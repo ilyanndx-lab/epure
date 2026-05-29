@@ -357,7 +357,9 @@ export default function ConnectorBar({
 
       {/* ── Skills panel ── */}
       {activePanel === 'skills' && (
-        <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-4 space-y-4">
+        <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-4 space-y-4 max-h-96 overflow-y-auto">
+
+          {/* Toggles */}
           <div className="flex items-center gap-3">
             <button
               onClick={onTtsToggle}
@@ -380,6 +382,40 @@ export default function ConnectorBar({
               {strictMode ? '◆ mode strict' : '◇ mode strict'}
             </button>
           </div>
+
+          {/* @ commands */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Préfixes @</p>
+            {[
+              { trigger: '@cours',   desc: 'RAG sur tous les fichiers indexés' },
+              { trigger: '@strict',  desc: 'Réponse concise, sans intro' },
+              { trigger: '@mémoire', desc: 'Affiche le contexte mémoire actuel' },
+            ].map(c => (
+              <div key={c.trigger} className="flex gap-2 items-baseline">
+                <span className="text-xs font-mono text-[#4a8a4a] shrink-0 w-24">{c.trigger}</span>
+                <span className="text-[10px] font-mono text-[#444]">{c.desc}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* / commands */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Commandes /</p>
+            {[
+              { trigger: '/kholle',     desc: 'Ouvre le module Kholle [matière?]' },
+              { trigger: '/flashcards', desc: 'Ouvre les Flashcards [source?]' },
+              { trigger: '/résumé',     desc: 'Résumé des fichiers actifs' },
+              { trigger: '/modèle',     desc: 'Change le modèle actif [nom]' },
+              { trigger: '/lacunes',    desc: 'Lacunes + erreurs des 7 derniers jours' },
+            ].map(c => (
+              <div key={c.trigger} className="flex gap-2 items-baseline">
+                <span className="text-xs font-mono text-[#4a6a8a] shrink-0 w-24">{c.trigger}</span>
+                <span className="text-[10px] font-mono text-[#444]">{c.desc}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Session instruction */}
           <div className="space-y-2">
             <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">
               Instruction de session

@@ -8,7 +8,9 @@
       "PowerShell(python -c \"from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction; print\\('EF import OK'\\)\")",
       "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Ilyan\\\\epure\" -Force)",
       "Bash(Select-Object Name, PSIsContainer)",
-      "Bash(Format-Table -AutoSize)"
+      "Bash(Format-Table -AutoSize)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Ilyan\\\\epure\\\\frontend\\\\src\" -Recurse -Include *.tsx, *.ts, *.css)",
+      "Bash(Select-Object FullName)"
     ]
   }
 }

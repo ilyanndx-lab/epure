@@ -49,6 +49,41 @@
           "historique": []
         }
       ]
+    },
+    {
+      "id": "5a754a9e-6829-4588-b630-1055943d1cae",
+      "nom": "s24",
+      "source": "C:\\Users\\Ilyan\\Fiches\\Maths\\fiche kholle S24.pdf",
+      "créé_le": "2026-05-29",
+      "cartes": [
+        {
+          "id": "e807d6f2-c2ba-4895-bc8b-f4d0b8f69474",
+          "question": "Qu'est-ce que le moment d'une force par rapport à un point ?",
+          "réponse": "Le moment d'une force ⃗F appliquée en un point M, par rapport à un autre point O, est le vecteur ⃗MO( ⃗F ) = ⃗OM ∧ ⃗F. Cette unité SI est N·m (newton-mètre).",
+          "niveau": 0,
+          "dernière_révision": null,
+          "prochaine_révision": "2026-05-29",
+          "historique": []
+        },
+        {
+          "id": "ed3b930e-d559-4cde-a0ed-2c85f8cb67c4",
+          "question": "Comment détermine-t-on la norme du moment d'une force ?",
+          "réponse": "La norme du moment de ⃗F par rapport à O est donnée par ∥ ⃗MO( ⃗F )∥ = OM·F·sinθ, où θ est l'angle entre ⃗OM et ⃗F. En SI, cette norme est exprimée en N·m.",
+          "niveau": 0,
+          "dernière_révision": null,
+          "prochaine_révision": "2026-05-29",
+          "historique": []
+        },
+        {
+          "id": "a9758c5e-034b-4459-8178-32c05c3ae1e0",
+          "question": "Quelle règle peut-on utiliser pour déterminer le sens du moment d'une force ?",
+          "réponse": "On utilise la règle de la main droite : plier l'index et le majeur de la main droite avec le pouce tel que l'index représente ⃗OM et le majeur ⃗F, alors le pouce indiquera le sens du vecteur moment.",
+          "niveau": 0,
+          "dernière_révision": null,
+          "prochaine_révision": "2026-05-29",
+          "historique": []
+        }
+      ]
     }
   ]
 }
