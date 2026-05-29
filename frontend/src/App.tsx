@@ -78,6 +78,7 @@ export default function App() {
             playSpeech={playSpeech}
             stopSpeech={stopSpeech}
             speakingText={speakingText}
+            onNavigate={setActiveModule}
           />
         )}
         {activeModule === 'kholle' && (
