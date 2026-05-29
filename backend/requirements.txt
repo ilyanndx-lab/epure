@@ -1,0 +1,8 @@
+﻿fastapi
+uvicorn
+ollama
+pyyaml
+chromadb
+sentence-transformers
+pypdf
+watchdog
