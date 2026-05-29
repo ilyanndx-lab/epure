@@ -159,6 +159,26 @@ async def memory_session_add(req: AddSessionRequest):
     return {"ok": True}
 
 
+@app.get("/memory/context")
+async def memory_context_get():
+    loop = asyncio.get_running_loop()
+    ctx_str = await loop.run_in_executor(None, memory.build_system_context)
+    return {"context": ctx_str if ctx_str else "(mémoire vide)"}
+
+
+@app.get("/memory/lacunes")
+async def memory_lacunes_get():
+    loop = asyncio.get_running_loop()
+    profile = await loop.run_in_executor(None, memory.load_profile)
+    sessions = await loop.run_in_executor(None, memory.get_sessions, 7)
+    lacunes = profile.get("lacunes_confirmées", [])
+    errors: list[dict] = []
+    for s in sessions[-20:]:
+        for e in s.get("erreurs", []):
+            errors.append({"date": s.get("date", ""), "erreur": e})
+    return {"lacunes": lacunes, "erreurs_recentes": errors}
+
+
 # ---------------------------------------------------------------------------
 # Context / Settings
 # ---------------------------------------------------------------------------
@@ -293,6 +313,74 @@ async def files_active():
 async def files_active_delete():
     memory.update_context(fichiers_actifs=[], résumé_contexte="")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Skills endpoints
+# ---------------------------------------------------------------------------
+
+async def _stream_résumé_sse():
+    ctx = memory.get_context()
+    active_files = ctx.get("fichiers_actifs", [])
+    if not active_files:
+        yield (
+            f"data: {json.dumps({'type': 'error', 'content': 'Aucun fichier actif. Chargez des fichiers via le panneau 📎.'})}\n\n"
+        )
+        return
+
+    loop = asyncio.get_running_loop()
+    text_parts: list[str] = []
+    for path in active_files:
+        try:
+            text = await loop.run_in_executor(None, RAGEngine.read_pdf_text, path)
+            text_parts.append(text[:3000])
+        except Exception:
+            logger.exception("Erreur lecture PDF %s pour /résumé", path)
+
+    if not text_parts:
+        yield f"data: {json.dumps({'type': 'error', 'content': 'Impossible de lire les fichiers actifs.'})}\n\n"
+        return
+
+    combined = "\n\n---\n\n".join(text_parts)[:12000]
+    prompt = (
+        "Résume en 100-150 mots maximum ces documents de cours. "
+        "Indique les sujets principaux et les notions clés. Sois factuel.\n\n"
+        f"Contenu :\n{combined}"
+    )
+    model_override = ctx.get("modèle_actif") or None
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _worker(msgs, q, lp, model):
+        try:
+            for token in llm.stream(msgs, model=model):
+                asyncio.run_coroutine_threadsafe(q.put(token), lp)
+        except Exception as exc:
+            logger.exception("Erreur streaming /skills/résumé")
+            asyncio.run_coroutine_threadsafe(q.put({"error": str(exc)}), lp)
+        finally:
+            asyncio.run_coroutine_threadsafe(q.put(None), lp)
+
+    Thread(
+        target=_worker,
+        args=([{"role": "user", "content": prompt}], queue, loop, model_override),
+        daemon=True,
+    ).start()
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        if isinstance(item, dict) and "error" in item:
+            yield f"data: {json.dumps({'type': 'error', 'content': item['error']})}\n\n"
+            return
+        yield f"data: {json.dumps({'type': 'token', 'content': item}, ensure_ascii=False)}\n\n"
+
+
+@app.post("/skills/résumé")
+async def skills_résumé():
+    return StreamingResponse(
+        _stream_résumé_sse(), media_type="text/event-stream", headers=_SSE_HEADERS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -489,12 +577,17 @@ async def ws_chat(websocket: WebSocket):
             msg = json.loads(data)
             history.append({"role": msg["role"], "content": msg["content"]})
 
+            rag_override: str | None = msg.get("rag_override")
+            strict_override: bool = bool(msg.get("strict_override", False))
+
             ctx = memory.get_context()
             active_files = ctx.get("fichiers_actifs", [])
             model_override = ctx.get("modèle_actif") or None
 
             user_text = msg["content"]
-            if active_files:
+            if rag_override == "all":
+                chunks = await loop.run_in_executor(None, rag.query, user_text)
+            elif active_files:
                 chunks = await loop.run_in_executor(
                     None, rag.query_filtered, user_text, active_files
                 )
@@ -502,6 +595,11 @@ async def ws_chat(websocket: WebSocket):
                 chunks = ""
 
             sys_parts: list[str] = []
+            if strict_override:
+                sys_parts.append(
+                    "Réponds de façon maximalement concise. "
+                    "Pas d'introduction, pas de reformulation."
+                )
             mem_ctx = memory.build_system_context()
             if mem_ctx:
                 sys_parts.append(mem_ctx)
