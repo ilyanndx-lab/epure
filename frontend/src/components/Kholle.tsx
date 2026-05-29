@@ -12,9 +12,17 @@ interface CurrentQuestion {
   total: number
 }
 
+interface KholleProps {
+  inputRef?: React.MutableRefObject<((text: string) => void) | null>
+  onAssistantDone?: (text: string) => void
+  playSpeech?: (text: string) => void
+  stopSpeech?: () => void
+  speakingText?: string | null
+}
+
 const basename = (path: string) => path.split(/[/\\]/).pop() ?? path
 
-export default function Kholle() {
+export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpeech, speakingText }: KholleProps) {
   // Config state
   const [mode, setMode] = useState<Mode>('generate')
   const [indexedFiles, setIndexedFiles] = useState<string[]>([])
@@ -37,6 +45,16 @@ export default function Kholle() {
 
   const wsRef = useRef<WebSocket | null>(null)
   const correctionBottomRef = useRef<HTMLDivElement>(null)
+  const correctionRef = useRef('')
+
+  useEffect(() => {
+    if (!inputRef) return
+    if (phase === 'session') {
+      inputRef.current = (text: string) => setAnswer(text)
+    } else {
+      inputRef.current = null
+    }
+  }, [phase, inputRef])
 
   useEffect(() => {
     fetch(`${API}/rag/files`)
@@ -66,16 +84,23 @@ export default function Kholle() {
       if (data.type === 'question') {
         setCurrentQ({ content: data.content, index: data.index, total: data.total })
         setCorrection('')
+        correctionRef.current = ''
         setCorrecting(false)
         setCorrectionDone(false)
         setAnswer('')
         setSessionError(null)
       } else if (data.type === 'token') {
-        setCorrection(prev => prev + data.content)
+        setCorrection(prev => {
+          const next = prev + data.content
+          correctionRef.current = next
+          return next
+        })
         setCorrecting(true)
       } else if (data.type === 'done') {
         setCorrecting(false)
         setCorrectionDone(true)
+        onAssistantDone?.(correctionRef.current)
+        correctionRef.current = ''
       } else if (data.type === 'session_end') {
         setSessionErrors(data.errors)
         setPhase('summary')
@@ -281,10 +306,27 @@ export default function Kholle() {
         {/* Correction */}
         <div className="flex-1 overflow-y-auto px-8 py-5">
           {correction ? (
-            <pre className="text-sm font-mono text-[#b8b8b8] leading-relaxed whitespace-pre-wrap break-words">
-              {correction}
-              {correcting && <span className="animate-pulse text-[#3a3a3a]">▍</span>}
-            </pre>
+            <>
+              <pre className="text-sm font-mono text-[#b8b8b8] leading-relaxed whitespace-pre-wrap break-words">
+                {correction}
+                {correcting && <span className="animate-pulse text-[#3a3a3a]">▍</span>}
+              </pre>
+              {correctionDone && playSpeech && (
+                <button
+                  onClick={() =>
+                    speakingText === correction ? stopSpeech?.() : playSpeech(correction)
+                  }
+                  className={`mt-3 text-xs font-mono transition-colors ${
+                    speakingText === correction
+                      ? 'text-[#5a9a5a] hover:text-[#7aba7a]'
+                      : 'text-[#333] hover:text-[#888]'
+                  }`}
+                  title={speakingText === correction ? 'Arrêter' : 'Lire la correction'}
+                >
+                  {speakingText === correction ? '■ arrêter' : '▶ lire'}
+                </button>
+              )}
+            </>
           ) : (
             !correcting && (
               <div className="flex items-center justify-center h-full">

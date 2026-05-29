@@ -15,3 +15,8 @@ rag:
   chunk_size: 500
   chunk_overlap: 50
   n_results: 3
+
+voice:
+  whisper_model: small
+  piper_voice: fr_FR-upmc-medium
+  language: fr
