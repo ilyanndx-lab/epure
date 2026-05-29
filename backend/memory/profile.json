@@ -1,0 +1,9 @@
+﻿{
+  "identité": {"niveau": "PTSI2", "établissement": "", "objectif": ""},
+  "préférences_interaction": {
+    "style": "direct, sans reformulation inutile",
+    "ne_pas_faire": ["répéter la question", "sur-expliquer les bases"]
+  },
+  "forces": [],
+  "lacunes_confirmées": []
+}

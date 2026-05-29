@@ -6,3 +6,5 @@ chromadb
 sentence-transformers
 pypdf
 watchdog
+faster-whisper
+piper-tts

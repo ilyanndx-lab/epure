@@ -38,7 +38,12 @@ class RAGEngine:
         if not full_text.strip():
             return
 
-        # chunk_size and chunk_overlap are in tokens; ~4 chars per token
+        # Remove stale chunks before re-indexing to avoid duplicates
+        try:
+            self._col.delete(where={"source": str(path)})
+        except Exception:
+            logger.exception("Erreur suppression chunks existants pour %s", path)
+
         chunk_chars = self._chunk_size * 4
         overlap_chars = self._chunk_overlap * 4
         step = max(1, chunk_chars - overlap_chars)
@@ -65,6 +70,28 @@ class RAGEngine:
         results = self._col.query(query_texts=[text], n_results=min(n, count))
         docs = results.get("documents", [[]])[0]
         return "\n\n---\n\n".join(d for d in docs if d)
+
+    def query_filtered(self, text: str, paths: list, n_results: Optional[int] = None) -> str:
+        if not paths:
+            return ""
+        n = n_results if n_results is not None else self._n_results
+        try:
+            existing = self._col.get(
+                where={"source": {"$in": list(paths)}}, include=[]
+            )
+            count = len(existing.get("ids", []))
+            if count == 0:
+                return ""
+            results = self._col.query(
+                query_texts=[text],
+                n_results=min(n, count),
+                where={"source": {"$in": list(paths)}},
+            )
+            docs = results.get("documents", [[]])[0]
+            return "\n\n---\n\n".join(d for d in docs if d)
+        except Exception:
+            logger.exception("Erreur query_filtered")
+            return ""
 
     def get_indexed_files(self) -> list:
         result = self._col.get(include=["metadatas"])
@@ -93,16 +120,7 @@ class RAGEngine:
         observer.daemon = True
         observer.start()
 
-def get_indexed_files(self) -> list[str]:
-    results = self._col.get(include=["metadatas"])
-    seen = set()
-    files = []
-    for meta in results.get("metadatas", []):
-        src = meta.get("source", "")
-        if src and src not in seen:
-            seen.add(src)
-            files.append(src)
-    return sorted(files)
+
 class _PDFHandler(FileSystemEventHandler):
     def __init__(self, engine: RAGEngine):
         self._engine = engine

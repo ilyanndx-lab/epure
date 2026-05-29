@@ -5,7 +5,10 @@
       "PowerShell(Get-Content *)",
       "PowerShell(python -c \"import chromadb; print\\('chromadb', chromadb.__version__\\)\")",
       "PowerShell(python -c \"import sentence_transformers, pypdf, watchdog; print\\('sentence_transformers', sentence_transformers.__version__\\); print\\('pypdf', pypdf.__version__\\); print\\('watchdog', watchdog.__version__\\)\")",
-      "PowerShell(python -c \"from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction; print\\('EF import OK'\\)\")"
+      "PowerShell(python -c \"from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction; print\\('EF import OK'\\)\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\Ilyan\\\\epure\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)"
     ]
   }
 }

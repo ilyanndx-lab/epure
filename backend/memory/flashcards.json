@@ -1,0 +1,54 @@
+{
+  "decks": [
+    {
+      "id": "6de000e1-d329-4544-b7b0-1f932260de41",
+      "nom": "graphe",
+      "source": "C:\\Users\\Ilyan\\Fiches\\Maths\\Chap10 Introduction aux graphes_1 page.pdf",
+      "créé_le": "2026-05-29",
+      "cartes": [
+        {
+          "id": "fde9f7e9-bbdc-40ea-b6c8-b539c002659a",
+          "question": "Qu'est-ce qu'une pile et quelles sont ses principales opérations ?",
+          "réponse": "Une pile est une structure de données où les éléments sont ajoutés ou supprimés en dernier arrivé, premier sorti (LIFO - Last In First Out). Ses principales opérations sont l'empilement (.append()) qui ajoute un élément à la fin de la pile et le dépilage (.pop()) qui supprime un élément de la fin de la pile.",
+          "niveau": 1,
+          "dernière_révision": "2026-05-29",
+          "prochaine_révision": "2026-06-01",
+          "historique": [
+            {
+              "date": "2026-05-29",
+              "resultat": "su",
+              "niveau": 1
+            }
+          ]
+        },
+        {
+          "id": "aca4254c-1ef2-4d38-aeb5-cff6c5e1a63e",
+          "question": "Comment utiliser une file en Python ? ",
+          "réponse": "Une file peut être utilisée avec les méthodes append() pour ajouter un élément à la fin (back) et popleft() pour supprimer un élément au début (front). Pour gagner en efficacité, on utilise le module collections.deque qui fournit des performances plus rapides pour les opérations d'ajout et de suppression aux extrémités.",
+          "niveau": 0,
+          "dernière_révision": null,
+          "prochaine_révision": "2026-05-29",
+          "historique": []
+        },
+        {
+          "id": "3b950d26-1f4f-41a7-950d-b3bf95f955c4",
+          "question": "Quelle est la différence entre le parcours en largeur et le parcours en profondeur dans un graphe ?",
+          "réponse": "Le parcours en largeur traite tout d'abord tous les voisins à une distance 1 du sommet initial, puis ceux à une distance 2, etc. Il utilise une file pour gérer l'ordre des sommets à traiter. Le parcours en profondeur traite un voisin avant de passer aux autres voisins, et il utilise une pile (ou une récursivité) pour mémoriser les sommets à explorer.",
+          "niveau": 0,
+          "dernière_révision": null,
+          "prochaine_révision": "2026-05-29",
+          "historique": []
+        },
+        {
+          "id": "f5d057b2-f7a2-4100-baae-3b97bdbcad74",
+          "question": "Quel algorithme est utilisé pour tester la présence de cycles dans un graphe non orienté ?",
+          "réponse": "On peut utiliser le parcours en largeur ou en profondeur. L'idée consiste à marquer chaque sommet visité et à vérifier s'il est déjà marqué avant d'explorer ses voisins.",
+          "niveau": 0,
+          "dernière_révision": null,
+          "prochaine_révision": "2026-05-29",
+          "historique": []
+        }
+      ]
+    }
+  ]
+}
