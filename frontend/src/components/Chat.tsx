@@ -5,15 +5,31 @@ interface Message {
   content: string
 }
 
+interface ChatProps {
+  inputRef?: React.MutableRefObject<((text: string) => void) | null>
+  onAssistantDone?: (text: string) => void
+  playSpeech?: (text: string) => void
+  stopSpeech?: () => void
+  speakingText?: string | null
+}
+
 const WS_URL = 'ws://localhost:8000/ws/chat'
 
-export default function Chat() {
+export default function Chat({ inputRef, onAssistantDone, playSpeech, stopSpeech, speakingText }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [connected, setConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const lastAssistantRef = useRef('')
+
+  useEffect(() => {
+    if (inputRef) inputRef.current = (text: string) => setInput(text)
+    return () => {
+      if (inputRef) inputRef.current = null
+    }
+  }, [inputRef])
 
   useEffect(() => {
     const connect = () => {
@@ -29,22 +45,28 @@ export default function Chat() {
           setMessages(prev => {
             const last = prev[prev.length - 1]
             if (last?.role === 'assistant') {
-              return [...prev.slice(0, -1), { ...last, content: last.content + data.content }]
+              const next = last.content + data.content
+              lastAssistantRef.current = next
+              return [...prev.slice(0, -1), { ...last, content: next }]
             }
+            lastAssistantRef.current = data.content
             return [...prev, { role: 'assistant', content: data.content }]
           })
         } else if (data.type === 'done') {
           setStreaming(false)
+          onAssistantDone?.(lastAssistantRef.current)
+          lastAssistantRef.current = ''
         } else if (data.type === 'error') {
           setMessages(prev => [...prev, { role: 'assistant', content: `[erreur: ${data.content}]` }])
           setStreaming(false)
+          lastAssistantRef.current = ''
         }
       }
       wsRef.current = ws
     }
     connect()
     return () => wsRef.current?.close()
-  }, [])
+  }, [onAssistantDone])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -76,7 +98,10 @@ export default function Chat() {
           </div>
         )}
         {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <div
+            key={i}
+            className={`flex group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
             <div
               className={`max-w-[78%] px-4 py-3 rounded text-sm leading-relaxed ${
                 msg.role === 'user'
@@ -85,6 +110,25 @@ export default function Chat() {
               }`}
             >
               <pre className="whitespace-pre-wrap break-words font-[inherit] m-0">{msg.content}</pre>
+              {msg.role === 'assistant' && playSpeech && (
+                <div className="mt-2 flex">
+                  <button
+                    onClick={() =>
+                      speakingText === msg.content ? stopSpeech?.() : playSpeech(msg.content)
+                    }
+                    className={`text-xs font-mono transition-colors
+                      [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100
+                      [@media(pointer:coarse)]:opacity-100
+                      ${speakingText === msg.content
+                        ? 'text-[#5a9a5a] hover:text-[#7aba7a]'
+                        : 'text-[#333] hover:text-[#888]'
+                      }`}
+                    title={speakingText === msg.content ? 'Arrêter' : 'Lire'}
+                  >
+                    {speakingText === msg.content ? '■' : '▶'}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
