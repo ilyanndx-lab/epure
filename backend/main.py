@@ -22,6 +22,7 @@ from pydantic import BaseModel
 _ENV_FILE = Path(__file__).parent / ".env"
 
 from core.admin import AdminEngine
+from core.consolidation import ConsolidationEngine
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
@@ -52,6 +53,7 @@ flashcards_engine = FlashcardsEngine()
 admin_engine = AdminEngine(llm, rag)
 models_registry = ModelsRegistry()
 history_engine = HistoryEngine(llm, rag._client, rag._ef)
+consolidation_engine = ConsolidationEngine(llm, memory, history_engine)
 
 _voice_cfg = _cfg.get("voice", {})
 whisper = WhisperEngine(
@@ -260,8 +262,21 @@ async def memory_session_add(req: AddSessionRequest):
 @app.get("/memory/context")
 async def memory_context_get():
     loop = asyncio.get_running_loop()
-    ctx_str = await loop.run_in_executor(None, memory.build_system_context)
-    return {"context": ctx_str if ctx_str else "(mémoire vide)"}
+    profile = await loop.run_in_executor(None, memory.load_profile)
+    sessions = await loop.run_in_executor(None, memory.get_all_sessions)
+    forces = profile.get("forces", [])
+    lacunes = profile.get("lacunes_confirmées", [])
+    style = profile.get("préférences_interaction", {}).get("style", "")
+    consol_log = await loop.run_in_executor(None, consolidation_engine.get_log, 1)
+    last_consol = consol_log[0]["date"][:10] if consol_log else "jamais"
+    lines = ["📊 Profil apprenant :"]
+    lines.append(f"Forces : {', '.join(forces[:5])}" if forces else "Forces : (aucune enregistrée)")
+    lines.append(f"Lacunes confirmées : {', '.join(lacunes[:5])}" if lacunes else "Lacunes : (aucune confirmée)")
+    if style:
+        lines.append(f"Style : {style}")
+    lines.append(f"Dernière consolidation : {last_consol}")
+    lines.append(f"Sessions totales : {len(sessions)}")
+    return {"context": "\n".join(lines)}
 
 
 @app.get("/memory/lacunes")
@@ -289,7 +304,7 @@ async def context_get():
 @app.patch("/context/settings")
 async def context_settings(request: Request):
     body = await request.json()
-    allowed = {"modèle_actif", "strict_mode", "session_instruction"}
+    allowed = {"modèle_actif", "strict_mode", "session_instruction", "consolidation_cloud"}
     filtered = {k: v for k, v in body.items() if k in allowed}
     memory.update_context(**filtered)
     return {"ok": True}
@@ -797,10 +812,14 @@ async def ws_chat(websocket: WebSocket):
         if len(history) >= 3:
             model = _last_model[0]
             msgs = list(history)
-            Thread(
-                target=lambda: history_engine.save_conversation(msgs, model, ["chat"]),
-                daemon=True,
-            ).start()
+            use_cloud = memory.get_context().get("consolidation_cloud", False)
+
+            def _save_and_consolidate():
+                conv_id = history_engine.save_conversation(msgs, model, ["chat"])
+                if len(msgs) >= 10:
+                    consolidation_engine.consolidate_history(conv_id, use_cloud)
+
+            Thread(target=_save_and_consolidate, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -809,6 +828,22 @@ async def ws_chat(websocket: WebSocket):
 
 class HistorySearchRequest(BaseModel):
     query: str
+
+
+@app.post("/memory/consolidate")
+async def memory_consolidate(request: Request):
+    body = await request.json()
+    use_cloud = bool(body.get("use_cloud", False))
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, consolidation_engine.consolidate_all, use_cloud)
+    return result
+
+
+@app.get("/memory/consolidation-log")
+async def memory_consolidation_log():
+    loop = asyncio.get_running_loop()
+    log = await loop.run_in_executor(None, consolidation_engine.get_log)
+    return {"log": log}
 
 
 @app.get("/history")
@@ -1058,6 +1093,18 @@ async def ws_kholle(websocket: WebSocket):
                             len(session_errors),
                         )
                         await loop.run_in_executor(None, memory.promote_lacunes)
+                        # Non-blocking consolidation after kholle session
+                        consol_data = {
+                            "matière": "kholle",
+                            "erreurs": all_errors,
+                            "réussies": réussies,
+                            "ratées": len(session_errors),
+                        }
+                        _use_cloud = memory.get_context().get("consolidation_cloud", False)
+                        Thread(
+                            target=lambda: consolidation_engine.consolidate_session(consol_data, _use_cloud),
+                            daemon=True,
+                        ).start()
                     except Exception:
                         logger.exception("Erreur sauvegarde session kholle en mémoire")
                 else:
