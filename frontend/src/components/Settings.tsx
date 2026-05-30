@@ -100,6 +100,12 @@ export default function Settings() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [selectedDates, setSelectedDates] = useState<string[]>([])
 
+  // Consolidation state
+  const [consolidCloud, setConsolidCloud] = useState(false)
+  const [consolidating, setConsolidating] = useState(false)
+  const [consolidResult, setConsolidResult] = useState<string | null>(null)
+  const [consolidLog, setConsolidLog] = useState<Record<string, unknown>[]>([])
+
   // API keys state
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({
     GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', DEEPSEEK_API_KEY: '', NVIDIA_API_KEY: '',
@@ -124,6 +130,16 @@ export default function Settings() {
       .then(r => r.json())
       .then((d: Record<string, boolean>) => setKeyStatus(d))
       .catch(err => console.error('GET /settings/api-keys:', err))
+
+    fetch(`${API}/context`)
+      .then(r => r.json())
+      .then((d: Record<string, unknown>) => setConsolidCloud(Boolean(d['consolidation_cloud'])))
+      .catch(() => {})
+
+    fetch(`${API}/memory/consolidation-log`)
+      .then(r => r.json())
+      .then((d: { log: Record<string, unknown>[] }) => setConsolidLog(d.log?.slice(0, 10) ?? []))
+      .catch(() => {})
   }, [])
 
   const saveProfile = useCallback(async () => {
@@ -146,6 +162,42 @@ export default function Settings() {
       setSaving(false)
     }
   }, [profile])
+
+  const toggleConsolidCloud = useCallback(async () => {
+    const next = !consolidCloud
+    setConsolidCloud(next)
+    await fetch(`${API}/context/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ consolidation_cloud: next }),
+    }).catch(() => {})
+  }, [consolidCloud])
+
+  const consolidateNow = useCallback(async () => {
+    setConsolidating(true)
+    setConsolidResult(null)
+    try {
+      const res = await fetch(`${API}/memory/consolidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ use_cloud: consolidCloud }),
+      })
+      const data: Record<string, unknown> = await res.json()
+      const ch = (data.changements as Record<string, unknown[]>) ?? {}
+      const parts: string[] = []
+      if ((ch.lacunes_ajoutées as string[])?.length) parts.push(`+${(ch.lacunes_ajoutées as string[]).length} lacune(s)`)
+      if ((ch.forces_ajoutées as string[])?.length) parts.push(`+${(ch.forces_ajoutées as string[]).length} force(s)`)
+      if (ch.style_màj) parts.push('style mis à jour')
+      setConsolidResult(parts.length ? parts.join(' · ') : 'Aucun changement')
+      const logRes = await fetch(`${API}/memory/consolidation-log`)
+      const logData: { log: Record<string, unknown>[] } = await logRes.json()
+      setConsolidLog(logData.log?.slice(0, 10) ?? [])
+    } catch {
+      setConsolidResult('Erreur')
+    } finally {
+      setConsolidating(false)
+    }
+  }, [consolidCloud])
 
   const saveApiKeys = useCallback(async () => {
     setSavingKeys(true)
@@ -305,6 +357,68 @@ export default function Settings() {
             <span className="text-xs font-mono text-[#5a9a5a]">{saveMsg}</span>
           )}
         </div>
+      </section>
+
+      {/* ── Consolidation ── */}
+      <section className="max-w-lg space-y-4">
+        <p className="text-xs font-mono text-[#444] uppercase tracking-widest">Consolidation mémoire</p>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-mono text-[#888]">Consolidation cloud après kholle</p>
+            <p className="text-[10px] font-mono text-[#333] mt-0.5">
+              {consolidCloud ? 'Groq Llama 3.3 70B (envoi erreurs + scores uniquement)' : 'LLM local (défaut)'}
+            </p>
+          </div>
+          <button
+            onClick={toggleConsolidCloud}
+            className={`px-3 py-1.5 rounded text-xs font-mono border transition-colors ${
+              consolidCloud
+                ? 'bg-[#1a1a2a] border-[#2a2a4a] text-[#7a7acc]'
+                : 'bg-[#141414] border-[#242424] text-[#555] hover:border-[#383838] hover:text-[#aaa]'
+            }`}
+          >
+            {consolidCloud ? '◆ cloud' : '◇ local'}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={consolidateNow}
+            disabled={consolidating}
+            className="px-4 py-1.5 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 transition-colors"
+          >
+            {consolidating ? 'Consolidation...' : 'Consolider maintenant'}
+          </button>
+          {consolidResult && (
+            <span className="text-xs font-mono text-[#5a9a5a]">{consolidResult}</span>
+          )}
+        </div>
+
+        {consolidLog.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Historique</p>
+            {consolidLog.map((entry, i) => {
+              const lacunes = (entry.lacunes_ajoutées as string[]) ?? []
+              const forces = (entry.forces_ajoutées as string[]) ?? []
+              const summary = [
+                lacunes.length ? `+${lacunes.length} lacune` : '',
+                forces.length ? `+${forces.length} force` : '',
+                entry.style_màj ? 'style' : '',
+              ].filter(Boolean).join(' · ') || 'aucun changement'
+              return (
+                <div key={i} className="flex items-center gap-3 text-[10px] font-mono border-b border-[#111] py-1">
+                  <span className="text-[#333] shrink-0">
+                    {String(entry.date ?? '').slice(0, 10)}
+                  </span>
+                  <span className="text-[#444] shrink-0">{String(entry.type ?? '')}</span>
+                  <span className="text-[#555] truncate flex-1">{String(entry.source ?? '')}</span>
+                  <span className="text-[#3a6a3a] shrink-0">{summary}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </section>
 
       {/* ── API Keys ── */}
