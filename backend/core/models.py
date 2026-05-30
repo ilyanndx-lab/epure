@@ -76,6 +76,12 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "description": "Raisonnement avancé · chain-of-thought",
         "usages": ["Kholle maths", "Kholle physique"],
     },
+    # Groq reasoning
+    "deepseek-r1-distill-llama-70b": {
+        "categorie": "puissant",
+        "description": "Raisonnement · chain-of-thought · Groq",
+        "usages": ["Kholle maths", "Kholle physique"],
+    },
     # Cerebras
     "llama3.1-8b": {
         "categorie": "rapide",
@@ -105,6 +111,7 @@ _NOM_MAP: dict[str, str] = {
     "gemini-2.5-flash-lite":              "Gemini 2.5 Flash-Lite",
     "gemini-2.5-pro":                     "Gemini 2.5 Pro",
     "gemini-3.1-flash-lite":              "Gemini 3.1 Flash-Lite",
+    "deepseek-r1-distill-llama-70b": "DeepSeek R1 70B",
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "deepseek-r1":       "DeepSeek R1",
     "llama3.1-8b":  "Llama 3.1 8B",
@@ -112,10 +119,39 @@ _NOM_MAP: dict[str, str] = {
     "llama-4-maverick":"Llama 4 Maverick",
 }
 
+# Recommendations that must override the dynamic first-match logic
+RECOMMENDATION_OVERRIDES: dict[str, str] = {
+    "Kholle maths":    "groq:deepseek-r1-distill-llama-70b",
+    "Kholle physique": "groq:deepseek-r1-distill-llama-70b",
+}
+
 _GROQ_EXCLUDE = {"whisper", "guard", "orpheus", "compound"}
 _NVIDIA_STATIC    = ["nvidia/nemotron-3-super-120b-a12b", "nvidia/llama-3.1-nemotron-nano-8b-v1"]
 _DEEPSEEK_STATIC = ["deepseek-v4-flash", "deepseek-r1"]
 _GEMINI_STATIC    = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.1-flash-lite"]
+
+# FastFlowLM (local NPU) — static list, availability checked at request time
+FLM_MODELS_STATIC: list[dict] = [
+    {
+        "id": "flm:qwen3:8b",
+        "nom": "Qwen3 8B (NPU)",
+        "provider": "flm",
+        "gratuit": True,
+        "description": "Qualité · NPU AMD · économe",
+        "_categorie": "puissant",
+        "_usages": ["Kholle maths", "Chat rapide"],
+    },
+]
+
+
+def check_flm() -> bool:
+    """Return True if the FastFlowLM server responds on localhost:11435."""
+    try:
+        req = urllib.request.Request("http://localhost:11435/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

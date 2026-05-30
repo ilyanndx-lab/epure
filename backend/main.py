@@ -25,7 +25,7 @@ from core.admin import AdminEngine
 from core.flashcards import FlashcardsEngine
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
-from core.models import ModelsRegistry
+from core.models import ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC, check_flm
 from core.rag import RAGEngine
 from core.voice import PiperEngine, WhisperEngine
 
@@ -125,6 +125,19 @@ async def list_models():
 
     catalog = await models_registry.get_catalog()
 
+    # FLM availability (2s timeout, non-blocking)
+    try:
+        flm_ok = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(None, check_flm), timeout=2.5
+        )
+    except Exception:
+        flm_ok = False
+
+    local_npu = [
+        {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": flm_ok}
+        for m in FLM_MODELS_STATIC
+    ]
+
     key_ok: dict[str, bool] = {
         "gemini":   bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "groq":     bool(os.environ.get("GROQ_API_KEY", "").strip()),
@@ -150,7 +163,13 @@ async def list_models():
                 if usage not in recommandations:
                     recommandations[usage] = m["id"]
 
-    return {"local": local, "cloud": cloud, "recommandations": recommandations}
+    # Apply static overrides when the target model's provider has a key
+    for usage, model_id in RECOMMENDATION_OVERRIDES.items():
+        provider = model_id.split(":", 1)[0]
+        if key_ok.get(provider, False):
+            recommandations[usage] = model_id
+
+    return {"local": local, "local_npu": local_npu, "cloud": cloud, "recommandations": recommandations}
 
 
 # ---------------------------------------------------------------------------
@@ -472,10 +491,19 @@ async def health():
         models = [m.model for m in response.models]
         ctx = memory.get_context()
         active_model = ctx.get("modèle_actif", llm._model)
-        return {"ollama": True, "model": active_model, "models": models}
+        ollama_ok = True
     except Exception:
         logger.exception("Erreur health check Ollama")
-        return {"ollama": False, "model": "", "models": []}
+        active_model, models, ollama_ok = "", [], False
+
+    try:
+        flm_ok = await asyncio.wait_for(
+            loop.run_in_executor(None, check_flm), timeout=2.0
+        )
+    except Exception:
+        flm_ok = False
+
+    return {"ollama": ollama_ok, "model": active_model, "models": models, "flm": flm_ok}
 
 
 @app.get("/rag/files")

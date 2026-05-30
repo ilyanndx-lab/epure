@@ -1,7 +1,7 @@
 {
   "fichiers_actifs": [],
   "résumé_contexte": "",
-  "modèle_actif": "deepseek:deepseek-r1",
+  "modèle_actif": "flm:qwen3:8b",
   "strict_mode": false,
   "session_instruction": ""
 }

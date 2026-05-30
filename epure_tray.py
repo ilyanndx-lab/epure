@@ -34,7 +34,7 @@ def _log(msg: str):
 
 
 def _kill_existing():
-    for name in ("ollama.exe", "uvicorn"):
+    for name in ("ollama.exe", "flm.exe", "uvicorn"):
         try:
             subprocess.run(
                 ["taskkill", "/F", "/IM", name],
@@ -90,6 +90,18 @@ def _start_processes():
         errors="ignore",
     )
     _processes.append(p_ollama)
+
+    _log("Lancement flm serve")
+    try:
+        p_flm = subprocess.Popen(
+            ["flm", "serve", "--port", "11435"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            startupinfo=_HIDDEN,
+        )
+        _processes.append(p_flm)
+    except FileNotFoundError:
+        _log("flm non trouvé — ignoré")
 
     time.sleep(4)
 

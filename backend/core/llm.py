@@ -13,12 +13,14 @@ load_dotenv(_ENV_FILE)
 
 logger = logging.getLogger(__name__)
 
-# OpenAI-compatible providers: name → (base_url, env_key)
-_OPENAI_COMPAT: dict[str, tuple[str, str]] = {
+# OpenAI-compatible providers: name → (base_url, env_key | None)
+# env_key=None means no API key required (local server)
+_OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
     "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY"),
     "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY"),
     "deepseek": ("https://api.deepseek.com",            "DEEPSEEK_API_KEY"),
     "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
+    "flm":      ("http://localhost:11435/v1",           None),
 }
 
 
@@ -57,9 +59,12 @@ class LLMEngine:
 
     def _openai_client(self, provider: str):
         base_url, key_name = _OPENAI_COMPAT[provider]
-        api_key = os.environ.get(key_name, "").strip()
-        if not api_key:
-            raise ValueError(f"{key_name} non configurée — ajoutez-la dans Settings")
+        if key_name is None:
+            api_key = "not-needed"  # local server, no auth required
+        else:
+            api_key = os.environ.get(key_name, "").strip()
+            if not api_key:
+                raise ValueError(f"{key_name} non configurée — ajoutez-la dans Settings")
         try:
             from openai import OpenAI
             return OpenAI(base_url=base_url, api_key=api_key)
