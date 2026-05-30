@@ -12,11 +12,15 @@ from typing import Optional
 import ollama
 import pypdf
 import yaml
+from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+_ENV_FILE = Path(__file__).parent / ".env"
+
+from core.admin import AdminEngine
 from core.flashcards import FlashcardsEngine
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
@@ -42,6 +46,7 @@ llm = LLMEngine()
 rag = RAGEngine()
 memory = MemoryEngine()  # resets context_session on startup
 flashcards_engine = FlashcardsEngine()
+admin_engine = AdminEngine(llm, rag)
 
 _voice_cfg = _cfg.get("voice", {})
 whisper = WhisperEngine(
@@ -107,11 +112,44 @@ async def list_models():
     loop = asyncio.get_running_loop()
     try:
         response = await loop.run_in_executor(None, ollama.list)
-        models = [m.model for m in response.models]
+        local = [m.model for m in response.models]
     except Exception:
         logger.exception("Erreur liste modèles Ollama")
-        models = [llm._model]
-    return {"models": models}
+        local = [llm._model]
+
+    gemini_ok = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    cloud = [
+        {"id": "gemini:gemini-2.5-flash",      "nom": "Gemini 2.5 Flash",      "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
+        {"id": "gemini:gemini-2.5-flash-lite",  "nom": "Gemini 2.5 Flash-Lite", "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
+        {"id": "gemini:gemini-2.5-pro",         "nom": "Gemini 2.5 Pro",        "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
+        {"id": "gemini:gemini-3.1-flash-lite",  "nom": "Gemini 3.1 Flash-Lite", "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
+    ]
+    return {"local": local, "cloud": cloud}
+
+
+# ---------------------------------------------------------------------------
+# Settings — API keys
+# ---------------------------------------------------------------------------
+
+class ApiKeysRequest(BaseModel):
+    GEMINI_API_KEY: Optional[str] = None
+
+
+@app.get("/settings/api-keys")
+async def api_keys_get():
+    return {"GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY", "").strip())}
+
+
+@app.put("/settings/api-keys")
+async def api_keys_put(req: ApiKeysRequest):
+    if req.GEMINI_API_KEY is not None:
+        _ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if not _ENV_FILE.exists():
+            _ENV_FILE.write_text("GEMINI_API_KEY=\n", encoding="utf-8")
+        dotenv_set_key(str(_ENV_FILE), "GEMINI_API_KEY", req.GEMINI_API_KEY)
+        load_dotenv(str(_ENV_FILE), override=True)
+        llm.reload_dotenv()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +678,15 @@ async def ws_chat(websocket: WebSocket):
                         json.dumps({"type": "error", "content": item["error"]})
                     )
                     break
+                if isinstance(item, dict) and "__stats__" in item:
+                    await websocket.send_text(json.dumps({
+                        "type": "stats",
+                        "prompt_tokens": item.get("prompt_tokens", 0),
+                        "output_tokens": item.get("output_tokens", 0),
+                        "eval_duration_ms": (item.get("eval_duration_ns", 0) or 0) // 1_000_000,
+                        "prompt_duration_ms": (item.get("prompt_duration_ns", 0) or 0) // 1_000_000,
+                    }))
+                    continue
                 accumulated += item
                 await websocket.send_text(json.dumps({"type": "token", "content": item}))
 
@@ -816,6 +863,15 @@ async def ws_kholle(websocket: WebSocket):
                             json.dumps({"type": "error", "content": item["error"]})
                         )
                         break
+                    if isinstance(item, dict) and "__stats__" in item:
+                        await websocket.send_text(json.dumps({
+                            "type": "stats",
+                            "prompt_tokens": item.get("prompt_tokens", 0),
+                            "output_tokens": item.get("output_tokens", 0),
+                            "eval_duration_ms": (item.get("eval_duration_ns", 0) or 0) // 1_000_000,
+                            "prompt_duration_ms": (item.get("prompt_duration_ns", 0) or 0) // 1_000_000,
+                        }))
+                        continue
                     accumulated += item
                     await websocket.send_text(json.dumps({"type": "token", "content": item}))
 
@@ -870,3 +926,102 @@ async def ws_kholle(websocket: WebSocket):
 
     except WebSocketDisconnect:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Admin
+# ---------------------------------------------------------------------------
+
+class ExecuteActionsRequest(BaseModel):
+    actions: list[dict]
+
+
+class UndoRequest(BaseModel):
+    action_id: str
+
+
+async def _stream_admin_scan():
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _worker():
+        try:
+            for result, index, total in admin_engine.scan_all():
+                asyncio.run_coroutine_threadsafe(
+                    queue.put({"result": result, "index": index, "total": total}), loop
+                )
+        except Exception as exc:
+            logger.exception("Erreur scan_all admin")
+            asyncio.run_coroutine_threadsafe(queue.put({"error": str(exc)}), loop)
+        finally:
+            asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+    Thread(target=_worker, daemon=True).start()
+
+    results = []
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        if "error" in item:
+            yield f"data: {json.dumps({'type': 'error', 'content': item['error']}, ensure_ascii=False)}\n\n"
+            return
+        r = item["result"]
+        results.append(r)
+        yield f"data: {json.dumps({'type': 'progress', 'file': r['nom_actuel'], 'index': item['index'], 'total': item['total']}, ensure_ascii=False)}\n\n"
+
+    yield f"data: {json.dumps({'type': 'done', 'résultats': results}, ensure_ascii=False)}\n\n"
+
+
+@app.post("/admin/scan")
+async def admin_scan():
+    return StreamingResponse(
+        _stream_admin_scan(), media_type="text/event-stream", headers=_SSE_HEADERS
+    )
+
+
+@app.get("/admin/duplicates")
+async def admin_duplicates():
+    loop = asyncio.get_running_loop()
+    try:
+        groups = await loop.run_in_executor(None, admin_engine.find_duplicates)
+        return {"groupes": groups}
+    except Exception:
+        logger.exception("Erreur détection doublons")
+        raise HTTPException(status_code=500, detail="Erreur détection doublons")
+
+
+@app.post("/admin/execute")
+async def admin_execute(req: ExecuteActionsRequest):
+    loop = asyncio.get_running_loop()
+    try:
+        results = await loop.run_in_executor(None, admin_engine.execute_actions, req.actions)
+        return {"résultats": results}
+    except Exception:
+        logger.exception("Erreur exécution actions admin")
+        raise HTTPException(status_code=500, detail="Erreur exécution actions")
+
+
+@app.get("/admin/open")
+async def admin_open(path: str):
+    try:
+        import subprocess
+        subprocess.Popen(f'explorer /select,"{path}"', shell=True)
+        return {"ok": True}
+    except Exception:
+        logger.exception("Erreur ouverture %s", path)
+        raise HTTPException(status_code=500, detail="Erreur ouverture fichier")
+
+
+@app.get("/admin/log")
+async def admin_log():
+    loop = asyncio.get_running_loop()
+    log = await loop.run_in_executor(None, admin_engine.get_log)
+    return {"log": log}
+
+
+@app.post("/admin/undo")
+async def admin_undo(req: UndoRequest):
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, admin_engine.undo_action, req.action_id)
+    return result

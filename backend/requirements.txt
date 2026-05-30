@@ -8,3 +8,5 @@ pypdf
 watchdog
 faster-whisper
 piper-tts
+python-dotenv
+google-generativeai
