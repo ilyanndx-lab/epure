@@ -1,0 +1,37 @@
+{
+  "conversations": [
+    {
+      "id": "41ccdbd1-549a-4a5e-8d7b-a19321ecfee6",
+      "date": "2026-05-30",
+      "titre": "Insecte Arpenté",
+      "apercu": "quel est l'animal sur lequel on s'est arreté ?",
+      "modèle": "gemini:gemini-3.1-flash-lite",
+      "n_messages": 4,
+      "modules": [
+        "chat"
+      ]
+    },
+    {
+      "id": "b9e8c0c3-880f-4faf-84fb-6d80079ac029",
+      "date": "2026-05-30",
+      "titre": "Conversation sur animaux",
+      "apercu": "bonsoir",
+      "modèle": "gemini:gemini-3.1-flash-lite",
+      "n_messages": 12,
+      "modules": [
+        "chat"
+      ]
+    },
+    {
+      "id": "cf9fa784-f41a-4e12-ae9b-5379b7e2c672",
+      "date": "2026-05-30",
+      "titre": "Réseaux neuronauxpieuvresPython",
+      "apercu": "bonsoir, quel est un animal fascinant ?",
+      "modèle": "gemini:gemini-3.1-flash-lite",
+      "n_messages": 6,
+      "modules": [
+        "chat"
+      ]
+    }
+  ]
+}

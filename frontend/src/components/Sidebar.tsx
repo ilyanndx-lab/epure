@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-type Module = 'chat' | 'kholle' | 'flashcards' | 'admin' | 'settings'
+type Module = 'chat' | 'kholle' | 'flashcards' | 'admin' | 'history' | 'settings'
 
 interface SidebarProps {
   activeModule: Module
@@ -12,6 +12,7 @@ const MODULES: { id: Module; label: string }[] = [
   { id: 'kholle', label: 'kholle' },
   { id: 'flashcards', label: 'flashcards' },
   { id: 'admin', label: 'admin' },
+  { id: 'history', label: 'historique' },
 ]
 
 const API = 'http://localhost:8000'

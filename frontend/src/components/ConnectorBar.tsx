@@ -421,9 +421,10 @@ export default function ConnectorBar({
           <div className="space-y-1.5">
             <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Préfixes @</p>
             {[
-              { trigger: '@cours',   desc: 'RAG sur tous les fichiers indexés' },
-              { trigger: '@strict',  desc: 'Réponse concise, sans intro' },
-              { trigger: '@mémoire', desc: 'Affiche le contexte mémoire actuel' },
+              { trigger: '@cours',      desc: 'RAG sur tous les fichiers indexés' },
+              { trigger: '@strict',     desc: 'Réponse concise, sans intro' },
+              { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
+              { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
             ].map(c => (
               <div key={c.trigger} className="flex gap-2 items-baseline">
                 <span className="text-xs font-mono text-[#4a8a4a] shrink-0 w-24">{c.trigger}</span>

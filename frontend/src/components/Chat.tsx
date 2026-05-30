@@ -28,9 +28,10 @@ interface ChatProps {
 }
 
 const AT_COMMANDS = [
-  { trigger: '@cours',   desc: 'RAG sur tous les fichiers indexés' },
-  { trigger: '@strict',  desc: 'Réponse concise, sans intro' },
-  { trigger: '@mémoire', desc: 'Affiche le contexte mémoire actuel' },
+  { trigger: '@cours',      desc: 'RAG sur tous les fichiers indexés' },
+  { trigger: '@strict',     desc: 'Réponse concise, sans intro' },
+  { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
+  { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
 ] as const
 
 const SLASH_COMMANDS = [
