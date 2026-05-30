@@ -1,7 +1,7 @@
 {
   "fichiers_actifs": [],
   "résumé_contexte": "",
-  "modèle_actif": "qwen2.5:7b",
+  "modèle_actif": "gemini:gemini-3.1-flash-lite",
   "strict_mode": false,
   "session_instruction": ""
 }

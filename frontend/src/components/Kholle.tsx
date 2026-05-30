@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import RichMessage from './RichMessage'
 
 const API = 'http://localhost:8000'
 const WS_KHOLLE = 'ws://localhost:8000/ws/kholle'
@@ -42,10 +43,15 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
 
   // Summary state
   const [sessionErrors, setSessionErrors] = useState<string[]>([])
+  const [streamStats, setStreamStats] = useState<{ tps: number; count: number } | null>(null)
+  const [correctionStats, setCorrectionStats] = useState<{ tps: number; outputTokens: number; promptTokens: number; durationMs: number } | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
   const correctionBottomRef = useRef<HTMLDivElement>(null)
   const correctionRef = useRef('')
+  const tokenCountRef = useRef(0)
+  const streamStartRef = useRef<number | null>(null)
+  const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
 
   useEffect(() => {
     if (!inputRef) return
@@ -96,9 +102,36 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
           return next
         })
         setCorrecting(true)
+        tokenCountRef.current += 1
+        if (streamStartRef.current === null) streamStartRef.current = Date.now()
+        const elapsed = (Date.now() - streamStartRef.current) / 1000
+        if (elapsed > 0) setStreamStats({ tps: tokenCountRef.current / elapsed, count: tokenCountRef.current })
+      } else if (data.type === 'stats') {
+        pendingOllamaStatsRef.current = {
+          promptTokens: data.prompt_tokens as number,
+          outputTokens: data.output_tokens as number,
+          evalMs: data.eval_duration_ms as number,
+        }
       } else if (data.type === 'done') {
+        const pending = pendingOllamaStatsRef.current
+        if (pending && pending.outputTokens > 0 && pending.evalMs > 0) {
+          setCorrectionStats({
+            tps: pending.outputTokens / (pending.evalMs / 1000),
+            outputTokens: pending.outputTokens,
+            promptTokens: pending.promptTokens,
+            durationMs: pending.evalMs,
+          })
+        } else {
+          const count = tokenCountRef.current
+          const dur = streamStartRef.current !== null ? (Date.now() - streamStartRef.current) / 1000 : 0
+          if (count > 0 && dur > 0) setCorrectionStats({ tps: count / dur, outputTokens: count, promptTokens: 0, durationMs: Math.round(dur * 1000) })
+        }
+        pendingOllamaStatsRef.current = null
         setCorrecting(false)
         setCorrectionDone(true)
+        setStreamStats(null)
+        tokenCountRef.current = 0
+        streamStartRef.current = null
         onAssistantDone?.(correctionRef.current)
         correctionRef.current = ''
       } else if (data.type === 'session_end') {
@@ -158,6 +191,11 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
     setCorrecting(true)
     setCorrectionDone(false)
     setCorrection('')
+    tokenCountRef.current = 0
+    streamStartRef.current = null
+    pendingOllamaStatsRef.current = null
+    setStreamStats(null)
+    setCorrectionStats(null)
     wsRef.current?.send(JSON.stringify({ type: 'answer', content: text }))
   }, [answer, correcting])
 
@@ -178,6 +216,9 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
     setSessionErrors([])
     setSessionError(null)
     setConfigError(null)
+    setCorrectionStats(null)
+    setStreamStats(null)
+    pendingOllamaStatsRef.current = null
   }, [])
 
   // ── Config ──────────────────────────────────────────────────────────────
@@ -307,10 +348,17 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
         <div className="flex-1 overflow-y-auto px-8 py-5">
           {correction ? (
             <>
-              <pre className="text-sm font-mono text-[#b8b8b8] leading-relaxed whitespace-pre-wrap break-words">
-                {correction}
-                {correcting && <span className="animate-pulse text-[#3a3a3a]">▍</span>}
-              </pre>
+              <RichMessage content={correction} streaming={correcting} />
+              {correcting && streamStats && (
+                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                  {streamStats.tps.toFixed(1)} tok/s · {streamStats.count} tokens
+                </div>
+              )}
+              {!correcting && correctionStats && (
+                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                  {correctionStats.tps.toFixed(1)} tok/s · {correctionStats.durationMs}ms · {correctionStats.promptTokens}in / {correctionStats.outputTokens}out tokens
+                </div>
+              )}
               {correctionDone && playSpeech && (
                 <button
                   onClick={() =>

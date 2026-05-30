@@ -3,10 +3,11 @@ import Sidebar from './components/Sidebar'
 import Chat from './components/Chat'
 import Kholle from './components/Kholle'
 import Flashcards from './components/Flashcards'
+import Admin from './components/Admin'
 import Settings from './components/Settings'
 import ConnectorBar from './components/ConnectorBar'
 
-type Module = 'chat' | 'kholle' | 'flashcards' | 'settings'
+type Module = 'chat' | 'kholle' | 'flashcards' | 'admin' | 'settings'
 
 const API = 'http://localhost:8000'
 
@@ -91,6 +92,7 @@ export default function App() {
           />
         )}
         {activeModule === 'flashcards' && <Flashcards />}
+        {activeModule === 'admin' && <Admin />}
         {activeModule === 'settings' && <Settings />}
         <ConnectorBar
           activeInputRef={activeInputRef}
