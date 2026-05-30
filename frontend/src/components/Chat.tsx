@@ -15,6 +15,7 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   stats?: MsgStats
+  isError?: boolean
 }
 
 interface ChatProps {
@@ -129,8 +130,12 @@ export default function Chat({
           onAssistantDone?.(lastAssistantRef.current)
           lastAssistantRef.current = ''
         } else if (data.type === 'error') {
-          setMessages(prev => [...prev, { role: 'assistant', content: `[erreur: ${data.content}]` }])
+          setMessages(prev => [...prev, { role: 'assistant', content: data.content, isError: true }])
           setStreaming(false)
+          setStreamStats(null)
+          tokenCountRef.current = 0
+          streamStartRef.current = null
+          pendingOllamaStatsRef.current = null
           lastAssistantRef.current = ''
         }
       }
@@ -382,6 +387,8 @@ export default function Chat({
             >
               {msg.role === 'user'
                 ? <p className="whitespace-pre-wrap break-words m-0">{msg.content}</p>
+                : msg.isError
+                ? <p className="text-xs text-[#7a3a3a] whitespace-pre-wrap">{msg.content}</p>
                 : <RichMessage content={msg.content} streaming={streaming && i === messages.length - 1} />
               }
               {msg.role === 'assistant' && i === messages.length - 1 && streaming && streamStats && (
