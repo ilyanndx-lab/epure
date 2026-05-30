@@ -23,6 +23,7 @@ _ENV_FILE = Path(__file__).parent / ".env"
 
 from core.admin import AdminEngine
 from core.flashcards import FlashcardsEngine
+from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
 from core.models import ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC, check_flm
@@ -50,6 +51,7 @@ memory = MemoryEngine()  # resets context_session on startup
 flashcards_engine = FlashcardsEngine()
 admin_engine = AdminEngine(llm, rag)
 models_registry = ModelsRegistry()
+history_engine = HistoryEngine(llm, rag._client, rag._ef)
 
 _voice_cfg = _cfg.get("voice", {})
 whisper = WhisperEngine(
@@ -675,6 +677,7 @@ async def ws_chat(websocket: WebSocket):
     await websocket.accept()
     history: list[dict] = []
     loop = asyncio.get_running_loop()
+    _last_model: list[str] = [llm._model]
 
     try:
         while True:
@@ -688,9 +691,26 @@ async def ws_chat(websocket: WebSocket):
             ctx = memory.get_context()
             active_files = ctx.get("fichiers_actifs", [])
             model_override = ctx.get("modèle_actif") or None
+            _last_model[0] = model_override or llm._model
 
             _req_start = time.time()
             user_text = msg["content"]
+
+            # @historique skill
+            hist_ctx = ""
+            if "@historique" in user_text:
+                hist_query = user_text.replace("@historique", "").strip() or user_text
+                hist_results = await loop.run_in_executor(
+                    None, history_engine.search_history, hist_query
+                )
+                if hist_results:
+                    extraits = "\n\n".join(
+                        f"— {r['titre']} ({r['date']}) :\n{r['extrait']}"
+                        for r in hist_results
+                    )
+                    hist_ctx = f"Extraits de conversations précédentes pertinentes :\n{extraits}"
+                user_text = hist_query if hist_query != user_text else user_text.replace("@historique", "").strip()
+                history[-1]["content"] = user_text or msg["content"]
 
             _t = time.time()
             if rag_override == "all":
@@ -714,6 +734,8 @@ async def ws_chat(websocket: WebSocket):
             logger.info("TTFT Memory: %.3fs", time.time() - _t)
             if mem_ctx:
                 sys_parts.append(mem_ctx)
+            if hist_ctx:
+                sys_parts.append(hist_ctx)
             if chunks:
                 sys_parts.append(
                     "Contexte extrait de tes fiches de révision :\n"
@@ -772,7 +794,51 @@ async def ws_chat(websocket: WebSocket):
             await websocket.send_text(json.dumps({"type": "done"}))
 
     except WebSocketDisconnect:
-        pass
+        if len(history) >= 3:
+            model = _last_model[0]
+            msgs = list(history)
+            Thread(
+                target=lambda: history_engine.save_conversation(msgs, model, ["chat"]),
+                daemon=True,
+            ).start()
+
+
+# ---------------------------------------------------------------------------
+# History
+# ---------------------------------------------------------------------------
+
+class HistorySearchRequest(BaseModel):
+    query: str
+
+
+@app.get("/history")
+async def history_list():
+    loop = asyncio.get_running_loop()
+    conversations = await loop.run_in_executor(None, history_engine.list_conversations)
+    return conversations
+
+
+@app.get("/history/{conv_id}")
+async def history_get(conv_id: str):
+    loop = asyncio.get_running_loop()
+    conv = await loop.run_in_executor(None, history_engine.get_conversation, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    return conv
+
+
+@app.delete("/history/{conv_id}")
+async def history_delete(conv_id: str):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, history_engine.delete_conversation, conv_id)
+    return {"ok": True}
+
+
+@app.post("/history/search")
+async def history_search(req: HistorySearchRequest):
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(None, history_engine.search_history, req.query)
+    return {"results": results}
 
 
 # ---------------------------------------------------------------------------
