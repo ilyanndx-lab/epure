@@ -757,10 +757,11 @@ INFO:     connection closed
 [2m21:10:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
 [2m21:10:28[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
 [2m21:10:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ConnectorBar.tsx[22m
-ntence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[2m21:43:22[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
+[2m21:43:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
+[2m21:43:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
+[2m21:44:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
+07 Temporary Redirect"
 INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/tokenizer_config.json "HTTP/1.1 200 OK"
 INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
 INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
@@ -6853,3 +6854,800 @@ INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
 INFO:     127.0.0.1:52869 - "GET /health HTTP/1.1" 200 OK
 INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
 INFO:     127.0.0.1:61227 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57323 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53963 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54673 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57268 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65337 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55906 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56317 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55005 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57227 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62010 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64198 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55035 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57314 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50217 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62889 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     connection closed
+INFO:     127.0.0.1:63544 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51053 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59370 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:65012 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62022 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:53573 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59325 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:53573 - "GET /context HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52558 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53573 - "GET /rag/files HTTP/1.1" 200 OK
+ERROR:core.models:Erreur fetch Groq models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 204, in _fetch_groq
+    data = _http_json("https://api.groq.com/openai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+ERROR:core.models:Erreur fetch Cerebras models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 222, in _fetch_cerebras
+    data = _http_json("https://api.cerebras.ai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+INFO:     127.0.0.1:53388 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60458 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:53573 - "GET /models HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:60573 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:61901 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55127 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50911 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50933 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64831 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57138 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52228 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60696 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50114 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64375 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58604 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52637 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52147 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61763 - "GET /health HTTP/1.1" 200 OK
+[2026-05-30 21:23:32] === Ã‰pure dÃ©marrage ===
+[2026-05-30 21:23:37] Lancement ollama serve
+[2026-05-30 21:23:37] Lancement flm serve
+Error: listen tcp 127.0.0.1:11434: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+[2026-05-30 21:23:41] Lancement uvicorn
+[2026-05-30 21:23:47] Lancement npm run dev
+[2026-05-30 21:23:47] Services dÃ©marrÃ©s â€” ouverture du navigateur dans 8 s
+
+> frontend@0.0.0 dev
+> vite
+
+Port 5173 is in use, trying another one...
+Port 5174 is in use, trying another one...
+Port 5175 is in use, trying another one...
+Port 5176 is in use, trying another one...
+Port 5177 is in use, trying another one...
+Port 5178 is in use, trying another one...
+Port 5179 is in use, trying another one...
+Port 5180 is in use, trying another one...
+Port 5181 is in use, trying another one...
+Port 5182 is in use, trying another one...
+Port 5183 is in use, trying another one...
+Port 5184 is in use, trying another one...
+Port 5185 is in use, trying another one...
+Port 5186 is in use, trying another one...
+Port 5187 is in use, trying another one...
+Port 5188 is in use, trying another one...
+Port 5189 is in use, trying another one...
+Port 5190 is in use, trying another one...
+Port 5191 is in use, trying another one...
+
+  [32m[1mVITE[22m v8.0.14[39m  [2mready in [0m[1m416[22m[2m[0m ms[22m
+
+  [32mâžœ[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5192[22m/[39m
+  [32mâžœ[39m  [1mNetwork[22m: [36mhttp://10.131.107.70:[1m5192[22m/[39m
+[2m[32m  âžœ[39m[22m[2m  press [22m[1mh + enter[22m[2m to show help[22m
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/modules.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO:sentence_transformers.base.model:Loading SentenceTransformer model from sentence-transformers/all-MiniLM-L6-v2.
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/README.md "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/modules.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/sentence_bert_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 2479.07it/s]
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2 "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:core.voice:Chargement du modèle Whisper : small
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/Systran/faster-whisper-small/revision/main "HTTP/1.1 200 OK"
+INFO:core.voice:Modèle Whisper prêt
+INFO:core.voice:Modèle Piper prêt : fr_FR-upmc-medium
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.04s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.04s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.89s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.89s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.55s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.55s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.15s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.15s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.14s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.14s/it]
+INFO:     Started server process [45548]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52526 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56111 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51903 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58226 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58714 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52999 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57920 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55786 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62707 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62378 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     connection closed
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60435 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60435 - "GET /context HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+ERROR:core.models:Erreur fetch Groq models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 204, in _fetch_groq
+    data = _http_json("https://api.groq.com/openai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+ERROR:core.models:Erreur fetch Cerebras models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 222, in _fetch_cerebras
+    data = _http_json("https://api.cerebras.ai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+INFO:     127.0.0.1:64796 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54528 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62929 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62378 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60435 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53389 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62929 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62378 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56307 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55189 - "OPTIONS /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55189 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63186 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65034 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.023s
+C:\Users\Ilyan\epure\backend\core\llm.py:143: FutureWarning: 
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving 
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  import google.generativeai as genai
+INFO:main:TTFT total: 3.038s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52812 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59964 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63009 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.004s
+INFO:main:TTFT total: 1.121s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55703 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51922 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50615 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.004s
+INFO:     127.0.0.1:61160 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT total: 2.549s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54282 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61427 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49669 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:49669 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58426 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53773 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:56340 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:58426 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49669 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54625 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:61196 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64802 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59814 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:49669 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:00<00:00,  8.12it/s]Batches: 100%|##########| 1/1 [00:00<00:00,  8.09it/s]
+INFO:core.history:Conversation sauvegardée : cf9fa784-f41a-4e12-ae9b-5379b7e2c672 — Réseaux neuronauxpieuvresPython
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64109 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.007s
+INFO:main:TTFT total: 1.184s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59953 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.003s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58573 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT total: 7.195s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61108 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.004s
+INFO:main:TTFT total: 0.763s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64817 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.003s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT total: 5.622s
+INFO:     127.0.0.1:53887 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.003s
+INFO:main:TTFT total: 0.779s
+INFO:     127.0.0.1:53372 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56707 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.005s
+INFO:     127.0.0.1:63462 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT total: 2.258s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52066 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59575 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61591 - "GET /health HTTP/1.1" 200 OK
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:     127.0.0.1:61591 - "GET /memory/context HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:61591 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61591 - "GET /history HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:00<00:00, 15.05it/s]
+INFO:core.history:Conversation sauvegardée : b9e8c0c3-880f-4faf-84fb-6d80079ac029 — Conversation sur animaux
+INFO:     127.0.0.1:63604 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62486 - "GET /history/cf9fa784-f41a-4e12-ae9b-5379b7e2c672 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61591 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62486 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62486 - "GET /context HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60518 - "WebSocket /ws/chat" [accepted]
+INFO:     127.0.0.1:63189 - "GET /context HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:61365 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:61365 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63189 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61591 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62486 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56261 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50126 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63189 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61591 - "GET /models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61591 - "GET /history/cf9fa784-f41a-4e12-ae9b-5379b7e2c672 HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55837 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59159 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63002 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:64366 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60159 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57448 - "GET /health HTTP/1.1" 200 OK
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:     127.0.0.1:57448 - "GET /memory/context HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61908 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61947 - "GET /health HTTP/1.1" 200 OK
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:00<00:00, 22.13it/s]
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.005s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57116 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT total: 11.038s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52122 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.005s
+INFO:main:TTFT total: 0.993s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63077 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:63077 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51416 - "GET /history HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]INFO:     127.0.0.1:51416 - "GET /history/b9e8c0c3-880f-4faf-84fb-6d80079ac029 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59136 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+Batches: 100%|##########| 1/1 [00:00<00:00, 12.67it/s]
+INFO:core.history:Conversation sauvegardée : 41ccdbd1-549a-4a5e-8d7b-a19321ecfee6 — Insecte Arpenté
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51416 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61150 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:51416 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51416 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61679 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:51416 - "GET /history/41ccdbd1-549a-4a5e-8d7b-a19321ecfee6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55819 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49917 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58326 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56910 - "GET /history/b9e8c0c3-880f-4faf-84fb-6d80079ac029 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62202 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     Shutting down
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+Terminer le programme de commandes (O/N)Â ? INFO:     Waiting for connections to close. (CTRL+C to force quit)
+INFO:     127.0.0.1:60392 - "GET /health HTTP/1.1" 200 OK
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [45548]
+[2026-05-30 21:49:26] === Ã‰pure dÃ©marrage ===
+[2026-05-30 21:49:30] Lancement ollama serve
+[2026-05-30 21:49:31] Lancement flm serve
+Error: listen tcp 127.0.0.1:11434: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+[2026-05-30 21:49:35] Lancement uvicorn
+[2026-05-30 21:49:41] Lancement npm run dev
+[2026-05-30 21:49:41] Services dÃ©marrÃ©s â€” ouverture du navigateur dans 8 s
+
+> frontend@0.0.0 dev
+> vite
+
+Port 5173 is in use, trying another one...
+Port 5174 is in use, trying another one...
+Port 5175 is in use, trying another one...
+Port 5176 is in use, trying another one...
+Port 5177 is in use, trying another one...
+Port 5178 is in use, trying another one...
+Port 5179 is in use, trying another one...
+Port 5180 is in use, trying another one...
+Port 5181 is in use, trying another one...
+Port 5182 is in use, trying another one...
+Port 5183 is in use, trying another one...
+Port 5184 is in use, trying another one...
+Port 5185 is in use, trying another one...
+Port 5186 is in use, trying another one...
+Port 5187 is in use, trying another one...
+Port 5188 is in use, trying another one...
+Port 5189 is in use, trying another one...
+Port 5190 is in use, trying another one...
+Port 5191 is in use, trying another one...
+
+  [32m[1mVITE[22m v8.0.14[39m  [2mready in [0m[1m493[22m[2m[0m ms[22m
+
+  [32mâžœ[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5192[22m/[39m
+  [32mâžœ[39m  [1mNetwork[22m: [36mhttp://10.131.107.70:[1m5192[22m/[39m
+[2m[32m  âžœ[39m[22m[2m  press [22m[1mh + enter[22m[2m to show help[22m
+
+Aborted!
+Terminer le programme de commandes (O/N)Â ? 
