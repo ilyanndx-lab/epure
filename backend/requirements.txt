@@ -10,3 +10,4 @@ faster-whisper
 piper-tts
 python-dotenv
 google-generativeai
+openai
