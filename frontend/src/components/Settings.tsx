@@ -69,6 +69,30 @@ function EditableList({
   )
 }
 
+const defaultProfile: Profile = {
+  identité: { niveau: '', établissement: '', objectif: '' },
+  préférences_interaction: { style: '', ne_pas_faire: [] },
+  forces: [],
+  lacunes_confirmées: [],
+}
+
+function mergeProfile(raw: Record<string, unknown>): Profile {
+  return {
+    ...defaultProfile,
+    ...raw,
+    identité: {
+      ...defaultProfile.identité,
+      ...((raw.identité as Record<string, string>) ?? {}),
+    },
+    préférences_interaction: {
+      ...defaultProfile.préférences_interaction,
+      ...((raw.préférences_interaction as Record<string, unknown>) ?? {}),
+    },
+    forces: (raw.forces as string[]) ?? [],
+    lacunes_confirmées: (raw.lacunes_confirmées as string[]) ?? [],
+  }
+}
+
 export default function Settings() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
@@ -76,16 +100,28 @@ export default function Settings() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [selectedDates, setSelectedDates] = useState<string[]>([])
 
+  // API keys state
+  const [geminiKey, setGeminiKey] = useState('')
+  const [showGeminiKey, setShowGeminiKey] = useState(false)
+  const [savingKeys, setSavingKeys] = useState(false)
+  const [keysMsg, setKeysMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [geminiConfigured, setGeminiConfigured] = useState(false)
+
   useEffect(() => {
     fetch(`${API}/memory/profile`)
       .then(r => r.json())
-      .then(setProfile)
+      .then((raw: Record<string, unknown>) => setProfile(mergeProfile(raw)))
       .catch(err => console.error('GET /memory/profile:', err))
 
     fetch(`${API}/memory/sessions`)
       .then(r => r.json())
       .then((d: { sessions: Session[] }) => setSessions(d.sessions))
       .catch(err => console.error('GET /memory/sessions:', err))
+
+    fetch(`${API}/settings/api-keys`)
+      .then(r => r.json())
+      .then((d: { GEMINI_API_KEY: boolean }) => setGeminiConfigured(d.GEMINI_API_KEY))
+      .catch(err => console.error('GET /settings/api-keys:', err))
   }, [])
 
   const saveProfile = useCallback(async () => {
@@ -108,6 +144,28 @@ export default function Settings() {
       setSaving(false)
     }
   }, [profile])
+
+  const saveApiKeys = useCallback(async () => {
+    setSavingKeys(true)
+    setKeysMsg(null)
+    try {
+      const res = await fetch(`${API}/settings/api-keys`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ GEMINI_API_KEY: geminiKey }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setGeminiConfigured(geminiKey.trim().length > 0)
+      setGeminiKey('')
+      setKeysMsg({ ok: true, text: 'Clé sauvegardée' })
+      setTimeout(() => setKeysMsg(null), 2000)
+    } catch (err) {
+      console.error('PUT /settings/api-keys:', err)
+      setKeysMsg({ ok: false, text: 'Erreur sauvegarde' })
+    } finally {
+      setSavingKeys(false)
+    }
+  }, [geminiKey])
 
   const archiveSelected = useCallback(async () => {
     if (selectedDates.length === 0) return
@@ -241,6 +299,49 @@ export default function Settings() {
           {saveMsg && (
             <span className="text-xs font-mono text-[#5a9a5a]">{saveMsg}</span>
           )}
+        </div>
+      </section>
+
+      {/* ── API Keys ── */}
+      <section className="max-w-lg space-y-4">
+        <p className="text-xs font-mono text-[#444] uppercase tracking-widest">Clés API</p>
+
+        <div className="space-y-3">
+          <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block">
+            Gemini API Key
+            <span className={`ml-3 normal-case tracking-normal ${geminiConfigured ? 'text-[#5a9a5a]' : 'text-[#555]'}`}>
+              {geminiConfigured ? '✓ configurée' : 'non configurée'}
+            </span>
+          </label>
+          <div className="flex gap-2">
+            <input
+              type={showGeminiKey ? 'text' : 'password'}
+              value={geminiKey}
+              onChange={e => setGeminiKey(e.target.value)}
+              placeholder="AIza..."
+              className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-1.5 text-xs font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
+            />
+            <button
+              onClick={() => setShowGeminiKey(v => !v)}
+              className="px-2 py-1.5 bg-[#141414] border border-[#242424] rounded text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors shrink-0"
+            >
+              {showGeminiKey ? 'masquer' : 'voir'}
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={saveApiKeys}
+              disabled={savingKeys || !geminiKey.trim()}
+              className="px-4 py-1.5 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              {savingKeys ? 'Sauvegarde...' : 'Sauvegarder'}
+            </button>
+            {keysMsg && (
+              <span className={`text-xs font-mono ${keysMsg.ok ? 'text-[#5a9a5a]' : 'text-[#9a5a5a]'}`}>
+                {keysMsg.text}
+              </span>
+            )}
+          </div>
         </div>
       </section>
 

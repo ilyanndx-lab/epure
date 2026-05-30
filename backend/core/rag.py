@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 import threading
@@ -32,6 +33,10 @@ class RAGEngine:
             "fiches", embedding_function=self._ef
         )
 
+        # Per-instance LRU caches — cleared on index_pdf to avoid stale results
+        self._query_lru = functools.lru_cache(maxsize=50)(self._do_query)
+        self._query_filtered_lru = functools.lru_cache(maxsize=50)(self._do_query_filtered)
+
     def index_pdf(self, path: str) -> None:
         reader = pypdf.PdfReader(str(path))
         full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
@@ -62,8 +67,11 @@ class RAGEngine:
             metadatas=[{"source": str(path), "chunk": i} for i in range(len(chunks))],
         )
 
-    def query(self, text: str, n_results: Optional[int] = None) -> str:
-        n = n_results if n_results is not None else self._n_results
+        # Invalidate query caches since the index has changed
+        self._query_lru.cache_clear()
+        self._query_filtered_lru.cache_clear()
+
+    def _do_query(self, text: str, n: int) -> str:
         count = self._col.count()
         if count == 0:
             return ""
@@ -71,13 +79,13 @@ class RAGEngine:
         docs = results.get("documents", [[]])[0]
         return "\n\n---\n\n".join(d for d in docs if d)
 
-    def query_filtered(self, text: str, paths: list, n_results: Optional[int] = None) -> str:
+    def _do_query_filtered(self, text: str, paths_key: tuple, n: int) -> str:
+        paths = list(paths_key)
         if not paths:
             return ""
-        n = n_results if n_results is not None else self._n_results
         try:
             existing = self._col.get(
-                where={"source": {"$in": list(paths)}}, include=[]
+                where={"source": {"$in": paths}}, include=[]
             )
             count = len(existing.get("ids", []))
             if count == 0:
@@ -85,13 +93,23 @@ class RAGEngine:
             results = self._col.query(
                 query_texts=[text],
                 n_results=min(n, count),
-                where={"source": {"$in": list(paths)}},
+                where={"source": {"$in": paths}},
             )
             docs = results.get("documents", [[]])[0]
             return "\n\n---\n\n".join(d for d in docs if d)
         except Exception:
             logger.exception("Erreur query_filtered")
             return ""
+
+    def query(self, text: str, n_results: Optional[int] = None) -> str:
+        n = n_results if n_results is not None else self._n_results
+        return self._query_lru(text, n)
+
+    def query_filtered(self, text: str, paths: list, n_results: Optional[int] = None) -> str:
+        if not paths:
+            return ""
+        n = n_results if n_results is not None else self._n_results
+        return self._query_filtered_lru(text, tuple(sorted(paths)), n)
 
     def get_indexed_files(self) -> list:
         result = self._col.get(include=["metadatas"])

@@ -1,11 +1,20 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import RichMessage from './RichMessage'
 
 const API = 'http://localhost:8000'
 const WS_URL = 'ws://localhost:8000/ws/chat'
 
+interface MsgStats {
+  tps: number
+  outputTokens: number
+  promptTokens: number
+  durationMs: number
+}
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
+  stats?: MsgStats
 }
 
 interface ChatProps {
@@ -46,9 +55,13 @@ export default function Chat({
   const [connected, setConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
+  const [streamStats, setStreamStats] = useState<{ tps: number; count: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const lastAssistantRef = useRef('')
+  const tokenCountRef = useRef(0)
+  const streamStartRef = useRef<number | null>(null)
+  const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
 
   useEffect(() => {
     if (inputRef) inputRef.current = (text: string) => setInput(text)
@@ -73,8 +86,46 @@ export default function Chat({
             lastAssistantRef.current = data.content
             return [...prev, { role: 'assistant', content: data.content }]
           })
+          tokenCountRef.current += 1
+          if (streamStartRef.current === null) streamStartRef.current = Date.now()
+          const elapsed = (Date.now() - streamStartRef.current) / 1000
+          if (elapsed > 0) setStreamStats({ tps: tokenCountRef.current / elapsed, count: tokenCountRef.current })
+        } else if (data.type === 'stats') {
+          pendingOllamaStatsRef.current = {
+            promptTokens: data.prompt_tokens as number,
+            outputTokens: data.output_tokens as number,
+            evalMs: data.eval_duration_ms as number,
+          }
         } else if (data.type === 'done') {
+          const pending = pendingOllamaStatsRef.current
+          let finalStats: MsgStats | null = null
+          if (pending && pending.outputTokens > 0 && pending.evalMs > 0) {
+            finalStats = {
+              tps: pending.outputTokens / (pending.evalMs / 1000),
+              outputTokens: pending.outputTokens,
+              promptTokens: pending.promptTokens,
+              durationMs: pending.evalMs,
+            }
+          } else {
+            const count = tokenCountRef.current
+            const dur = streamStartRef.current !== null ? (Date.now() - streamStartRef.current) / 1000 : 0
+            if (count > 0 && dur > 0) {
+              finalStats = { tps: count / dur, outputTokens: count, promptTokens: 0, durationMs: Math.round(dur * 1000) }
+            }
+          }
+          if (finalStats) {
+            const s = finalStats
+            setMessages(prev => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'assistant') return [...prev.slice(0, -1), { ...last, stats: s }]
+              return prev
+            })
+          }
+          pendingOllamaStatsRef.current = null
           setStreaming(false)
+          setStreamStats(null)
+          tokenCountRef.current = 0
+          streamStartRef.current = null
           onAssistantDone?.(lastAssistantRef.current)
           lastAssistantRef.current = ''
         } else if (data.type === 'error') {
@@ -278,6 +329,10 @@ export default function Chat({
 
     pushMsg('user', rawText)
     setStreaming(true)
+    tokenCountRef.current = 0
+    streamStartRef.current = null
+    pendingOllamaStatsRef.current = null
+    setStreamStats(null)
     const wsMsg: Record<string, unknown> = { role: 'user', content: cleanText || rawText }
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
@@ -325,7 +380,20 @@ export default function Chat({
                   : 'text-[#b8b8b8] font-mono'
               }`}
             >
-              <pre className="whitespace-pre-wrap break-words font-[inherit] m-0">{msg.content}</pre>
+              {msg.role === 'user'
+                ? <p className="whitespace-pre-wrap break-words m-0">{msg.content}</p>
+                : <RichMessage content={msg.content} streaming={streaming && i === messages.length - 1} />
+              }
+              {msg.role === 'assistant' && i === messages.length - 1 && streaming && streamStats && (
+                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                  {streamStats.tps.toFixed(1)} tok/s · {streamStats.count} tokens
+                </div>
+              )}
+              {msg.role === 'assistant' && msg.stats && (
+                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                  {msg.stats.tps.toFixed(1)} tok/s · {msg.stats.durationMs}ms · {msg.stats.promptTokens}in / {msg.stats.outputTokens}out tokens
+                </div>
+              )}
               {msg.role === 'assistant' && playSpeech && (
                 <div className="mt-2 flex">
                   <button

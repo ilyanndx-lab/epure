@@ -11,6 +11,14 @@ interface ConnectorBarProps {
 
 type Panel = 'files' | 'skills' | 'model' | null
 
+interface CloudModel {
+  id: string
+  nom: string
+  provider: string
+  gratuit: boolean
+  disponible: boolean
+}
+
 interface FileSummary {
   résumé: string
   pages_totales: number
@@ -42,7 +50,8 @@ export default function ConnectorBar({
   const [instructionDraft, setInstructionDraft] = useState('')
 
   // Model state
-  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [localModels, setLocalModels] = useState<string[]>([])
+  const [cloudModels, setCloudModels] = useState<CloudModel[]>([])
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b')
 
   // STT state
@@ -78,7 +87,10 @@ export default function ConnectorBar({
 
     fetch(`${API}/models`)
       .then(r => r.json())
-      .then((d: { models: string[] }) => setAvailableModels(d.models))
+      .then((d: { local: string[]; cloud: CloudModel[] }) => {
+        setLocalModels(d.local ?? [])
+        setCloudModels(d.cloud ?? [])
+      })
       .catch(err => console.error('GET /models:', err))
   }, [])
 
@@ -440,23 +452,56 @@ export default function ConnectorBar({
 
       {/* ── Model panel ── */}
       {activePanel === 'model' && (
-        <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3 space-y-1">
-          {availableModels.length === 0 ? (
+        <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3">
+          {localModels.length === 0 && cloudModels.length === 0 ? (
             <p className="text-xs font-mono text-[#333]">Chargement des modèles...</p>
           ) : (
-            availableModels.map(m => (
-              <button
-                key={m}
-                onClick={() => handleModelSelect(m)}
-                className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors ${
-                  m === selectedModel
-                    ? 'bg-[#1a1a1a] text-[#e0e0e0]'
-                    : 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
-                }`}
-              >
-                {m === selectedModel ? '◆ ' : '◇ '}{m}
-              </button>
-            ))
+            <div className="space-y-0.5">
+              {localModels.length > 0 && (
+                <>
+                  <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Local</p>
+                  {localModels.map(m => (
+                    <button
+                      key={m}
+                      onClick={() => handleModelSelect(m)}
+                      className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
+                        m === selectedModel
+                          ? 'bg-[#1a1a1a] text-[#e0e0e0]'
+                          : 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#3a5a3a] shrink-0" />
+                      {m === selectedModel ? '◆ ' : '◇ '}{m}
+                    </button>
+                  ))}
+                </>
+              )}
+              {cloudModels.length > 0 && (
+                <>
+                  {localModels.length > 0 && <div className="border-t border-[#1a1a1a] my-1" />}
+                  <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Cloud</p>
+                  {cloudModels.map(m => (
+                    <button
+                      key={m.id}
+                      onClick={() => m.disponible ? handleModelSelect(m.id) : undefined}
+                      className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
+                        m.id === selectedModel
+                          ? 'bg-[#1a1a1a] text-[#e0e0e0]'
+                          : m.disponible
+                          ? 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
+                          : 'text-[#333] cursor-default'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? 'bg-[#3a4a7a]' : 'bg-[#2a2a2a]'}`} />
+                      {m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}
+                      {!m.disponible && (
+                        <span className="text-[10px] text-[#7a4a2a] ml-auto">⚠ clé manquante → Settings</span>
+                      )}
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
           )}
         </div>
       )}
