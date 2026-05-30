@@ -29,10 +29,12 @@ interface CloudCategories {
 const PROVIDER_DOT: Record<string, string> = {
   ollama: 'bg-[#3a5a3a]', gemini: 'bg-[#3a4a7a]', groq: 'bg-[#5a3a7a]',
   cerebras: 'bg-[#3a6a6a]', deepseek: 'bg-[#3a5a7a]', nvidia: 'bg-[#3a6a5a]',
+  flm: 'bg-[#6a3a9a]',
 }
 const PROVIDER_TEXT: Record<string, string> = {
   ollama: 'text-[#3a6a3a]', gemini: 'text-[#4a6a9a]', groq: 'text-[#7a5a9a]',
   cerebras: 'text-[#5a9a9a]', deepseek: 'text-[#5a7a9a]', nvidia: 'text-[#5a9a7a]',
+  flm: 'text-[#8a5aaa]',
 }
 
 interface FileSummary {
@@ -67,6 +69,7 @@ export default function ConnectorBar({
 
   // Model state
   const [localModels, setLocalModels] = useState<ModelInfo[]>([])
+  const [localNpuModels, setLocalNpuModels] = useState<ModelInfo[]>([])
   const [cloudCategories, setCloudCategories] = useState<CloudCategories>({ rapide: [], puissant: [], long_contexte: [] })
   const [recommandations, setRecommandations] = useState<Record<string, string>>({})
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b')
@@ -104,8 +107,9 @@ export default function ConnectorBar({
 
     fetch(`${API}/models`)
       .then(r => r.json())
-      .then((d: { local: ModelInfo[]; cloud: CloudCategories; recommandations: Record<string, string> }) => {
+      .then((d: { local: ModelInfo[]; local_npu?: ModelInfo[]; cloud: CloudCategories; recommandations: Record<string, string> }) => {
         setLocalModels(d.local ?? [])
+        setLocalNpuModels(d.local_npu ?? [])
         setCloudCategories(d.cloud ?? { rapide: [], puissant: [], long_contexte: [] })
         setRecommandations(d.recommandations ?? {})
       })
@@ -471,7 +475,7 @@ export default function ConnectorBar({
       {/* ── Model panel ── */}
       {activePanel === 'model' && (() => {
         const allCloud = [...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
-        const hasModels = localModels.length > 0 || allCloud.length > 0
+        const hasModels = localModels.length > 0 || localNpuModels.length > 0 || allCloud.length > 0
         return (
           <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3 max-h-[65vh] overflow-y-auto">
             {!hasModels ? (
@@ -513,6 +517,31 @@ export default function ConnectorBar({
                       >
                         <span className="w-1.5 h-1.5 rounded-full bg-[#3a5a3a] shrink-0" />
                         <span className="flex-1 truncate">{m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {/* LOCAL NPU */}
+                {localNpuModels.length > 0 && (
+                  <>
+                    <div className="border-t border-[#1a1a1a] my-1" />
+                    <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Local NPU</p>
+                    {localNpuModels.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => m.disponible ? handleModelSelect(m.id) : undefined}
+                        className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
+                          m.id === selectedModel ? 'bg-[#1a1a1a] text-[#e0e0e0]'
+                          : m.disponible ? 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
+                          : 'text-[#333] cursor-default'
+                        }`}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? 'bg-[#6a3a9a]' : 'bg-[#2a2a2a]'}`} />
+                        <span className="flex-1 truncate">{m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}</span>
+                        <span className="text-[9px] text-[#6a3a9a] shrink-0">NPU</span>
+                        {m.description && <span className="text-[9px] text-[#2a2a2a] shrink-0 hidden sm:inline">{m.description}</span>}
+                        {!m.disponible && <span className="text-[9px] text-[#7a4a2a] shrink-0">⚠ FLM non démarré</span>}
                       </button>
                     ))}
                   </>
@@ -622,7 +651,7 @@ export default function ConnectorBar({
         {/* Model name indicator */}
         <span className="ml-1 text-[10px] font-mono text-[#2a2a2a] truncate max-w-24">
           {(() => {
-            const all = [...localModels, ...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
+            const all = [...localModels, ...localNpuModels, ...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
             const info = all.find(m => m.id === selectedModel)
             return info?.nom?.split(' ')[0] ?? selectedModel.split(':').pop() ?? selectedModel
           })()}

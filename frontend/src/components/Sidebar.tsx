@@ -19,14 +19,16 @@ const API = 'http://localhost:8000'
 export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) {
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null)
   const [modelName, setModelName] = useState('')
+  const [flmOk, setFlmOk] = useState<boolean | null>(null)
 
   useEffect(() => {
     const check = () => {
       fetch(`${API}/health`)
         .then(r => r.json())
-        .then((d: { ollama: boolean; model: string }) => {
+        .then((d: { ollama: boolean; model: string; flm?: boolean }) => {
           setOllamaOk(d.ollama)
           setModelName(d.model)
+          setFlmOk(d.flm ?? null)
         })
         .catch(() => setOllamaOk(false))
     }
@@ -89,6 +91,14 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
               : 'ollama inactif'}
           </span>
         </div>
+        {flmOk !== null && (
+          <div className="flex items-center gap-2">
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${flmOk ? 'bg-[#5a3a7a]' : 'bg-[#2a2a2a]'}`} />
+            <span className="text-[10px] font-mono text-[#2a2a2a] truncate">
+              {flmOk ? 'flm (npu)' : 'flm inactif'}
+            </span>
+          </div>
+        )}
         <span className="text-xs font-mono text-[#1e1e1e]">épure</span>
         <span className="text-[10px] font-mono text-[#2a2a2a]">
           build {import.meta.env.VITE_BUILD_TIME}
