@@ -8,15 +8,21 @@ import ollama
 import yaml
 from dotenv import load_dotenv
 
-# Loaded once at import time; reload_dotenv() refreshes after .env update
 _ENV_FILE = Path(__file__).parent.parent / ".env"
 load_dotenv(_ENV_FILE)
 
 logger = logging.getLogger(__name__)
 
+# OpenAI-compatible providers: name → (base_url, env_key)
+_OPENAI_COMPAT: dict[str, tuple[str, str]] = {
+    "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY"),
+    "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY"),
+    "deepseek": ("https://api.deepseek.com",            "DEEPSEEK_API_KEY"),
+    "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
+}
+
 
 def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
-    """Split messages into (system_instruction, contents) for Gemini API."""
     system_parts: list[str] = []
     contents: list[dict] = []
     for msg in messages:
@@ -41,25 +47,56 @@ class LLMEngine:
         self._gen = cfg["generation"]
 
     @staticmethod
-    def _is_gemini(model: str) -> bool:
-        return model.startswith("gemini:")
+    def _parse_model(model: str) -> tuple[str, str]:
+        """'provider:model_id' → (provider, model_id).  Falls back to ('ollama', model)."""
+        if ":" in model:
+            prefix, rest = model.split(":", 1)
+            if prefix in _OPENAI_COMPAT or prefix == "gemini":
+                return prefix, rest
+        return "ollama", model
 
-    @staticmethod
-    def _gemini_model_name(model: str) -> str:
-        return model.split("gemini:", 1)[1]
+    def _openai_client(self, provider: str):
+        base_url, key_name = _OPENAI_COMPAT[provider]
+        api_key = os.environ.get(key_name, "").strip()
+        if not api_key:
+            raise ValueError(f"{key_name} non configurée — ajoutez-la dans Settings")
+        try:
+            from openai import OpenAI
+            return OpenAI(base_url=base_url, api_key=api_key)
+        except ImportError:
+            raise RuntimeError("Package 'openai' non installé — pip install openai")
+
+    # ── Public API ───────────────────────────────────────────────────────────
 
     def stream(self, messages: list[dict], model: Optional[str] = None) -> Generator:
         m = model or self._model
-        if self._is_gemini(m):
+        provider, model_id = self._parse_model(m)
+        if provider == "gemini":
             yield from self._stream_gemini(messages, m)
+        elif provider in _OPENAI_COMPAT:
+            client = self._openai_client(provider)  # raises if key missing
+            yield from self._stream_openai(messages, model_id, client, provider)
         else:
             yield from self._stream_ollama(messages, m)
 
+    def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
+        m = model or self._model
+        provider, model_id = self._parse_model(m)
+        if provider == "gemini":
+            return self._generate_gemini(messages, m)
+        elif provider in _OPENAI_COMPAT:
+            client = self._openai_client(provider)
+            return self._generate_openai(messages, model_id, client, provider)
+        return self._generate_ollama(messages, m)
+
+    def reload_dotenv(self) -> None:
+        load_dotenv(_ENV_FILE, override=True)
+
+    # ── Ollama ───────────────────────────────────────────────────────────────
+
     def _stream_ollama(self, messages: list[dict], model: str) -> Generator:
         for chunk in ollama.chat(
-            model=model,
-            messages=messages,
-            stream=True,
+            model=model, messages=messages, stream=True,
             options={
                 "temperature": self._gen["temperature"],
                 "top_p": self._gen["top_p"],
@@ -82,68 +119,9 @@ class LLMEngine:
             except Exception:
                 pass
 
-    def _stream_gemini(self, messages: list[dict], model: str) -> Generator:
-        try:
-            import google.generativeai as genai
-        except ImportError:
-            logger.error("google-generativeai non installé")
-            yield "[Erreur: google-generativeai non installé]"
-            return
-
-        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if not api_key:
-            yield "[Erreur: GEMINI_API_KEY non configurée. Ajoutez la clé dans Settings.]"
-            return
-
-        try:
-            genai.configure(api_key=api_key)
-            model_name = self._gemini_model_name(model)
-            sys_instr, contents = _gemini_contents(messages)
-
-            kwargs: dict = {}
-            if sys_instr:
-                kwargs["system_instruction"] = sys_instr
-            gen_model = genai.GenerativeModel(model_name, **kwargs)
-
-            response = gen_model.generate_content(
-                contents,
-                stream=True,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=self._gen["temperature"],
-                    max_output_tokens=self._gen["max_tokens"],
-                ),
-            )
-            stream_start = time.time()
-            for chunk in response:
-                if chunk.text:
-                    yield chunk.text
-            # usage_metadata is available after the stream is fully consumed
-            try:
-                meta = response.usage_metadata
-                yield {
-                    "__stats__": True,
-                    "prompt_tokens": meta.prompt_token_count or 0,
-                    "output_tokens": meta.candidates_token_count or 0,
-                    "eval_duration_ns": int((time.time() - stream_start) * 1e9),
-                    "prompt_duration_ns": 0,
-                }
-            except Exception:
-                pass
-        except Exception:
-            logger.exception("Erreur streaming Gemini")
-            yield "[Erreur Gemini — vérifiez la clé API et le nom du modèle]"
-
-    def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
-        m = model or self._model
-        if self._is_gemini(m):
-            return self._generate_gemini(messages, m)
-        return self._generate_ollama(messages, m)
-
     def _generate_ollama(self, messages: list[dict], model: str) -> str:
         response = ollama.chat(
-            model=model,
-            messages=messages,
-            stream=False,
+            model=model, messages=messages, stream=False,
             options={
                 "temperature": self._gen["temperature"],
                 "top_p": self._gen["top_p"],
@@ -153,26 +131,68 @@ class LLMEngine:
         )
         return response["message"]["content"]
 
+    # ── Gemini ───────────────────────────────────────────────────────────────
+
+    def _stream_gemini(self, messages: list[dict], model: str) -> Generator:
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            raise RuntimeError("Package 'google-generativeai' non installé")
+
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY non configurée — ajoutez-la dans Settings")
+
+        genai.configure(api_key=api_key)
+        model_name = model.split("gemini:", 1)[1]
+        sys_instr, contents = _gemini_contents(messages)
+
+        kwargs: dict = {}
+        if sys_instr:
+            kwargs["system_instruction"] = sys_instr
+        gen_model = genai.GenerativeModel(model_name, **kwargs)
+        response = gen_model.generate_content(
+            contents, stream=True,
+            generation_config=genai.types.GenerationConfig(
+                temperature=self._gen["temperature"],
+                max_output_tokens=self._gen["max_tokens"],
+            ),
+        )
+
+        stream_start = time.time()
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
+        stream_end = time.time()  # capture après la boucle complète
+
+        try:
+            meta = response.usage_metadata
+            yield {
+                "__stats__": True,
+                "prompt_tokens": meta.prompt_token_count or 0,
+                "output_tokens": meta.candidates_token_count or 0,
+                "eval_duration_ns": int((stream_end - stream_start) * 1e9),
+                "prompt_duration_ns": 0,
+            }
+        except Exception:
+            pass
+
     def _generate_gemini(self, messages: list[dict], model: str) -> str:
         try:
             import google.generativeai as genai
         except ImportError:
             return "[Erreur: google-generativeai non installé]"
-
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
             return "[Erreur: GEMINI_API_KEY non configurée]"
-
         try:
             genai.configure(api_key=api_key)
-            model_name = self._gemini_model_name(model)
+            model_name = model.split("gemini:", 1)[1]
             sys_instr, contents = _gemini_contents(messages)
-
             kwargs: dict = {}
             if sys_instr:
                 kwargs["system_instruction"] = sys_instr
             gen_model = genai.GenerativeModel(model_name, **kwargs)
-
             response = gen_model.generate_content(
                 contents,
                 generation_config=genai.types.GenerationConfig(
@@ -185,6 +205,53 @@ class LLMEngine:
             logger.exception("Erreur generate Gemini")
             return "[Erreur Gemini]"
 
-    def reload_dotenv(self) -> None:
-        """Reload GEMINI_API_KEY from .env after an update."""
-        load_dotenv(_ENV_FILE, override=True)
+    # ── OpenAI-compatible providers ──────────────────────────────────────────
+
+    def _stream_openai(self, messages: list[dict], model_id: str, client, provider: str = "") -> Generator:
+        oai = [{"role": m["role"], "content": m["content"]} for m in messages]
+        stream_start = time.time()
+        prompt_tokens = 0
+        output_tokens = 0
+
+        try:
+            stream = client.chat.completions.create(
+                model=model_id, messages=oai, stream=True,
+                stream_options={"include_usage": True},
+                temperature=self._gen["temperature"],
+                max_tokens=self._gen["max_tokens"],
+            )
+        except Exception:
+            # Provider doesn't support stream_options — retry without
+            stream = client.chat.completions.create(
+                model=model_id, messages=oai, stream=True,
+                temperature=self._gen["temperature"],
+                max_tokens=self._gen["max_tokens"],
+            )
+
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+            if getattr(chunk, "usage", None):
+                prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+
+        yield {
+            "__stats__": True,
+            "prompt_tokens": prompt_tokens,
+            "output_tokens": output_tokens,
+            "eval_duration_ns": int((time.time() - stream_start) * 1e9),
+            "prompt_duration_ns": 0,
+        }
+
+    def _generate_openai(self, messages: list[dict], model_id: str, client, provider: str = "") -> str:
+        oai = [{"role": m["role"], "content": m["content"]} for m in messages]
+        try:
+            response = client.chat.completions.create(
+                model=model_id, messages=oai, stream=False,
+                temperature=self._gen["temperature"],
+                max_tokens=self._gen["max_tokens"],
+            )
+            return response.choices[0].message.content or ""
+        except Exception:
+            logger.exception("Erreur generate %s", provider)
+            return f"[Erreur {provider}]"

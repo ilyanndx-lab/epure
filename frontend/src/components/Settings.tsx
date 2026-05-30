@@ -101,11 +101,13 @@ export default function Settings() {
   const [selectedDates, setSelectedDates] = useState<string[]>([])
 
   // API keys state
-  const [geminiKey, setGeminiKey] = useState('')
-  const [showGeminiKey, setShowGeminiKey] = useState(false)
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({
+    GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', DEEPSEEK_API_KEY: '', NVIDIA_API_KEY: '',
+  })
+  const [showKey, setShowKey] = useState<Record<string, boolean>>({})
   const [savingKeys, setSavingKeys] = useState(false)
   const [keysMsg, setKeysMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [geminiConfigured, setGeminiConfigured] = useState(false)
+  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     fetch(`${API}/memory/profile`)
@@ -120,7 +122,7 @@ export default function Settings() {
 
     fetch(`${API}/settings/api-keys`)
       .then(r => r.json())
-      .then((d: { GEMINI_API_KEY: boolean }) => setGeminiConfigured(d.GEMINI_API_KEY))
+      .then((d: Record<string, boolean>) => setKeyStatus(d))
       .catch(err => console.error('GET /settings/api-keys:', err))
   }, [])
 
@@ -149,15 +151,18 @@ export default function Settings() {
     setSavingKeys(true)
     setKeysMsg(null)
     try {
+      const body: Record<string, string> = {}
+      Object.entries(apiKeys).forEach(([k, v]) => { if (v.trim()) body[k] = v.trim() })
       const res = await fetch(`${API}/settings/api-keys`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ GEMINI_API_KEY: geminiKey }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setGeminiConfigured(geminiKey.trim().length > 0)
-      setGeminiKey('')
-      setKeysMsg({ ok: true, text: 'Clé sauvegardée' })
+      const status: Record<string, boolean> = await fetch(`${API}/settings/api-keys`).then(r => r.json())
+      setKeyStatus(status)
+      setApiKeys({ GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', DEEPSEEK_API_KEY: '', NVIDIA_API_KEY: '' })
+      setKeysMsg({ ok: true, text: 'Clés sauvegardées' })
       setTimeout(() => setKeysMsg(null), 2000)
     } catch (err) {
       console.error('PUT /settings/api-keys:', err)
@@ -165,7 +170,7 @@ export default function Settings() {
     } finally {
       setSavingKeys(false)
     }
-  }, [geminiKey])
+  }, [apiKeys])
 
   const archiveSelected = useCallback(async () => {
     if (selectedDates.length === 0) return
@@ -303,45 +308,54 @@ export default function Settings() {
       </section>
 
       {/* ── API Keys ── */}
-      <section className="max-w-lg space-y-4">
+      <section className="max-w-lg space-y-5">
         <p className="text-xs font-mono text-[#444] uppercase tracking-widest">Clés API</p>
 
-        <div className="space-y-3">
-          <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block">
-            Gemini API Key
-            <span className={`ml-3 normal-case tracking-normal ${geminiConfigured ? 'text-[#5a9a5a]' : 'text-[#555]'}`}>
-              {geminiConfigured ? '✓ configurée' : 'non configurée'}
-            </span>
-          </label>
-          <div className="flex gap-2">
-            <input
-              type={showGeminiKey ? 'text' : 'password'}
-              value={geminiKey}
-              onChange={e => setGeminiKey(e.target.value)}
-              placeholder="AIza..."
-              className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-1.5 text-xs font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
-            />
-            <button
-              onClick={() => setShowGeminiKey(v => !v)}
-              className="px-2 py-1.5 bg-[#141414] border border-[#242424] rounded text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors shrink-0"
-            >
-              {showGeminiKey ? 'masquer' : 'voir'}
-            </button>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={saveApiKeys}
-              disabled={savingKeys || !geminiKey.trim()}
-              className="px-4 py-1.5 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-            >
-              {savingKeys ? 'Sauvegarde...' : 'Sauvegarder'}
-            </button>
-            {keysMsg && (
-              <span className={`text-xs font-mono ${keysMsg.ok ? 'text-[#5a9a5a]' : 'text-[#9a5a5a]'}`}>
-                {keysMsg.text}
+        {[
+          { key: 'GEMINI_API_KEY',     label: 'Google Gemini',  placeholder: 'AIza...' },
+          { key: 'GROQ_API_KEY',       label: 'Groq',           placeholder: 'gsk_...' },
+          { key: 'CEREBRAS_API_KEY',   label: 'Cerebras',       placeholder: 'csk-...' },
+          { key: 'DEEPSEEK_API_KEY',    label: 'DeepSeek',       placeholder: 'sk-...' },
+          { key: 'NVIDIA_API_KEY',     label: 'NVIDIA NIM',     placeholder: 'nvapi-...' },
+        ].map(({ key, label, placeholder }) => (
+          <div key={key} className="space-y-1.5">
+            <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest">
+              <span className="text-[#333]">{label}</span>
+              <span className={keyStatus[key] ? 'text-[#5a9a5a]' : 'text-[#333]'}>
+                {keyStatus[key] ? '✓ configurée' : 'non configurée'}
               </span>
-            )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type={showKey[key] ? 'text' : 'password'}
+                value={apiKeys[key] ?? ''}
+                onChange={e => setApiKeys(prev => ({ ...prev, [key]: e.target.value }))}
+                placeholder={placeholder}
+                className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-1.5 text-xs font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
+              />
+              <button
+                onClick={() => setShowKey(prev => ({ ...prev, [key]: !prev[key] }))}
+                className="px-2 py-1.5 bg-[#141414] border border-[#242424] rounded text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors shrink-0"
+              >
+                {showKey[key] ? 'masquer' : 'voir'}
+              </button>
+            </div>
           </div>
+        ))}
+
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={saveApiKeys}
+            disabled={savingKeys || !Object.values(apiKeys).some(v => v.trim())}
+            className="px-4 py-1.5 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            {savingKeys ? 'Sauvegarde...' : 'Sauvegarder'}
+          </button>
+          {keysMsg && (
+            <span className={`text-xs font-mono ${keysMsg.ok ? 'text-[#5a9a5a]' : 'text-[#9a5a5a]'}`}>
+              {keysMsg.text}
+            </span>
+          )}
         </div>
       </section>
 

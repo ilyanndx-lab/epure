@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -24,6 +25,7 @@ from core.admin import AdminEngine
 from core.flashcards import FlashcardsEngine
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
+from core.models import ModelsRegistry
 from core.rag import RAGEngine
 from core.voice import PiperEngine, WhisperEngine
 
@@ -47,6 +49,7 @@ rag = RAGEngine()
 memory = MemoryEngine()  # resets context_session on startup
 flashcards_engine = FlashcardsEngine()
 admin_engine = AdminEngine(llm, rag)
+models_registry = ModelsRegistry()
 
 _voice_cfg = _cfg.get("voice", {})
 whisper = WhisperEngine(
@@ -112,43 +115,79 @@ async def list_models():
     loop = asyncio.get_running_loop()
     try:
         response = await loop.run_in_executor(None, ollama.list)
-        local = [m.model for m in response.models]
+        local = [
+            {"id": m.model, "nom": m.model, "provider": "ollama", "disponible": True}
+            for m in response.models
+        ]
     except Exception:
         logger.exception("Erreur liste modèles Ollama")
-        local = [llm._model]
+        local = [{"id": llm._model, "nom": llm._model, "provider": "ollama", "disponible": True}]
 
-    gemini_ok = bool(os.environ.get("GEMINI_API_KEY", "").strip())
-    cloud = [
-        {"id": "gemini:gemini-2.5-flash",      "nom": "Gemini 2.5 Flash",      "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
-        {"id": "gemini:gemini-2.5-flash-lite",  "nom": "Gemini 2.5 Flash-Lite", "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
-        {"id": "gemini:gemini-2.5-pro",         "nom": "Gemini 2.5 Pro",        "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
-        {"id": "gemini:gemini-3.1-flash-lite",  "nom": "Gemini 3.1 Flash-Lite", "provider": "gemini", "gratuit": True, "disponible": gemini_ok},
-    ]
-    return {"local": local, "cloud": cloud}
+    catalog = await models_registry.get_catalog()
+
+    key_ok: dict[str, bool] = {
+        "gemini":   bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+        "groq":     bool(os.environ.get("GROQ_API_KEY", "").strip()),
+        "cerebras": bool(os.environ.get("CEREBRAS_API_KEY", "").strip()),
+        "deepseek": bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()),
+        "nvidia":   bool(os.environ.get("NVIDIA_API_KEY", "").strip()),
+    }
+
+    cloud: dict[str, list] = {}
+    for cat, models in catalog.items():
+        cloud[cat] = [
+            {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": key_ok.get(m["provider"], False)}
+            for m in models
+        ]
+
+    # Recommendations: first available model per usage (based on _usages metadata)
+    recommandations: dict[str, str] = {}
+    for models in catalog.values():
+        for m in models:
+            if not key_ok.get(m["provider"], False):
+                continue
+            for usage in m.get("_usages", []):
+                if usage not in recommandations:
+                    recommandations[usage] = m["id"]
+
+    return {"local": local, "cloud": cloud, "recommandations": recommandations}
 
 
 # ---------------------------------------------------------------------------
 # Settings — API keys
 # ---------------------------------------------------------------------------
 
+_API_KEY_NAMES = ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY"]
+
+
 class ApiKeysRequest(BaseModel):
     GEMINI_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
+    CEREBRAS_API_KEY: Optional[str] = None
+    DEEPSEEK_API_KEY: Optional[str] = None
+    NVIDIA_API_KEY: Optional[str] = None
 
 
 @app.get("/settings/api-keys")
 async def api_keys_get():
-    return {"GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY", "").strip())}
+    return {k: bool(os.environ.get(k, "").strip()) for k in _API_KEY_NAMES}
 
 
 @app.put("/settings/api-keys")
 async def api_keys_put(req: ApiKeysRequest):
-    if req.GEMINI_API_KEY is not None:
-        _ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if not _ENV_FILE.exists():
-            _ENV_FILE.write_text("GEMINI_API_KEY=\n", encoding="utf-8")
-        dotenv_set_key(str(_ENV_FILE), "GEMINI_API_KEY", req.GEMINI_API_KEY)
+    _ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not _ENV_FILE.exists():
+        _ENV_FILE.write_text("", encoding="utf-8")
+    updated = False
+    for k in _API_KEY_NAMES:
+        val = getattr(req, k, None)
+        if val is not None:
+            dotenv_set_key(str(_ENV_FILE), k, val)
+            updated = True
+    if updated:
         load_dotenv(str(_ENV_FILE), override=True)
         llm.reload_dotenv()
+        models_registry.invalidate()
     return {"ok": True}
 
 
@@ -622,7 +661,10 @@ async def ws_chat(websocket: WebSocket):
             active_files = ctx.get("fichiers_actifs", [])
             model_override = ctx.get("modèle_actif") or None
 
+            _req_start = time.time()
             user_text = msg["content"]
+
+            _t = time.time()
             if rag_override == "all":
                 chunks = await loop.run_in_executor(None, rag.query, user_text)
             elif active_files:
@@ -631,6 +673,7 @@ async def ws_chat(websocket: WebSocket):
                 )
             else:
                 chunks = ""
+            logger.info("TTFT RAG: %.3fs", time.time() - _t)
 
             sys_parts: list[str] = []
             if strict_override:
@@ -638,7 +681,9 @@ async def ws_chat(websocket: WebSocket):
                     "Réponds de façon maximalement concise. "
                     "Pas d'introduction, pas de reformulation."
                 )
+            _t = time.time()
             mem_ctx = memory.build_system_context()
+            logger.info("TTFT Memory: %.3fs", time.time() - _t)
             if mem_ctx:
                 sys_parts.append(mem_ctx)
             if chunks:
@@ -669,6 +714,7 @@ async def ws_chat(websocket: WebSocket):
             ).start()
 
             accumulated = ""
+            _first_token = True
             while True:
                 item = await queue.get()
                 if item is None:
@@ -687,10 +733,14 @@ async def ws_chat(websocket: WebSocket):
                         "prompt_duration_ms": (item.get("prompt_duration_ns", 0) or 0) // 1_000_000,
                     }))
                     continue
+                if _first_token:
+                    logger.info("TTFT total: %.3fs", time.time() - _req_start)
+                    _first_token = False
                 accumulated += item
                 await websocket.send_text(json.dumps({"type": "token", "content": item}))
 
-            history.append({"role": "assistant", "content": accumulated})
+            if accumulated:
+                history.append({"role": "assistant", "content": accumulated})
             await websocket.send_text(json.dumps({"type": "done"}))
 
     except WebSocketDisconnect:

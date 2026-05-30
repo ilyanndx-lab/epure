@@ -11,12 +11,28 @@ interface ConnectorBarProps {
 
 type Panel = 'files' | 'skills' | 'model' | null
 
-interface CloudModel {
+interface ModelInfo {
   id: string
   nom: string
   provider: string
-  gratuit: boolean
   disponible: boolean
+  gratuit?: boolean
+  description?: string
+}
+
+interface CloudCategories {
+  rapide: ModelInfo[]
+  puissant: ModelInfo[]
+  long_contexte: ModelInfo[]
+}
+
+const PROVIDER_DOT: Record<string, string> = {
+  ollama: 'bg-[#3a5a3a]', gemini: 'bg-[#3a4a7a]', groq: 'bg-[#5a3a7a]',
+  cerebras: 'bg-[#3a6a6a]', deepseek: 'bg-[#3a5a7a]', nvidia: 'bg-[#3a6a5a]',
+}
+const PROVIDER_TEXT: Record<string, string> = {
+  ollama: 'text-[#3a6a3a]', gemini: 'text-[#4a6a9a]', groq: 'text-[#7a5a9a]',
+  cerebras: 'text-[#5a9a9a]', deepseek: 'text-[#5a7a9a]', nvidia: 'text-[#5a9a7a]',
 }
 
 interface FileSummary {
@@ -50,8 +66,9 @@ export default function ConnectorBar({
   const [instructionDraft, setInstructionDraft] = useState('')
 
   // Model state
-  const [localModels, setLocalModels] = useState<string[]>([])
-  const [cloudModels, setCloudModels] = useState<CloudModel[]>([])
+  const [localModels, setLocalModels] = useState<ModelInfo[]>([])
+  const [cloudCategories, setCloudCategories] = useState<CloudCategories>({ rapide: [], puissant: [], long_contexte: [] })
+  const [recommandations, setRecommandations] = useState<Record<string, string>>({})
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b')
 
   // STT state
@@ -87,9 +104,10 @@ export default function ConnectorBar({
 
     fetch(`${API}/models`)
       .then(r => r.json())
-      .then((d: { local: string[]; cloud: CloudModel[] }) => {
+      .then((d: { local: ModelInfo[]; cloud: CloudCategories; recommandations: Record<string, string> }) => {
         setLocalModels(d.local ?? [])
-        setCloudModels(d.cloud ?? [])
+        setCloudCategories(d.cloud ?? { rapide: [], puissant: [], long_contexte: [] })
+        setRecommandations(d.recommandations ?? {})
       })
       .catch(err => console.error('GET /models:', err))
   }, [])
@@ -451,60 +469,89 @@ export default function ConnectorBar({
       )}
 
       {/* ── Model panel ── */}
-      {activePanel === 'model' && (
-        <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3">
-          {localModels.length === 0 && cloudModels.length === 0 ? (
-            <p className="text-xs font-mono text-[#333]">Chargement des modèles...</p>
-          ) : (
-            <div className="space-y-0.5">
-              {localModels.length > 0 && (
-                <>
-                  <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Local</p>
-                  {localModels.map(m => (
-                    <button
-                      key={m}
-                      onClick={() => handleModelSelect(m)}
-                      className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
-                        m === selectedModel
-                          ? 'bg-[#1a1a1a] text-[#e0e0e0]'
-                          : 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
-                      }`}
-                    >
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#3a5a3a] shrink-0" />
-                      {m === selectedModel ? '◆ ' : '◇ '}{m}
-                    </button>
-                  ))}
-                </>
-              )}
-              {cloudModels.length > 0 && (
-                <>
-                  {localModels.length > 0 && <div className="border-t border-[#1a1a1a] my-1" />}
-                  <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Cloud</p>
-                  {cloudModels.map(m => (
-                    <button
-                      key={m.id}
-                      onClick={() => m.disponible ? handleModelSelect(m.id) : undefined}
-                      className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
-                        m.id === selectedModel
-                          ? 'bg-[#1a1a1a] text-[#e0e0e0]'
-                          : m.disponible
-                          ? 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
-                          : 'text-[#333] cursor-default'
-                      }`}
-                    >
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? 'bg-[#3a4a7a]' : 'bg-[#2a2a2a]'}`} />
-                      {m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}
-                      {!m.disponible && (
-                        <span className="text-[10px] text-[#7a4a2a] ml-auto">⚠ clé manquante → Settings</span>
-                      )}
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {activePanel === 'model' && (() => {
+        const allCloud = [...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
+        const hasModels = localModels.length > 0 || allCloud.length > 0
+        return (
+          <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3 max-h-[65vh] overflow-y-auto">
+            {!hasModels ? (
+              <p className="text-xs font-mono text-[#333]">Chargement des modèles...</p>
+            ) : (
+              <div className="space-y-0.5">
+                {/* RECOMMANDATIONS */}
+                {Object.keys(recommandations).length > 0 && (
+                  <>
+                    <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Recommandations</p>
+                    <div className="px-3 pb-2 flex flex-wrap gap-1.5">
+                      {Object.entries(recommandations).map(([label, mid]) => (
+                        <button
+                          key={label}
+                          onClick={() => handleModelSelect(mid)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
+                            selectedModel === mid
+                              ? 'bg-[#1a2a1a] border-[#2a4a2a] text-[#6a9a6a]'
+                              : 'bg-[#0d0d0d] border-[#1e1e1e] text-[#444] hover:border-[#2a2a2a] hover:text-[#777]'
+                          }`}
+                        >{label}</button>
+                      ))}
+                    </div>
+                    <div className="border-t border-[#1a1a1a] my-1" />
+                  </>
+                )}
+
+                {/* LOCAL */}
+                {localModels.length > 0 && (
+                  <>
+                    <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Local</p>
+                    {localModels.map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => handleModelSelect(m.id)}
+                        className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
+                          m.id === selectedModel ? 'bg-[#1a1a1a] text-[#e0e0e0]' : 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
+                        }`}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#3a5a3a] shrink-0" />
+                        <span className="flex-1 truncate">{m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+
+                {/* CLOUD categories */}
+                {(['rapide', 'puissant', 'long_contexte'] as const).map(cat => {
+                  const catLabel = { rapide: 'RAPIDE', puissant: 'PUISSANT', long_contexte: 'LONG CONTEXTE' }[cat]
+                  const models = cloudCategories[cat]
+                  if (!models || models.length === 0) return null
+                  return (
+                    <div key={cat}>
+                      <div className="border-t border-[#1a1a1a] my-1" />
+                      <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">{catLabel}</p>
+                      {models.map(m => (
+                        <button
+                          key={m.id}
+                          onClick={() => m.disponible ? handleModelSelect(m.id) : undefined}
+                          className={`w-full text-left px-3 py-1.5 rounded text-xs font-mono transition-colors flex items-center gap-2 ${
+                            m.id === selectedModel ? 'bg-[#1a1a1a] text-[#e0e0e0]'
+                            : m.disponible ? 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
+                            : 'text-[#333] cursor-default'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? (PROVIDER_DOT[m.provider] ?? 'bg-[#3a4a7a]') : 'bg-[#2a2a2a]'}`} />
+                          <span className="flex-1 truncate">{m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}</span>
+                          <span className={`text-[9px] shrink-0 ${PROVIDER_TEXT[m.provider] ?? 'text-[#333]'}`}>{m.provider}</span>
+                          {m.description && <span className="text-[9px] text-[#2a2a2a] shrink-0 hidden sm:inline">{m.description}</span>}
+                          {!m.disponible && <span className="text-[9px] text-[#7a4a2a] shrink-0">⚠</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* ── Main bar ── */}
       <div className="flex items-center gap-1 px-4 py-2">
@@ -574,7 +621,11 @@ export default function ConnectorBar({
 
         {/* Model name indicator */}
         <span className="ml-1 text-[10px] font-mono text-[#2a2a2a] truncate max-w-24">
-          {selectedModel.split(':')[0]}
+          {(() => {
+            const all = [...localModels, ...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
+            const info = all.find(m => m.id === selectedModel)
+            return info?.nom?.split(' ')[0] ?? selectedModel.split(':').pop() ?? selectedModel
+          })()}
         </span>
       </div>
     </div>

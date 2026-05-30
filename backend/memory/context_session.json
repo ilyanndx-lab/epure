@@ -1,7 +1,7 @@
 {
   "fichiers_actifs": [],
   "résumé_contexte": "",
-  "modèle_actif": "gemini:gemini-3.1-flash-lite",
+  "modèle_actif": "deepseek:deepseek-r1",
   "strict_mode": false,
   "session_instruction": ""
 }
