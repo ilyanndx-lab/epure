@@ -23,6 +23,7 @@ _ENV_FILE = Path(__file__).parent / ".env"
 
 from core.admin import AdminEngine
 from core.consolidation import ConsolidationEngine
+from core.orchestrator import OrchestratorEngine
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
@@ -54,6 +55,7 @@ admin_engine = AdminEngine(llm, rag)
 models_registry = ModelsRegistry()
 history_engine = HistoryEngine(llm, rag._client, rag._ef)
 consolidation_engine = ConsolidationEngine(llm, memory, history_engine)
+orchestrator = OrchestratorEngine(llm)
 
 _voice_cfg = _cfg.get("voice", {})
 whisper = WhisperEngine(
@@ -304,7 +306,7 @@ async def context_get():
 @app.patch("/context/settings")
 async def context_settings(request: Request):
     body = await request.json()
-    allowed = {"modèle_actif", "strict_mode", "session_instruction", "consolidation_cloud"}
+    allowed = {"modèle_actif", "strict_mode", "session_instruction", "consolidation_cloud", "orchestrateur_actif"}
     filtered = {k: v for k, v in body.items() if k in allowed}
     memory.update_context(**filtered)
     return {"ok": True}
@@ -762,6 +764,50 @@ async def ws_chat(websocket: WebSocket):
             if sys_parts:
                 messages = [{"role": "system", "content": "\n\n".join(sys_parts)}] + messages
 
+            # ── Orchestrator ──────────────────────────────────────────────────
+            _effort = msg.get("effort", "direct")
+            _client_steps = msg.get("steps", [])  # [{"role": "...", "model": "..."}]
+            _direct_mode = bool(msg.get("direct", False)) or _effort == "direct" or not _effort
+
+            if not _direct_mode:
+                _pipeline: list[dict] = []
+
+                if _effort == "adaptive":
+                    try:
+                        _classification = await asyncio.wait_for(
+                            loop.run_in_executor(None, orchestrator.classify_task, user_text, ctx),
+                            timeout=3.0,
+                        )
+                    except Exception:
+                        _classification = {"complexity": "simple"}
+                    _complexity = _classification.get("complexity", "simple")
+                    if _complexity == "simple":
+                        _direct_mode = True
+                    else:
+                        _eff = "medium" if _complexity == "moderate" else "high"
+                        _pipeline = orchestrator.build_steps(_eff, [], ctx)
+                elif _effort in ("low", "medium", "high"):
+                    _pipeline = orchestrator.build_steps(_effort, _client_steps, ctx)
+
+                if not _direct_mode and _pipeline:
+                    await websocket.send_text(json.dumps({
+                        "type": "pipeline_info",
+                        "effort": _effort,
+                        "steps": [{"role": s["role"], "label": s.get("label", s["role"]), "model": s["model"]} for s in _pipeline],
+                    }))
+                    _final = ""
+                    async for _event in orchestrator.run_pipeline(_pipeline, user_text, messages, loop):
+                        if _event.get("type") == "pipeline_done":
+                            _final = _event.get("final_output", "")
+                        await websocket.send_text(json.dumps(_event))
+                    if _final:
+                        history.append({"role": "assistant", "content": _final})
+                    await websocket.send_text(json.dumps({"type": "done"}))
+                    continue
+                elif not _direct_mode:
+                    _direct_mode = True  # empty pipeline → fall through to direct
+            # ─────────────────────────────────────────────────────────────────
+
             queue: asyncio.Queue = asyncio.Queue()
 
             def _stream(msgs, q, lp, model):
@@ -820,6 +866,39 @@ async def ws_chat(websocket: WebSocket):
                     consolidation_engine.consolidate_history(conv_id, use_cloud)
 
             Thread(target=_save_and_consolidate, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator presets
+# ---------------------------------------------------------------------------
+
+class PresetCreateRequest(BaseModel):
+    nom: str
+    effort: str
+    steps: list[dict]
+
+
+@app.get("/orchestrator/presets")
+async def orchestrator_presets_list():
+    loop = asyncio.get_running_loop()
+    presets = await loop.run_in_executor(None, orchestrator.get_presets)
+    return {"presets": presets}
+
+
+@app.post("/orchestrator/presets")
+async def orchestrator_presets_create(req: PresetCreateRequest):
+    loop = asyncio.get_running_loop()
+    preset = await loop.run_in_executor(None, orchestrator.create_preset, req.nom, req.effort, req.steps)
+    return preset
+
+
+@app.delete("/orchestrator/presets/{preset_id}")
+async def orchestrator_presets_delete(preset_id: str):
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(None, orchestrator.delete_preset, preset_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Preset introuvable ou preset par défaut")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

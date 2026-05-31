@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
+import type { EffortLevel, StepConfig } from '../App'
 
 const API = 'http://localhost:8000'
 
@@ -7,6 +8,10 @@ interface ConnectorBarProps {
   ttsEnabled: boolean
   onTtsToggle: () => void
   speakingText: string | null
+  effort: EffortLevel
+  onEffortChange: (e: EffortLevel) => void
+  pipelineSteps: StepConfig[]
+  onPipelineStepsChange: (steps: StepConfig[]) => void
 }
 
 type Panel = 'files' | 'skills' | 'model' | null
@@ -24,6 +29,46 @@ interface CloudCategories {
   rapide: ModelInfo[]
   puissant: ModelInfo[]
   long_contexte: ModelInfo[]
+}
+
+interface Preset {
+  id: string
+  nom: string
+  effort: EffortLevel
+  steps: StepConfig[]
+  défaut?: boolean
+}
+
+interface StepDef {
+  role: string
+  label: string
+  recommended: string | null
+}
+
+const EFFORT_DEFINITIONS: Record<Exclude<EffortLevel, 'direct' | 'adaptive'>, StepDef[]> = {
+  low: [
+    { role: 'contextualizer', label: 'Contextualisation', recommended: null },
+    { role: 'responder', label: 'Réponse', recommended: null },
+  ],
+  medium: [
+    { role: 'analyzer', label: 'Analyse', recommended: 'groq:deepseek-r1-distill-llama-70b' },
+    { role: 'solver', label: 'Résolution', recommended: null },
+    { role: 'pedagogue', label: 'Reformulation pédagogique', recommended: 'gemini:gemini-2.5-flash' },
+  ],
+  high: [
+    { role: 'analyzer', label: 'Analyse approfondie', recommended: 'groq:deepseek-r1-distill-llama-70b' },
+    { role: 'solver', label: 'Résolution rigoureuse', recommended: null },
+    { role: 'verifier', label: 'Vérification', recommended: 'groq:deepseek-r1-distill-llama-70b' },
+    { role: 'pedagogue', label: 'Synthèse finale', recommended: 'gemini:gemini-2.5-flash' },
+  ],
+}
+
+const EFFORT_LABELS: Record<EffortLevel, string> = {
+  direct: 'Direct',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  adaptive: 'Adaptatif',
 }
 
 const PROVIDER_DOT: Record<string, string> = {
@@ -48,6 +93,10 @@ export default function ConnectorBar({
   ttsEnabled,
   onTtsToggle,
   speakingText,
+  effort,
+  onEffortChange,
+  pipelineSteps,
+  onPipelineStepsChange,
 }: ConnectorBarProps) {
   const [activePanel, setActivePanel] = useState<Panel>(null)
 
@@ -74,6 +123,11 @@ export default function ConnectorBar({
   const [recommandations, setRecommandations] = useState<Record<string, string>>({})
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b')
 
+  // Preset state
+  const [presets, setPresets] = useState<Preset[]>([])
+  const [saveModalOpen, setSaveModalOpen] = useState(false)
+  const [newPresetName, setNewPresetName] = useState('')
+
   // STT state
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
@@ -83,7 +137,50 @@ export default function ConnectorBar({
   const togglePanel = (panel: Panel) =>
     setActivePanel(prev => (prev === panel ? null : panel))
 
-  // ── Load initial context and files ──────────────────────────────────────
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  const allModels = useCallback((): ModelInfo[] => {
+    return [
+      ...localModels,
+      ...localNpuModels,
+      ...cloudCategories.rapide,
+      ...cloudCategories.puissant,
+      ...cloudCategories.long_contexte,
+    ]
+  }, [localModels, localNpuModels, cloudCategories])
+
+  const defaultModelForRole = useCallback((recommended: string | null): string => {
+    if (!recommended) return selectedModel
+    const models = allModels()
+    const found = models.find(m => m.id === recommended && m.disponible)
+    return found ? recommended : selectedModel
+  }, [selectedModel, allModels])
+
+  // ── Build default steps when effort changes ───────────────────────────────
+
+  const buildDefaultSteps = useCallback((e: EffortLevel): StepConfig[] => {
+    if (e === 'direct' || e === 'adaptive') return []
+    const defs = EFFORT_DEFINITIONS[e]
+    return defs.map(d => ({
+      role: d.role,
+      model: defaultModelForRole(d.recommended),
+    }))
+  }, [defaultModelForRole])
+
+  const handleEffortChange = useCallback((e: EffortLevel) => {
+    onEffortChange(e)
+    onPipelineStepsChange(buildDefaultSteps(e))
+  }, [onEffortChange, onPipelineStepsChange, buildDefaultSteps])
+
+  // Rebuild steps when selectedModel changes (for "active" placeholders)
+  useEffect(() => {
+    if (effort !== 'direct' && effort !== 'adaptive' && pipelineSteps.length === 0) {
+      onPipelineStepsChange(buildDefaultSteps(effort))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModel, effort])
+
+  // ── Load initial context and files ────────────────────────────────────────
 
   useEffect(() => {
     fetch(`${API}/rag/files`)
@@ -114,20 +211,22 @@ export default function ConnectorBar({
         setRecommandations(d.recommandations ?? {})
       })
       .catch(err => console.error('GET /models:', err))
+
+    fetch(`${API}/orchestrator/presets`)
+      .then(r => r.json())
+      .then((d: { presets: Preset[] }) => setPresets(d.presets ?? []))
+      .catch(err => console.error('GET /orchestrator/presets:', err))
   }, [])
 
-  // ── Settings sync to backend ─────────────────────────────────────────────
+  // ── Settings sync ─────────────────────────────────────────────────────────
 
-  const pushSettings = useCallback(
-    (patch: Record<string, unknown>) => {
-      fetch(`${API}/context/settings`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      }).catch(err => console.error('PATCH /context/settings:', err))
-    },
-    []
-  )
+  const pushSettings = useCallback((patch: Record<string, unknown>) => {
+    fetch(`${API}/context/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).catch(err => console.error('PATCH /context/settings:', err))
+  }, [])
 
   const handleStrictToggle = useCallback(() => {
     const next = !strictMode
@@ -149,7 +248,47 @@ export default function ConnectorBar({
     [pushSettings]
   )
 
-  // ── Files ────────────────────────────────────────────────────────────────
+  // ── Pipeline step model change ─────────────────────────────────────────────
+
+  const handleStepModelChange = useCallback((idx: number, model: string) => {
+    const next = pipelineSteps.map((s, i) => i === idx ? { ...s, model } : s)
+    onPipelineStepsChange(next)
+  }, [pipelineSteps, onPipelineStepsChange])
+
+  // ── Preset actions ────────────────────────────────────────────────────────
+
+  const loadPreset = useCallback((preset: Preset) => {
+    onEffortChange(preset.effort)
+    onPipelineStepsChange(preset.steps)
+  }, [onEffortChange, onPipelineStepsChange])
+
+  const savePreset = useCallback(async () => {
+    if (!newPresetName.trim()) return
+    try {
+      const res = await fetch(`${API}/orchestrator/presets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nom: newPresetName.trim(), effort, steps: pipelineSteps }),
+      })
+      const preset = await res.json() as Preset
+      setPresets(prev => [...prev, preset])
+      setNewPresetName('')
+      setSaveModalOpen(false)
+    } catch (err) {
+      console.error('POST /orchestrator/presets:', err)
+    }
+  }, [newPresetName, effort, pipelineSteps])
+
+  const deletePreset = useCallback(async (id: string) => {
+    try {
+      await fetch(`${API}/orchestrator/presets/${id}`, { method: 'DELETE' })
+      setPresets(prev => prev.filter(p => p.id !== id))
+    } catch (err) {
+      console.error('DELETE /orchestrator/presets:', err)
+    }
+  }, [])
+
+  // ── Files ─────────────────────────────────────────────────────────────────
 
   const consumeLoadStream = useCallback(async (res: Response, finalPaths?: string[]) => {
     const reader = res.body!.getReader()
@@ -179,9 +318,7 @@ export default function ConnectorBar({
             finalPages = ev.pages
             finalChunks = ev.chunks
           }
-        } catch {
-          // skip malformed line
-        }
+        } catch { /* skip */ }
       }
     }
 
@@ -225,7 +362,6 @@ export default function ConnectorBar({
       const res = await fetch(`${API}/files/upload`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res)
-      // Refresh file list and active context
       const [filesData, ctxData] = await Promise.all([
         fetch(`${API}/rag/files`).then(r => r.json()) as Promise<{ files: string[] }>,
         fetch(`${API}/context`).then(r => r.json()) as Promise<Record<string, unknown>>,
@@ -241,7 +377,7 @@ export default function ConnectorBar({
     }
   }, [consumeLoadStream])
 
-  // ── STT ──────────────────────────────────────────────────────────────────
+  // ── STT ───────────────────────────────────────────────────────────────────
 
   const stopRecording = useCallback(() => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
@@ -290,19 +426,116 @@ export default function ConnectorBar({
 
   const handleMicUp = useCallback(() => stopRecording(), [stopRecording])
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
   const basename = (p: string) => p.split(/[/\\]/).pop() ?? p
+
+  // ── Current step defs for pipeline panel ──────────────────────────────────
+
+  const stepDefs = (effort !== 'direct' && effort !== 'adaptive')
+    ? EFFORT_DEFINITIONS[effort] ?? []
+    : []
+
+  const relevantPresets = presets.filter(p => p.effort === effort)
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="relative border-t border-[#1e1e1e] bg-[#0a0a0a] shrink-0">
 
+      {/* ── Pipeline config panel ── */}
+      {effort !== 'direct' && effort !== 'adaptive' && stepDefs.length > 0 && (
+        <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-[#444] uppercase tracking-widest">
+              Pipeline {EFFORT_LABELS[effort]} · {stepDefs.length} étapes
+            </span>
+            <div className="flex items-center gap-2">
+              {/* Presets dropdown */}
+              {relevantPresets.length > 0 && (
+                <select
+                  className="bg-[#141414] border border-[#242424] rounded px-2 py-0.5 text-[10px] font-mono text-[#666] focus:outline-none"
+                  defaultValue=""
+                  onChange={e => {
+                    const preset = presets.find(p => p.id === e.target.value)
+                    if (preset) loadPreset(preset)
+                    e.target.value = ''
+                  }}
+                >
+                  <option value="" disabled>Presets ▾</option>
+                  {relevantPresets.map(p => (
+                    <option key={p.id} value={p.id}>{p.nom}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={() => setSaveModalOpen(v => !v)}
+                className="px-2 py-0.5 bg-[#141414] border border-[#242424] rounded text-[10px] font-mono text-[#555] hover:text-[#999] transition-colors"
+              >
+                sauvegarder preset
+              </button>
+            </div>
+          </div>
+
+          {/* Steps */}
+          <div className="flex flex-wrap gap-2">
+            {stepDefs.map((def, idx) => {
+              const chosenModel = pipelineSteps[idx]?.model ?? selectedModel
+              const isRecommended = def.recommended && chosenModel === def.recommended
+              return (
+                <div key={def.role} className="flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded px-2 py-1">
+                  <span className="text-[10px] font-mono text-[#444]">
+                    {String(idx + 1).padStart(2, '0')}
+                  </span>
+                  <span className="text-[10px] font-mono text-[#666] shrink-0">{def.label}</span>
+                  <select
+                    value={chosenModel}
+                    onChange={e => handleStepModelChange(idx, e.target.value)}
+                    className="bg-[#0d0d0d] border border-[#1e1e1e] rounded px-1.5 py-0.5 text-[10px] font-mono text-[#888] focus:outline-none max-w-36"
+                  >
+                    {[...localModels, ...localNpuModels, ...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
+                      .filter(m => m.disponible)
+                      .map(m => (
+                        <option key={m.id} value={m.id}>{m.nom}</option>
+                      ))}
+                  </select>
+                  {isRecommended && (
+                    <span className="text-[8px] font-mono text-[#4a6a4a] shrink-0">recommandé</span>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Save preset inline form */}
+          {saveModalOpen && (
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                value={newPresetName}
+                onChange={e => setNewPresetName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') savePreset() }}
+                placeholder="Nom du preset..."
+                className="flex-1 bg-[#141414] border border-[#242424] rounded px-2 py-1 text-[10px] font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none"
+              />
+              <button
+                onClick={savePreset}
+                disabled={!newPresetName.trim()}
+                className="px-2 py-1 bg-[#141414] border border-[#2a4a2a] rounded text-[10px] font-mono text-[#5a9a5a] hover:text-[#8aca8a] disabled:opacity-30 transition-colors"
+              >
+                Sauvegarder
+              </button>
+              <button
+                onClick={() => setSaveModalOpen(false)}
+                className="px-2 py-1 text-[10px] font-mono text-[#444] hover:text-[#888]"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Files panel ── */}
       {activePanel === 'files' && (
         <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-4 max-h-72 overflow-y-auto space-y-4">
-          {/* Drag & drop upload */}
           <div
             onDragOver={e => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
@@ -325,12 +558,9 @@ export default function ConnectorBar({
             />
           </div>
 
-          {/* Available files list */}
           {availableFiles.length > 0 && (
             <div className="space-y-1">
-              <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest mb-2">
-                Fichiers indexés
-              </p>
+              <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest mb-2">Fichiers indexés</p>
               {availableFiles.map(f => (
                 <label key={f} className="flex items-center gap-2 cursor-pointer group">
                   <input
@@ -351,7 +581,6 @@ export default function ConnectorBar({
             </div>
           )}
 
-          {/* Actions */}
           <div className="flex gap-2 flex-wrap">
             <button
               onClick={loadSelectedFiles}
@@ -370,7 +599,6 @@ export default function ConnectorBar({
             )}
           </div>
 
-          {/* Summary card — streaming or final */}
           {(summaryText || summary) && (
             <div className="border border-[#1e1e1e] rounded px-3 py-3 space-y-1">
               <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">
@@ -392,9 +620,7 @@ export default function ConnectorBar({
       {/* ── Skills panel ── */}
       {activePanel === 'skills' && (
         <div className="border-t border-[#1e1e1e] bg-[#0d0d0d] px-4 py-4 space-y-4 max-h-96 overflow-y-auto">
-
-          {/* Toggles */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <button
               onClick={onTtsToggle}
               className={`px-3 py-1.5 rounded text-xs font-mono border transition-colors ${
@@ -417,7 +643,31 @@ export default function ConnectorBar({
             </button>
           </div>
 
-          {/* @ commands */}
+          {/* Preset management */}
+          {presets.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Presets sauvegardés</p>
+              {presets.map(p => (
+                <div key={p.id} className="flex items-center gap-2">
+                  <button
+                    onClick={() => loadPreset(p)}
+                    className="text-left flex-1 text-xs font-mono text-[#666] hover:text-[#aaa] truncate"
+                  >
+                    {p.nom} <span className="text-[#333]">· {EFFORT_LABELS[p.effort]} · {p.steps.length} étapes</span>
+                  </button>
+                  {!p.défaut && (
+                    <button
+                      onClick={() => deletePreset(p.id)}
+                      className="text-[10px] font-mono text-[#333] hover:text-[#884444] transition-colors shrink-0"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Préfixes @</p>
             {[
@@ -433,15 +683,15 @@ export default function ConnectorBar({
             ))}
           </div>
 
-          {/* / commands */}
           <div className="space-y-1.5">
             <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Commandes /</p>
             {[
-              { trigger: '/kholle',     desc: 'Ouvre le module Kholle [matière?]' },
-              { trigger: '/flashcards', desc: 'Ouvre les Flashcards [source?]' },
+              { trigger: '/kholle',     desc: 'Ouvre le module Kholle' },
+              { trigger: '/flashcards', desc: 'Ouvre les Flashcards' },
               { trigger: '/résumé',     desc: 'Résumé des fichiers actifs' },
               { trigger: '/modèle',     desc: 'Change le modèle actif [nom]' },
               { trigger: '/lacunes',    desc: 'Lacunes + erreurs des 7 derniers jours' },
+              { trigger: '/direct',     desc: 'Envoie sans orchestrateur [message]' },
             ].map(c => (
               <div key={c.trigger} className="flex gap-2 items-baseline">
                 <span className="text-xs font-mono text-[#4a6a8a] shrink-0 w-24">{c.trigger}</span>
@@ -450,11 +700,8 @@ export default function ConnectorBar({
             ))}
           </div>
 
-          {/* Session instruction */}
           <div className="space-y-2">
-            <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">
-              Instruction de session
-            </p>
+            <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Instruction de session</p>
             <textarea
               value={instructionDraft}
               onChange={e => setInstructionDraft(e.target.value)}
@@ -483,7 +730,6 @@ export default function ConnectorBar({
               <p className="text-xs font-mono text-[#333]">Chargement des modèles...</p>
             ) : (
               <div className="space-y-0.5">
-                {/* RECOMMANDATIONS */}
                 {Object.keys(recommandations).length > 0 && (
                   <>
                     <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Recommandations</p>
@@ -504,7 +750,6 @@ export default function ConnectorBar({
                   </>
                 )}
 
-                {/* LOCAL */}
                 {localModels.length > 0 && (
                   <>
                     <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest px-3 py-1">Local</p>
@@ -523,7 +768,6 @@ export default function ConnectorBar({
                   </>
                 )}
 
-                {/* LOCAL NPU */}
                 {localNpuModels.length > 0 && (
                   <>
                     <div className="border-t border-[#1a1a1a] my-1" />
@@ -541,14 +785,12 @@ export default function ConnectorBar({
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? 'bg-[#6a3a9a]' : 'bg-[#2a2a2a]'}`} />
                         <span className="flex-1 truncate">{m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}</span>
                         <span className="text-[9px] text-[#6a3a9a] shrink-0">NPU</span>
-                        {m.description && <span className="text-[9px] text-[#2a2a2a] shrink-0 hidden sm:inline">{m.description}</span>}
                         {!m.disponible && <span className="text-[9px] text-[#7a4a2a] shrink-0">⚠ FLM non démarré</span>}
                       </button>
                     ))}
                   </>
                 )}
 
-                {/* CLOUD categories */}
                 {(['rapide', 'puissant', 'long_contexte'] as const).map(cat => {
                   const catLabel = { rapide: 'RAPIDE', puissant: 'PUISSANT', long_contexte: 'LONG CONTEXTE' }[cat]
                   const models = cloudCategories[cat]
@@ -570,7 +812,6 @@ export default function ConnectorBar({
                           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? (PROVIDER_DOT[m.provider] ?? 'bg-[#3a4a7a]') : 'bg-[#2a2a2a]'}`} />
                           <span className="flex-1 truncate">{m.id === selectedModel ? '◆ ' : '◇ '}{m.nom}</span>
                           <span className={`text-[9px] shrink-0 ${PROVIDER_TEXT[m.provider] ?? 'text-[#333]'}`}>{m.provider}</span>
-                          {m.description && <span className="text-[9px] text-[#2a2a2a] shrink-0 hidden sm:inline">{m.description}</span>}
                           {!m.disponible && <span className="text-[9px] text-[#7a4a2a] shrink-0">⚠</span>}
                         </button>
                       ))}
@@ -603,7 +844,7 @@ export default function ConnectorBar({
           )}
         </button>
 
-        {/* Mic button (push-to-talk) */}
+        {/* Mic button */}
         <button
           onPointerDown={handleMicDown}
           onPointerUp={handleMicUp}
@@ -649,8 +890,26 @@ export default function ConnectorBar({
           🤖
         </button>
 
+        {/* Divider */}
+        <div className="w-px h-4 bg-[#1e1e1e] mx-1" />
+
+        {/* Effort selector */}
+        {(['direct', 'low', 'medium', 'high', 'adaptive'] as EffortLevel[]).map(e => (
+          <button
+            key={e}
+            onClick={() => handleEffortChange(e)}
+            className={`px-2 py-1 rounded text-[10px] font-mono border transition-colors ${
+              effort === e
+                ? 'bg-[#1a1a2a] border-[#2a2a4a] text-[#8a8acc]'
+                : 'bg-[#0d0d0d] border-[#1e1e1e] text-[#333] hover:border-[#2a2a2a] hover:text-[#666]'
+            }`}
+          >
+            {EFFORT_LABELS[e]}
+          </button>
+        ))}
+
         {/* Model name indicator */}
-        <span className="ml-1 text-[10px] font-mono text-[#2a2a2a] truncate max-w-24">
+        <span className="ml-auto text-[10px] font-mono text-[#2a2a2a] truncate max-w-24">
           {(() => {
             const all = [...localModels, ...localNpuModels, ...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
             const info = all.find(m => m.id === selectedModel)
