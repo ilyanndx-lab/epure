@@ -761,56 +761,30 @@ INFO:     connection closed
 [2m21:43:29[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
 [2m21:43:40[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
 [2m21:44:06[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Settings.tsx[22m
-07 Temporary Redirect"
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/tokenizer_config.json "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
-INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
-INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
-INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2 "HTTP/1.1 200 OK"
-INFO:core.voice:Chargement du modèle Whisper : small
-INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/Systran/faster-whisper-small/revision/main "HTTP/1.1 200 OK"
-INFO:core.voice:Modèle Whisper prêt
-INFO:core.voice:Modèle Piper prêt : fr_FR-upmc-medium
-Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.36s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.36s/it]
-Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:02<00:00,  2.06s/it]Batches: 100%|##########| 1/1 [00:02<00:00,  2.06s/it]
-Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.58s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.58s/it]
-Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.17s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.17s/it]
-Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.14s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.14s/it]
-INFO:     Started server process [27296]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:53771 - "WebSocket /ws/chat" [accepted]
-INFO:     connection open
-INFO:     127.0.0.1:56989 - "WebSocket /ws/chat" [accepted]
-INFO:     connection open
-INFO:     127.0.0.1:55116 - "WebSocket /ws/chat" [accepted]
-INFO:     connection open
-INFO:     127.0.0.1:49777 - "WebSocket /ws/chat" [accepted]
-INFO:     connection open
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:59712 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:57930 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:60839 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:58398 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:56473 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:60755 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:53484 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:53484 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:54178 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:54178 - "GET /health HTTP/1.1" 200 OK
-INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
-INFO:     127.0.0.1:54128 - "GET /health HTTP/1.1" 200 OK
+[2m22:06:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Chat.tsx[22m
+[2m22:06:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m22:06:15[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[2m22:06:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Chat.tsx[22m
+[2m22:06:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m22:06:24[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[2m22:06:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Chat.tsx[22m
+[2m22:06:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m22:06:31[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[2m22:06:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Chat.tsx[22m
+[2m22:06:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m22:06:39[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[2m22:06:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Chat.tsx[22m
+[2m22:06:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m22:06:47[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[2m22:06:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/Chat.tsx[22m
+[2m22:06:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [33mhmr invalidate [39m[2m/src/components/Chat.tsx[22m Could not Fast Refresh ("SKILL_COMMANDS" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports
+[2m22:06:59[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/App.tsx[22m
+[2m22:07:07[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ConnectorBar.tsx[22m
+[2m22:07:13[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ConnectorBar.tsx[22m
+[2m22:07:19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ConnectorBar.tsx[22m
+[2m22:07:27[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ConnectorBar.tsx[22m
+[2m22:07:35[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css, /src/components/ConnectorBar.tsx[22m
+
 INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
 INFO:     127.0.0.1:54128 - "GET /health HTTP/1.1" 200 OK
 INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
@@ -7651,3 +7625,976 @@ Port 5191 is in use, trying another one...
 
 Aborted!
 Terminer le programme de commandes (O/N)Â ? 
+[2026-05-31 15:35:35] === Ã‰pure dÃ©marrage ===
+[2026-05-31 15:35:42] Lancement ollama serve
+[2026-05-31 15:35:42] Lancement flm serve
+Error: listen tcp 127.0.0.1:11434: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+[2026-05-31 15:35:46] Lancement uvicorn
+[2026-05-31 15:35:52] Lancement npm run dev
+[2026-05-31 15:35:52] Services dÃ©marrÃ©s â€” ouverture du navigateur dans 8 s
+
+> frontend@0.0.0 dev
+> vite
+
+
+  [32m[1mVITE[22m v8.0.14[39m  [2mready in [0m[1m432[22m[2m[0m ms[22m
+
+  [32mâžœ[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5173[22m/[39m
+  [32mâžœ[39m  [1mNetwork[22m: [36mhttp://192.168.137.1:[1m5173[22m/[39m
+  [32mâžœ[39m  [1mNetwork[22m: [36mhttp://10.131.107.70:[1m5173[22m/[39m
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/modules.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO:sentence_transformers.base.model:Loading SentenceTransformer model from sentence-transformers/all-MiniLM-L6-v2.
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/README.md "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/modules.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/sentence_bert_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 2164.42it/s]
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/c9745ed1d9f207416be6d2e6f8de32d1f16199bf/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2 "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:core.voice:Chargement du modèle Whisper : small
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/Systran/faster-whisper-small/revision/main "HTTP/1.1 200 OK"
+INFO:core.voice:Modèle Whisper prêt
+INFO:core.voice:Modèle Piper prêt : fr_FR-upmc-medium
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.29s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.29s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.98s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.98s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.57s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.57s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.21s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.21s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.23s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.23s/it]
+INFO:     Started server process [26940]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52996 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:61085 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51567 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65416 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63403 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65389 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62668 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65161 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53918 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59794 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61073 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50517 - "OPTIONS /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50517 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50517 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56142 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56142 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56805 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58342 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     connection closed
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65370 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50329 - "WebSocket /ws/chat" [accepted]
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     connection open
+INFO:     127.0.0.1:60010 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65370 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60010 - "GET /rag/files HTTP/1.1" 200 OK
+ERROR:core.models:Erreur fetch Groq models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 204, in _fetch_groq
+    data = _http_json("https://api.groq.com/openai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+ERROR:core.models:Erreur fetch Cerebras models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 222, in _fetch_cerebras
+    data = _http_json("https://api.cerebras.ai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+INFO:     127.0.0.1:58342 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49719 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50833 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     connection closed
+INFO:     127.0.0.1:50833 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65370 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60010 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58342 - "GET /models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65464 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62826 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49160 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:57562 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54437 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52993 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.029s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55428 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60629 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54866 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:59220 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:65412 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62316 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:59827 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63343 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://localhost:11435/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61935 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT total: 49.470s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52118 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61311 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50835 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:61853 - "GET /context HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58487 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:65443 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61853 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65443 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52844 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50811 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64357 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65443 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50811 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49770 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.005s
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+C:\Users\Ilyan\epure\backend\core\llm.py:143: FutureWarning: 
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving 
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  import google.generativeai as genai
+INFO:main:TTFT total: 4.207s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64087 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.005s
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50665 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53871 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62018 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52063 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57417 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61023 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61853 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55127 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59131 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59131 - "OPTIONS /voice/synthesize HTTP/1.1" 200 OK
+ERROR:main:Erreur synthèse /voice/synthesize
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\main.py", line 108, in voice_synthesize
+    wav_bytes = await loop.run_in_executor(None, piper.synthesize, req.text)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\concurrent\futures\thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\concurrent\futures\thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "C:\Users\Ilyan\epure\backend\core\voice.py", line 80, in synthesize
+    with wave.open(buf, "wb") as wav:
+         ~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\wave.py", line 477, in __exit__
+    self.close()
+    ~~~~~~~~~~^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\wave.py", line 595, in close
+    self._ensure_header_written(0)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\wave.py", line 613, in _ensure_header_written
+    raise Error('# channels not specified')
+wave.Error: # channels not specified
+INFO:     127.0.0.1:59131 - "POST /voice/synthesize HTTP/1.1" 500 Internal Server Error
+ERROR:main:Erreur synthèse /voice/synthesize
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\main.py", line 108, in voice_synthesize
+    wav_bytes = await loop.run_in_executor(None, piper.synthesize, req.text)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\concurrent\futures\thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\concurrent\futures\thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "C:\Users\Ilyan\epure\backend\core\voice.py", line 80, in synthesize
+    with wave.open(buf, "wb") as wav:
+         ~~~~~~~~~^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\wave.py", line 477, in __exit__
+    self.close()
+    ~~~~~~~~~~^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\wave.py", line 595, in close
+    self._ensure_header_written(0)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\wave.py", line 613, in _ensure_header_written
+    raise Error('# channels not specified')
+wave.Error: # channels not specified
+INFO:     127.0.0.1:59131 - "POST /voice/synthesize HTTP/1.1" 500 Internal Server Error
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59131 - "GET /health HTTP/1.1" 200 OK
+INFO:core.orchestrator:Pipeline step 1/2 (contextualizer · qwen2.5:7b) : 103.35s · 3239 chars
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60455 - "GET /health HTTP/1.1" 200 OK
+INFO:core.orchestrator:Pipeline step 2/2 (responder · gemini:gemini-2.5-flash-lite) : 7.52s · 5190 chars
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55935 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59942 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59942 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.004s
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55456 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60501 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60501 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63869 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63631 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65163 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60003 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49820 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64148 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49669 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64507 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50069 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57863 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+INFO:main:TTFT total: 111.765s
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58547 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58547 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58547 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.004s
+INFO:     127.0.0.1:51546 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: POST http://localhost:11435/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54381 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:main:TTFT total: 18.819s
+INFO:     127.0.0.1:61410 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65455 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65243 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51435 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51435 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51435 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56698 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51253 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57775 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55358 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54755 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53282 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56457 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:main:TTFT Memory: 0.004s
+INFO:httpx:HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51013 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62318 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49294 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64661 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59294 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59190 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50880 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62836 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49789 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56776 - "GET /health HTTP/1.1" 200 OK
+INFO:core.orchestrator:Pipeline step 1/2 (contextualizer · qwen2.5:7b) : 93.60s · 2685 chars
+INFO:httpx:HTTP Request: POST http://localhost:11435/v1/chat/completions "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65174 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52806 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52457 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49377 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53510 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50276 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63624 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52526 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63065 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52450 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49312 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52533 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62050 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64900 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64468 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56532 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52511 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62697 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52944 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50176 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54242 - "GET /health HTTP/1.1" 200 OK
+INFO:core.orchestrator:Pipeline step 2/2 (responder · flm:qwen3:8b) : 213.37s · 4679 chars
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55433 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62907 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60161 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62104 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65073 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58551 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63776 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62248 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50733 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62951 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59711 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53676 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61669 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60073 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53839 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59107 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60385 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61673 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57236 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65216 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64496 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53685 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56124 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58671 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62454 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55292 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59840 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54908 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62685 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52338 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64656 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61160 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61160 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50394 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55206 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53556 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55624 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50383 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61377 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60043 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50976 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61707 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49679 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57805 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59152 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53525 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51016 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53770 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53526 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58263 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65413 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56090 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62913 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63426 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51442 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50138 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64790 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63901 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49669 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49672 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56849 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59940 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57832 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64030 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:59987 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52989 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     connection closed
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]INFO:     127.0.0.1:62524 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+Batches: 100%|##########| 1/1 [00:00<00:00,  2.75it/s]Batches: 100%|##########| 1/1 [00:00<00:00,  2.74it/s]
+INFO:core.history:Conversation sauvegardée : 83be868e-6230-4f92-9547-dbe66019bfa3 — Théorème de l'énergie cinétique & QCM
+INFO:     127.0.0.1:50814 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55328 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56445 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58238 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64725 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52016 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\profile.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 47, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:core.consolidation:Consolidation conversation 83be868e-6230-4f92-9547-dbe66019bfa3 : {'lacunes_ajoutées': ["besoin d'explications plus détaillées pour certaines formules mathématiques"], 'forces_ajoutées': ['intérêt pour les théorèmes mathématiques', 'capacité à poser et résoudre des problèmes complexes'], 'style_màj': 'précis et basé sur des exemples concrets'}
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51000 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49831 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53775 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58993 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61099 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56303 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49670 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54686 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58678 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52287 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61496 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51717 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     connection closed
+INFO:     connection closed
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59287 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61677 - "WebSocket /ws/chat" [accepted]
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     connection open
+INFO:     127.0.0.1:59287 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58885 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59287 - "GET /rag/files HTTP/1.1" 200 OK
+ERROR:core.models:Erreur fetch Groq models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 204, in _fetch_groq
+    data = _http_json("https://api.groq.com/openai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+ERROR:core.models:Erreur fetch Cerebras models
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 222, in _fetch_cerebras
+    data = _http_json("https://api.cerebras.ai/v1/models", token)
+  File "C:\Users\Ilyan\epure\backend\core\models.py", line 180, in _http_json
+    with urllib.request.urlopen(req, timeout=4) as resp:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 493, in open
+    response = meth(req, response)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 464, in _call_chain
+    result = func(*args)
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\urllib\request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 403: Forbidden
+INFO:     127.0.0.1:61506 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58614 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57253 - "GET /models HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59287 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61506 - "GET /models HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:61506 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59287 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53075 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52774 - "GET /history/83be868e-6230-4f92-9547-dbe66019bfa3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59287 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54627 - "GET /admin/log HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54627 - "GET /admin/log HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54627 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58309 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58309 - "POST /admin/scan HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51346 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55614 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64219 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65365 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56464 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51587 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56316 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61731 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52658 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52658 - "GET /admin/duplicates HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52658 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62355 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56112 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62974 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52510 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:60596 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:65036 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49832 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59837 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54113 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54113 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55950 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53147 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51190 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64172 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58836 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49310 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49892 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57850 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64034 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57374 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50703 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50703 - "GET /history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54636 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54636 - "GET /admin/log HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50703 - "GET /admin/log HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50703 - "GET /flashcards/decks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "GET /flashcards/decks HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54636 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "OPTIONS /flashcards/decks/6de000e1-d329-4544-b7b0-1f932260de41 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "DELETE /flashcards/decks/6de000e1-d329-4544-b7b0-1f932260de41 HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61371 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "OPTIONS /flashcards/decks/5a754a9e-6829-4588-b630-1055943d1cae HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "DELETE /flashcards/decks/5a754a9e-6829-4588-b630-1055943d1cae HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61371 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55304 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60105 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:65009 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:63583 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:50711 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58224 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55537 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53112 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61017 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:49271 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57482 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52616 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:57397 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55808 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59552 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61508 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56935 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62815 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:55779 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:53875 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:52356 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:58412 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:64522 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:54973 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:59293 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:51282 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: GET http://127.0.0.1:11434/api/tags "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:61807 - "GET /health HTTP/1.1" 200 OK

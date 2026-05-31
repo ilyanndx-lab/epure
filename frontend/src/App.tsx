@@ -9,6 +9,8 @@ import Settings from './components/Settings'
 import ConnectorBar from './components/ConnectorBar'
 
 type Module = 'chat' | 'kholle' | 'flashcards' | 'admin' | 'history' | 'settings'
+export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
+export interface StepConfig { role: string; model: string }
 
 const API = 'http://localhost:8000'
 
@@ -16,6 +18,8 @@ export default function App() {
   const [activeModule, setActiveModule] = useState<Module>('chat')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
+  const [effort, setEffort] = useState<EffortLevel>('direct')
+  const [pipelineSteps, setPipelineSteps] = useState<StepConfig[]>([])
 
   const activeInputRef = useRef<((text: string) => void) | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -81,6 +85,8 @@ export default function App() {
             stopSpeech={stopSpeech}
             speakingText={speakingText}
             onNavigate={setActiveModule}
+            effort={effort}
+            pipelineSteps={pipelineSteps}
           />
         )}
         {activeModule === 'kholle' && (
@@ -101,6 +107,10 @@ export default function App() {
           ttsEnabled={ttsEnabled}
           onTtsToggle={() => setTtsEnabled(v => !v)}
           speakingText={speakingText}
+          effort={effort}
+          onEffortChange={setEffort}
+          pipelineSteps={pipelineSteps}
+          onPipelineStepsChange={setPipelineSteps}
         />
       </div>
     </div>
