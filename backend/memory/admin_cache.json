@@ -40,5 +40,17 @@
     "matière": "Inconnu",
     "nom_suggéré": "fiche kholle s20 thermo.pdf",
     "confiance": 0.0
+  },
+  "C:\\Users\\Ilyan\\Fiches\\SI\\fiche kholle statique.pdf": {
+    "mtime": 1780001076.0443053,
+    "matière": "SI",
+    "nom_suggéré": "Kholle_SI_Statique_PTSI2.pdf",
+    "confiance": 0.8
+  },
+  "C:\\Users\\Ilyan\\Fiches\\SI\\fiche_kholle_statique_PTSI2.pdf": {
+    "mtime": 1780001076.0763128,
+    "matière": "SI",
+    "nom_suggéré": "Maths_Suites_S24.pdf",
+    "confiance": 0.8
   }
 }

@@ -1,0 +1,64 @@
+{
+  "presets": [
+    {
+      "id": "aa81f9a9-fc36-4b4c-bc11-cbb99c28dc67",
+      "nom": "Kholle maths",
+      "effort": "high",
+      "steps": [
+        {
+          "role": "analyzer",
+          "model": "groq:deepseek-r1-distill-llama-70b"
+        },
+        {
+          "role": "solver",
+          "model": "qwen2.5:7b"
+        },
+        {
+          "role": "verifier",
+          "model": "groq:deepseek-r1-distill-llama-70b"
+        },
+        {
+          "role": "pedagogue",
+          "model": "gemini:gemini-2.5-flash"
+        }
+      ],
+      "défaut": true
+    },
+    {
+      "id": "306ceb54-e5d2-4c86-9f3f-aeec58d8772a",
+      "nom": "Révision rapide",
+      "effort": "low",
+      "steps": [
+        {
+          "role": "contextualizer",
+          "model": "qwen2.5:7b"
+        },
+        {
+          "role": "responder",
+          "model": "qwen2.5:7b"
+        }
+      ],
+      "défaut": true
+    },
+    {
+      "id": "777884b5-cd52-446a-89c0-dcd5978a19bd",
+      "nom": "Full local",
+      "effort": "medium",
+      "steps": [
+        {
+          "role": "analyzer",
+          "model": "qwen2.5:7b"
+        },
+        {
+          "role": "solver",
+          "model": "qwen2.5:7b"
+        },
+        {
+          "role": "pedagogue",
+          "model": "qwen2.5:7b"
+        }
+      ],
+      "défaut": true
+    }
+  ]
+}

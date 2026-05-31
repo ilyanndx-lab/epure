@@ -1,9 +1,12 @@
-﻿{
-  "identité": {"niveau": "PTSI2", "établissement": "", "objectif": ""},
+{
+  "lacunes_confirmées": [
+    "besoin d'explications plus détaillées pour certaines formules mathématiques"
+  ],
+  "forces": [
+    "intérêt pour les théorèmes mathématiques",
+    "capacité à poser et résoudre des problèmes complexes"
+  ],
   "préférences_interaction": {
-    "style": "direct, sans reformulation inutile",
-    "ne_pas_faire": ["répéter la question", "sur-expliquer les bases"]
-  },
-  "forces": [],
-  "lacunes_confirmées": []
+    "style": "précis et basé sur des exemples concrets"
+  }
 }

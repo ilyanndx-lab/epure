@@ -73,16 +73,17 @@ class LLMEngine:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def stream(self, messages: list[dict], model: Optional[str] = None) -> Generator:
+    def stream(self, messages: list[dict], model: Optional[str] = None, max_tokens: Optional[int] = None) -> Generator:
         m = model or self._model
         provider, model_id = self._parse_model(m)
+        mt = max_tokens or self._gen["max_tokens"]
         if provider == "gemini":
-            yield from self._stream_gemini(messages, m)
+            yield from self._stream_gemini(messages, m, mt)
         elif provider in _OPENAI_COMPAT:
             client = self._openai_client(provider)  # raises if key missing
-            yield from self._stream_openai(messages, model_id, client, provider)
+            yield from self._stream_openai(messages, model_id, client, provider, mt)
         else:
-            yield from self._stream_ollama(messages, m)
+            yield from self._stream_ollama(messages, m, mt)
 
     def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
         m = model or self._model
@@ -99,13 +100,13 @@ class LLMEngine:
 
     # ── Ollama ───────────────────────────────────────────────────────────────
 
-    def _stream_ollama(self, messages: list[dict], model: str) -> Generator:
+    def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None) -> Generator:
         for chunk in ollama.chat(
             model=model, messages=messages, stream=True,
             options={
                 "temperature": self._gen["temperature"],
                 "top_p": self._gen["top_p"],
-                "num_predict": self._gen["max_tokens"],
+                "num_predict": max_tokens or self._gen["max_tokens"],
                 "num_thread": 8,
             },
         ):
@@ -138,7 +139,7 @@ class LLMEngine:
 
     # ── Gemini ───────────────────────────────────────────────────────────────
 
-    def _stream_gemini(self, messages: list[dict], model: str) -> Generator:
+    def _stream_gemini(self, messages: list[dict], model: str, max_tokens: Optional[int] = None) -> Generator:
         try:
             import google.generativeai as genai
         except ImportError:
@@ -160,7 +161,7 @@ class LLMEngine:
             contents, stream=True,
             generation_config=genai.types.GenerationConfig(
                 temperature=self._gen["temperature"],
-                max_output_tokens=self._gen["max_tokens"],
+                max_output_tokens=max_tokens or self._gen["max_tokens"],
             ),
         )
 
@@ -212,25 +213,26 @@ class LLMEngine:
 
     # ── OpenAI-compatible providers ──────────────────────────────────────────
 
-    def _stream_openai(self, messages: list[dict], model_id: str, client, provider: str = "") -> Generator:
+    def _stream_openai(self, messages: list[dict], model_id: str, client, provider: str = "", max_tokens: Optional[int] = None) -> Generator:
         oai = [{"role": m["role"], "content": m["content"]} for m in messages]
         stream_start = time.time()
         prompt_tokens = 0
         output_tokens = 0
+        mt = max_tokens or self._gen["max_tokens"]
 
         try:
             stream = client.chat.completions.create(
                 model=model_id, messages=oai, stream=True,
                 stream_options={"include_usage": True},
                 temperature=self._gen["temperature"],
-                max_tokens=self._gen["max_tokens"],
+                max_tokens=mt,
             )
         except Exception:
             # Provider doesn't support stream_options — retry without
             stream = client.chat.completions.create(
                 model=model_id, messages=oai, stream=True,
                 temperature=self._gen["temperature"],
-                max_tokens=self._gen["max_tokens"],
+                max_tokens=mt,
             )
 
         for chunk in stream:
