@@ -1,7 +1,11 @@
+import concurrent.futures
 import json
 import logging
+import re
+from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +29,30 @@ _CONTEXT_DEFAULT = {
     "session_instruction": "",
 }
 
+_VALID_SECTIONS = {"lacunes", "forces", "style", "sessions_récentes", "aucune"}
+_CACHE_MAXSIZE = 20
+_context_cache: OrderedDict = OrderedDict()
+
+
+def _cache_get(key: str):
+    if key not in _context_cache:
+        return None
+    _context_cache.move_to_end(key)
+    return _context_cache[key]
+
+
+def _cache_set(key: str, value: list) -> None:
+    if key in _context_cache:
+        _context_cache.move_to_end(key)
+    else:
+        if len(_context_cache) >= _CACHE_MAXSIZE:
+            _context_cache.popitem(last=False)
+    _context_cache[key] = value
+
 
 class MemoryEngine:
-    def __init__(self):
+    def __init__(self, llm=None):
+        self._llm = llm
         _MEMORY_DIR.mkdir(exist_ok=True)
         self._profile_path = _MEMORY_DIR / "profile.json"
         self._sessions_path = _MEMORY_DIR / "memory_sessions.json"
@@ -115,7 +140,6 @@ class MemoryEngine:
         self._write(self._sessions_path, data)
 
     def promote_lacunes(self) -> None:
-        """Promote errors appearing in 3+ recent sessions to lacunes_confirmées."""
         recent = self.get_sessions(days=30)
         counts: dict[str, int] = {}
         for s in recent:
@@ -143,29 +167,141 @@ class MemoryEngine:
         data.update(kwargs)
         self._write(self._context_path, data)
 
+    # ── Selective memory retrieval ─────────────────────────────────────────
+
+    def _available_sections(self) -> list[str]:
+        """Return which sections actually have data (avoids LLM hallucinating missing sections)."""
+        available: list[str] = []
+        profile = self.load_profile()
+        if profile.get("lacunes_confirmées"):
+            available.append("lacunes")
+        if profile.get("forces"):
+            available.append("forces")
+        prefs = profile.get("préférences_interaction", {})
+        if prefs.get("style") or prefs.get("ne_pas_faire"):
+            available.append("style")
+        recent = self.get_sessions(days=7)
+        if any(s.get("erreurs") for s in recent):
+            available.append("sessions_récentes")
+        return available
+
+    def retrieve_relevant_context(self, message: str) -> list[str]:
+        """
+        Ask the local LLM (timeout 2s) which profile sections are relevant.
+        Returns section names to inject. Falls back to ['style'] on any failure.
+        """
+        # Short-circuit: very short messages never need profile context
+        if len(message.strip()) < 20:
+            logger.debug("Memory retrieve: message court (%d chars) → aucune section", len(message.strip()))
+            return []
+
+        cache_key = message[:100]
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            logger.debug("Memory retrieve: cache hit → %s", cached)
+            return cached
+
+        available = self._available_sections()
+        if not available:
+            _cache_set(cache_key, [])
+            return []
+
+        if not self._llm:
+            # No LLM available — inject everything (legacy)
+            _cache_set(cache_key, available)
+            return available
+
+        sections_str = ", ".join(available)
+        prompt = (
+            f"Message : {message[:200]}\n"
+            f"Sections de profil disponibles : {sections_str}\n"
+            "Quelles sections sont pertinentes pour adapter la réponse à ce message ?\n"
+            'Réponds UNIQUEMENT avec une liste JSON, par exemple : ["lacunes", "style"] ou ["aucune"]'
+        )
+
+        fallback = ["style"] if "style" in available else []
+
+        def _call():
+            return self._llm.generate([{"role": "user", "content": prompt}])
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_call)
+        try:
+            raw = future.result(timeout=2.0)
+            match = re.search(r'\[.*?\]', raw, re.DOTALL)
+            if not match:
+                raise ValueError(f"Pas de JSON array dans la réponse: {raw[:80]!r}")
+            sections = json.loads(match.group())
+            if not isinstance(sections, list):
+                raise ValueError("La réponse n'est pas une liste")
+            result = [s for s in sections if s in _VALID_SECTIONS and s != "aucune"]
+            # Only keep sections that actually have data
+            result = [s for s in result if s in available]
+            _cache_set(cache_key, result)
+            estimated = len(" ".join(result))
+            logger.info("Memory retrieve: %r → %s (~%d chars clés)", message[:40], result, estimated)
+            return result
+        except concurrent.futures.TimeoutError:
+            logger.info("Memory retrieve: timeout (>2s) → fallback %s", fallback)
+            _cache_set(cache_key, fallback)
+            return fallback
+        except Exception:
+            logger.exception("Memory retrieve: erreur → fallback %s", fallback)
+            _cache_set(cache_key, fallback)
+            return fallback
+        finally:
+            executor.shutdown(wait=False)
+
     # ── System prompt builder ──────────────────────────────────────────────
 
-    def build_system_context(self) -> str:
-        parts: list[str] = []
-
+    def build_system_context(self, message: Optional[str] = None) -> str:
+        """
+        Build the system context string.
+        If message is provided: selectively inject only relevant profile sections.
+        If message is None: inject all (legacy behaviour, used by @mémoire skill).
+        Active context (résumé, instruction, strict_mode) is always included.
+        """
         profile = self.load_profile()
         prefs = profile.get("préférences_interaction", {})
         style = prefs.get("style", "")
         ne_pas = prefs.get("ne_pas_faire", [])
+        forces = profile.get("forces", [])
         lacunes = profile.get("lacunes_confirmées", [])
-
-        if style or ne_pas or lacunes:
-            lines = ["[PROFIL ÉLÈVE]"]
-            if style:
-                lines.append(f"Style attendu : {style}")
-            if ne_pas:
-                lines.append("À éviter : " + ", ".join(ne_pas))
-            if lacunes:
-                lines.append("Lacunes confirmées : " + " ; ".join(lacunes))
-            parts.append("\n".join(lines))
-
         recent = self.get_sessions(days=7)
-        if recent:
+        ctx = self.get_context()
+
+        # Decide which profile sections to include
+        if message is not None:
+            sections = self.retrieve_relevant_context(message)
+            include_style = "style" in sections
+            include_lacunes = "lacunes" in sections
+            include_forces = "forces" in sections
+            include_sessions = "sessions_récentes" in sections
+        else:
+            # Legacy: inject everything
+            include_style = bool(style or ne_pas)
+            include_lacunes = bool(lacunes)
+            include_forces = bool(forces)
+            include_sessions = True
+
+        parts: list[str] = []
+
+        # Profile block (selective)
+        profile_lines: list[str] = []
+        if include_style and (style or ne_pas):
+            if style:
+                profile_lines.append(f"Style attendu : {style}")
+            if ne_pas:
+                profile_lines.append("À éviter : " + ", ".join(ne_pas))
+        if include_forces and forces:
+            profile_lines.append("Points forts : " + " ; ".join(forces[:5]))
+        if include_lacunes and lacunes:
+            profile_lines.append("Lacunes confirmées : " + " ; ".join(lacunes))
+        if profile_lines:
+            parts.append("[PROFIL ÉLÈVE]\n" + "\n".join(profile_lines))
+
+        # Recent errors (selective)
+        if include_sessions and recent:
             errors: list[str] = []
             for s in recent[-5:]:
                 for e in s.get("erreurs", []):
@@ -173,15 +309,17 @@ class MemoryEngine:
             if errors:
                 parts.append("[ERREURS RÉCENTES]\n" + "\n".join(errors))
 
-        ctx = self.get_context()
+        # Active file context — always injected
         résumé = ctx.get("résumé_contexte", "")
         if résumé:
             parts.append(f"[CONTEXTE ACTIF]\n{résumé}")
 
+        # Session instruction — always injected
         instruction = ctx.get("session_instruction", "")
         if instruction:
             parts.append(f"[INSTRUCTION DE SESSION]\n{instruction}")
 
+        # Strict mode — always injected
         if ctx.get("strict_mode"):
             parts.append(
                 "[MODE STRICT]\n"
@@ -189,4 +327,15 @@ class MemoryEngine:
                 "Pas d'introduction ni de reformulation inutile."
             )
 
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        est_tokens = len(result.split())
+        if message is not None:
+            used = []
+            if include_style: used.append("style")
+            if include_lacunes: used.append("lacunes")
+            if include_forces: used.append("forces")
+            if include_sessions: used.append("sessions_récentes")
+            logger.info("Memory context: %r → sections=%s ~%d tokens", message[:40], used, est_tokens)
+        else:
+            logger.info("Memory context: legacy → ~%d tokens", est_tokens)
+        return result
