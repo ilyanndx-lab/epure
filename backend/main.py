@@ -49,7 +49,7 @@ with open("config.yaml") as f:
 
 llm = LLMEngine()
 rag = RAGEngine()
-memory = MemoryEngine()  # resets context_session on startup
+memory = MemoryEngine(llm=llm)  # resets context_session on startup
 flashcards_engine = FlashcardsEngine()
 admin_engine = AdminEngine(llm, rag)
 models_registry = ModelsRegistry()
@@ -747,7 +747,7 @@ async def ws_chat(websocket: WebSocket):
                     "Pas d'introduction, pas de reformulation."
                 )
             _t = time.time()
-            mem_ctx = memory.build_system_context()
+            mem_ctx = await loop.run_in_executor(None, memory.build_system_context, user_text)
             logger.info("TTFT Memory: %.3fs", time.time() - _t)
             if mem_ctx:
                 sys_parts.append(mem_ctx)
@@ -1079,7 +1079,7 @@ async def ws_kholle(websocket: WebSocket):
 
                 ctx = memory.get_context()
                 model_override = ctx.get("modèle_actif") or None
-                mem_ctx = memory.build_system_context()
+                mem_ctx = await loop.run_in_executor(None, memory.build_system_context, question)
 
                 system_content = _KHOLLE_SYSTEM
                 if mem_ctx:
