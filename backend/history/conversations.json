@@ -1,6 +1,17 @@
 {
   "conversations": [
     {
+      "id": "13773818-1ef8-4367-8adc-4bffcc492184",
+      "date": "2026-05-31",
+      "titre": "Conversation Incrémentale",
+      "apercu": "bonjour",
+      "modèle": "flm:qwen3:8b",
+      "n_messages": 4,
+      "modules": [
+        "chat"
+      ]
+    },
+    {
       "id": "31c4d520-cb3c-43f4-b4fe-0c40865a0efe",
       "date": "2026-05-31",
       "titre": "Théorème Énergie Cinétique",

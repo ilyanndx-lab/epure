@@ -133,6 +133,15 @@ _GEMINI_STATIC    = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pr
 # FastFlowLM (local NPU) — static list, availability checked at request time
 FLM_MODELS_STATIC: list[dict] = [
     {
+        "id": "flm:qwen3:4b",
+        "nom": "Qwen3 4B (NPU)",
+        "provider": "flm",
+        "gratuit": True,
+        "description": "Léger · NPU AMD · 17 tok/s",
+        "_categorie": "rapide",
+        "_usages": ["Chat rapide", "Flashcards", "Classification"],
+    },
+    {
         "id": "flm:qwen3:8b",
         "nom": "Qwen3 8B (NPU)",
         "provider": "flm",
