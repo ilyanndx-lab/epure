@@ -22,6 +22,13 @@ from pydantic import BaseModel
 _ENV_FILE = Path(__file__).parent / ".env"
 
 from core.admin import AdminEngine
+from core.codeagent import (
+    CodeAgent, execute_code as _code_exec, create_file as _code_create,
+    read_file as _code_read, delete_path as _code_delete, create_folder as _code_mkdir,
+    get_tree as _code_tree, _safe_path as _code_safe_path, SecurityError as _CodeSecurityError,
+    WORKSPACE as _CODE_WORKSPACE, install_package as _code_install,
+    generate_tests as _code_generate_tests,
+)
 from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
 from core.orchestrator import OrchestratorEngine
@@ -52,6 +59,76 @@ llm = LLMEngine()
 rag = RAGEngine()
 memory = MemoryEngine(llm=llm)  # resets context_session on startup
 docanalysis = DocAnalysisEngine(chroma_client=rag._client, embedding_function=rag._ef, llm=llm)
+code_agent = CodeAgent(llm=llm)
+_CODE_WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+
+# ── QuotaTracker (session, reset quotidien) ──────────────────────────────────
+
+from datetime import date as _date
+
+
+class _QuotaTracker:
+    _STEPS = ("reflection", "generation", "verification", "tests", "other")
+
+    def __init__(self):
+        self._day = str(_date.today())
+        self._reset()
+
+    def _check_day(self):
+        today = str(_date.today())
+        if today != self._day:
+            self._day = today
+            self._reset()
+
+    def _reset(self):
+        self.total = 0
+        self.by_provider: dict[str, int] = {}
+        self.by_step: dict[str, int] = {s: 0 for s in self._STEPS}
+
+    def track(self, step: str, provider: str, tokens: int):
+        self._check_day()
+        self.total += tokens
+        self.by_provider[provider] = self.by_provider.get(provider, 0) + tokens
+        key = step if step in self.by_step else "other"
+        self.by_step[key] += tokens
+
+    def get_usage(self) -> dict:
+        self._check_day()
+        return {
+            "session": {"total_tokens": self.total, "providers": dict(self.by_provider)},
+            "session_tokens_by_step": dict(self.by_step),
+        }
+
+    def reset(self):
+        self._reset()
+
+
+quota_tracker = _QuotaTracker()
+
+
+def _provider_of(model: Optional[str]) -> str:
+    if not model:
+        return "local"
+    if ":" in model:
+        prefix = model.split(":", 1)[0]
+        return prefix if prefix not in ("ollama",) else "local"
+    return "local"
+
+
+def _pick_reflection_model(preferred: Optional[str]) -> Optional[str]:
+    """Retourne un modèle cloud pour la réflexion, ou None si aucun disponible."""
+    # Si le modèle préféré est déjà cloud, l'utiliser
+    if preferred and ":" in preferred and not preferred.startswith("ollama:"):
+        return preferred
+    # Fallback sur le meilleur cloud disponible
+    if os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        return "deepseek:deepseek-chat"
+    if os.environ.get("GEMINI_API_KEY", "").strip():
+        return "gemini:gemini-2.0-flash"
+    if os.environ.get("GROQ_API_KEY", "").strip():
+        return "groq:llama-3.3-70b-versatile"
+    return None  # Pas de cloud disponible → skip réflexion
 flashcards_engine = FlashcardsEngine()
 admin_engine = AdminEngine(llm, rag)
 models_registry = ModelsRegistry()
@@ -1537,6 +1614,261 @@ async def ws_docchat(websocket: WebSocket):
 
             history.append({"role": "assistant", "content": assistant_text})
             await websocket.send_text(json.dumps({"type": "done"}))
+
+    except WebSocketDisconnect:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Code Agent
+# ---------------------------------------------------------------------------
+
+class CodeFileRequest(BaseModel):
+    path: str
+    content: str = ""
+
+
+class CodeFolderRequest(BaseModel):
+    path: str
+
+
+@app.get("/code/files")
+async def code_files():
+    loop = asyncio.get_running_loop()
+    tree = await loop.run_in_executor(None, _code_tree)
+    return {"tree": tree}
+
+
+@app.get("/code/file")
+async def code_file_get(path: str):
+    loop = asyncio.get_running_loop()
+    try:
+        content = await loop.run_in_executor(None, _code_read, path)
+    except _CodeSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception:
+        logger.exception("Erreur lecture fichier code %s", path)
+        raise HTTPException(status_code=500, detail="Erreur lecture")
+    return {"content": content, "path": path}
+
+
+@app.post("/code/file")
+async def code_file_post(req: CodeFileRequest):
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _code_create, req.path, req.content)
+    except _CodeSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception:
+        logger.exception("Erreur création fichier code %s", req.path)
+        raise HTTPException(status_code=500, detail="Erreur création")
+    return {"ok": True, "result": result}
+
+
+@app.delete("/code/file")
+async def code_file_delete(path: str):
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _code_delete, path)
+    except _CodeSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return {"ok": True, "result": result}
+
+
+@app.post("/code/folder")
+async def code_folder_create(req: CodeFolderRequest):
+    loop = asyncio.get_running_loop()
+    try:
+        from core.codeagent import create_folder as _cf
+        result = await loop.run_in_executor(None, _cf, req.path)
+    except _CodeSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return {"ok": True, "result": result}
+
+
+class CodeInstallRequest(BaseModel):
+    package: str
+
+
+async def _stream_pip_install(package: str):
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _worker():
+        try:
+            for event in _code_install(package):
+                asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+        except Exception as exc:
+            logger.exception("Erreur install_package %s", package)
+            asyncio.run_coroutine_threadsafe(
+                queue.put({"type": "error", "line": str(exc)}), loop
+            )
+        finally:
+            asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+    Thread(target=_worker, daemon=True).start()
+
+    while True:
+        event = await queue.get()
+        if event is None:
+            break
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+@app.post("/code/install")
+async def code_install(req: CodeInstallRequest):
+    return StreamingResponse(
+        _stream_pip_install(req.package),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+@app.get("/code/usage")
+async def code_usage():
+    return quota_tracker.get_usage()
+
+
+@app.post("/code/usage/reset")
+async def code_usage_reset():
+    quota_tracker.reset()
+    return {"ok": True}
+
+
+@app.post("/code/execute")
+async def code_execute_direct(req: CodeFileRequest):
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _code_exec, req.path, req.content)
+    except _CodeSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return result
+
+
+@app.websocket("/ws/code")
+async def ws_code(websocket: WebSocket):
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            msg_type = msg.get("type")
+
+            if msg_type == "message":
+                content = msg.get("content", "")
+                file_context = msg.get("file_context", "")
+                pipeline = msg.get("pipeline") or None
+
+                # Pipeline présent → utiliser ses modèles ; sinon fallback legacy
+                if pipeline:
+                    model = (pipeline.get("code") or {}).get("model") or None
+                    reflection_model = (pipeline.get("reflection") or {}).get("model") or None
+                else:
+                    model = msg.get("model") or None
+                    reflection_model = _pick_reflection_model(model)
+
+                queue: asyncio.Queue = asyncio.Queue()
+
+                def _agent_worker(q, _content, _file_ctx, _model, _ref_model, _pipeline):
+                    try:
+                        for event in code_agent.run_turn(
+                            _content, _file_ctx, model=_model,
+                            reflection_model=_ref_model, pipeline=_pipeline,
+                        ):
+                            asyncio.run_coroutine_threadsafe(q.put(event), loop)
+                    except Exception as exc:
+                        logger.exception("Erreur CodeAgent.run_turn")
+                        asyncio.run_coroutine_threadsafe(
+                            q.put({"type": "error", "content": str(exc)}), loop
+                        )
+                    finally:
+                        asyncio.run_coroutine_threadsafe(q.put(None), loop)
+
+                Thread(
+                    target=_agent_worker,
+                    args=(queue, content, file_context, model, reflection_model, pipeline),
+                    daemon=True,
+                ).start()
+
+                while True:
+                    event = await queue.get()
+                    if event is None:
+                        break
+                    # Intercepter les events tokens pour le quota tracker
+                    if event.get("type") == "tokens":
+                        step = event.get("step", "other")
+                        if pipeline:
+                            step_model = (pipeline.get(step) or {}).get("model") or model
+                        else:
+                            step_model = reflection_model if step == "reflection" else model
+                        provider = _provider_of(step_model)
+                        quota_tracker.track(step, provider, event.get("count", 0))
+                    await websocket.send_text(json.dumps(event, ensure_ascii=False))
+
+            elif msg_type == "generate_tests":
+                path = msg.get("path", "")
+                model = msg.get("model") or None
+                queue2: asyncio.Queue = asyncio.Queue()
+
+                def _tests_worker(q, _path, _model):
+                    try:
+                        test_content = ""
+                        for token in _code_generate_tests(_path, llm, _model):
+                            test_content += token
+                            asyncio.run_coroutine_threadsafe(
+                                q.put({"type": "tests_token", "content": token}), loop
+                            )
+                        # Compute test file path
+                        from pathlib import Path as _P
+                        stem = _P(_path).stem
+                        test_path = str(_P(_path).parent / f"test_{stem}.py")
+                        asyncio.run_coroutine_threadsafe(
+                            q.put({"type": "tests_done", "path": test_path,
+                                   "count": max(1, int(len(test_content.split()) * 1.3))}),
+                            loop,
+                        )
+                    except Exception as exc:
+                        logger.exception("Erreur generate_tests %s", path)
+                        asyncio.run_coroutine_threadsafe(
+                            q.put({"type": "error", "content": str(exc)}), loop
+                        )
+                    finally:
+                        asyncio.run_coroutine_threadsafe(q.put(None), loop)
+
+                Thread(target=_tests_worker, args=(queue2, path, model), daemon=True).start()
+
+                while True:
+                    event = await queue2.get()
+                    if event is None:
+                        break
+                    if event.get("type") == "tests_done":
+                        quota_tracker.track("tests", _provider_of(model), event.get("count", 0))
+                    await websocket.send_text(json.dumps(event, ensure_ascii=False))
+
+            elif msg_type == "execute_confirm":
+                path = msg.get("path", "")
+                args = msg.get("args", "")
+                try:
+                    result = await loop.run_in_executor(None, _code_exec, path, args)
+                except _CodeSecurityError as e:
+                    result = {"stdout": "", "stderr": str(e), "returncode": -1, "duration_ms": 0}
+                if result.get("html_preview"):
+                    await websocket.send_text(json.dumps(
+                        {"type": "html_preview", "content": result.get("content", "")},
+                        ensure_ascii=False,
+                    ))
+                elif result.get("external"):
+                    await websocket.send_text(json.dumps(
+                        {"type": "execute_external", "path": path},
+                        ensure_ascii=False,
+                    ))
+                else:
+                    send = {k: v for k, v in result.items() if k not in ("html_preview", "external", "content")}
+                    await websocket.send_text(json.dumps(
+                        {"type": "execute_result", **send}, ensure_ascii=False
+                    ))
 
     except WebSocketDisconnect:
         pass
