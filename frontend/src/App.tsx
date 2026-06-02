@@ -4,12 +4,13 @@ import Chat from './components/Chat'
 import Kholle from './components/Kholle'
 import Flashcards from './components/Flashcards'
 import Admin from './components/Admin'
+import Code from './components/Code'
 import Docs from './components/Docs'
 import History from './components/History'
 import Settings from './components/Settings'
 import ConnectorBar from './components/ConnectorBar'
 
-type Module = 'chat' | 'kholle' | 'flashcards' | 'docs' | 'admin' | 'history' | 'settings'
+type Module = 'chat' | 'kholle' | 'flashcards' | 'code' | 'docs' | 'admin' | 'history' | 'settings'
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
 
@@ -100,6 +101,7 @@ export default function App() {
           />
         )}
         {activeModule === 'flashcards' && <Flashcards />}
+        {activeModule === 'code' && <Code />}
         {activeModule === 'docs' && <Docs />}
         {activeModule === 'admin' && <Admin />}
         {activeModule === 'history' && <History />}

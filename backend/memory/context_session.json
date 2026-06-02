@@ -1,7 +1,7 @@
 {
   "fichiers_actifs": [],
   "résumé_contexte": "",
-  "modèle_actif": "flm:qwen3:4b",
+  "modèle_actif": "qwen2.5:7b",
   "strict_mode": false,
   "session_instruction": ""
 }

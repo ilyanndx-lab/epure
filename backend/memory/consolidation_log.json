@@ -1,6 +1,14 @@
 {
   "log": [
     {
+      "date": "2026-06-01T23:37:48.477573",
+      "type": "manuel",
+      "source": "consolidate_all",
+      "lacunes_ajoutées": [],
+      "forces_ajoutées": [],
+      "style_màj": "Incrémental"
+    },
+    {
       "date": "2026-05-31T16:41:28.800281",
       "type": "conversation",
       "source": "Théorème de l'énergie cinétique & QCM",
