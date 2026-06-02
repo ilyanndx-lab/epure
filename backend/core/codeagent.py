@@ -333,6 +333,17 @@ _TAG_RE = re.compile(
 
 _JSON_RE = re.compile(r'\{[^{}]*?"tool"\s*:\s*"(?P<tool>\w+)"[^{}]*?\}', re.DOTALL)
 
+# **edit_file** `path` or **create_file** `path` followed by optional code block
+_MD_TOOL_RE = re.compile(
+    r'\*\*(?P<tool>create_file|edit_file|read_file|delete_file|list_files|execute_code)\*\*'
+    r'\s+`(?P<path>[^`\n]+)`'
+    r'(?:\s*\n```\w*\r?\n(?P<content>[\s\S]*?)\r?\n```)?',
+    re.IGNORECASE,
+)
+
+# Standalone code block — used by the no-tool fallback
+_CODE_BLOCK_RE = re.compile(r'```(?:\w+)?\r?\n([\s\S]*?)\r?\n```')
+
 
 def parse_tool_calls(text: str) -> list[dict]:
     calls: list[dict] = []
@@ -353,6 +364,18 @@ def parse_tool_calls(text: str) -> list[dict]:
                 calls.append(json.loads(m.group(0)))
             except json.JSONDecodeError:
                 pass
+    if not calls:
+        for m in _MD_TOOL_RE.finditer(text):
+            tool = m.group("tool").lower()
+            path = m.group("path").strip()
+            content = m.group("content")
+            call: dict = {"tool": tool, "path": path}
+            if content is not None:
+                if tool == "edit_file":
+                    # Markdown gives full content only — treat as full file write
+                    call["tool"] = "create_file"
+                call["content"] = content
+            calls.append(call)
     return calls
 
 
@@ -473,6 +496,11 @@ Utilise ces outils avec la syntaxe XML exacte :
 
 Règles : explique ce que tu fais, crée des fichiers complets et fonctionnels, ne sors jamais du workspace.
 
+RÈGLE ABSOLUE : Tu ne peux PAS modifier un fichier en montrant du code dans ta réponse. Tu DOIS utiliser les tools.
+Si tu veux modifier un fichier, utilise TOUJOURS edit_file ou create_file.
+Jamais de bloc ```code``` pour montrer des modifications — utilise les tools.
+Si tu n'utilises pas de tool, le fichier ne sera PAS modifié.
+
 Fichier actif : {file_context}
 Arborescence :
 {tree}
@@ -565,7 +593,27 @@ class CodeAgent:
 
         # ── Exécution des tools ──────────────────────────────────────────────
         created_files: list[str] = []
-        for call in parse_tool_calls(full):
+        calls = parse_tool_calls(full)
+
+        # Fallback : code block présent mais aucun tool appelé
+        if not calls:
+            cb = _CODE_BLOCK_RE.search(full)
+            if cb:
+                active_path = (file_context or "").split("\n")[0].strip()
+                if active_path:
+                    code_content = cb.group(1)
+                    yield {"type": "warning", "content": "Tool non utilisé — modification appliquée automatiquement"}
+                    auto_call = {"tool": "create_file", "path": active_path, "content": code_content}
+                    yield {"type": "tool_call", "tool": "create_file", "path": active_path, "status": "pending"}
+                    res = dispatch_tool(auto_call)
+                    yield {
+                        "type": "tool_result", "tool": "create_file", "path": active_path,
+                        "result": res.get("result", ""), "status": res.get("status", "error"),
+                    }
+                    if res.get("status") == "success":
+                        created_files.append(active_path)
+
+        for call in calls:
             tool_name = call.get("tool", "")
             path = call.get("path", "")
             yield {"type": "tool_call", "tool": tool_name, "path": path, "status": "pending"}

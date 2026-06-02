@@ -1,4 +1,5 @@
 
+# Ce script importe le module 'random' et génère un nombre entier aléatoire.
 import random
 
 print("Le module random a été importé avec succès.")

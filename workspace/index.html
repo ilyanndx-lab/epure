@@ -1,0 +1,48 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bouton Change Couleur</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        #colorChangingButton {
+            padding: 15px 30px;
+            font-size: 20px;
+            cursor: pointer;
+            border: none;
+            border-radius: 8px;
+            background-color: #007bff; /* Couleur initiale */
+            color: white;
+            transition: background-color 0.3s ease;
+            outline: none;
+        }
+        #colorChangingButton:hover {
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <button id="colorChangingButton">Cliquez-moi !</button>
+
+    <script>
+        const button = document.getElementById('colorChangingButton');
+        const colors = ['#007bff', '#28a745', '#dc3545', '#ffc107', '#6f42c1', '#fd7e14'];
+        let currentColorIndex = 0;
+
+        button.addEventListener('click', () => {
+            currentColorIndex = (currentColorIndex + 1) % colors.length;
+            button.style.backgroundColor = colors[currentColorIndex];
+        });
+    </script>
+</body>
+</html>
