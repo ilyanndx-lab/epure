@@ -1,4 +1,5 @@
 import asyncio
+import html as _htmllib
 import io
 import json
 import logging
@@ -9,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -846,17 +848,73 @@ _WEB_SEARCH_UA = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 _WEB_SEARCH_TIMEOUT = 8.0
+# User-Agent alternatifs essayés en cas de blocage (403 Cloudflare, etc.)
+_WEB_SEARCH_USER_AGENTS = [
+    _WEB_SEARCH_UA,
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+]
+
+# Cache mémoire LRU avec TTL court : évite de re-frapper DuckDuckGo pour une
+# même requête (utile quand l'utilisateur reformule peu ou relance @web).
+_WEB_SEARCH_CACHE_TTL = 300.0  # secondes
+_WEB_SEARCH_CACHE_MAX = 64
+_web_search_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
 
 
-def perform_web_search(query: str) -> str:
-    """Interroge l'API DuckDuckGo Instant Answer et retourne un extrait formaté.
+def _web_search_cache_get(key: str) -> Optional[str]:
+    """Retourne la valeur en cache si présente et non expirée, sinon None."""
+    entry = _web_search_cache.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if (time.time() - ts) > _WEB_SEARCH_CACHE_TTL:
+        _web_search_cache.pop(key, None)
+        return None
+    _web_search_cache.move_to_end(key)  # marque comme récemment utilisé
+    return value
 
-    En cas d'échec, retourne un message d'erreur court pour informer l'utilisateur.
+
+def _web_search_cache_set(key: str, value: str) -> None:
+    """Insère/rafraîchit une entrée et évince les plus anciennes (LRU)."""
+    _web_search_cache[key] = (time.time(), value)
+    _web_search_cache.move_to_end(key)
+    while len(_web_search_cache) > _WEB_SEARCH_CACHE_MAX:
+        _web_search_cache.popitem(last=False)
+
+
+def _web_search_fetch(url: str, accept: str) -> tuple[Optional[str], Optional[str]]:
+    """Récupère une URL en essayant plusieurs User-Agent.
+
+    Retourne ``(texte, None)`` en cas de succès, ``(None, erreur)`` sinon.
     """
-    if not query or not query.strip():
-        return ""
-    q = query.strip()
-    base_url = "https://api.duckduckgo.com/"
+    last_exc: Optional[str] = None
+    for ua in _WEB_SEARCH_USER_AGENTS:
+        req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": accept})
+        try:
+            with urllib.request.urlopen(req, timeout=_WEB_SEARCH_TIMEOUT) as resp:
+                if resp.status != 200:
+                    logger.warning("Web search HTTP %s pour %s (UA: %s)", resp.status, url, ua)
+                    last_exc = f"HTTP {resp.status}"
+                    continue  # essayer prochain UA
+                return resp.read().decode("utf-8", errors="replace"), None
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            logger.warning("Web search impossible pour %s (UA: %s) : %s", url, ua, exc)
+            last_exc = str(exc)
+            continue
+        except Exception as exc:  # pragma: no cover - imprévisible
+            logger.exception("Web search erreur inattendue pour %s (UA: %s)", url, ua)
+            last_exc = str(exc)
+            continue
+    return None, (last_exc or "erreur inconnue")
+
+
+def _web_search_instant(q: str) -> tuple[list[str], list[str], Optional[str]]:
+    """Stratégie 1 : API DuckDuckGo Instant Answer (JSON).
+
+    Retourne ``(parties, lignes_source, erreur)``. ``parties`` est vide quand
+    l'API ne renvoie rien d'exploitable (cas qui déclenche le fallback HTML).
+    """
     params = {
         "q": q,
         "format": "json",
@@ -864,42 +922,16 @@ def perform_web_search(query: str) -> str:
         "skip_disambig": "1",
         "t": "epure",
     }
-    url = base_url + urllib.parse.urlencode(params)
-    # Tentatives avec différents User-Agent en cas de blocage
-    user_agents = [
-        _WEB_SEARCH_UA,
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    ]
-    last_exc = None
-    for ua in user_agents:
-        req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=_WEB_SEARCH_TIMEOUT) as resp:
-                if resp.status != 200:
-                    logger.warning("Web search HTTP %s pour %s (UA: %s)", resp.status, q, ua)
-                    last_exc = f"HTTP {resp.status}"
-                    continue  # essayer prochain UA
-                raw = resp.read().decode("utf-8", errors="replace")
-                break  # succès
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-            logger.warning("Web search impossible pour %s (UA: %s) : %s", q, ua, exc)
-            last_exc = str(exc)
-            continue
-        except Exception as exc:  # pragma: no cover - imprévisible
-            logger.exception("Web search erreur inattendue pour %s (UA: %s)", q, ua)
-            last_exc = str(exc)
-            continue
-    else:
-        # Toutes les tentatives ont échoué
-        logger.error("Web search échoué après %d tentatives pour %s : %s", len(user_agents), q, last_exc)
-        return f"Erreur de recherche web : {last_exc or 'erreur inconnue'}"
+    url = "https://api.duckduckgo.com/" + urllib.parse.urlencode(params)
+    raw, err = _web_search_fetch(url, "application/json")
+    if raw is None:
+        return [], [], err
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         logger.warning("Web search JSON invalide pour %s", q)
-        return "Erreur de recherche web : réponse JSON invalide"
+        return [], [], "réponse JSON invalide"
 
     abstract = (data.get("Abstract") or "").strip()
     abstract_source = (data.get("AbstractSource") or "").strip()
@@ -910,7 +942,7 @@ def perform_web_search(query: str) -> str:
     answer = (data.get("Answer") or "").strip()
     answer_type = (data.get("AnswerType") or "").strip()
 
-    related = []
+    related: list[str] = []
     for item in data.get("RelatedTopics", []) or []:
         if not isinstance(item, dict):
             continue
@@ -936,21 +968,100 @@ def perform_web_search(query: str) -> str:
     for r in related[:5]:
         parts.append(f"- {r}")
 
-    if not parts:
-        # Aucun résultat exploitable, mais pas d'erreur
-        return ""
-
-    source_lines = []
+    source_lines: list[str] = []
     if abstract and abstract_source:
         source_lines.append(f"Source abstract : {abstract_source}" + (f" ({abstract_url})" if abstract_url else ""))
     if definition and definition_source:
         source_lines.append(f"Source définition : {definition_source}" + (f" ({definition_url})" if definition_url else ""))
+    return parts, source_lines, None
+
+
+_HTML_RESULT_RE = re.compile(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE)
+_HTML_SNIPPET_RE = re.compile(r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(fragment: str) -> str:
+    """Retire les balises et déséchappe les entités d'un fragment HTML."""
+    return _htmllib.unescape(_HTML_TAG_RE.sub("", fragment)).strip()
+
+
+def _web_search_html(q: str) -> tuple[list[str], Optional[str]]:
+    """Stratégie 2 (fallback) : endpoint HTML html.duckduckgo.com.
+
+    Retourne ``(parties, erreur)``. Parse les résultats (titre + extrait) par
+    expression régulière — pas de dépendance HTML externe.
+    """
+    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": q})
+    raw, err = _web_search_fetch(url, "text/html")
+    if raw is None:
+        return [], err
+
+    titles = [_strip_html(m) for m in _HTML_RESULT_RE.findall(raw)]
+    snippets = [_strip_html(m) for m in _HTML_SNIPPET_RE.findall(raw)]
+
+    parts: list[str] = []
+    for i in range(max(len(titles), len(snippets))):
+        title = titles[i] if i < len(titles) else ""
+        snippet = snippets[i] if i < len(snippets) else ""
+        line = " — ".join(p for p in (title, snippet) if p)
+        if line:
+            parts.append(f"- {line}")
+        if len(parts) >= 5:
+            break
+    return parts, None
+
+
+def perform_web_search(query: str) -> str:
+    """Recherche web via DuckDuckGo, avec fallback HTML et cache LRU.
+
+    Stratégie : (1) API Instant Answer (JSON) ; (2) si rien d'exploitable,
+    fallback sur l'endpoint HTML html.duckduckgo.com. Le résultat formaté est
+    mis en cache (TTL court). En cas d'échec réseau total, retourne un message
+    d'erreur court pour informer l'utilisateur.
+    """
+    if not query or not query.strip():
+        return ""
+    q = query.strip()
+
+    cached = _web_search_cache_get(q)
+    if cached is not None:
+        logger.info("Web search « %s » : %d caractères servis depuis le cache", q, len(cached))
+        return cached
+
+    # Stratégie 1 : Instant Answer
+    parts, source_lines, err = _web_search_instant(q)
+    source = "DuckDuckGo Instant Answer"
+
+    # Stratégie 2 : fallback HTML si l'Instant Answer ne donne rien
+    if not parts:
+        html_parts, html_err = _web_search_html(q)
+        if html_parts:
+            parts = html_parts
+            source_lines = []
+            source = "DuckDuckGo HTML"
+        elif err and html_err:
+            # Les deux stratégies ont échoué au niveau réseau
+            logger.error("Web search échoué pour « %s » : instant=%s ; html=%s", q, err, html_err)
+            return f"Erreur de recherche web : {err}"
+
+    if not parts:
+        # Aucun résultat exploitable, mais pas d'erreur réseau
+        logger.info("Web search « %s » : 0 résultat (source: %s)", q, source)
+        return ""
+
     sources_block = ("\n\n" + "\n".join(source_lines)) if source_lines else ""
-    return (
-        f"Résultats de recherche web pour « {q} » (DuckDuckGo Instant Answer) :\n"
+    result = (
+        f"Résultats de recherche web pour « {q} » ({source}) :\n"
         + "\n".join(parts)
         + sources_block
     )
+
+    excerpt = result[:160].replace("\n", " ")
+    logger.info("Web search « %s » : %d résultat(s) via %s — extrait : %s", q, len(parts), source, excerpt)
+
+    _web_search_cache_set(q, result)
+    return result
 
 
 @app.websocket("/ws/chat")
