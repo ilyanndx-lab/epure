@@ -1,15 +1,9 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, Suspense } from 'react'
+import { Loader2 } from 'lucide-react'
 import Sidebar from './components/Sidebar'
-import Chat from './components/Chat'
-import Kholle from './components/Kholle'
-import Flashcards from './components/Flashcards'
-import Admin from './components/Admin'
-import Code from './components/Code'
-import Docs from './components/Docs'
-import History from './components/History'
-import Settings from './components/Settings'
 import { useInstanceConfig } from './instance'
 import { useModules } from './modules'
+import { getModuleDef, type SharedModuleProps } from './modules/registry'
 
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
@@ -22,24 +16,6 @@ export default function App() {
   const [activeModule, setActiveModule] = useState<string>('chat')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
-
-  // Ensemble des modules réellement accessibles (settings toujours inclus).
-  const visibleIds = new Set<string>([
-    'settings',
-    ...modules
-      .filter(m => m.status === 'active' && config.modules_activés.includes(m.id))
-      .map(m => m.id),
-  ])
-
-  // Si le module courant devient inaccessible (désactivé), bascule vers le
-  // premier module visible (ou Réglages en dernier recours).
-  useEffect(() => {
-    if (!visibleIds.has(activeModule)) {
-      const first = config.modules_activés.find(id => visibleIds.has(id))
-      setActiveModule(first ?? 'settings')
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeModule, config.modules_activés, modules])
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -92,37 +68,55 @@ export default function App() {
     [ttsEnabled, playSpeech]
   )
 
+  // Modules réellement accessibles (settings toujours inclus).
+  const visibleIds = new Set<string>([
+    'settings',
+    ...modules
+      .filter(m => m.status === 'active' && config.modules_activés.includes(m.id))
+      .map(m => m.id),
+  ])
+
+  // Si le module courant devient inaccessible, bascule vers le premier visible.
+  useEffect(() => {
+    if (!visibleIds.has(activeModule)) {
+      const first = config.modules_activés.find(id => visibleIds.has(id))
+      setActiveModule(first ?? 'settings')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeModule, config.modules_activés, modules])
+
+  // Props partagées passées à tout module rendu.
+  const sharedProps: SharedModuleProps = {
+    onAssistantDone,
+    playSpeech,
+    stopSpeech,
+    speakingText,
+    onNavigate: setActiveModule,
+    ttsEnabled,
+    onTtsToggle: () => setTtsEnabled(v => !v),
+  }
+
+  const Active = getModuleDef(activeModule)?.component
+
   return (
     <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
       <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
       <div className="flex flex-col flex-1 overflow-hidden">
-        {activeModule === 'chat' && (
-          <Chat
-            onAssistantDone={onAssistantDone}
-            playSpeech={playSpeech}
-            stopSpeech={stopSpeech}
-            speakingText={speakingText}
-            onNavigate={setActiveModule}
-            ttsEnabled={ttsEnabled}
-            onTtsToggle={() => setTtsEnabled(v => !v)}
-          />
-        )}
-        {activeModule === 'kholle' && (
-          <Kholle
-            onAssistantDone={onAssistantDone}
-            playSpeech={playSpeech}
-            stopSpeech={stopSpeech}
-            speakingText={speakingText}
-            ttsEnabled={ttsEnabled}
-            onTtsToggle={() => setTtsEnabled(v => !v)}
-          />
-        )}
-        {activeModule === 'flashcards' && <Flashcards />}
-        {activeModule === 'code' && <Code />}
-        {activeModule === 'docs' && <Docs />}
-        {activeModule === 'admin' && <Admin />}
-        {activeModule === 'history' && <History />}
-        {activeModule === 'settings' && <Settings />}
+        <Suspense
+          fallback={
+            <div className="flex flex-1 items-center justify-center text-muted">
+              <Loader2 size={18} className="animate-spin" />
+            </div>
+          }
+        >
+          {Active ? (
+            <Active {...sharedProps} />
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-muted">
+              Module « {activeModule} » sans interface frontend
+            </div>
+          )}
+        </Suspense>
       </div>
     </div>
   )

@@ -61,13 +61,13 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
     return () => clearInterval(id)
   }, [])
 
-  // Modules visibles : actifs au catalogue ET activés par l'utilisateur.
-  // settings est exclu ici (toujours accessible via le bouton Profil).
-  const navModules = modules.filter(
-    m => m.id !== 'settings'
-      && m.status === 'active'
-      && config.modules_activés.includes(m.id)
-  )
+  // Modules visibles, DANS L'ORDRE de modules_activés (réordonnable depuis
+  // Réglages) : on mappe la liste ordonnée vers les manifestes, en ne gardant
+  // que ceux actifs au catalogue. settings est exclu (bouton Profil dédié).
+  const byId = new Map(modules.map(m => [m.id, m]))
+  const navModules = config.modules_activés
+    .map(id => byId.get(id))
+    .filter((m): m is NonNullable<typeof m> => !!m && m.id !== 'settings' && m.status === 'active')
 
   const settingsModule = modules.find(m => m.id === 'settings')
 
