@@ -1,0 +1,13 @@
+{
+  "id": "docs",
+  "version": "1.0.0",
+  "nom": "Docs",
+  "icon": "FileSearch",
+  "description": "Analyse documentaire et chat sur vos fichiers",
+  "frontend": { "component": "Docs" },
+  "backend": { "prefix": "/docanalysis" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}
