@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { ArrowLeft, Clock, Search, Trash2, X } from 'lucide-react'
-import { Badge, Button, Card, Input } from './ui'
-import RichMessage from './RichMessage'
+import { Badge, Button, Card, Input } from '../../components/ui'
+import RichMessage from '../../components/RichMessage'
 
 const API = 'http://localhost:8000'
 

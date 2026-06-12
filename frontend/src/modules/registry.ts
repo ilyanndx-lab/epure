@@ -48,7 +48,7 @@ const CORE_DEFS: ModuleDef[] = [
   { id: 'code',       label: 'Code',        icon: 'Code2',         core: true, component: lazyComponent(() => import('../components/Code')) },
   { id: 'docs',       label: 'Docs',        icon: 'FileSearch',    core: true, component: lazyComponent(() => import('../components/Docs')) },
   { id: 'admin',      label: 'Admin',       icon: 'FolderCog',     core: true, component: lazyComponent(() => import('../components/Admin')) },
-  { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('../components/History')) },
+  { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('./history/Component')) },
   { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('../components/Settings')) },
 ]
 
