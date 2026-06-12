@@ -1,0 +1,15 @@
+# Ne pas embarquer données, caches ni secrets dans l'image.
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+chroma_db/
+*.log
+.env
+.env.*
+!.env.example
+data/
+.pytest_cache/
+.mypy_cache/

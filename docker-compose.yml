@@ -1,0 +1,62 @@
+# Épure — orchestration backend + frontend (+ Ollama optionnel)
+#
+#   docker compose up --build                 # backend + frontend
+#   docker compose --profile ollama up --build # + serveur Ollama embarqué
+#
+# Frontend : http://localhost:5173   |   API : http://localhost:8000
+#
+# Les clés API et options sont lues depuis backend/.env (optionnel, voir
+# backend/.env.example). Aucune clé n'est requise pour démarrer.
+
+services:
+  backend:
+    build: ./backend
+    image: epure-backend
+    ports:
+      - "8000:8000"
+    # backend/.env est chargé s'il existe, sinon ignoré (Compose v2.24+).
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      EPURE_FICHES_DIR: /data/fiches
+      EPURE_CORS_ORIGINS: ${EPURE_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      EPURE_LOG_LEVEL: ${EPURE_LOG_LEVEL:-INFO}
+      # Par défaut : Ollama de la machine hôte. Avec le profil "ollama"
+      # ci-dessous, surchargez en http://ollama:11434 (cf. README).
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+    volumes:
+      - ./data:/data                                   # fiches PDF (EPURE_FICHES_DIR)
+      - ./backend/chroma_db:/app/backend/chroma_db     # index vectoriel persistant
+      - ./backend/memory:/app/backend/memory           # état applicatif (quotas, logs)
+      - hf_cache:/models                               # modèles HuggingFace mis en cache
+    extra_hosts:
+      - "host.docker.internal:host-gateway"            # accès à l'hôte sous Linux
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    image: epure-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ── Service Ollama OPTIONNEL ────────────────────────────────────────────────
+  # Activé uniquement avec --profile ollama. Sinon, le backend utilise l'Ollama
+  # installé sur la machine hôte (host.docker.internal:11434).
+  # Avec ce service, lancez :
+  #   OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up --build
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
+  ollama_data:
