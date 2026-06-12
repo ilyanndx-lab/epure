@@ -86,12 +86,17 @@ def register_routers(app) -> None:
     donc relatifs au prefix (ex. prefix ``/hello`` + ``@router.get("/ping")`` →
     ``GET /hello/ping``).
 
-    Les 7 modules core restent décorés directement sur ``app`` (non déplacés).
+    Traite TOUS les modules de façon uniforme (core ou non) : un module est
+    monté dès qu'il est actif ET possède un ``router.py``. Les modules core pas
+    encore migrés (sans router.py) restent décorés sur ``app`` dans main.py et
+    sont simplement ignorés ici.
     """
     for m in list_modules():
-        if m.get("core_module") or m.get("status") != "active":
+        if m.get("status") != "active":
             continue
         mid = m.get("id")
+        if not (_MODULES_DIR / str(mid) / "router.py").is_file():
+            continue  # pas de backend pour ce module (ou core non migré)
         try:
             mod = importlib.import_module(f"modules.{mid}.router")
         except Exception:
