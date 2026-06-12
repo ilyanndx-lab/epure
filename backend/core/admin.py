@@ -9,9 +9,10 @@ from pathlib import Path
 import ollama
 import pypdf
 
+from core.paths import FICHES_DIR as _FICHES_DIR
+
 logger = logging.getLogger(__name__)
 
-_FICHES_DIR = Path(r"C:\Users\Ilyan\Fiches")
 _MATIERES = ["Maths", "Physique-Chimie", "SI"]
 _LOG_PATH = Path(__file__).parent.parent / "memory" / "admin_log.json"
 _CACHE_PATH = Path(__file__).parent.parent / "memory" / "admin_cache.json"
