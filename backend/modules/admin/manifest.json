@@ -1,0 +1,13 @@
+{
+  "id": "admin",
+  "version": "1.0.0",
+  "nom": "Admin",
+  "icon": "FolderCog",
+  "description": "Organisation et classement automatique des fiches PDF",
+  "frontend": { "component": "Admin" },
+  "backend": { "prefix": "/admin" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}

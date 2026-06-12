@@ -1,0 +1,13 @@
+{
+  "id": "settings",
+  "version": "1.0.0",
+  "nom": "Réglages",
+  "icon": "Settings",
+  "description": "Profil, préférences et personnalisation de l'instance",
+  "frontend": { "component": "Settings" },
+  "backend": { "prefix": "/settings" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}

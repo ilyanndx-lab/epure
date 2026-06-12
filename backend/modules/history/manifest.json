@@ -1,0 +1,13 @@
+{
+  "id": "history",
+  "version": "1.0.0",
+  "nom": "Historique",
+  "icon": "Clock",
+  "description": "Historique des conversations et recherche sémantique",
+  "frontend": { "component": "History" },
+  "backend": { "prefix": "/history" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}

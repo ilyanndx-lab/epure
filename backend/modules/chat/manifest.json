@@ -1,0 +1,13 @@
+{
+  "id": "chat",
+  "version": "1.0.0",
+  "nom": "Chat",
+  "icon": "MessageSquare",
+  "description": "Conversation multi-modèles avec orchestration et recherche web",
+  "frontend": { "component": "Chat" },
+  "backend": { "prefix": "/ws/chat" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}
