@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square } from 'lucide-react'
-import { Card, Textarea } from './ui'
+import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe } from 'lucide-react'
+import { Card, Textarea, Toggle } from './ui'
 import RichMessage from './RichMessage'
 import ModuleBar from './ModuleBar'
 import type { EffortLevel, StepConfig } from '../App'
@@ -172,7 +172,15 @@ export default function Chat({
   const [streamStats, setStreamStats] = useState<{ tps: number; count: number } | null>(null)
   const [collapsedThinking, setCollapsedThinking] = useState<Record<number, boolean>>({})
 
+  // Recherche web : active = force une recherche avant la réponse.
+  // Mode 'once' = réinitialisé après chaque message (défaut, non handicapant) ;
+  // 'always' = reste actif jusqu'à désactivation explicite.
+  const [webSearch, setWebSearch] = useState(false)
+  const [webSearchMode, setWebSearchMode] = useState<'once' | 'always'>('once')
+  const [webMenuOpen, setWebMenuOpen] = useState(false)
+
   const wsRef = useRef<WebSocket | null>(null)
+  const webMenuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const lastAssistantRef = useRef('')
   const tokenCountRef = useRef(0)
@@ -377,6 +385,18 @@ export default function Chat({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Ferme le menu de recherche web au clic extérieur.
+  useEffect(() => {
+    if (!webMenuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (webMenuRef.current && !webMenuRef.current.contains(e.target as Node)) {
+        setWebMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [webMenuOpen])
+
   // ── Autocomplete ──────────────────────────────────────────────────────────
 
   const suggestions = useMemo(() => {
@@ -559,7 +579,8 @@ export default function Chat({
     let cleanText = rawText
     let ragOverride: string | undefined
     let strictOverride = false
-    let webSearchOverride = false
+    // Le bouton (icône Globe) force la recherche web ; @web le fait aussi.
+    let webSearchOverride = webSearch
 
     let again = true
     while (again) {
@@ -600,8 +621,12 @@ export default function Chat({
     if (strictOverride) wsMsg.strict_override = true
     if (webSearchOverride) wsMsg.web_search_override = true
     wsRef.current?.send(JSON.stringify(wsMsg))
+
+    // Mode 'once' : on désactive après envoi pour ne pas pénaliser les
+    // messages suivants ; 'always' reste actif.
+    if (webSearch && webSearchMode === 'once') setWebSearch(false)
   }, [
-    input, connected, streaming, effort, pipelineSteps,
+    input, connected, streaming, effort, pipelineSteps, webSearch, webSearchMode,
     streamSSE, handleMémoire, handleModèle, handleLacunes, handleNavigate,
   ])
 
@@ -733,6 +758,103 @@ export default function Chat({
         )}
 
         <div className="flex gap-3 items-end">
+          {/* ── Recherche web : icône cliquable + menu déroulable ── */}
+          <div className="relative shrink-0" ref={webMenuRef}>
+            <div
+              className={`flex items-stretch rounded-md border transition-colors duration-150 ${
+                webSearch ? 'border-accent/40 bg-accent/10' : 'border-line bg-elevated'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setWebSearch(v => !v)}
+                aria-pressed={webSearch}
+                title={webSearch
+                  ? 'Recherche web activée — forcée avant la réponse'
+                  : 'Forcer une recherche web avant la réponse'}
+                className={`relative p-2.5 rounded-l-md transition-colors duration-150 ${
+                  webSearch ? 'text-accent' : 'text-muted hover:text-secondary'
+                }`}
+              >
+                <Globe size={16} className={webSearch && streaming ? 'animate-pulse' : ''} />
+                {webSearch && (
+                  <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
+                    {webSearchMode === 'once' ? '1×' : '∞'}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setWebMenuOpen(v => !v)}
+                aria-haspopup="menu"
+                aria-expanded={webMenuOpen}
+                title="Options de recherche web"
+                className={`px-1 rounded-r-md border-l transition-colors duration-150 ${
+                  webSearch
+                    ? 'border-accent/30 text-accent hover:bg-accent/10'
+                    : 'border-line text-muted hover:text-secondary hover:bg-elevated'
+                }`}
+              >
+                <ChevronDown
+                  size={13}
+                  className={`transition-transform duration-150 ${webMenuOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+            </div>
+
+            {webMenuOpen && (
+              <div className="absolute bottom-full left-0 mb-2 w-64 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
+                <div className="flex items-center justify-between px-3 py-2.5 border-b border-line">
+                  <span className="text-xs font-medium text-primary flex items-center gap-2">
+                    <Globe size={13} className={webSearch ? 'text-accent' : 'text-muted'} />
+                    Recherche web
+                  </span>
+                  <Toggle checked={webSearch} onChange={setWebSearch} label="Activer la recherche web" />
+                </div>
+
+                <div className="p-1.5 space-y-0.5">
+                  <p className="px-2 py-1 text-xs text-muted uppercase tracking-wide">Mode</p>
+                  {([
+                    { id: 'once', label: 'Activer une fois', desc: 'Réinitialisé après chaque message' },
+                    { id: 'always', label: 'Toujours activé', desc: "Reste actif jusqu'à désactivation" },
+                  ] as const).map(opt => {
+                    const selected = webSearchMode === opt.id
+                    return (
+                      <button
+                        key={opt.id}
+                        onClick={() => { setWebSearchMode(opt.id); setWebSearch(true) }}
+                        className={`w-full text-left px-2.5 py-1.5 rounded-sm transition-colors duration-150 flex items-start gap-2 ${
+                          selected ? 'bg-accent/10' : 'hover:bg-surface'
+                        }`}
+                      >
+                        <span className="shrink-0 w-4 inline-flex justify-center pt-0.5">
+                          {selected
+                            ? <Check size={13} className="text-accent" />
+                            : <span className="w-1.5 h-1.5 rounded-full bg-line inline-block mt-1" />}
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span className={`block text-xs ${selected ? 'text-accent font-medium' : 'text-secondary'}`}>
+                            {opt.label}
+                          </span>
+                          <span className="block text-[11px] text-muted">{opt.desc}</span>
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <div className="px-3 py-2.5 border-t border-line space-y-1.5">
+                  <p className="text-xs text-muted uppercase tracking-wide">Sources utilisées</p>
+                  <div className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-accent2 shrink-0" />
+                    <span className="text-xs text-secondary">DuckDuckGo</span>
+                    <span className="text-[11px] font-mono text-muted ml-auto">Instant + HTML</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <Textarea
             value={input}
             onChange={e => setInput(e.target.value)}
