@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
+import { Check, Copy, FolderCog, RefreshCw, Scan, Square, Undo2, X } from 'lucide-react'
+import { Badge, Button, Card, Modal, ProgressBar } from './ui'
 
 const API = 'http://localhost:8000'
 const FICHES_ROOT = 'C:\\Users\\Ilyan\\Fiches\\'
@@ -40,10 +42,10 @@ interface PendingAction {
   label: string
 }
 
-function confColor(c: number) {
-  if (c > 0.8) return 'text-[#6a8a6a]'
-  if (c > 0.5) return 'text-[#8a7a4a]'
-  return 'text-[#7a4a4a]'
+function confBadge(c: number): 'success' | 'warning' | 'error' {
+  if (c > 0.8) return 'success'
+  if (c > 0.5) return 'warning'
+  return 'error'
 }
 
 function filename(p: string) {
@@ -235,77 +237,85 @@ export default function Admin() {
   const pendingCount = pendingActions.length
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-10 font-mono text-sm text-[#e0e0e0]">
+    <div className="flex-1 overflow-y-auto p-6 space-y-8">
+
+      <h1 className="text-lg font-semibold text-primary flex items-center gap-2">
+        <FolderCog size={18} className="text-accent" />
+        Administration des fiches
+      </h1>
 
       {/* ── Section 1 : Scan ── */}
-      <section>
-        <div className="flex items-center gap-4 mb-4">
-          <h2 className="text-[10px] uppercase tracking-[0.2em] text-[#444]">Scan et analyse</h2>
-        </div>
+      <Card className="space-y-4">
+        <h2 className="text-sm font-semibold text-primary flex items-center gap-2">
+          <Scan size={15} className="text-muted" />
+          Scan et analyse
+        </h2>
 
-        <button
+        <Button
+          variant={scanning ? 'danger' : 'primary'}
           onClick={startScan}
-          className={`px-4 py-2 border rounded text-xs transition-colors ${
-            scanning
-              ? 'border-[#4a2a2a] text-[#aa5a5a] hover:border-[#7a3a3a]'
-              : 'bg-[#1a1a1a] border-[#2a2a2a] hover:border-[#444]'
-          }`}
+          icon={scanning ? <Square size={14} /> : <Scan size={14} />}
         >
           {scanning ? 'Arrêter le scan' : 'Scanner les fiches'}
-        </button>
+        </Button>
 
         {scanProgress && (
-          <div className="mt-3 space-y-1">
+          <div className="space-y-1">
             <div className="flex items-center gap-3">
-              <div className="flex-1 h-px bg-[#1a1a1a] relative overflow-hidden">
-                <div
-                  className="absolute left-0 top-0 h-full bg-[#3a5a3a] transition-all duration-300"
-                  style={{ width: `${((scanProgress.index + 1) / scanProgress.total) * 100}%` }}
-                />
-              </div>
-              <span className="text-[10px] text-[#555] shrink-0">
+              <ProgressBar
+                value={((scanProgress.index + 1) / scanProgress.total) * 100}
+                className="flex-1"
+              />
+              <span className="text-xs font-mono text-muted shrink-0">
                 {scanProgress.index + 1}/{scanProgress.total}
               </span>
             </div>
-            <p className="text-[10px] text-[#3a3a3a] truncate">{scanProgress.file}</p>
+            <p className="text-xs font-mono text-muted truncate">{scanProgress.file}</p>
           </div>
         )}
 
         {scanResults.length > 0 && (
-          <div className="mt-5">
-            <div className="overflow-x-auto">
+          <div>
+            <div className="overflow-x-auto rounded-md border border-line">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-[#3a3a3a] border-b border-[#1a1a1a]">
-                    <th className="text-left pb-2 pr-4 font-normal">Fichier</th>
-                    <th className="text-left pb-2 pr-4 font-normal">Dossier</th>
-                    <th className="text-left pb-2 pr-4 font-normal">Matière</th>
-                    <th className="text-left pb-2 pr-4 font-normal">Conf.</th>
-                    <th className="text-left pb-2 pr-4 font-normal">Nom suggéré</th>
-                    <th className="text-center pb-2 pr-2 font-normal">Déplacer</th>
-                    <th className="text-center pb-2 font-normal">Renommer</th>
+                  <tr className="text-muted uppercase tracking-wide border-b border-line bg-elevated/50">
+                    <th className="text-left px-3 py-2 font-medium">Fichier</th>
+                    <th className="text-left px-3 py-2 font-medium">Dossier</th>
+                    <th className="text-left px-3 py-2 font-medium">Matière</th>
+                    <th className="text-left px-3 py-2 font-medium">Conf.</th>
+                    <th className="text-left px-3 py-2 font-medium">Nom suggéré</th>
+                    <th className="text-center px-3 py-2 font-medium">Déplacer</th>
+                    <th className="text-center px-3 py-2 font-medium">Renommer</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {scanResults.map(r => (
-                    <tr key={r.path} className="border-b border-[#111] hover:bg-[#0f0f0f] group">
-                      <td className="py-2 pr-4 text-[#bbb] max-w-[180px]">
-                        <span className="truncate block" title={r.nom_actuel}>{r.nom_actuel}</span>
+                  {scanResults.map((r, ri) => (
+                    <tr
+                      key={r.path}
+                      className={`border-b border-line last:border-b-0 hover:bg-accent/5 transition-colors duration-150 ${
+                        ri % 2 === 1 ? 'bg-elevated/30' : ''
+                      }`}
+                    >
+                      <td className="px-3 py-2 text-primary max-w-[180px]">
+                        <span className="truncate block font-mono" title={r.nom_actuel}>{r.nom_actuel}</span>
                       </td>
-                      <td className="py-2 pr-4 text-[#666]">{r.dossier_actuel}</td>
-                      <td className={`py-2 pr-4 ${r.matière_détectée === 'Inconnu' ? 'text-[#3a3a3a]' : 'text-[#888]'}`}>
+                      <td className="px-3 py-2 text-secondary font-mono">{r.dossier_actuel}</td>
+                      <td className={`px-3 py-2 ${r.matière_détectée === 'Inconnu' ? 'text-muted' : 'text-secondary'}`}>
                         {r.matière_détectée}
                       </td>
-                      <td className={`py-2 pr-4 ${confColor(r.confiance)}`}>
-                        {(r.confiance * 100).toFixed(0)}%
+                      <td className="px-3 py-2">
+                        <Badge variant={confBadge(r.confiance)} mono>
+                          {(r.confiance * 100).toFixed(0)}%
+                        </Badge>
                       </td>
-                      <td className="py-2 pr-4 text-[#666] max-w-[180px]">
+                      <td className="px-3 py-2 text-secondary max-w-[180px]">
                         {r.nom_actuel !== r.nom_suggéré
-                          ? <span className="truncate block" title={r.nom_suggéré}>{r.nom_suggéré}</span>
-                          : <span className="text-[#222]">—</span>
+                          ? <span className="truncate block font-mono" title={r.nom_suggéré}>{r.nom_suggéré}</span>
+                          : <span className="text-muted/50">—</span>
                         }
                       </td>
-                      <td className="py-2 pr-2 text-center">
+                      <td className="px-3 py-2 text-center">
                         {r.action_tri ? (
                           <input
                             type="checkbox"
@@ -314,11 +324,11 @@ export default function Admin() {
                               ...s,
                               [r.path]: { ...s[r.path], tri: e.target.checked }
                             }))}
-                            className="accent-[#3a6a3a] cursor-pointer"
+                            className="accent-[--accent-primary] cursor-pointer"
                           />
-                        ) : <span className="text-[#222]">—</span>}
+                        ) : <span className="text-muted/50">—</span>}
                       </td>
-                      <td className="py-2 text-center">
+                      <td className="px-3 py-2 text-center">
                         {r.action_renommage ? (
                           <input
                             type="checkbox"
@@ -327,9 +337,9 @@ export default function Admin() {
                               ...s,
                               [r.path]: { ...s[r.path], renommage: e.target.checked }
                             }))}
-                            className="accent-[#3a6a3a] cursor-pointer"
+                            className="accent-[--accent-primary] cursor-pointer"
                           />
-                        ) : <span className="text-[#222]">—</span>}
+                        ) : <span className="text-muted/50">—</span>}
                       </td>
                     </tr>
                   ))}
@@ -338,172 +348,149 @@ export default function Admin() {
             </div>
 
             <div className="mt-4 flex gap-3 items-center">
-              <button
-                onClick={() => setShowModal(true)}
-                disabled={pendingCount === 0}
-                className="px-4 py-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-xs hover:border-[#444] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              >
-                Aperçu ({pendingCount} action{pendingCount !== 1 ? 's' : ''})
-              </button>
-              <button
+              <Button
+                variant="primary"
                 onClick={() => setShowModal(true)}
                 disabled={executing || pendingCount === 0}
-                className="px-4 py-2 bg-[#111a11] border border-[#1e3a1e] rounded text-xs hover:border-[#3a6a3a] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                {executing ? 'Exécution…' : 'Exécuter la sélection'}
-              </button>
+                {executing ? 'Exécution…' : `Exécuter la sélection (${pendingCount})`}
+              </Button>
             </div>
 
             {execResults && (
               <div className="mt-3 space-y-1">
                 {execResults.map((r, i) => (
-                  <div key={i} className={`text-xs flex items-center gap-2 ${r.succès ? 'text-[#6a8a6a]' : 'text-[#8a4a4a]'}`}>
-                    <span>{r.succès ? '✓' : '✗'}</span>
-                    <span className="truncate">{filename(r.path)}</span>
-                    {r.erreur && <span className="text-[#6a3a3a]">— {r.erreur}</span>}
+                  <div key={i} className={`text-xs flex items-center gap-2 ${r.succès ? 'text-success' : 'text-error'}`}>
+                    {r.succès ? <Check size={12} /> : <X size={12} />}
+                    <span className="truncate font-mono">{filename(r.path)}</span>
+                    {r.erreur && <span className="text-error/80">— {r.erreur}</span>}
                   </div>
                 ))}
               </div>
             )}
           </div>
         )}
-      </section>
+      </Card>
 
       {/* ── Section 2 : Doublons ── */}
-      <section>
-        <h2 className="text-[10px] uppercase tracking-[0.2em] text-[#444] mb-4">Doublons</h2>
+      <Card className="space-y-4">
+        <h2 className="text-sm font-semibold text-primary flex items-center gap-2">
+          <Copy size={15} className="text-muted" />
+          Doublons
+        </h2>
 
-        <button
-          onClick={loadDuplicates}
-          disabled={loadingDups}
-          className="px-4 py-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-xs hover:border-[#444] disabled:opacity-50 transition-colors"
-        >
+        <Button variant="secondary" onClick={loadDuplicates} disabled={loadingDups}>
           {loadingDups ? 'Analyse…' : 'Détecter les doublons'}
-        </button>
+        </Button>
 
         {duplicates !== null && (
-          <div className="mt-4">
+          <div>
             {duplicates.length === 0 ? (
-              <p className="text-xs text-[#3a3a3a]">Aucun doublon détecté.</p>
+              <p className="text-xs text-muted">Aucun doublon détecté.</p>
             ) : (
               <div className="space-y-3">
                 {duplicates.map((grp, gi) => (
-                  <div key={gi} className="border border-[#1e1e1e] rounded p-3 space-y-1">
-                    <div className="text-[10px] text-[#444] mb-2">
-                      similarité {(grp.similarité * 100).toFixed(1)}%
+                  <Card key={gi} elevated className="space-y-1">
+                    <div className="mb-2">
+                      <Badge variant="secondary" mono>
+                        similarité {(grp.similarité * 100).toFixed(1)}%
+                      </Badge>
                     </div>
                     {grp.groupe.map((p, pi) => (
                       <div key={pi} className="flex items-center gap-3">
-                        <span className="text-xs text-[#888] truncate flex-1" title={p}>
+                        <span className="text-xs font-mono text-secondary truncate flex-1" title={p}>
                           {filename(p)}
                         </span>
-                        <span className="text-[10px] text-[#333] truncate max-w-[200px] hidden sm:block" title={p}>
+                        <span className="text-xs font-mono text-muted truncate max-w-[200px] hidden sm:block" title={p}>
                           {p}
                         </span>
-                        <button
-                          onClick={() => openFile(p)}
-                          className="text-[10px] text-[#444] hover:text-[#888] shrink-0 transition-colors"
-                        >
+                        <Button variant="ghost" size="sm" onClick={() => openFile(p)}>
                           ouvrir
-                        </button>
+                        </Button>
                       </div>
                     ))}
-                  </div>
+                  </Card>
                 ))}
               </div>
             )}
           </div>
         )}
-      </section>
+      </Card>
 
       {/* ── Section 3 : Historique ── */}
-      <section>
-        <div className="flex items-center gap-4 mb-4">
-          <h2 className="text-[10px] uppercase tracking-[0.2em] text-[#444]">Historique</h2>
-          <button
-            onClick={loadLog}
-            className="text-[10px] text-[#333] hover:text-[#666] transition-colors"
-          >
+      <Card className="space-y-4">
+        <div className="flex items-center gap-4">
+          <h2 className="text-sm font-semibold text-primary flex items-center gap-2">
+            <RefreshCw size={15} className="text-muted" />
+            Historique
+          </h2>
+          <Button variant="ghost" size="sm" icon={<RefreshCw size={12} />} onClick={loadLog}>
             rafraîchir
-          </button>
+          </Button>
         </div>
 
         {log.length === 0 ? (
-          <p className="text-xs text-[#2a2a2a]">Aucune action enregistrée.</p>
+          <p className="text-xs text-muted">Aucune action enregistrée.</p>
         ) : (
-          <div className="space-y-0">
-            {log.map(entry => (
+          <div>
+            {log.map((entry, ei) => (
               <div
                 key={entry.id}
-                className={`flex items-center gap-3 border-b border-[#111] py-2 text-xs ${entry.annulé ? 'opacity-30' : ''}`}
+                className={`flex items-center gap-3 border-b border-line last:border-b-0 py-2 px-2 text-xs hover:bg-accent/5 transition-colors duration-150 ${
+                  ei % 2 === 1 ? 'bg-elevated/30' : ''
+                } ${entry.annulé ? 'opacity-40' : ''}`}
               >
-                <span className="text-[#333] shrink-0 text-[10px]">
+                <span className="text-muted font-mono shrink-0">
                   {new Date(entry.date).toLocaleString('fr-FR', {
                     day: '2-digit', month: '2-digit',
                     hour: '2-digit', minute: '2-digit',
                   })}
                 </span>
-                <span className="text-[#444] shrink-0 text-[10px]">{entry.type}</span>
-                <span className="text-[#666] truncate flex-1" title={`${entry.source} → ${entry.destination}`}>
+                <Badge variant="neutral" mono>{entry.type}</Badge>
+                <span className="text-secondary font-mono truncate flex-1" title={`${entry.source} → ${entry.destination}`}>
                   {filename(entry.source)} → {filename(entry.destination)}
                 </span>
                 {!entry.annulé && isRecent(entry.date) && (
-                  <button
-                    onClick={() => undoAction(entry.id)}
-                    className="text-[10px] text-[#5a3a3a] hover:text-[#aa5a5a] shrink-0 transition-colors"
-                  >
+                  <Button variant="ghost" size="sm" icon={<Undo2 size={12} />} onClick={() => undoAction(entry.id)}>
                     annuler
-                  </button>
+                  </Button>
                 )}
                 {entry.annulé && (
-                  <span className="text-[10px] text-[#2a2a2a] shrink-0">annulé</span>
+                  <Badge variant="neutral">annulé</Badge>
                 )}
               </div>
             ))}
           </div>
         )}
-      </section>
+      </Card>
 
       {/* ── Modal aperçu ── */}
-      {showModal && (
-        <div
-          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
-          onClick={e => { if (e.target === e.currentTarget) setShowModal(false) }}
-        >
-          <div className="bg-[#0f0f0f] border border-[#2a2a2a] rounded p-6 max-w-2xl w-full mx-4 max-h-[75vh] flex flex-col">
-            <h3 className="text-[10px] uppercase tracking-[0.2em] text-[#444] mb-4 shrink-0">
-              Aperçu — {pendingCount} action{pendingCount !== 1 ? 's' : ''}
-            </h3>
-
-            <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
-              {pendingActions.map((a, i) => (
-                <div key={i} className="text-xs border-b border-[#1a1a1a] pb-2">
-                  <span className="text-[#3a5a3a] mr-2">[{a.type}]</span>
-                  <span className="text-[#777]">{filename(a.source)}</span>
-                  <span className="text-[#333] mx-2">→</span>
-                  <span className="text-[#aaa] break-all">{a.destination}</span>
-                </div>
-              ))}
+      <Modal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        title={`Aperçu — ${pendingCount} action${pendingCount !== 1 ? 's' : ''}`}
+        width="max-w-2xl"
+      >
+        <div className="max-h-[55vh] overflow-y-auto space-y-2">
+          {pendingActions.map((a, i) => (
+            <div key={i} className="text-xs border-b border-line last:border-b-0 pb-2">
+              <Badge variant="primary" mono className="mr-2">{a.type}</Badge>
+              <span className="text-secondary font-mono">{filename(a.source)}</span>
+              <span className="text-muted mx-2">→</span>
+              <span className="text-primary font-mono break-all">{a.destination}</span>
             </div>
-
-            <div className="mt-4 flex gap-3 shrink-0 pt-2 border-t border-[#1a1a1a]">
-              <button
-                onClick={executeActions}
-                disabled={executing}
-                className="px-4 py-2 bg-[#111a11] border border-[#1e3a1e] rounded text-xs hover:border-[#3a6a3a] disabled:opacity-50 transition-colors"
-              >
-                {executing ? 'Exécution…' : 'Confirmer et exécuter'}
-              </button>
-              <button
-                onClick={() => setShowModal(false)}
-                className="px-4 py-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-xs hover:border-[#444] transition-colors"
-              >
-                Annuler
-              </button>
-            </div>
-          </div>
+          ))}
         </div>
-      )}
+
+        <div className="mt-4 flex gap-3 pt-3 border-t border-line">
+          <Button variant="primary" onClick={executeActions} disabled={executing}>
+            {executing ? 'Exécution…' : 'Confirmer et exécuter'}
+          </Button>
+          <Button variant="ghost" onClick={() => setShowModal(false)}>
+            Annuler
+          </Button>
+        </div>
+      </Modal>
     </div>
   )
 }

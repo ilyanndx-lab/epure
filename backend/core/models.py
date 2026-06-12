@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ QUALITATIVE_METADATA: dict[str, dict] = {
     "llama-3.1-8b-instant": {
         "categorie": "rapide",
         "description": "Chat temps réel · 560 tok/s",
-        "usages": ["Chat rapide", "Discussion libre"],
+        "usages": ["Chat rapide", "Discussion libre", "Conversation instantanée"],
     },
     "llama-3.3-70b-versatile": {
         "categorie": "puissant",
@@ -66,21 +68,44 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "description": "Nouveau · Google",
         "usages": ["Chat rapide"],
     },
-    "deepseek-v4-flash": {
-        "categorie": "puissant",
-        "description": "Chat + raisonnement · DeepSeek",
-        "usages": ["Kholle maths", "Discussion libre"],
-    },
-    "deepseek-r1": {
-        "categorie": "puissant",
-        "description": "Raisonnement avancé · chain-of-thought",
-        "usages": ["Kholle maths", "Kholle physique"],
-    },
     # Groq reasoning
     "deepseek-r1-distill-llama-70b": {
         "categorie": "puissant",
         "description": "Raisonnement · chain-of-thought · Groq",
         "usages": ["Kholle maths", "Kholle physique"],
+    },
+    # NVIDIA NIM DeepSeek
+    "deepseek-ai/deepseek-r1": {
+        "categorie": "puissant",
+        "description": "Raisonnement · NVIDIA NIM",
+        "usages": ["Kholle maths", "Kholle physique"],
+    },
+    "deepseek-ai/deepseek-v4-flash": {
+        "categorie": "puissant",
+        "description": "Chat général · NVIDIA NIM",
+        "usages": ["Discussion libre", "Flashcards"],
+    },
+    # Mistral
+    "codestral-latest": {
+        "categorie": "puissant",
+        "description": "Code SOTA · Mistral",
+        "usages": ["Code"],
+    },
+    "mistral-small-latest": {
+        "categorie": "puissant",
+        "description": "Français + sciences · RGPD",
+        "usages": ["Discussion libre", "Kholle physique"],
+    },
+    # Ollama qualitative metadata
+    "qwen2.5-coder:7b": {
+        "categorie": "puissant",
+        "description": "Code spécialisé · local CPU",
+        "usages": ["Code"],
+    },
+    "mistral-small:24b": {
+        "categorie": "puissant",
+        "description": "Français + sciences · local CPU",
+        "usages": ["Kholle physique", "Discussion libre"],
     },
     # Cerebras
     "llama3.1-8b": {
@@ -111,9 +136,11 @@ _NOM_MAP: dict[str, str] = {
     "gemini-2.5-flash-lite":              "Gemini 2.5 Flash-Lite",
     "gemini-2.5-pro":                     "Gemini 2.5 Pro",
     "gemini-3.1-flash-lite":              "Gemini 3.1 Flash-Lite",
-    "deepseek-r1-distill-llama-70b": "DeepSeek R1 70B",
-    "deepseek-v4-flash": "DeepSeek V4 Flash",
-    "deepseek-r1":       "DeepSeek R1",
+    "deepseek-r1-distill-llama-70b":  "DeepSeek R1 70B",
+    "deepseek-ai/deepseek-r1":        "DeepSeek R1 (NIM)",
+    "deepseek-ai/deepseek-v4-flash":  "DeepSeek V4 Flash (NIM)",
+    "codestral-latest":               "Codestral",
+    "mistral-small-latest":           "Mistral Small",
     "llama3.1-8b":  "Llama 3.1 8B",
     "llama-4-scout":   "Llama 4 Scout",
     "llama-4-maverick":"Llama 4 Maverick",
@@ -126,9 +153,26 @@ RECOMMENDATION_OVERRIDES: dict[str, str] = {
 }
 
 _GROQ_EXCLUDE = {"whisper", "guard", "orpheus", "compound"}
-_NVIDIA_STATIC    = ["nvidia/nemotron-3-super-120b-a12b", "nvidia/llama-3.1-nemotron-nano-8b-v1"]
-_DEEPSEEK_STATIC = ["deepseek-v4-flash", "deepseek-r1"]
-_GEMINI_STATIC    = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.1-flash-lite"]
+
+# Static fallbacks when the live /v1/models fetch is unavailable.
+# For NVIDIA/Mistral these are also the curated surface (the live list is only
+# used to validate availability — NIM exposes 100+ models we don't want to show).
+_GROQ_STATIC = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "deepseek-r1-distill-llama-70b",
+]
+_CEREBRAS_STATIC = ["llama3.1-8b", "llama-4-scout", "llama-4-maverick"]
+_NVIDIA_STATIC = [
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/llama-3.1-nemotron-nano-8b-v1",
+    "deepseek-ai/deepseek-r1",
+    "deepseek-ai/deepseek-v4-flash",
+]
+_MISTRAL_STATIC = ["codestral-latest", "mistral-small-latest"]
+_GEMINI_STATIC  = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.1-flash-lite"]
 
 # FastFlowLM (local NPU) — static list, availability checked at request time
 FLM_MODELS_STATIC: list[dict] = [
@@ -139,7 +183,7 @@ FLM_MODELS_STATIC: list[dict] = [
         "gratuit": True,
         "description": "Léger · NPU AMD · 17 tok/s",
         "_categorie": "rapide",
-        "_usages": ["Chat rapide", "Flashcards", "Classification"],
+        "_usages": ["Chat rapide", "Flashcards", "Classification", "Conversation instantanée"],
     },
     {
         "id": "flm:qwen3:8b",
@@ -150,7 +194,106 @@ FLM_MODELS_STATIC: list[dict] = [
         "_categorie": "puissant",
         "_usages": ["Kholle maths", "Chat rapide"],
     },
+    {
+        "id": "flm:gemma3:4b",
+        "nom": "Gemma 3 4B (NPU)",
+        "provider": "flm",
+        "gratuit": True,
+        "description": "Français + vision · 20 tok/s",
+        "_categorie": "rapide",
+        "_usages": ["Chat rapide", "Discussion libre"],
+    },
+    {
+        "id": "flm:phi4-mini-it:4b",
+        "nom": "Phi-4 Mini (NPU)",
+        "provider": "flm",
+        "gratuit": True,
+        "description": "Raisonnement compact · NPU",
+        "_categorie": "rapide",
+        "_usages": ["Kholle maths", "Chat rapide"],
+    },
+    {
+        "id": "flm:qwen3vl-it:4b",
+        "nom": "Qwen3-VL 4B (NPU)",
+        "provider": "flm",
+        "gratuit": True,
+        "description": "Vision + OCR · NPU",
+        "_categorie": "rapide",
+        "_usages": ["Vision", "Chat rapide"],
+    },
+    {
+        "id": "flm:gpt-oss:20b",
+        "nom": "GPT-OSS 20B (NPU)",
+        "provider": "flm",
+        "gratuit": True,
+        "description": "Raisonnement fort · NPU AMD",
+        "_categorie": "puissant",
+        "_usages": ["Kholle maths", "Kholle physique"],
+    },
 ]
+
+# ── FLM local model detection ────────────────────────────────────────────────
+
+_FLM_MODELS_DIR = Path.home() / ".flm" / "models"
+
+# Installed folder name → FLM model ID. Folders not listed here go through
+# the generic parser below (Name-Size-NPUx → name:size).
+_FLM_FOLDER_MAP: dict[str, str] = {
+    "GPT-OSS-20B-NPU2":           "gpt-oss:20b",
+    "Gemma3-4B-NPU2":             "gemma3:4b",
+    "Phi4-mini-Instruct-NPU2":    "phi4-mini-it:4b",
+    "Qwen3-4B-NPU2":              "qwen3:4b",
+    "Qwen3-8B-NPU2":              "qwen3:8b",
+    "Qwen3-VL-4B-Instruct-NPU2":  "qwen3vl-it:4b",
+}
+
+
+def _flm_folder_to_id(folder: str) -> str:
+    if folder in _FLM_FOLDER_MAP:
+        return _FLM_FOLDER_MAP[folder]
+    parts = re.sub(r"-NPU\d*$", "", folder, flags=re.IGNORECASE).split("-")
+    size = next(
+        (p.lower() for p in reversed(parts) if re.fullmatch(r"\d+(?:\.\d+)?[bB]|e\d+[bB]", p)),
+        None,
+    )
+    if size:
+        name = "-".join(p for p in parts if p.lower() != size).lower()
+        return f"{name}:{size}"
+    return folder.lower()
+
+
+def get_flm_installed() -> set[str]:
+    """FLM model IDs physically present in ~/.flm/models (empty set if none)."""
+    try:
+        if not _FLM_MODELS_DIR.is_dir():
+            return set()
+        return {
+            _flm_folder_to_id(d.name) for d in _FLM_MODELS_DIR.iterdir() if d.is_dir()
+        }
+    except Exception:
+        logger.exception("Erreur scan dossier FLM %s", _FLM_MODELS_DIR)
+        return set()
+
+
+def get_ollama_installed() -> Optional[list[str]]:
+    """Installed Ollama model names via direct HTTP on localhost.
+
+    Bypasses the ollama python client, which honors OLLAMA_HOST=0.0.0.0
+    (server listen address) and fails to connect on Windows.
+    Returns None if the server is unreachable.
+    """
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return [
+            m.get("model") or m.get("name", "")
+            for m in data.get("models", [])
+            if m.get("model") or m.get("name")
+        ]
+    except Exception:
+        logger.warning("Ollama non joignable sur localhost:11434")
+        return None
 
 
 def check_flm() -> bool:
@@ -161,6 +304,17 @@ def check_flm() -> bool:
             return resp.status == 200
     except Exception:
         return False
+
+
+def flm_model_ids() -> Optional[set[str]]:
+    """Model IDs known by the FLM server catalog, or None if unreachable."""
+    try:
+        req = urllib.request.Request("http://localhost:11435/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return {m.get("id", "") for m in data.get("data", []) if m.get("id")}
+    except Exception:
+        return None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -185,7 +339,11 @@ def _make_entry(provider: str, model_id: str) -> dict:
 
 
 def _http_json(url: str, token: str) -> dict:
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    # User-Agent explicite : Cloudflare (Groq/Cerebras) renvoie 403 au UA Python-urllib
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) epure/1.0",
+    })
     with urllib.request.urlopen(req, timeout=4) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -204,56 +362,68 @@ class ModelsRegistry:
         self._catalog_at = 0.0
 
     # ── Sync fetches (run in executor) ───────────────────────────────────────
+    # Each fetch returns: list of live IDs, [] when the API key is rejected
+    # (401/403 → mark everything unavailable), or None when no key is set or
+    # the request failed (→ fall back to key-presence availability).
 
-    def _fetch_groq(self) -> list[str]:
-        token = os.environ.get("GROQ_API_KEY", "").strip()
+    @staticmethod
+    def _fetch_models(name: str, url: str, env_key: str) -> Optional[list[str]]:
+        token = os.environ.get(env_key, "").strip()
         if not token:
-            return []
+            return None
         try:
-            data = _http_json("https://api.groq.com/openai/v1/models", token)
-            ids = []
-            for m in data.get("data", []):
-                mid = m.get("id", "")
-                if any(ex in mid.lower() for ex in _GROQ_EXCLUDE):
-                    continue
-                ids.append(mid)
-            logger.info("Groq: %d modèles récupérés", len(ids))
-            return ids
-        except Exception:
-            logger.exception("Erreur fetch Groq models")
-            return []
-
-    def _fetch_cerebras(self) -> list[str]:
-        token = os.environ.get("CEREBRAS_API_KEY", "").strip()
-        if not token:
-            return []
-        try:
-            data = _http_json("https://api.cerebras.ai/v1/models", token)
+            data = _http_json(url, token)
             items = data.get("data") or data.get("models") or []
             ids = [m.get("id", "") for m in items if m.get("id")]
-            logger.info("Cerebras: %d modèles récupérés", len(ids))
+            logger.info("%s: %d modèles récupérés via /v1/models", name, len(ids))
             return ids
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                logger.warning(
+                    "%s: clé API refusée (HTTP %d) — modèles marqués indisponibles",
+                    name, exc.code,
+                )
+                return []
+            logger.exception("Erreur fetch %s models", name)
+            return None
         except Exception:
-            logger.exception("Erreur fetch Cerebras models")
-            return []
+            logger.exception("Erreur fetch %s models", name)
+            return None
+
+    def _fetch_groq(self) -> Optional[list[str]]:
+        ids = self._fetch_models("Groq", "https://api.groq.com/openai/v1/models", "GROQ_API_KEY")
+        if ids is None:
+            return None
+        return [mid for mid in ids if not any(ex in mid.lower() for ex in _GROQ_EXCLUDE)]
+
+    def _fetch_cerebras(self) -> Optional[list[str]]:
+        return self._fetch_models("Cerebras", "https://api.cerebras.ai/v1/models", "CEREBRAS_API_KEY")
+
+    def _fetch_mistral(self) -> Optional[list[str]]:
+        return self._fetch_models("Mistral", "https://api.mistral.ai/v1/models", "MISTRAL_API_KEY")
+
+    def _fetch_nvidia(self) -> Optional[list[str]]:
+        return self._fetch_models("NVIDIA", "https://integrate.api.nvidia.com/v1/models", "NVIDIA_API_KEY")
 
     # ── Async orchestration ──────────────────────────────────────────────────
 
-    async def _guarded(self, func) -> list:
+    async def _guarded(self, func) -> Optional[list]:
         loop = asyncio.get_running_loop()
         try:
             return await asyncio.wait_for(loop.run_in_executor(None, func), timeout=5.0)
         except asyncio.TimeoutError:
             logger.warning("Timeout fetch provider: %s", func.__name__)
-            return []
+            return None
         except Exception:
             logger.exception("Erreur fetch provider: %s", func.__name__)
-            return []
+            return None
 
     async def _build(self) -> dict:
-        groq_ids, cerebras_ids = await asyncio.gather(
+        groq_ids, cerebras_ids, mistral_ids, nvidia_ids = await asyncio.gather(
             self._guarded(self._fetch_groq),
             self._guarded(self._fetch_cerebras),
+            self._guarded(self._fetch_mistral),
+            self._guarded(self._fetch_nvidia),
         )
 
         rapide: list[dict] = []
@@ -269,16 +439,21 @@ class ModelsRegistry:
             else:
                 puissant.append(entry)
 
-        for mid in groq_ids:
-            _place(_make_entry("groq", mid))
-        for mid in cerebras_ids:
-            _place(_make_entry("cerebras", mid))
-        for mid in _NVIDIA_STATIC:
-            _place(_make_entry("nvidia", mid))
-        for mid in _DEEPSEEK_STATIC:
-            _place(_make_entry("deepseek", mid))
-        for mid in _GEMINI_STATIC:
-            _place(_make_entry("gemini", mid))
+        def _add(provider: str, surface: list[str], live: Optional[list[str]]) -> None:
+            live_set = set(live) if live is not None else None
+            for mid in surface:
+                entry = _make_entry(provider, mid)
+                entry["_disponible"] = None if live_set is None else (mid in live_set)
+                _place(entry)
+
+        # Groq/Cerebras: the live list is the surface; static fallback on failure
+        _add("groq", groq_ids if groq_ids else _GROQ_STATIC, groq_ids)
+        _add("cerebras", cerebras_ids if cerebras_ids else _CEREBRAS_STATIC, cerebras_ids)
+        # NVIDIA/Mistral: curated surface, live list only validates availability
+        _add("nvidia", _NVIDIA_STATIC, nvidia_ids)
+        _add("mistral", _MISTRAL_STATIC, mistral_ids)
+        # Gemini: pas de /v1/models OpenAI-compatible — availability = key presence
+        _add("gemini", _GEMINI_STATIC, None)
 
         return {"rapide": rapide, "puissant": puissant, "long_contexte": long_contexte}
 

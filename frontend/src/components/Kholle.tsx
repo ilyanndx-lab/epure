@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { GraduationCap, Play, Square, Send, ArrowRight, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import { Button, Card, ProgressBar, Textarea } from './ui'
 import RichMessage from './RichMessage'
+import ModuleBar from './ModuleBar'
 
 const API = 'http://localhost:8000'
 const WS_KHOLLE = 'ws://localhost:8000/ws/kholle'
@@ -14,16 +17,17 @@ interface CurrentQuestion {
 }
 
 interface KholleProps {
-  inputRef?: React.MutableRefObject<((text: string) => void) | null>
   onAssistantDone?: (text: string) => void
   playSpeech?: (text: string) => void
   stopSpeech?: () => void
   speakingText?: string | null
+  ttsEnabled?: boolean
+  onTtsToggle?: () => void
 }
 
 const basename = (path: string) => path.split(/[/\\]/).pop() ?? path
 
-export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpeech, speakingText }: KholleProps) {
+export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speakingText, ttsEnabled, onTtsToggle }: KholleProps) {
   // Config state
   const [mode, setMode] = useState<Mode>('generate')
   const [indexedFiles, setIndexedFiles] = useState<string[]>([])
@@ -52,15 +56,6 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
   const tokenCountRef = useRef(0)
   const streamStartRef = useRef<number | null>(null)
   const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
-
-  useEffect(() => {
-    if (!inputRef) return
-    if (phase === 'session') {
-      inputRef.current = (text: string) => setAnswer(text)
-    } else {
-      inputRef.current = null
-    }
-  }, [phase, inputRef])
 
   useEffect(() => {
     fetch(`${API}/rag/files`)
@@ -231,32 +226,33 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
     return (
       <main className="flex flex-col flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto px-8 py-8">
-          <div className="max-w-lg">
-            <p className="text-xs font-mono text-[#444] uppercase tracking-widest mb-6">
+          <div className="max-w-lg space-y-5">
+            <h1 className="text-lg font-semibold text-primary flex items-center gap-2">
+              <GraduationCap size={18} className="text-accent" />
               Configuration kholle
-            </p>
+            </h1>
 
-            <div className="space-y-2 mb-7">
+            <Card className="space-y-2">
               {(['generate', 'list'] as Mode[]).map(m => (
                 <label key={m} className="flex items-center gap-3 cursor-pointer group">
                   <input
                     type="radio"
                     checked={mode === m}
                     onChange={() => setMode(m)}
-                    className="accent-[#555]"
+                    className="accent-[--accent-primary]"
                   />
-                  <span className="text-xs font-mono text-[#888] group-hover:text-[#ccc] transition-colors">
+                  <span className="text-sm text-secondary group-hover:text-primary transition-colors duration-150">
                     {m === 'generate' ? 'Générer depuis mes fiches' : 'Fournir une liste'}
                   </span>
                 </label>
               ))}
-            </div>
+            </Card>
 
             {mode === 'generate' ? (
-              <div>
-                <p className="text-xs font-mono text-[#444] mb-3">Sources disponibles :</p>
+              <Card>
+                <p className="text-xs text-muted uppercase tracking-wide mb-3">Sources disponibles</p>
                 {indexedFiles.length === 0 ? (
-                  <p className="text-xs font-mono text-[#333]">Aucun fichier indexé.</p>
+                  <p className="text-sm text-muted">Aucun fichier indexé.</p>
                 ) : (
                   <div className="space-y-2">
                     {indexedFiles.map(f => (
@@ -269,47 +265,57 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
                               e.target.checked ? [...prev, f] : prev.filter(x => x !== f)
                             )
                           }
-                          className="mt-0.5 accent-[#555] shrink-0"
+                          className="mt-0.5 accent-[--accent-primary] shrink-0"
                         />
-                        <span className="text-xs font-mono leading-relaxed">
-                          <span className="text-[#aaa] group-hover:text-[#e0e0e0] transition-colors">
+                        <span className="text-xs leading-relaxed">
+                          <span className="text-secondary group-hover:text-primary transition-colors duration-150">
                             {basename(f)}
                           </span>
                           <br />
-                          <span className="text-[#2e2e2e] text-[10px] break-all">{f}</span>
+                          <span className="text-muted/60 font-mono text-xs break-all">{f}</span>
                         </span>
                       </label>
                     ))}
                   </div>
                 )}
-              </div>
+              </Card>
             ) : (
-              <div>
-                <p className="text-xs font-mono text-[#444] mb-2">Questions (une par ligne) :</p>
-                <textarea
+              <Card>
+                <p className="text-xs text-muted uppercase tracking-wide mb-2">Questions (une par ligne)</p>
+                <Textarea
                   value={questionText}
                   onChange={e => setQuestionText(e.target.value)}
                   placeholder="Définir un espace vectoriel..."
                   rows={8}
-                  className="w-full bg-[#141414] border border-[#242424] rounded px-3 py-2 text-xs text-[#e0e0e0] placeholder-[#333] resize-none focus:outline-none focus:border-[#383838] font-mono"
+                  className="w-full text-xs"
                 />
-              </div>
+              </Card>
             )}
 
             {configError && (
-              <p className="mt-4 text-xs font-mono text-[#7a3333]">{configError}</p>
+              <p className="text-xs text-error">{configError}</p>
             )}
           </div>
         </div>
 
-        <div className="border-t border-[#1e1e1e] px-8 py-4">
-          <button
+        <ModuleBar
+          module="kholle"
+          showMic
+          showModel
+          onTranscribed={(t) => setQuestionText(prev => prev + t)}
+          ttsEnabled={ttsEnabled}
+          onTtsToggle={onTtsToggle}
+          speakingText={speakingText}
+        />
+        <div className="border-t border-line px-8 py-4">
+          <Button
+            variant="primary"
             onClick={startSession}
             disabled={!canStart}
-            className="px-5 py-2 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+            icon={starting ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
           >
             {starting ? 'Génération des questions...' : 'Démarrer la kholle'}
-          </button>
+          </Button>
         </div>
       </main>
     )
@@ -323,21 +329,22 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
     return (
       <main className="flex flex-col flex-1 overflow-hidden">
         {/* Question header */}
-        <div className="border-b border-[#1e1e1e] px-8 py-5 shrink-0">
+        <div className="border-b border-line px-8 py-5 shrink-0 bg-surface">
           {currentQ && (
             <>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-mono text-[#3a3a3a]">
-                  {currentQ.index + 1} / {currentQ.total}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-mono text-muted">
+                  Question {currentQ.index + 1} / {currentQ.total}
                 </span>
-                <button
-                  onClick={reset}
-                  className="text-xs font-mono text-[#2a2a2a] hover:text-[#666] transition-colors"
-                >
+                <Button variant="ghost" size="sm" onClick={reset}>
                   abandonner
-                </button>
+                </Button>
               </div>
-              <p className="text-base font-mono text-[#e0e0e0] leading-relaxed">
+              <ProgressBar
+                value={((currentQ.index + 1) / currentQ.total) * 100}
+                className="mb-3"
+              />
+              <p className="text-base text-primary leading-relaxed">
                 {currentQ.content}
               </p>
             </>
@@ -350,12 +357,12 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
             <>
               <RichMessage content={correction} streaming={correcting} />
               {correcting && streamStats && (
-                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                <div className="mt-1 text-xs font-mono text-muted/70">
                   {streamStats.tps.toFixed(1)} tok/s · {streamStats.count} tokens
                 </div>
               )}
               {!correcting && correctionStats && (
-                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                <div className="mt-1 text-xs font-mono text-muted/70">
                   {correctionStats.tps.toFixed(1)} tok/s · {correctionStats.durationMs}ms · {correctionStats.promptTokens}in / {correctionStats.outputTokens}out tokens
                 </div>
               )}
@@ -364,44 +371,51 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
                   onClick={() =>
                     speakingText === correction ? stopSpeech?.() : playSpeech(correction)
                   }
-                  className={`mt-3 text-xs font-mono transition-colors ${
+                  className={`mt-3 inline-flex items-center gap-1.5 text-xs transition-colors duration-150 ${
                     speakingText === correction
-                      ? 'text-[#5a9a5a] hover:text-[#7aba7a]'
-                      : 'text-[#333] hover:text-[#888]'
+                      ? 'text-accent2 hover:text-accent2-hover'
+                      : 'text-muted hover:text-secondary'
                   }`}
                   title={speakingText === correction ? 'Arrêter' : 'Lire la correction'}
                 >
-                  {speakingText === correction ? '■ arrêter' : '▶ lire'}
+                  {speakingText === correction
+                    ? <><Square size={12} fill="currentColor" /> arrêter</>
+                    : <><Play size={12} /> lire</>}
                 </button>
               )}
             </>
           ) : (
             !correcting && (
-              <div className="flex items-center justify-center h-full">
-                <span className="text-xs font-mono text-[#2a2a2a] select-none">
-                  — en attente de ta réponse —
-                </span>
+              <div className="flex flex-col items-center justify-center gap-2 h-full text-muted select-none">
+                <GraduationCap size={16} />
+                <span className="text-sm">En attente de ta réponse</span>
               </div>
             )
           )}
           {sessionError && (
-            <p className="mt-3 text-xs font-mono text-[#7a3333]">{sessionError}</p>
+            <p className="mt-3 text-xs text-error">{sessionError}</p>
           )}
           <div ref={correctionBottomRef} />
         </div>
 
+        <ModuleBar
+          module="kholle"
+          showMic
+          showModel
+          onTranscribed={(t) => setAnswer(prev => prev + t)}
+          ttsEnabled={ttsEnabled}
+          onTtsToggle={onTtsToggle}
+          speakingText={speakingText}
+        />
         {/* Input */}
-        <div className="border-t border-[#1e1e1e] px-8 py-4 shrink-0">
+        <div className="border-t border-line px-8 py-4 shrink-0">
           {correctionDone ? (
-            <button
-              onClick={nextQuestion}
-              className="px-5 py-2 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] transition-colors"
-            >
-              {isLast ? 'Voir le bilan →' : 'Question suivante →'}
-            </button>
+            <Button variant="primary" onClick={nextQuestion} icon={<ArrowRight size={15} />}>
+              {isLast ? 'Voir le bilan' : 'Question suivante'}
+            </Button>
           ) : (
             <div className="flex gap-3 items-end">
-              <textarea
+              <Textarea
                 value={answer}
                 onChange={e => setAnswer(e.target.value)}
                 disabled={correcting}
@@ -413,7 +427,7 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
                 }}
                 placeholder="Ta réponse..."
                 rows={1}
-                className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-2 text-sm text-[#e0e0e0] placeholder-[#383838] resize-none focus:outline-none focus:border-[#383838] font-mono disabled:opacity-40"
+                className="flex-1 disabled:opacity-40"
                 style={{ minHeight: '40px', maxHeight: '160px' }}
                 onInput={e => {
                   const el = e.currentTarget
@@ -424,9 +438,10 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
               <button
                 onClick={sendAnswer}
                 disabled={correcting || !answer.trim()}
-                className="px-4 py-2 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#666] hover:border-[#383838] hover:text-[#aaa] disabled:opacity-20 disabled:cursor-not-allowed transition-colors shrink-0"
+                title="Répondre"
+                className="p-2.5 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
               >
-                {correcting ? '...' : 'répondre'}
+                {correcting ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
               </button>
             </div>
           )}
@@ -440,32 +455,34 @@ export default function Kholle({ inputRef, onAssistantDone, playSpeech, stopSpee
   return (
     <main className="flex flex-col flex-1 overflow-hidden">
       <div className="flex-1 overflow-y-auto px-8 py-8">
-        <div className="max-w-2xl">
-          <p className="text-xs font-mono text-[#444] uppercase tracking-widest mb-6">
+        <div className="max-w-2xl space-y-5">
+          <h1 className="text-lg font-semibold text-primary flex items-center gap-2">
+            <GraduationCap size={18} className="text-accent" />
             Bilan de kholle
-          </p>
+          </h1>
           {sessionErrors.length === 0 ? (
-            <p className="text-xs font-mono text-[#555]">
-              Aucune erreur détectée. Excellent travail.
-            </p>
+            <Card className="flex items-center gap-3">
+              <CheckCircle2 size={18} className="text-success shrink-0" />
+              <p className="text-sm text-secondary">
+                Aucune erreur détectée. Excellent travail.
+              </p>
+            </Card>
           ) : (
             <div className="space-y-2">
               {sessionErrors.map((err, i) => (
-                <div key={i} className="border border-[#1e1e1e] rounded px-4 py-3">
-                  <p className="text-xs font-mono text-[#888] leading-relaxed">{err}</p>
-                </div>
+                <Card key={i} className="flex items-start gap-3">
+                  <XCircle size={15} className="text-error shrink-0 mt-0.5" />
+                  <p className="text-sm text-secondary leading-relaxed">{err}</p>
+                </Card>
               ))}
             </div>
           )}
         </div>
       </div>
-      <div className="border-t border-[#1e1e1e] px-8 py-4">
-        <button
-          onClick={reset}
-          className="px-5 py-2 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] transition-colors"
-        >
+      <div className="border-t border-line px-8 py-4">
+        <Button variant="primary" onClick={reset}>
           Nouvelle kholle
-        </button>
+        </Button>
       </div>
     </main>
   )

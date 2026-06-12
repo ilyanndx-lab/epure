@@ -15,7 +15,7 @@ _CLASSIFY_MODEL_GROQ = "groq:llama-3.1-8b-instant"
 _KEY_MAP = {
     "groq":     "GROQ_API_KEY",
     "cerebras": "CEREBRAS_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
+    "mistral":  "MISTRAL_API_KEY",
     "nvidia":   "NVIDIA_API_KEY",
     "gemini":   "GEMINI_API_KEY",
     "flm":      None,

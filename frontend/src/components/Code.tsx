@@ -1,6 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
+import {
+  Brain, Check, ChevronDown, ChevronRight, Code2, CornerDownLeft, FilePlus,
+  FlaskConical, FolderPlus, Loader2, Monitor, Package, Play, RefreshCw,
+  Save, Terminal as TerminalIcon, Wrench, X, Zap,
+} from 'lucide-react'
+import { Badge, Button, Input, Select, Toggle } from './ui'
 import RichMessage from './RichMessage'
+import ModuleBar from './ModuleBar'
 
 const API = 'http://localhost:8000'
 
@@ -81,11 +88,11 @@ function TreeNodeItem({
     return (
       <div>
         <div
-          className="flex items-center gap-1 px-2 py-1 cursor-pointer hover:bg-[#111] rounded text-[11px] font-mono text-[#444] group"
+          className="flex items-center gap-1 px-2 py-1 cursor-pointer hover:bg-elevated rounded-sm text-xs font-mono text-muted group transition-colors duration-150"
           style={{ paddingLeft: `${8 + depth * 12}px` }}
           onClick={() => setOpen(o => !o)}
         >
-          <span className="text-[9px] text-[#2a2a2a]">{open ? '▼' : '▶'}</span>
+          {open ? <ChevronDown size={11} className="shrink-0" /> : <ChevronRight size={11} className="shrink-0" />}
           <span>{node.name}/</span>
         </div>
         {open && node.children?.map(child => (
@@ -104,18 +111,20 @@ function TreeNodeItem({
 
   return (
     <div
-      className={`flex items-center justify-between px-2 py-1 rounded cursor-pointer group text-[11px] font-mono ${
-        isActive ? 'bg-[#1a1a1a] text-[#ddd]' : 'text-[#555] hover:text-[#aaa] hover:bg-[#111]'
+      className={`relative flex items-center justify-between px-2 py-1 rounded-sm cursor-pointer group text-xs font-mono transition-colors duration-150 ${
+        isActive ? 'bg-accent/10 text-primary' : 'text-secondary hover:text-primary hover:bg-elevated'
       }`}
       style={{ paddingLeft: `${8 + depth * 12}px` }}
       onClick={() => onSelect(node.path)}
     >
+      {isActive && <span className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-accent" />}
       <span className="truncate">{node.name}</span>
       <button
         onClick={e => onDelete(node.path, e)}
-        className="opacity-0 group-hover:opacity-100 text-[#333] hover:text-[#777] text-[10px] shrink-0 ml-1"
+        title="Supprimer"
+        className="opacity-0 group-hover:opacity-100 text-muted hover:text-error shrink-0 ml-1 transition-colors duration-150"
       >
-        ✕
+        <X size={11} />
       </button>
     </div>
   )
@@ -140,35 +149,39 @@ function Terminal({
     return m ? m[1] : null
   })()
 
+  // Terminal volontairement SOMBRE même en thème light (couleurs fixes)
   return (
-    <div className="mt-2 rounded border border-[#1a1a1a] overflow-hidden">
-      <div className="px-3 py-1.5 bg-[#080808] border-b border-[#1a1a1a] flex items-center justify-between">
-        <span className="text-[9px] font-mono text-[#333]">output · {dur}</span>
-        <span className={`text-[9px] font-mono ${event.returncode === 0 ? 'text-[#2a5a2a]' : 'text-[#5a2a2a]'}`}>
+    <div className="mt-2 rounded-md border border-line overflow-hidden">
+      <div className="px-3 py-1.5 bg-[#16140f] border-b border-[#2a2620] flex items-center justify-between">
+        <span className="text-xs font-mono text-[#8a8478] flex items-center gap-1.5">
+          <TerminalIcon size={11} />
+          output · {dur}
+        </span>
+        <span className={`text-xs font-mono ${event.returncode === 0 ? 'text-success' : 'text-error'}`}>
           exit {event.returncode}
         </span>
       </div>
-      <div className="bg-[#060606] px-3 py-2 font-mono text-[11px] leading-relaxed">
+      <div className="bg-[#100e0a] px-3 py-2 font-mono text-xs leading-relaxed">
         {event.stdout && (
-          <pre className="text-[#3a7a3a] whitespace-pre-wrap break-words">{event.stdout}</pre>
+          <pre className="text-[#d4cfc4] whitespace-pre-wrap break-words">{event.stdout}</pre>
         )}
         {event.stderr && (
-          <pre className="text-[#7a3a3a] whitespace-pre-wrap break-words">{event.stderr}</pre>
+          <pre className="text-error whitespace-pre-wrap break-words">{event.stderr}</pre>
         )}
         {!event.stdout && !event.stderr && (
-          <span className={event.returncode === 0 ? 'text-[#2a5a2a]' : 'text-[#2a2a2a]'}>
+          <span className={event.returncode === 0 ? 'text-success' : 'text-[#8a8478]'}>
             {event.returncode === 0 ? '✓ Exécution terminée (pas de sortie)' : '(pas de sortie)'}
           </span>
         )}
       </div>
       {missingModule && (
-        <div className="px-3 py-2 bg-[#0a0908] border-t border-[#1a1a14] flex items-center gap-2">
-          <span className="text-[9px] font-mono text-[#5a5a2a]">
+        <div className="px-3 py-2 bg-[#16140f] border-t border-[#2a2620] flex items-center gap-2">
+          <span className="text-xs font-mono text-warning">
             Module '{missingModule}' non trouvé.
           </span>
           <button
             onClick={() => onInstall(missingModule)}
-            className="text-[9px] font-mono text-[#3a6a3a] hover:text-[#5a9a5a] border border-[#2a4a2a] rounded px-2 py-0.5 hover:bg-[#0f1a0f] transition-colors"
+            className="text-xs font-mono text-accent2 hover:text-accent2-hover border border-accent2/30 rounded-sm px-2 py-0.5 transition-colors duration-150"
           >
             Installer {missingModule} ?
           </button>
@@ -180,15 +193,21 @@ function Terminal({
 
 // ── Chat event renderer ───────────────────────────────────────────────────
 
-function Collapsible({ label, children, defaultOpen = false }: { label: string; children: React.ReactNode; defaultOpen?: boolean }) {
+function Collapsible({ label, icon, children, defaultOpen = false }: {
+  label: string
+  icon?: React.ReactNode
+  children: React.ReactNode
+  defaultOpen?: boolean
+}) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="border border-[#181818] rounded overflow-hidden my-1">
+    <div className="border border-line border-l-2 border-l-accent2/50 rounded-sm overflow-hidden my-1 bg-surface">
       <button
         onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-[9px] font-mono text-[#444] hover:text-[#777] hover:bg-[#0d0d0d] transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-muted hover:text-secondary hover:bg-elevated transition-colors duration-150 text-left"
       >
-        <span>{open ? '▼' : '▶'}</span>
+        <ChevronRight size={11} className={`shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`} />
+        {icon}
         <span>{label}</span>
       </button>
       {open && <div className="px-3 pb-2 pt-1">{children}</div>}
@@ -214,73 +233,72 @@ function ChatEventView({
   }
   if (event.type === 'reflection') {
     return (
-      <Collapsible label={`🧠 Réflexion${event.streaming ? ' ...' : ''}`} defaultOpen={false}>
-        <div className="text-[10px] font-mono text-[#555] leading-relaxed whitespace-pre-wrap">
+      <Collapsible
+        label={`Réflexion${event.streaming ? ' ...' : ''}`}
+        icon={<Brain size={11} className="text-accent2 shrink-0" />}
+        defaultOpen={false}
+      >
+        <div className="text-xs font-mono text-secondary leading-relaxed whitespace-pre-wrap">
           {event.content}
-          {event.streaming && <span className="animate-pulse text-[#333]">▍</span>}
+          {event.streaming && <span className="animate-pulse text-accent2">▍</span>}
         </div>
       </Collapsible>
     )
   }
   if (event.type === 'tool_call') {
     return (
-      <div className={`flex items-center gap-2 text-[10px] font-mono py-1 ${
-        event.status === 'pending' ? 'text-[#6a5a2a]' : ''
+      <div className={`flex items-center gap-2 text-xs font-mono py-1 ${
+        event.status === 'pending' ? 'text-warning' : 'text-muted'
       }`}>
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-          event.status === 'pending' ? 'bg-[#6a5a2a] animate-pulse' : 'bg-[#3a3a3a]'
+          event.status === 'pending' ? 'bg-warning animate-pulse' : 'bg-line'
         }`} />
-        <span>⚙ {event.tool}</span>
-        {event.path && <span className="text-[#333]">{event.path}</span>}
+        <Wrench size={11} className="shrink-0" />
+        <span>{event.tool}</span>
+        {event.path && <span className="text-muted/60">{event.path}</span>}
       </div>
     )
   }
   if (event.type === 'tool_result') {
     return (
-      <div className={`flex items-start gap-2 text-[10px] font-mono py-1 ${
-        event.status === 'success' ? 'text-[#2a5a2a]' : 'text-[#5a2a2a]'
+      <div className={`flex items-start gap-2 text-xs font-mono py-1 ${
+        event.status === 'success' ? 'text-success' : 'text-error'
       }`}>
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1 ${
-          event.status === 'success' ? 'bg-[#2a5a2a]' : 'bg-[#5a2a2a]'
-        }`} />
-        <span className="break-words">{event.status === 'success' ? '✓' : '✗'} {event.result}</span>
+        {event.status === 'success'
+          ? <Check size={12} className="shrink-0 mt-0.5" />
+          : <X size={12} className="shrink-0 mt-0.5" />}
+        <span className="break-words">{event.result}</span>
       </div>
     )
   }
   if (event.type === 'execute_request') {
     return (
-      <div className="mt-2 border border-[#2a2a1a] rounded bg-[#0e0e08] p-3">
-        <div className="text-[10px] font-mono text-[#5a5a2a] mb-2">
-          Exécuter <span className="text-[#777]">{event.path}</span>
-          {event.args && <span className="text-[#444]"> {event.args}</span>}
+      <div className="mt-2 border border-warning/30 rounded-md bg-warning/5 p-3">
+        <div className="text-xs font-mono mb-2 text-secondary">
+          Exécuter <span className="text-primary">{event.path}</span>
+          {event.args && <span className="text-muted"> {event.args}</span>}
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => onExecuteConfirm(event.path, event.args)}
-            className="px-3 py-1 text-[10px] font-mono bg-[#1a2a1a] text-[#4a7a4a] border border-[#2a4a2a] rounded hover:text-[#6a9a6a] transition-colors"
-          >
-            ▶ exécuter
-          </button>
-          <button
-            onClick={onExecuteCancel}
-            className="px-3 py-1 text-[10px] font-mono text-[#3a3a3a] border border-[#222] rounded hover:text-[#666] transition-colors"
-          >
-            ✕ annuler
-          </button>
+          <Button variant="primary" size="sm" icon={<Play size={12} />} onClick={() => onExecuteConfirm(event.path, event.args)}>
+            exécuter
+          </Button>
+          <Button variant="ghost" size="sm" icon={<X size={12} />} onClick={onExecuteCancel}>
+            annuler
+          </Button>
         </div>
       </div>
     )
   }
   if (event.type === 'verification') {
     return (
-      <div className={`flex items-start gap-2 text-[10px] font-mono py-1 ${
-        event.pending ? 'text-[#4a4a2a]' : event.result.startsWith('✓') ? 'text-[#2a5a2a]' : 'text-[#7a5a2a]'
+      <div className={`flex items-start gap-2 text-xs font-mono py-1 ${
+        event.pending ? 'text-warning' : event.result.startsWith('✓') ? 'text-success' : 'text-warning'
       }`}>
-        <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-0.5 ${
-          event.pending ? 'bg-[#4a4a2a] animate-pulse' : event.result.startsWith('✓') ? 'bg-[#2a5a2a]' : 'bg-[#7a5a2a]'
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1 ${
+          event.pending ? 'bg-warning animate-pulse' : event.result.startsWith('✓') ? 'bg-success' : 'bg-warning'
         }`} />
         <div>
-          <span>{event.pending ? `✓ vérification ${event.path}...` : event.result}</span>
+          <span>{event.pending ? `vérification ${event.path}...` : event.result}</span>
         </div>
       </div>
     )
@@ -288,22 +306,26 @@ function ChatEventView({
   if (event.type === 'tests_prompt') {
     return (
       <div className="flex items-center gap-2 py-1">
-        <span className="text-[9px] font-mono text-[#3a3a3a]">🧪 tests disponibles</span>
-        <button
-          onClick={() => onGenerateTests(event.path)}
-          className="text-[9px] font-mono text-[#3a5a3a] hover:text-[#5a8a5a] border border-[#2a4a2a] rounded px-2 py-0.5 hover:bg-[#0d140d] transition-colors"
-        >
-          Générer les tests →
-        </button>
+        <span className="text-xs font-mono text-muted flex items-center gap-1">
+          <FlaskConical size={11} />
+          tests disponibles
+        </span>
+        <Button variant="secondary" size="sm" onClick={() => onGenerateTests(event.path)}>
+          Générer les tests
+        </Button>
       </div>
     )
   }
   if (event.type === 'tests_result') {
     return (
-      <Collapsible label={`🧪 Tests${event.streaming ? ' (génération...)' : event.path ? ` → ${event.path}` : ''}`} defaultOpen={!event.streaming}>
-        <pre className="text-[10px] font-mono text-[#4a6a4a] whitespace-pre-wrap leading-relaxed">
+      <Collapsible
+        label={`Tests${event.streaming ? ' (génération...)' : event.path ? ` → ${event.path}` : ''}`}
+        icon={<FlaskConical size={11} className="text-accent2 shrink-0" />}
+        defaultOpen={!event.streaming}
+      >
+        <pre className="text-xs font-mono text-secondary whitespace-pre-wrap leading-relaxed">
           {event.content}
-          {event.streaming && <span className="animate-pulse text-[#333]">▍</span>}
+          {event.streaming && <span className="animate-pulse text-accent2">▍</span>}
         </pre>
       </Collapsible>
     )
@@ -313,23 +335,25 @@ function ChatEventView({
   }
   if (event.type === 'execute_external') {
     return (
-      <div className="mt-2 border border-[#1a2a1a] rounded bg-[#0a120a] px-3 py-2">
-        <span className="text-[10px] font-mono text-[#4a8a4a]">
-          🖥 Application GUI — lancée dans une fenêtre externe
+      <div className="mt-2 border border-accent2/30 rounded-md bg-accent2/5 px-3 py-2">
+        <span className="text-xs font-mono text-accent2 flex items-center gap-1.5">
+          <Monitor size={12} />
+          Application GUI — lancée dans une fenêtre externe
         </span>
       </div>
     )
   }
   if (event.type === 'html_preview') {
     return (
-      <div className="mt-2 border border-[#1a1a2a] rounded overflow-hidden">
-        <div className="px-3 py-1 bg-[#080808] border-b border-[#1a1a2a] text-[9px] font-mono text-[#333]">
+      <div className="mt-2 border border-line rounded-md overflow-hidden">
+        <div className="px-3 py-1 bg-elevated border-b border-line text-xs font-mono text-muted">
           html preview
         </div>
+        {/* fond blanc fixe : le HTML arbitraire suppose une page claire */}
         <iframe
           sandbox="allow-scripts"
           srcDoc={event.content}
-          className="w-full h-48 bg-white"
+          className="w-full h-48 bg-on-accent"
           title="HTML preview"
         />
       </div>
@@ -352,22 +376,33 @@ function StatsBar({ usage }: { usage: UsageStats | null }) {
   const providers = Object.entries(usage.session.providers)
   if (total === 0) return null
   return (
-    <div className="px-4 py-1.5 bg-[#090909] border-b border-[#141414] flex items-center gap-4 flex-wrap shrink-0">
-      <span className="text-[9px] font-mono text-[#444]">
-        ⚡ session : <span className="text-[#666]">{fmt(total)}</span>
+    <div className="px-4 py-1.5 bg-surface border-b border-line flex items-center gap-3 flex-wrap shrink-0">
+      <span className="text-xs font-mono text-muted flex items-center gap-1">
+        <Zap size={11} className="text-accent" />
+        session : <span className="text-secondary">{fmt(total)}</span>
       </span>
-      {s.reflection > 0 && <span className="text-[9px] font-mono text-[#4a4a2a]">🧠 {fmt(s.reflection)}</span>}
-      {s.generation > 0 && <span className="text-[9px] font-mono text-[#2a4a4a]">💻 {fmt(s.generation)}</span>}
-      {s.verification > 0 && <span className="text-[9px] font-mono text-[#2a4a2a]">✓ {fmt(s.verification)}</span>}
-      {s.tests > 0 && <span className="text-[9px] font-mono text-[#3a4a2a]">🧪 {fmt(s.tests)}</span>}
+      {s.reflection > 0 && (
+        <span className="text-xs font-mono text-muted flex items-center gap-1"><Brain size={10} /> {fmt(s.reflection)}</span>
+      )}
+      {s.generation > 0 && (
+        <span className="text-xs font-mono text-muted flex items-center gap-1"><Code2 size={10} /> {fmt(s.generation)}</span>
+      )}
+      {s.verification > 0 && (
+        <span className="text-xs font-mono text-muted flex items-center gap-1"><Check size={10} /> {fmt(s.verification)}</span>
+      )}
+      {s.tests > 0 && (
+        <span className="text-xs font-mono text-muted flex items-center gap-1"><FlaskConical size={10} /> {fmt(s.tests)}</span>
+      )}
       {providers.length > 0 && (
-        <span className="text-[9px] font-mono text-[#2a2a2a] ml-auto">
-          {providers.map(([p, t]) => `${p} ${fmt(t)}`).join(' · ')}
+        <span className="ml-auto flex items-center gap-1.5">
+          {providers.map(([p, t]) => (
+            <Badge key={p} variant="secondary" mono>{p} {fmt(t)}</Badge>
+          ))}
         </span>
       )}
       <button
         onClick={() => fetch(`${API}/code/usage/reset`, { method: 'POST' })}
-        className="text-[9px] font-mono text-[#252525] hover:text-[#555] transition-colors"
+        className="text-xs font-mono text-muted hover:text-secondary transition-colors duration-150"
       >reset</button>
     </div>
   )
@@ -378,14 +413,14 @@ function StatsBar({ usage }: { usage: UsageStats | null }) {
 function TurnStatsFooter({ stats: rawStats }: { stats: TurnStats | undefined }) {
   const stats = rawStats ?? { reflection: 0, generation: 0, verification: 0, tests: 0 }
   const parts: string[] = []
-  if (stats.reflection) parts.push(`🧠 ${fmt(stats.reflection)}`)
-  if (stats.generation) parts.push(`💻 ${fmt(stats.generation)}`)
-  if (stats.verification) parts.push(`✓ ${fmt(stats.verification)}`)
-  if (stats.tests) parts.push(`🧪 ${fmt(stats.tests)}`)
+  if (stats.reflection) parts.push(`réfl ${fmt(stats.reflection)}`)
+  if (stats.generation) parts.push(`code ${fmt(stats.generation)}`)
+  if (stats.verification) parts.push(`vérif ${fmt(stats.verification)}`)
+  if (stats.tests) parts.push(`tests ${fmt(stats.tests)}`)
   if (parts.length === 0) return null
   const total = stats.reflection + stats.generation + stats.verification + stats.tests
   return (
-    <div className="text-[9px] font-mono text-[#252525] mt-1 flex gap-2 flex-wrap">
+    <div className="text-xs font-mono text-muted/70 mt-1 flex gap-2 flex-wrap">
       {parts.join(' + ')}
       {parts.length > 1 && <span>= {fmt(total)}</span>}
     </div>
@@ -407,10 +442,10 @@ interface PipelineConfig {
 }
 
 const STEP_DEFS: { key: keyof PipelineConfig; label: string; skippable: boolean }[] = [
-  { key: 'reflection',   label: '🧠 Réflexion', skippable: true  },
-  { key: 'code',         label: '💻 Code',       skippable: false },
-  { key: 'verification', label: '✓ Vérif',       skippable: false },
-  { key: 'tests',        label: '🧪 Tests',       skippable: true  },
+  { key: 'reflection',   label: 'Réflexion', skippable: true  },
+  { key: 'code',         label: 'Code',      skippable: false },
+  { key: 'verification', label: 'Vérif',     skippable: false },
+  { key: 'tests',        label: 'Tests',     skippable: true  },
 ]
 
 const EMPTY_PIPELINE: PipelineConfig = {
@@ -919,45 +954,50 @@ export default function Code() {
     // Add execute_request event to a new agent turn
     setChatTurns(prev => [
       ...prev,
-      { role: 'agent', events: [{ type: 'execute_request', path: activeFile, args: '' }] },
+      {
+        role: 'agent',
+        events: [{ type: 'execute_request', path: activeFile, args: '' }],
+        stats: { reflection: 0, generation: 0, verification: 0, tests: 0 },
+      },
     ])
   }, [activeFile, openFiles, saveFile])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden font-mono">
+    <div className="flex flex-col flex-1 overflow-hidden">
       <StatsBar usage={usage} />
 
       <div className="flex flex-1 overflow-hidden">
 
       {/* ── Colonne 1: Arborescence ── */}
-      <div className="w-52 shrink-0 border-r border-[#1e1e1e] flex flex-col bg-[#0d0d0d]">
-        <div className="px-3 py-2.5 border-b border-[#1e1e1e] flex items-center justify-between">
-          <span className="text-[9px] text-[#2a2a2a] uppercase tracking-[0.2em]">workspace</span>
-          <div className="flex gap-1">
+      <div className="w-52 shrink-0 border-r border-line flex flex-col bg-surface">
+        <div className="px-3 py-2.5 border-b border-line flex items-center justify-between">
+          <span className="text-xs text-muted uppercase tracking-wide">workspace</span>
+          <div className="flex gap-0.5">
             <button
               onClick={() => { setNewItemType('file'); setNewItemName('') }}
               title="Nouveau fichier"
-              className="text-[10px] text-[#333] hover:text-[#888] px-1"
-            >+f</button>
+              className="p-1 rounded-sm text-muted hover:text-secondary hover:bg-elevated transition-colors duration-150"
+            ><FilePlus size={12} /></button>
             <button
               onClick={() => { setNewItemType('dir'); setNewItemName('') }}
               title="Nouveau dossier"
-              className="text-[10px] text-[#333] hover:text-[#888] px-1"
-            >+d</button>
+              className="p-1 rounded-sm text-muted hover:text-secondary hover:bg-elevated transition-colors duration-150"
+            ><FolderPlus size={12} /></button>
             <button
               onClick={fetchTree}
               title="Rafraîchir"
-              className="text-[10px] text-[#333] hover:text-[#888] px-1"
-            >↺</button>
+              className="p-1 rounded-sm text-muted hover:text-secondary hover:bg-elevated transition-colors duration-150"
+            ><RefreshCw size={12} /></button>
           </div>
         </div>
 
         {newItemType && (
-          <div className="px-2 py-1.5 border-b border-[#181818] flex gap-1">
-            <input
+          <div className="px-2 py-1.5 border-b border-line flex gap-1">
+            <Input
               autoFocus
+              mono
               value={newItemName}
               onChange={e => setNewItemName(e.target.value)}
               onKeyDown={e => {
@@ -965,18 +1005,19 @@ export default function Code() {
                 if (e.key === 'Escape') setNewItemType(null)
               }}
               placeholder={newItemType === 'file' ? 'fichier.py' : 'dossier/'}
-              className="flex-1 bg-[#141414] border border-[#222] rounded px-2 py-1 text-[10px] text-[#ccc] placeholder-[#333] focus:outline-none"
+              className="flex-1 text-xs py-1 px-2 min-w-0"
             />
             <button
               onClick={handleCreateItem}
-              className="text-[10px] text-[#444] hover:text-[#888] px-1"
-            >↵</button>
+              title="Créer"
+              className="p-1 rounded-sm text-muted hover:text-secondary transition-colors duration-150"
+            ><CornerDownLeft size={12} /></button>
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto py-1">
+        <div className="flex-1 overflow-y-auto py-1 px-1">
           {tree.length === 0 ? (
-            <div className="text-center py-6 text-[9px] text-[#252525]">workspace vide</div>
+            <div className="text-center py-6 text-xs text-muted">workspace vide</div>
           ) : (
             tree.map(node => (
               <TreeNodeItem
@@ -993,95 +1034,96 @@ export default function Code() {
       </div>
 
       {/* ── Colonne 2: Éditeur Monaco ── */}
-      <div className="flex flex-col flex-1 min-w-0 border-r border-[#1e1e1e]">
+      <div className="flex flex-col flex-1 min-w-0 border-r border-line">
         {/* Tabs */}
-        <div className="flex border-b border-[#1e1e1e] bg-[#0a0a0a] shrink-0 overflow-x-auto">
+        <div className="flex border-b border-line bg-surface shrink-0 overflow-x-auto">
           {openFiles.map(f => (
             <div
               key={f.path}
               onClick={() => setActiveFile(f.path)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-[10px] cursor-pointer border-r border-[#1a1a1a] shrink-0 ${
-                f.path === activeFile ? 'bg-[#0d0d0d] text-[#ccc]' : 'text-[#444] hover:text-[#888] hover:bg-[#0b0b0b]'
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-mono cursor-pointer border-r border-line shrink-0 transition-colors duration-150 ${
+                f.path === activeFile
+                  ? 'bg-elevated text-primary border-t-2 border-t-accent'
+                  : 'text-muted hover:text-secondary hover:bg-elevated/50'
               }`}
             >
               <span className="truncate max-w-[120px]">{f.path.split('/').pop()}</span>
-              {f.dirty && <span className="text-[#5a5a2a] shrink-0">●</span>}
+              {f.dirty && <span className="text-warning shrink-0">●</span>}
               <button
                 onClick={e => closeTab(f.path, e)}
-                className="text-[#2a2a2a] hover:text-[#666] shrink-0 ml-0.5"
-              >✕</button>
+                title="Fermer"
+                className="text-muted hover:text-secondary shrink-0 ml-0.5 transition-colors duration-150"
+              ><X size={11} /></button>
             </div>
           ))}
           {openFiles.length === 0 && (
-            <span className="px-4 py-2 text-[10px] text-[#222]">aucun fichier ouvert</span>
+            <span className="px-4 py-2 text-xs text-muted">aucun fichier ouvert</span>
           )}
           <div className="ml-auto flex items-center gap-2 px-3 shrink-0">
             <label className="flex items-center gap-1.5 cursor-pointer">
-              <span className="text-[9px] text-[#2a2a2a]">auto-save</span>
-              <div
-                onClick={() => setAutoSave(v => !v)}
-                className={`w-6 h-3 rounded-full relative cursor-pointer transition-colors ${autoSave ? 'bg-[#1a3a1a]' : 'bg-[#181818]'}`}
-              >
-                <div className={`absolute top-0.5 w-2 h-2 rounded-full bg-[#444] transition-all ${autoSave ? 'left-3' : 'left-0.5'}`} />
-              </div>
+              <span className="text-xs text-muted">auto-save</span>
+              <Toggle checked={autoSave} onChange={() => setAutoSave(v => !v)} label="Auto-save" />
             </label>
           </div>
         </div>
 
         {/* Editor toolbar */}
         {activeFile && (
-          <div className="border-b border-[#141414] bg-[#090909] shrink-0">
-            <div className="flex items-center gap-2 px-3 py-1.5">
-              <span className="text-[9px] text-[#2a2a2a] truncate flex-1">{activeFile}</span>
-              <button
+          <div className="border-b border-line bg-surface shrink-0">
+            <div className="flex items-center gap-1 px-3 py-1.5">
+              <span className="text-xs font-mono text-muted truncate flex-1">{activeFile}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Save size={12} />}
                 onClick={() => {
                   const f = openFiles.find(x => x.path === activeFile)
                   if (f) saveFile(f.path, f.content)
                 }}
-                className="text-[10px] text-[#444] hover:text-[#aaa] px-2 py-0.5 rounded hover:bg-[#141414] transition-colors"
               >
-                💾 sauv
-              </button>
-              <button
-                onClick={runActiveFile}
-                className="text-[10px] text-[#3a5a3a] hover:text-[#5a8a5a] px-2 py-0.5 rounded hover:bg-[#111] transition-colors"
-              >
-                ▶ exécuter
-              </button>
-              <button
+                sauv
+              </Button>
+              <Button variant="ghost" size="sm" icon={<Play size={12} className="text-success" />} onClick={runActiveFile}>
+                exécuter
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Package size={12} />}
                 onClick={() => { setShowPkgInstall(v => !v); setPkgLines([]) }}
-                className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
-                  showPkgInstall ? 'text-[#6a5a2a] bg-[#141410]' : 'text-[#444] hover:text-[#aaa] hover:bg-[#141414]'
-                }`}
+                className={showPkgInstall ? 'bg-accent/10 text-accent' : ''}
               >
-                📦 pkg
-              </button>
+                pkg
+              </Button>
             </div>
 
             {/* Package install panel */}
             {showPkgInstall && (
               <div className="px-3 pb-2 space-y-1.5">
                 <div className="flex gap-1.5">
-                  <input
+                  <Input
+                    mono
                     value={pkgName}
                     onChange={e => setPkgName(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && installPackage(pkgName)}
                     placeholder="ex: numpy, pygame==2.5.0"
                     disabled={pkgInstalling}
-                    className="flex-1 bg-[#0d0d0d] border border-[#1e1e1e] rounded px-2 py-1 text-[10px] text-[#ccc] placeholder-[#282828] focus:outline-none disabled:opacity-50"
+                    className="flex-1 text-xs py-1 disabled:opacity-50"
                   />
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => installPackage(pkgName)}
                     disabled={pkgInstalling || !pkgName.trim()}
-                    className="px-2 py-1 text-[10px] text-[#3a6a3a] border border-[#2a4a2a] rounded hover:text-[#5a9a5a] disabled:opacity-40 transition-colors"
                   >
                     {pkgInstalling ? '...' : 'pip install'}
-                  </button>
+                  </Button>
                 </div>
                 {pkgLines.length > 0 && (
-                  <div className="bg-[#060606] rounded border border-[#141414] px-2 py-1.5 max-h-24 overflow-y-auto">
+                  // sortie pip : volontairement sombre comme le terminal
+                  <div className="bg-[#100e0a] rounded-sm border border-line px-2 py-1.5 max-h-24 overflow-y-auto">
                     {pkgLines.map((l, i) => (
-                      <div key={i} className={`text-[9px] font-mono leading-relaxed ${l.ok ? 'text-[#3a6a3a]' : 'text-[#6a3a3a]'}`}>
+                      <div key={i} className={`text-xs font-mono leading-relaxed ${l.ok ? 'text-[#d4cfc4]' : 'text-error'}`}>
                         {l.text}
                       </div>
                     ))}
@@ -1092,7 +1134,7 @@ export default function Code() {
           </div>
         )}
 
-        {/* Monaco editor */}
+        {/* Monaco editor — garde son thème sombre vs-dark dans les deux thèmes */}
         <div ref={editorWrapperRef} className="flex-1 min-h-0 overflow-hidden relative">
           {activeFile ? (
             <Editor
@@ -1104,7 +1146,7 @@ export default function Code() {
               theme="vs-dark"
               options={{
                 fontSize: 12,
-                fontFamily: 'monospace',
+                fontFamily: 'JetBrains Mono, Consolas, monospace',
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,
                 lineNumbers: 'on',
@@ -1115,7 +1157,8 @@ export default function Code() {
               }}
             />
           ) : (
-            <div className="flex items-center justify-center h-full text-[#1e1e1e] text-xs">
+            <div className="flex flex-col items-center justify-center gap-2 h-full text-muted text-sm select-none">
+              <Code2 size={18} />
               Ouvrez un fichier depuis l'arborescence
             </div>
           )}
@@ -1123,9 +1166,9 @@ export default function Code() {
       </div>
 
       {/* ── Colonne 3: Chat IA ── */}
-      <div className="w-80 shrink-0 flex flex-col bg-[#0d0d0d]">
+      <div className="w-80 shrink-0 flex flex-col bg-surface">
         {/* Pipeline step config */}
-        <div className="px-2 py-1.5 border-b border-[#1e1e1e] shrink-0 space-y-1">
+        <div className="px-2 py-1.5 border-b border-line shrink-0 space-y-1">
           {STEP_DEFS.map(({ key, label, skippable }) => (
             <div key={key} className="flex items-center gap-1.5">
               <button
@@ -1136,31 +1179,32 @@ export default function Code() {
                     [key]: { ...prev[key], enabled: !prev[key].enabled },
                   }))
                 }}
-                className={`w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center text-[8px] transition-colors ${
+                className={`w-3.5 h-3.5 rounded-sm border shrink-0 flex items-center justify-center transition-colors duration-150 ${
                   stepConfig[key].enabled
-                    ? 'bg-[#1a3a1a] border-[#2a5a2a] text-[#4a9a4a]'
-                    : 'bg-[#141414] border-[#222] text-transparent'
+                    ? 'bg-accent/15 border-accent/40 text-accent'
+                    : 'bg-elevated border-line text-transparent'
                 } ${!skippable ? 'opacity-40 cursor-default' : 'cursor-pointer hover:opacity-80'}`}
               >
-                ✓
+                <Check size={9} strokeWidth={3} />
               </button>
-              <span className={`text-[9px] font-mono shrink-0 w-[5.5rem] ${
-                stepConfig[key].enabled ? 'text-[#555]' : 'text-[#2a2a2a]'
+              <span className={`text-xs shrink-0 w-[5.5rem] ${
+                stepConfig[key].enabled ? 'text-secondary' : 'text-muted/60'
               }`}>
                 {label}
               </span>
-              <select
+              <Select
+                mono
                 value={stepConfig[key].model}
                 onChange={e => setStepConfig(prev => ({
                   ...prev,
                   [key]: { ...prev[key], model: e.target.value },
                 }))}
-                className="flex-1 min-w-0 bg-[#0f0f0f] border border-[#1a1a1a] rounded px-1 py-0.5 text-[9px] text-[#444] focus:outline-none"
+                className="flex-1 min-w-0 py-0.5 px-1"
               >
                 {models.map(m => (
                   <option key={m.id} value={m.id}>{m.nom}</option>
                 ))}
-              </select>
+              </Select>
             </div>
           ))}
         </div>
@@ -1168,14 +1212,15 @@ export default function Code() {
         {/* Chat messages */}
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {chatTurns.length === 0 && (
-            <div className="text-center py-8 text-[9px] text-[#202020]">
-              Décrivez ce que vous voulez construire
+            <div className="flex flex-col items-center gap-2 py-8 text-muted select-none">
+              <Code2 size={15} />
+              <span className="text-xs">Décrivez ce que vous voulez construire</span>
             </div>
           )}
           {chatTurns.map((turn, i) => (
             <div key={i} className={turn.role === 'user' ? 'flex justify-end' : ''}>
               {turn.role === 'user' ? (
-                <div className="max-w-[90%] bg-[#111] border border-[#1e1e1e] rounded px-3 py-2 text-[11px] text-[#ccc]">
+                <div className="max-w-[90%] bg-elevated border border-line rounded-lg px-3 py-2 text-xs text-primary">
                   {(turn.events[0] as { content: string })?.content}
                 </div>
               ) : (
@@ -1204,7 +1249,7 @@ export default function Code() {
         </div>
 
         {/* Chat input */}
-        <div className="px-3 pb-3 pt-2 border-t border-[#1e1e1e] shrink-0">
+        <div className="px-3 pb-3 pt-2 border-t border-line shrink-0">
           <div className="flex gap-1.5">
             <textarea
               value={chatInput}
@@ -1215,20 +1260,23 @@ export default function Code() {
               placeholder="Décrivez votre besoin..."
               disabled={streaming}
               rows={2}
-              className="flex-1 bg-[#0f0f0f] border border-[#1e1e1e] rounded px-2 py-1.5 text-[11px] text-[#ccc] placeholder-[#282828] focus:outline-none focus:border-[#252525] disabled:opacity-50 resize-none"
+              className="flex-1 bg-elevated border border-line rounded-sm px-2 py-1.5 text-xs text-primary placeholder-muted focus:outline-none focus:border-accent disabled:opacity-50 resize-none transition-colors duration-150"
             />
             <button
               onClick={sendMessage}
               disabled={streaming || !chatInput.trim()}
-              className="px-2 py-1 text-[10px] bg-[#141414] text-[#666] border border-[#1e1e1e] rounded hover:text-[#bbb] disabled:opacity-40 transition-colors self-end"
+              title="Envoyer"
+              className="p-2 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 self-end"
             >
-              {streaming ? '...' : '↵'}
+              {streaming ? <Loader2 size={13} className="animate-spin" /> : <CornerDownLeft size={13} />}
             </button>
           </div>
         </div>
       </div>
 
       </div>  {/* end 3-column flex */}
+
+      <ModuleBar module="code" showModel />
     </div>
   )
 }

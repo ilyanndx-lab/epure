@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
+import { Copy, Check } from 'lucide-react'
 
 function PreBlock({ children }: { children: React.ReactNode }) {
   const [copied, setCopied] = useState(false)
@@ -21,17 +22,20 @@ function PreBlock({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative group my-2">
+      {/* Fond sombre fixe : le thème highlight.js (github-dark) est global, le bloc
+          de code reste donc sombre même en thème light */}
       <pre
         ref={preRef}
-        className="overflow-x-auto p-3 rounded text-xs bg-[#080808] border border-[#1a1a1a] leading-relaxed"
+        className="overflow-x-auto p-3 rounded-md text-xs font-mono bg-[#16140f] border border-line leading-relaxed"
       >
         {children}
       </pre>
       <button
         onClick={copy}
-        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 px-2 py-0.5 text-[10px] font-mono bg-[#141414] border border-[#2a2a2a] rounded text-[#555] hover:text-[#aaa] transition-all duration-150"
+        title={copied ? 'Copié' : 'Copier'}
+        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1.5 bg-elevated border border-line rounded-sm text-muted hover:text-primary transition-all duration-150"
       >
-        {copied ? 'copié' : 'copier'}
+        {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
       </button>
     </div>
   )
@@ -53,7 +57,7 @@ interface RichMessageProps {
 
 export default function RichMessage({ content, streaming = false }: RichMessageProps) {
   return (
-    <div className="text-sm font-mono text-[#b8b8b8] leading-relaxed">
+    <div className="text-sm text-secondary leading-relaxed">
       <ReactMarkdown
         children={preprocessLatex(content)}
         remarkPlugins={[remarkMath]}
@@ -84,7 +88,7 @@ export default function RichMessage({ content, streaming = false }: RichMessageP
             }
             // Inline code
             return (
-              <code className="px-1 py-0.5 bg-[#141414] border border-[#1e1e1e] rounded text-[#c8c8c8] text-xs not-italic">
+              <code className="px-1 py-0.5 bg-elevated border border-line rounded-sm text-primary font-mono text-xs not-italic">
                 {children}
               </code>
             )
@@ -100,13 +104,13 @@ export default function RichMessage({ content, streaming = false }: RichMessageP
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           li({ children }: any) {
-            return <li className="text-[#b8b8b8]">{children}</li>
+            return <li className="text-secondary">{children}</li>
           },
           strong({ children }) {
-            return <strong className="text-[#e0e0e0] font-semibold">{children}</strong>
+            return <strong className="text-primary font-semibold">{children}</strong>
           },
           em({ children }) {
-            return <em className="text-[#c8c8c8] italic">{children}</em>
+            return <em className="text-secondary italic">{children}</em>
           },
           table({ children }) {
             return (
@@ -117,32 +121,32 @@ export default function RichMessage({ content, streaming = false }: RichMessageP
           },
           th({ children }) {
             return (
-              <th className="border border-[#2a2a2a] px-3 py-1.5 text-left text-[#555] font-normal">
+              <th className="border border-line px-3 py-1.5 text-left text-muted font-medium">
                 {children}
               </th>
             )
           },
           td({ children }) {
-            return <td className="border border-[#1e1e1e] px-3 py-1.5 text-[#777]">{children}</td>
+            return <td className="border border-line px-3 py-1.5 text-secondary">{children}</td>
           },
           h1({ children }) {
-            return <h1 className="text-base font-semibold text-[#e0e0e0] mt-3 mb-1 first:mt-0">{children}</h1>
+            return <h1 className="text-base font-semibold text-primary mt-3 mb-1 first:mt-0">{children}</h1>
           },
           h2({ children }) {
-            return <h2 className="text-sm font-semibold text-[#e0e0e0] mt-3 mb-1 first:mt-0">{children}</h2>
+            return <h2 className="text-sm font-semibold text-primary mt-3 mb-1 first:mt-0">{children}</h2>
           },
           h3({ children }) {
-            return <h3 className="text-xs font-semibold text-[#ddd] mt-2 mb-1 first:mt-0">{children}</h3>
+            return <h3 className="text-xs font-semibold text-primary mt-2 mb-1 first:mt-0">{children}</h3>
           },
           blockquote({ children }) {
             return (
-              <blockquote className="border-l-2 border-[#2a2a2a] pl-3 text-[#666] my-2">
+              <blockquote className="border-l-2 border-accent2/50 pl-3 text-secondary my-2">
                 {children}
               </blockquote>
             )
           },
           hr() {
-            return <hr className="border-[#1e1e1e] my-3" />
+            return <hr className="border-line my-3" />
           },
           a({ href, children }) {
             return (
@@ -150,7 +154,7 @@ export default function RichMessage({ content, streaming = false }: RichMessageP
                 href={href}
                 target="_blank"
                 rel="noreferrer"
-                className="text-[#5a7a9a] hover:text-[#7a9aaa] underline"
+                className="text-accent2 hover:text-accent2-hover underline"
               >
                 {children}
               </a>
@@ -158,7 +162,7 @@ export default function RichMessage({ content, streaming = false }: RichMessageP
           },
         }}
       />
-      {streaming && <span className="animate-pulse text-[#3a3a3a]">▍</span>}
+      {streaming && <span className="animate-pulse text-accent2">▍</span>}
     </div>
   )
 }
