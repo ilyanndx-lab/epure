@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { GraduationCap, Play, Square, Send, ArrowRight, Loader2, CheckCircle2, XCircle } from 'lucide-react'
-import { Button, Card, ProgressBar, Textarea } from './ui'
-import RichMessage from './RichMessage'
-import ModuleBar from './ModuleBar'
+import { Button, Card, ProgressBar, Textarea } from '../../components/ui'
+import RichMessage from '../../components/RichMessage'
+import ModuleBar from '../../components/ModuleBar'
 
 const API = 'http://localhost:8000'
 const WS_KHOLLE = 'ws://localhost:8000/ws/kholle'
