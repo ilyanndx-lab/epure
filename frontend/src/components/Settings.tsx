@@ -1,12 +1,22 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Archive, Brain, Check, Eye, EyeOff, Gauge, KeyRound, Palette, Plus,
-  RefreshCw, RotateCcw, User, X,
+  Archive, Boxes, Brain, Check, Cpu, Eye, EyeOff, FolderTree, Gauge, KeyRound,
+  Palette, Plus, RefreshCw, RotateCcw, User, X,
 } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Toggle } from './ui'
+import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from './ui'
 import { useTheme } from '../theme'
+import { useInstanceConfig, updateInstance } from '../instance'
+import { useModules, resolveIcon } from '../modules'
 
 const API = 'http://localhost:8000'
+
+interface ModelOption { id: string; nom: string; disponible: boolean }
+
+interface ModelsResponse {
+  local?: ModelOption[]
+  local_npu?: ModelOption[]
+  cloud?: { rapide?: ModelOption[]; puissant?: ModelOption[]; long_contexte?: ModelOption[] }
+}
 
 interface Profile {
   identité: { niveau: string; établissement: string; objectif: string }
@@ -136,6 +146,9 @@ function SectionTitle({ icon, children }: { icon: React.ReactNode; children: Rea
 
 export default function Settings() {
   const { theme, toggleTheme } = useTheme()
+  const config = useInstanceConfig()
+  const modules = useModules()
+  const [models, setModels] = useState<ModelOption[]>([])
   const [profile, setProfile] = useState<Profile | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [saving, setSaving] = useState(false)
@@ -187,8 +200,28 @@ export default function Settings() {
       .then((d: { log: Record<string, unknown>[] }) => setConsolidLog(d.log?.slice(0, 10) ?? []))
       .catch(() => {})
 
+    fetch(`${API}/models`)
+      .then(r => r.json())
+      .then((d: ModelsResponse) => {
+        const flat = [
+          ...(d.local ?? []),
+          ...(d.local_npu ?? []),
+          ...(d.cloud?.rapide ?? []),
+          ...(d.cloud?.puissant ?? []),
+          ...(d.cloud?.long_contexte ?? []),
+        ]
+        setModels(flat)
+      })
+      .catch(() => {})
+
     loadQuotas()
   }, [])
+
+  const toggleModule = useCallback((id: string, on: boolean) => {
+    const current = config.modules_activés
+    const next = on ? [...new Set([...current, id])] : current.filter(m => m !== id)
+    void updateInstance({ modules_activés: next })
+  }, [config.modules_activés])
 
   const loadQuotas = () => {
     setQuotasLoading(true)
@@ -307,6 +340,16 @@ export default function Settings() {
     }
   }, [selectedDates])
 
+  // Options du sélecteur de modèle : dédupliquées, avec le modèle actif garanti
+  // présent même s'il n'est pas (ou plus) listé par /models.
+  const modelOptions: ModelOption[] = (() => {
+    const seen = new Map<string, ModelOption>()
+    for (const m of models) if (!seen.has(m.id)) seen.set(m.id, m)
+    const actif = config.providers.actif
+    if (actif && !seen.has(actif)) seen.set(actif, { id: actif, nom: actif, disponible: true })
+    return [...seen.values()]
+  })()
+
   if (!profile) {
     return (
       <main className="flex flex-col flex-1 overflow-hidden items-center justify-center">
@@ -333,6 +376,101 @@ export default function Settings() {
             <Toggle checked={theme === 'light'} onChange={toggleTheme} label="Thème clair" />
             <span className="text-xs text-muted">Clair</span>
           </div>
+        </div>
+      </Card>
+
+      {/* ── Instance ── */}
+      <Card className="max-w-lg space-y-5">
+        <SectionTitle icon={<Boxes size={15} />}>Instance</SectionTitle>
+
+        {/* Nom affiché */}
+        <div>
+          <label className="text-xs text-muted uppercase tracking-wide block mb-1">Nom affiché</label>
+          <Input
+            value={config.nom_affiché}
+            onChange={e => void updateInstance({ nom_affiché: e.target.value })}
+            className="w-full text-xs py-1.5"
+            placeholder="Épure"
+          />
+        </div>
+
+        {/* Modules visibles */}
+        <div className="space-y-2">
+          <label className="text-xs text-muted uppercase tracking-wide block">Modules visibles</label>
+          <div className="space-y-1.5">
+            {modules.filter(m => m.id !== 'settings').map(m => {
+              const Icon = resolveIcon(m.icon)
+              const disabledByCatalog = m.status !== 'active'
+              const on = config.modules_activés.includes(m.id) && !disabledByCatalog
+              return (
+                <div key={m.id} className="flex items-center gap-3">
+                  <Icon size={15} className={`shrink-0 ${on ? 'text-accent' : 'text-muted'}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-secondary">{m.nom}</p>
+                    <p className="text-xs text-muted truncate">{m.description}</p>
+                  </div>
+                  <Toggle
+                    checked={on}
+                    onChange={v => toggleModule(m.id, v)}
+                    disabled={disabledByCatalog}
+                    label={`Activer ${m.nom}`}
+                  />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Modèle actif */}
+        <div>
+          <label className="text-xs text-muted uppercase tracking-wide mb-1 flex items-center gap-1.5">
+            <Cpu size={12} /> Modèle actif
+          </label>
+          <Select
+            mono
+            value={config.providers.actif}
+            onChange={e => void updateInstance({ providers: { actif: e.target.value } })}
+            className="w-full"
+          >
+            {modelOptions.map(m => (
+              <option key={m.id} value={m.id} disabled={!m.disponible}>
+                {m.nom}{m.disponible ? '' : ' — indisponible'}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        {/* Dossiers de fiches */}
+        <div className="space-y-3">
+          <label className="text-xs text-muted uppercase tracking-wide flex items-center gap-1.5">
+            <FolderTree size={12} /> Dossiers de fiches
+          </label>
+          <div>
+            <p className="text-xs text-muted mb-1">Racine</p>
+            <Input
+              mono
+              key={config.fiches.racine}
+              defaultValue={config.fiches.racine}
+              onBlur={e => {
+                const v = e.target.value
+                if (v !== config.fiches.racine) void updateInstance({ fiches: { racine: v } })
+              }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="w-full text-xs py-1.5"
+              placeholder="/data/fiches"
+            />
+          </div>
+          <div>
+            <p className="text-xs text-muted mb-1">Sous-dossiers surveillés</p>
+            <EditableList
+              items={config.fiches.watch_folders}
+              onChange={items => void updateInstance({ fiches: { watch_folders: items } })}
+              placeholder="Ajouter un dossier (ex : Maths)..."
+            />
+          </div>
+          <p className="text-xs text-muted/70">
+            Le retrait d'un dossier prend effet au redémarrage du backend.
+          </p>
         </div>
       </Card>
 

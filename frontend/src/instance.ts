@@ -24,6 +24,16 @@ export interface InstanceConfig {
   preset_défaut: string | null
 }
 
+/** Patch partiel accepté par updateInstance (champs imbriqués partiels). */
+export interface InstanceConfigPatch {
+  nom_affiché?: string
+  modules_activés?: string[]
+  providers?: Partial<InstanceConfig['providers']>
+  fiches?: Partial<InstanceConfig['fiches']>
+  thème?: Theme
+  preset_défaut?: string | null
+}
+
 const DEFAULT_CONFIG: InstanceConfig = {
   instance_id: '',
   nom_affiché: 'Épure',
@@ -94,7 +104,7 @@ export async function refreshInstance(): Promise<void> {
 }
 
 /** Merge partiel : applique en optimiste puis PUT serveur (qui fait foi). */
-export async function updateInstance(partial: Partial<InstanceConfig>): Promise<void> {
+export async function updateInstance(partial: InstanceConfigPatch): Promise<void> {
   setConfig({
     ...config,
     ...partial,
