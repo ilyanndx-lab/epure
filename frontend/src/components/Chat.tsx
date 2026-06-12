@@ -60,6 +60,7 @@ const AT_COMMANDS = [
   { trigger: '@strict',     desc: 'Réponse concise, sans intro' },
   { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
   { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
+  { trigger: '@web',        desc: 'Recherche web complémentaire avant la réponse [sujet]' },
 ] as const
 
 const SLASH_COMMANDS = [
@@ -558,6 +559,7 @@ export default function Chat({
     let cleanText = rawText
     let ragOverride: string | undefined
     let strictOverride = false
+    let webSearchOverride = false
 
     let again = true
     while (again) {
@@ -569,6 +571,10 @@ export default function Chat({
       } else if (cleanText === '@strict' || cleanText.startsWith('@strict ')) {
         strictOverride = true
         cleanText = cleanText.replace(/^@strict\s*/, '').trim()
+        again = true
+      } else if (cleanText === '@web' || cleanText.startsWith('@web ')) {
+        webSearchOverride = true
+        cleanText = cleanText.replace(/^@web\s*/, '').trim()
         again = true
       }
     }
@@ -592,6 +598,7 @@ export default function Chat({
     }
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
+    if (webSearchOverride) wsMsg.web_search_override = true
     wsRef.current?.send(JSON.stringify(wsMsg))
   }, [
     input, connected, streaming, effort, pipelineSteps,
