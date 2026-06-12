@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { FileSearch, Loader2, Plus, Send, Trash2 } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from './ui'
-import RichMessage from './RichMessage'
-import ModuleBar from './ModuleBar'
+import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from '../../components/ui'
+import RichMessage from '../../components/RichMessage'
+import ModuleBar from '../../components/ModuleBar'
 
 const API = 'http://localhost:8000'
 
