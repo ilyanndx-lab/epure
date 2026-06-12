@@ -10,6 +10,7 @@ Le status effectif fusionne le manifeste avec ``memory/modules_state.json``
 modules tiers (origin ≠ "builtin", removable: true) sans changer l'interface.
 """
 
+import importlib
 import json
 import logging
 from pathlib import Path
@@ -74,6 +75,38 @@ def list_modules() -> list[dict]:
 
 def get_module(module_id: str) -> Optional[dict]:
     return next((m for m in list_modules() if m.get("id") == module_id), None)
+
+
+def register_routers(app) -> None:
+    """Monte les routeurs des modules non-core actifs sur ``app``.
+
+    Pour chaque module ``status="active"`` et ``core_module`` falsy :
+    importe ``modules.<id>.router`` et fait ``app.include_router(router,
+    prefix=manifest.backend.prefix)``. Les chemins déclarés dans le router sont
+    donc relatifs au prefix (ex. prefix ``/hello`` + ``@router.get("/ping")`` →
+    ``GET /hello/ping``).
+
+    Les 7 modules core restent décorés directement sur ``app`` (non déplacés).
+    """
+    for m in list_modules():
+        if m.get("core_module") or m.get("status") != "active":
+            continue
+        mid = m.get("id")
+        try:
+            mod = importlib.import_module(f"modules.{mid}.router")
+        except Exception:
+            logger.exception("Module %s : import de modules.%s.router échoué", mid, mid)
+            continue
+        router = getattr(mod, "router", None)
+        if router is None:
+            logger.warning("Module %s : router.py ne définit pas 'router'", mid)
+            continue
+        prefix = (m.get("backend") or {}).get("prefix", "")
+        try:
+            app.include_router(router, prefix=prefix)
+            logger.info("Module %s : routeur monté sur %s", mid, prefix or "/")
+        except Exception:
+            logger.exception("Module %s : include_router a échoué", mid)
 
 
 def set_status(module_id: str, status: str) -> Optional[dict]:
