@@ -5,9 +5,9 @@
   "icon": "FileSearch",
   "description": "Analyse documentaire et chat sur vos fichiers",
   "frontend": { "component": "Docs" },
-  "backend": { "prefix": "/docanalysis" },
+  "backend": { "prefix": "" },
   "core_module": true,
   "origin": "builtin",
   "status": "active",
-  "removable": false
+  "removable": true
 }
