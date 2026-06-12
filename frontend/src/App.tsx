@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
 import Chat from './components/Chat'
 import Kholle from './components/Kholle'
@@ -8,17 +8,38 @@ import Code from './components/Code'
 import Docs from './components/Docs'
 import History from './components/History'
 import Settings from './components/Settings'
+import { useInstanceConfig } from './instance'
+import { useModules } from './modules'
 
-type Module = 'chat' | 'kholle' | 'flashcards' | 'code' | 'docs' | 'admin' | 'history' | 'settings'
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
 
 const API = 'http://localhost:8000'
 
 export default function App() {
-  const [activeModule, setActiveModule] = useState<Module>('chat')
+  const config = useInstanceConfig()
+  const modules = useModules()
+  const [activeModule, setActiveModule] = useState<string>('chat')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
+
+  // Ensemble des modules réellement accessibles (settings toujours inclus).
+  const visibleIds = new Set<string>([
+    'settings',
+    ...modules
+      .filter(m => m.status === 'active' && config.modules_activés.includes(m.id))
+      .map(m => m.id),
+  ])
+
+  // Si le module courant devient inaccessible (désactivé), bascule vers le
+  // premier module visible (ou Réglages en dernier recours).
+  useEffect(() => {
+    if (!visibleIds.has(activeModule)) {
+      const first = config.modules_activés.find(id => visibleIds.has(id))
+      setActiveModule(first ?? 'settings')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeModule, config.modules_activés, modules])
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 

@@ -1,26 +1,14 @@
 import { useState, useEffect } from 'react'
-import {
-  MessageSquare, GraduationCap, Layers, Code2, FileSearch,
-  FolderCog, Clock, Settings as SettingsIcon,
-} from 'lucide-react'
+import { Settings as SettingsIcon } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { ThemeToggle } from './ui'
-
-type Module = 'chat' | 'kholle' | 'flashcards' | 'code' | 'docs' | 'admin' | 'history' | 'settings'
+import { useInstanceConfig } from '../instance'
+import { useModules, resolveIcon } from '../modules'
 
 interface SidebarProps {
-  activeModule: Module
-  onModuleChange: (m: Module) => void
+  activeModule: string
+  onModuleChange: (m: string) => void
 }
-
-const MODULES: { id: Module; label: string; icon: typeof MessageSquare }[] = [
-  { id: 'chat', label: 'Chat', icon: MessageSquare },
-  { id: 'kholle', label: 'Kholle', icon: GraduationCap },
-  { id: 'flashcards', label: 'Flashcards', icon: Layers },
-  { id: 'code', label: 'Code', icon: Code2 },
-  { id: 'docs', label: 'Docs', icon: FileSearch },
-  { id: 'admin', label: 'Admin', icon: FolderCog },
-  { id: 'history', label: 'Historique', icon: Clock },
-]
 
 const API = 'http://localhost:8000'
 
@@ -29,7 +17,7 @@ function NavItem({
 }: {
   active: boolean
   label: string
-  icon: typeof MessageSquare
+  icon: LucideIcon
   onClick: () => void
 }) {
   return (
@@ -51,6 +39,8 @@ function NavItem({
 }
 
 export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) {
+  const config = useInstanceConfig()
+  const modules = useModules()
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null)
   const [modelName, setModelName] = useState('')
   const [flmOk, setFlmOk] = useState<boolean | null>(null)
@@ -71,22 +61,34 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
     return () => clearInterval(id)
   }, [])
 
+  // Modules visibles : actifs au catalogue ET activés par l'utilisateur.
+  // settings est exclu ici (toujours accessible via le bouton Profil).
+  const navModules = modules.filter(
+    m => m.id !== 'settings'
+      && m.status === 'active'
+      && config.modules_activés.includes(m.id)
+  )
+
+  const settingsModule = modules.find(m => m.id === 'settings')
+
   return (
     <aside className="w-52 shrink-0 bg-surface border-r border-line flex flex-col">
       {/* Logo */}
       <div className="px-4 py-5 border-b border-line flex items-center justify-between">
-        <span className="text-lg font-semibold text-gradient select-none">épure</span>
+        <span className="text-lg font-semibold text-gradient select-none lowercase">
+          {config.nom_affiché || 'épure'}
+        </span>
         <ThemeToggle />
       </div>
 
       <nav className="flex-1 px-2 py-3 space-y-0.5">
-        {MODULES.map(({ id, label, icon }) => (
+        {navModules.map(m => (
           <NavItem
-            key={id}
-            active={activeModule === id}
-            label={label}
-            icon={icon}
-            onClick={() => onModuleChange(id)}
+            key={m.id}
+            active={activeModule === m.id}
+            label={m.nom}
+            icon={resolveIcon(m.icon)}
+            onClick={() => onModuleChange(m.id)}
           />
         ))}
       </nav>
@@ -94,8 +96,8 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
       <div className="px-2 pb-2 border-t border-line pt-2">
         <NavItem
           active={activeModule === 'settings'}
-          label="Profil"
-          icon={SettingsIcon}
+          label={settingsModule?.nom ?? 'Profil'}
+          icon={settingsModule ? resolveIcon(settingsModule.icon) : SettingsIcon}
           onClick={() => onModuleChange('settings')}
         />
       </div>
