@@ -41,7 +41,11 @@ from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core.instance import instance_config, fiches_root, fiches_watch_paths
 from core.memory import MemoryEngine
-from core.module_registry import list_modules as _list_modules, set_status as _set_module_status
+from core.module_registry import (
+    list_modules as _list_modules,
+    register_routers as _register_routers,
+    set_status as _set_module_status,
+)
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
@@ -95,6 +99,10 @@ async def _unhandled_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Erreur interne du serveur", "type": exc.__class__.__name__},
     )
+
+# Monte les routeurs des modules non-core actifs (modules.<id>.router).
+# Les 7 modules core restent décorés directement sur `app` plus bas.
+_register_routers(app)
 
 with open(Path(__file__).parent / "config.yaml") as f:
     _cfg = yaml.safe_load(f)
