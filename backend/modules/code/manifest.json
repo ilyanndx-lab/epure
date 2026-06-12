@@ -1,0 +1,13 @@
+{
+  "id": "code",
+  "version": "1.0.0",
+  "nom": "Code",
+  "icon": "Code2",
+  "description": "Agent de code multi-langages avec exécution et vérification",
+  "frontend": { "component": "Code" },
+  "backend": { "prefix": "/code" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}

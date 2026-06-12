@@ -1,0 +1,13 @@
+{
+  "id": "kholle",
+  "version": "1.0.0",
+  "nom": "Kholle",
+  "icon": "GraduationCap",
+  "description": "Kholles interactives type prépa scientifique (MPSI/MP)",
+  "frontend": { "component": "Kholle" },
+  "backend": { "prefix": "/kholle" },
+  "core_module": true,
+  "origin": "builtin",
+  "status": "active",
+  "removable": false
+}
