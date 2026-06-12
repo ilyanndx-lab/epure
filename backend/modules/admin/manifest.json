@@ -9,5 +9,5 @@
   "core_module": true,
   "origin": "builtin",
   "status": "active",
-  "removable": false
+  "removable": true
 }
