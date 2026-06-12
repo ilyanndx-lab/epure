@@ -1,4 +1,9 @@
 import { useState, useEffect } from 'react'
+import {
+  MessageSquare, GraduationCap, Layers, Code2, FileSearch,
+  FolderCog, Clock, Settings as SettingsIcon,
+} from 'lucide-react'
+import { ThemeToggle } from './ui'
 
 type Module = 'chat' | 'kholle' | 'flashcards' | 'code' | 'docs' | 'admin' | 'history' | 'settings'
 
@@ -7,17 +12,43 @@ interface SidebarProps {
   onModuleChange: (m: Module) => void
 }
 
-const MODULES: { id: Module; label: string }[] = [
-  { id: 'chat', label: 'chat' },
-  { id: 'kholle', label: 'kholle' },
-  { id: 'flashcards', label: 'flashcards' },
-  { id: 'code', label: 'code' },
-  { id: 'docs', label: 'docs' },
-  { id: 'admin', label: 'admin' },
-  { id: 'history', label: 'historique' },
+const MODULES: { id: Module; label: string; icon: typeof MessageSquare }[] = [
+  { id: 'chat', label: 'Chat', icon: MessageSquare },
+  { id: 'kholle', label: 'Kholle', icon: GraduationCap },
+  { id: 'flashcards', label: 'Flashcards', icon: Layers },
+  { id: 'code', label: 'Code', icon: Code2 },
+  { id: 'docs', label: 'Docs', icon: FileSearch },
+  { id: 'admin', label: 'Admin', icon: FolderCog },
+  { id: 'history', label: 'Historique', icon: Clock },
 ]
 
 const API = 'http://localhost:8000'
+
+function NavItem({
+  active, label, icon: Icon, onClick,
+}: {
+  active: boolean
+  label: string
+  icon: typeof MessageSquare
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative w-full flex items-center gap-2.5 px-3 py-2 rounded-sm text-sm transition-colors duration-150 ${
+        active
+          ? 'bg-accent/10 text-primary font-medium'
+          : 'text-muted hover:text-secondary hover:bg-elevated'
+      }`}
+    >
+      {active && (
+        <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-accent" />
+      )}
+      <Icon size={15} className={active ? 'text-accent' : ''} />
+      {label}
+    </button>
+  )
+}
 
 export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) {
   const [ollamaOk, setOllamaOk] = useState<boolean | null>(null)
@@ -41,69 +72,55 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
   }, [])
 
   return (
-    <aside className="w-52 shrink-0 bg-[#0f0f0f] border-r border-[#1e1e1e] flex flex-col">
-      <div className="px-4 py-5 border-b border-[#1e1e1e]">
-        <span className="text-xs font-mono text-[#444] uppercase tracking-[0.2em]">
-          Modules
-        </span>
+    <aside className="w-52 shrink-0 bg-surface border-r border-line flex flex-col">
+      {/* Logo */}
+      <div className="px-4 py-5 border-b border-line flex items-center justify-between">
+        <span className="text-lg font-semibold text-gradient select-none">épure</span>
+        <ThemeToggle />
       </div>
+
       <nav className="flex-1 px-2 py-3 space-y-0.5">
-        {MODULES.map(({ id, label }) => (
-          <button
+        {MODULES.map(({ id, label, icon }) => (
+          <NavItem
             key={id}
+            active={activeModule === id}
+            label={label}
+            icon={icon}
             onClick={() => onModuleChange(id)}
-            className={`w-full text-left px-3 py-2 rounded text-xs font-mono transition-colors ${
-              activeModule === id
-                ? 'bg-[#1a1a1a] text-[#e0e0e0]'
-                : 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
-            }`}
-          >
-            {label}
-          </button>
+          />
         ))}
       </nav>
-      <div className="px-2 pb-2 border-t border-[#1e1e1e] pt-3">
-        <button
+
+      <div className="px-2 pb-2 border-t border-line pt-2">
+        <NavItem
+          active={activeModule === 'settings'}
+          label="Profil"
+          icon={SettingsIcon}
           onClick={() => onModuleChange('settings')}
-          className={`w-full text-left px-3 py-2 rounded text-xs font-mono transition-colors ${
-            activeModule === 'settings'
-              ? 'bg-[#1a1a1a] text-[#e0e0e0]'
-              : 'text-[#555] hover:text-[#aaa] hover:bg-[#141414]'
-          }`}
-        >
-          ⚙ profil
-        </button>
+        />
       </div>
-      <div className="px-4 py-4 border-t border-[#1e1e1e] space-y-2">
-        {/* Ollama status indicator */}
+
+      {/* Santé serveurs */}
+      <div className="px-4 py-3 border-t border-line space-y-1.5">
         <div className="flex items-center gap-2">
           <span
             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-              ollamaOk === null
-                ? 'bg-[#3a3a3a]'
-                : ollamaOk
-                ? 'bg-[#3a6a3a]'
-                : 'bg-[#6a3a3a]'
+              ollamaOk === null ? 'bg-line' : ollamaOk ? 'bg-success' : 'bg-error'
             }`}
           />
-          <span className="text-[10px] font-mono text-[#2a2a2a] truncate">
-            {ollamaOk === null
-              ? '...'
-              : ollamaOk
-              ? (modelName.split(':')[0] || 'ollama')
-              : 'ollama inactif'}
+          <span className="text-xs font-mono text-muted truncate">
+            {ollamaOk === null ? '...' : ollamaOk ? (modelName.split(':')[0] || 'ollama') : 'ollama inactif'}
           </span>
         </div>
         {flmOk !== null && (
           <div className="flex items-center gap-2">
-            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${flmOk ? 'bg-[#5a3a7a]' : 'bg-[#2a2a2a]'}`} />
-            <span className="text-[10px] font-mono text-[#2a2a2a] truncate">
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${flmOk ? 'bg-accent' : 'bg-line'}`} />
+            <span className="text-xs font-mono text-muted truncate">
               {flmOk ? 'flm (npu)' : 'flm inactif'}
             </span>
           </div>
         )}
-        <span className="text-xs font-mono text-[#1e1e1e]">épure</span>
-        <span className="text-[10px] font-mono text-[#2a2a2a]">
+        <span className="block text-xs font-mono text-muted/60 pt-1">
           build {import.meta.env.VITE_BUILD_TIME}
         </span>
       </div>

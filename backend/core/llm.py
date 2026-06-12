@@ -13,12 +13,21 @@ load_dotenv(_ENV_FILE)
 
 logger = logging.getLogger(__name__)
 
+# OLLAMA_HOST=0.0.0.0 is a server *listen* address — the client can't connect
+# to it on Windows. Normalize to localhost for all client calls.
+_ollama_host = os.environ.get("OLLAMA_HOST", "").strip() or "http://localhost:11434"
+if "0.0.0.0" in _ollama_host:
+    _ollama_host = _ollama_host.replace("0.0.0.0", "localhost")
+if not _ollama_host.startswith("http"):
+    _ollama_host = f"http://{_ollama_host}:11434"
+_ollama_client = ollama.Client(host=_ollama_host)
+
 # OpenAI-compatible providers: name → (base_url, env_key | None)
 # env_key=None means no API key required (local server)
 _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
     "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY"),
     "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY"),
-    "deepseek": ("https://api.deepseek.com",            "DEEPSEEK_API_KEY"),
+    "mistral":  ("https://api.mistral.ai/v1",           "MISTRAL_API_KEY"),
     "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
     "flm":      ("http://localhost:11435/v1",           None),
 }
@@ -101,7 +110,7 @@ class LLMEngine:
     # ── Ollama ───────────────────────────────────────────────────────────────
 
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None) -> Generator:
-        for chunk in ollama.chat(
+        for chunk in _ollama_client.chat(
             model=model, messages=messages, stream=True,
             options={
                 "temperature": self._gen["temperature"],
@@ -126,7 +135,7 @@ class LLMEngine:
                 pass
 
     def _generate_ollama(self, messages: list[dict], model: str) -> str:
-        response = ollama.chat(
+        response = _ollama_client.chat(
             model=model, messages=messages, stream=False,
             options={
                 "temperature": self._gen["temperature"],

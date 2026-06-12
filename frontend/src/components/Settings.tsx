@@ -1,4 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
+import {
+  Archive, Brain, Check, Eye, EyeOff, Gauge, KeyRound, Palette, Plus,
+  RefreshCw, RotateCcw, User, X,
+} from 'lucide-react'
+import { Badge, Button, Card, Input, ProgressBar, Toggle } from './ui'
+import { useTheme } from '../theme'
 
 const API = 'http://localhost:8000'
 
@@ -17,6 +23,36 @@ interface Session {
   réussies: number
   ratées: number
   archivée: boolean
+}
+
+interface QuotaEntry {
+  tokens_input: number
+  tokens_output: number
+  requests: number
+  reset_date: string
+  limite: number | null
+  type_limite: string
+  période: string
+  label_limite: string
+  utilisé: number
+  pourcentage: number | null
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  gemini: 'Google Gemini', groq: 'Groq', cerebras: 'Cerebras',
+  nvidia: 'NVIDIA NIM', mistral: 'Mistral',
+}
+
+function quotaBarColor(pct: number): 'gradient' | 'warning' | 'error' {
+  if (pct < 70) return 'gradient'
+  if (pct <= 90) return 'warning'
+  return 'error'
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
 }
 
 function EditableList({
@@ -41,29 +77,25 @@ function EditableList({
     <div className="space-y-1">
       {items.map((item, i) => (
         <div key={i} className="flex items-center gap-2">
-          <span className="flex-1 text-xs font-mono text-[#888]">{item}</span>
+          <span className="flex-1 text-xs text-secondary">{item}</span>
           <button
             onClick={() => onChange(items.filter((_, j) => j !== i))}
-            className="text-xs font-mono text-[#333] hover:text-[#888] transition-colors"
+            title="Retirer"
+            className="p-0.5 rounded-sm text-muted hover:text-error transition-colors duration-150"
           >
-            ✕
+            <X size={12} />
           </button>
         </div>
       ))}
       <div className="flex gap-2 mt-1">
-        <input
+        <Input
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && add()}
           placeholder={placeholder}
-          className="flex-1 bg-[#141414] border border-[#242424] rounded px-2 py-1 text-xs font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
+          className="flex-1 text-xs py-1"
         />
-        <button
-          onClick={add}
-          className="px-2 py-1 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#555] hover:text-[#aaa] transition-colors"
-        >
-          +
-        </button>
+        <Button variant="ghost" size="sm" icon={<Plus size={13} />} onClick={add} aria-label="Ajouter" />
       </div>
     </div>
   )
@@ -93,7 +125,17 @@ function mergeProfile(raw: Record<string, unknown>): Profile {
   }
 }
 
+function SectionTitle({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <h2 className="text-sm font-semibold text-primary flex items-center gap-2">
+      <span className="text-muted">{icon}</span>
+      {children}
+    </h2>
+  )
+}
+
 export default function Settings() {
+  const { theme, toggleTheme } = useTheme()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [saving, setSaving] = useState(false)
@@ -106,9 +148,13 @@ export default function Settings() {
   const [consolidResult, setConsolidResult] = useState<string | null>(null)
   const [consolidLog, setConsolidLog] = useState<Record<string, unknown>[]>([])
 
+  // Quota usage state
+  const [quotas, setQuotas] = useState<Record<string, QuotaEntry>>({})
+  const [quotasLoading, setQuotasLoading] = useState(false)
+
   // API keys state
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({
-    GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', DEEPSEEK_API_KEY: '', NVIDIA_API_KEY: '',
+    GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '',
   })
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
   const [savingKeys, setSavingKeys] = useState(false)
@@ -140,6 +186,26 @@ export default function Settings() {
       .then(r => r.json())
       .then((d: { log: Record<string, unknown>[] }) => setConsolidLog(d.log?.slice(0, 10) ?? []))
       .catch(() => {})
+
+    loadQuotas()
+  }, [])
+
+  const loadQuotas = () => {
+    setQuotasLoading(true)
+    fetch(`${API}/quota/usage`)
+      .then(r => r.json())
+      .then((d: Record<string, QuotaEntry>) => setQuotas(d))
+      .catch(err => console.error('GET /quota/usage:', err))
+      .finally(() => setQuotasLoading(false))
+  }
+
+  const resetQuota = useCallback(async (provider: string) => {
+    try {
+      await fetch(`${API}/quota/reset/${provider}`, { method: 'POST' })
+      loadQuotas()
+    } catch (err) {
+      console.error(`POST /quota/reset/${provider}:`, err)
+    }
   }, [])
 
   const saveProfile = useCallback(async () => {
@@ -213,7 +279,7 @@ export default function Settings() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const status: Record<string, boolean> = await fetch(`${API}/settings/api-keys`).then(r => r.json())
       setKeyStatus(status)
-      setApiKeys({ GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', DEEPSEEK_API_KEY: '', NVIDIA_API_KEY: '' })
+      setApiKeys({ GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '' })
       setKeysMsg({ ok: true, text: 'Clés sauvegardées' })
       setTimeout(() => setKeysMsg(null), 2000)
     } catch (err) {
@@ -244,27 +310,45 @@ export default function Settings() {
   if (!profile) {
     return (
       <main className="flex flex-col flex-1 overflow-hidden items-center justify-center">
-        <span className="text-xs font-mono text-[#2a2a2a]">Chargement...</span>
+        <span className="text-sm text-muted">Chargement...</span>
       </main>
     )
   }
 
   return (
-    <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 space-y-10">
+    <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 space-y-6">
+
+      {/* ── Apparence ── */}
+      <Card className="max-w-lg space-y-4">
+        <SectionTitle icon={<Palette size={15} />}>Apparence</SectionTitle>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-secondary">Thème</p>
+            <p className="text-xs text-muted mt-0.5">
+              {theme === 'dark' ? 'Sombre — gris chaud' : 'Clair — crème'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">Sombre</span>
+            <Toggle checked={theme === 'light'} onChange={toggleTheme} label="Thème clair" />
+            <span className="text-xs text-muted">Clair</span>
+          </div>
+        </div>
+      </Card>
 
       {/* ── Profile ── */}
-      <section className="max-w-lg space-y-6">
-        <p className="text-xs font-mono text-[#444] uppercase tracking-widest">Profil</p>
+      <Card className="max-w-lg space-y-5">
+        <SectionTitle icon={<User size={15} />}>Profil</SectionTitle>
 
         <div className="space-y-4">
           {/* Identité */}
           <div className="space-y-3">
             {(['niveau', 'établissement', 'objectif'] as const).map(key => (
               <div key={key}>
-                <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block mb-1">
+                <label className="text-xs text-muted uppercase tracking-wide block mb-1">
                   {key}
                 </label>
-                <input
+                <Input
                   value={profile.identité[key]}
                   onChange={e =>
                     setProfile(p => p && {
@@ -272,7 +356,7 @@ export default function Settings() {
                       identité: { ...p.identité, [key]: e.target.value },
                     })
                   }
-                  className="w-full bg-[#141414] border border-[#242424] rounded px-3 py-1.5 text-xs font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
+                  className="w-full text-xs py-1.5"
                 />
               </div>
             ))}
@@ -280,10 +364,10 @@ export default function Settings() {
 
           {/* Style */}
           <div>
-            <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block mb-1">
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">
               Style d'interaction
             </label>
-            <input
+            <Input
               value={profile.préférences_interaction.style}
               onChange={e =>
                 setProfile(p => p && {
@@ -294,13 +378,13 @@ export default function Settings() {
                   },
                 })
               }
-              className="w-full bg-[#141414] border border-[#242424] rounded px-3 py-1.5 text-xs font-mono text-[#e0e0e0] focus:outline-none focus:border-[#383838]"
+              className="w-full text-xs py-1.5"
             />
           </div>
 
           {/* Ne pas faire */}
           <div>
-            <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block mb-2">
+            <label className="text-xs text-muted uppercase tracking-wide block mb-2">
               À éviter
             </label>
             <EditableList
@@ -320,7 +404,7 @@ export default function Settings() {
 
           {/* Forces */}
           <div>
-            <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block mb-2">
+            <label className="text-xs text-muted uppercase tracking-wide block mb-2">
               Forces
             </label>
             <EditableList
@@ -332,7 +416,7 @@ export default function Settings() {
 
           {/* Lacunes confirmées */}
           <div>
-            <label className="text-[10px] font-mono text-[#333] uppercase tracking-widest block mb-2">
+            <label className="text-xs text-muted uppercase tracking-wide block mb-2">
               Lacunes confirmées
             </label>
             <EditableList
@@ -346,58 +430,41 @@ export default function Settings() {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={saveProfile}
-            disabled={saving}
-            className="px-5 py-2 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 transition-colors"
-          >
+          <Button variant="primary" onClick={saveProfile} disabled={saving}>
             {saving ? 'Sauvegarde...' : 'Sauvegarder'}
-          </button>
+          </Button>
           {saveMsg && (
-            <span className="text-xs font-mono text-[#5a9a5a]">{saveMsg}</span>
+            <span className="text-xs text-success">{saveMsg}</span>
           )}
         </div>
-      </section>
+      </Card>
 
       {/* ── Consolidation ── */}
-      <section className="max-w-lg space-y-4">
-        <p className="text-xs font-mono text-[#444] uppercase tracking-widest">Consolidation mémoire</p>
+      <Card className="max-w-lg space-y-4">
+        <SectionTitle icon={<Brain size={15} />}>Consolidation mémoire</SectionTitle>
 
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-mono text-[#888]">Consolidation cloud après kholle</p>
-            <p className="text-[10px] font-mono text-[#333] mt-0.5">
+            <p className="text-sm text-secondary">Consolidation cloud après kholle</p>
+            <p className="text-xs text-muted mt-0.5">
               {consolidCloud ? 'Groq Llama 3.3 70B (envoi erreurs + scores uniquement)' : 'LLM local (défaut)'}
             </p>
           </div>
-          <button
-            onClick={toggleConsolidCloud}
-            className={`px-3 py-1.5 rounded text-xs font-mono border transition-colors ${
-              consolidCloud
-                ? 'bg-[#1a1a2a] border-[#2a2a4a] text-[#7a7acc]'
-                : 'bg-[#141414] border-[#242424] text-[#555] hover:border-[#383838] hover:text-[#aaa]'
-            }`}
-          >
-            {consolidCloud ? '◆ cloud' : '◇ local'}
-          </button>
+          <Toggle checked={consolidCloud} onChange={toggleConsolidCloud} label="Consolidation cloud" />
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={consolidateNow}
-            disabled={consolidating}
-            className="px-4 py-1.5 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 transition-colors"
-          >
+          <Button variant="secondary" size="sm" onClick={consolidateNow} disabled={consolidating}>
             {consolidating ? 'Consolidation...' : 'Consolider maintenant'}
-          </button>
+          </Button>
           {consolidResult && (
-            <span className="text-xs font-mono text-[#5a9a5a]">{consolidResult}</span>
+            <span className="text-xs text-success">{consolidResult}</span>
           )}
         </div>
 
         {consolidLog.length > 0 && (
           <div className="space-y-1">
-            <p className="text-[10px] font-mono text-[#333] uppercase tracking-widest">Historique</p>
+            <p className="text-xs text-muted uppercase tracking-wide">Historique</p>
             {consolidLog.map((entry, i) => {
               const lacunes = (entry.lacunes_ajoutées as string[]) ?? []
               const forces = (entry.forces_ajoutées as string[]) ?? []
@@ -407,98 +474,155 @@ export default function Settings() {
                 entry.style_màj ? 'style' : '',
               ].filter(Boolean).join(' · ') || 'aucun changement'
               return (
-                <div key={i} className="flex items-center gap-3 text-[10px] font-mono border-b border-[#111] py-1">
-                  <span className="text-[#333] shrink-0">
+                <div key={i} className="flex items-center gap-3 text-xs font-mono border-b border-line last:border-b-0 py-1">
+                  <span className="text-muted shrink-0">
                     {String(entry.date ?? '').slice(0, 10)}
                   </span>
-                  <span className="text-[#444] shrink-0">{String(entry.type ?? '')}</span>
-                  <span className="text-[#555] truncate flex-1">{String(entry.source ?? '')}</span>
-                  <span className="text-[#3a6a3a] shrink-0">{summary}</span>
+                  <span className="text-muted shrink-0">{String(entry.type ?? '')}</span>
+                  <span className="text-secondary truncate flex-1">{String(entry.source ?? '')}</span>
+                  <span className="text-accent2 shrink-0">{summary}</span>
                 </div>
               )
             })}
           </div>
         )}
-      </section>
+      </Card>
+
+      {/* ── Quotas & Usage ── */}
+      <Card className="max-w-lg space-y-4">
+        <div className="flex items-center justify-between">
+          <SectionTitle icon={<Gauge size={15} />}>Quotas & Usage</SectionTitle>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<RefreshCw size={12} className={quotasLoading ? 'animate-spin' : ''} />}
+            onClick={loadQuotas}
+            disabled={quotasLoading}
+          >
+            Actualiser
+          </Button>
+        </div>
+
+        {Object.keys(quotas).length === 0 ? (
+          <p className="text-xs text-muted">Aucune donnée d'usage.</p>
+        ) : (
+          <div className="space-y-4">
+            {Object.entries(quotas).map(([provider, q]) => (
+              <div key={provider} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-secondary font-medium">
+                    {PROVIDER_LABELS[provider] ?? provider}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted font-mono">
+                      {q.pourcentage !== null
+                        ? `${formatCount(q.utilisé)} / ${formatCount(q.limite ?? 0)} ${q.type_limite === 'requests' ? 'req' : 'tok'} · ${q.pourcentage}%`
+                        : `${formatCount(q.utilisé)} ${q.type_limite === 'requests' ? 'req' : 'tok'} · ${q.label_limite}`}
+                    </span>
+                    <button
+                      onClick={() => resetQuota(provider)}
+                      className="p-0.5 rounded-sm text-muted hover:text-secondary transition-colors duration-150"
+                      title={`Reset compteurs ${provider}`}
+                    >
+                      <RotateCcw size={11} />
+                    </button>
+                  </div>
+                </div>
+                {q.pourcentage !== null && (
+                  <ProgressBar
+                    value={Math.max(q.pourcentage, q.utilisé > 0 ? 2 : 0)}
+                    color={quotaBarColor(q.pourcentage)}
+                  />
+                )}
+                <div className="flex items-center gap-3 text-xs font-mono text-muted/70">
+                  <span>in {formatCount(q.tokens_input)} tok</span>
+                  <span>out {formatCount(q.tokens_output)} tok</span>
+                  <span>{q.requests} req</span>
+                  <span>période {q.période === 'day' ? 'jour' : 'mois'} ({q.reset_date})</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
 
       {/* ── API Keys ── */}
-      <section className="max-w-lg space-y-5">
-        <p className="text-xs font-mono text-[#444] uppercase tracking-widest">Clés API</p>
+      <Card className="max-w-lg space-y-5">
+        <SectionTitle icon={<KeyRound size={15} />}>Clés API</SectionTitle>
 
         {[
-          { key: 'GEMINI_API_KEY',     label: 'Google Gemini',  placeholder: 'AIza...' },
-          { key: 'GROQ_API_KEY',       label: 'Groq',           placeholder: 'gsk_...' },
-          { key: 'CEREBRAS_API_KEY',   label: 'Cerebras',       placeholder: 'csk-...' },
-          { key: 'DEEPSEEK_API_KEY',    label: 'DeepSeek',       placeholder: 'sk-...' },
-          { key: 'NVIDIA_API_KEY',     label: 'NVIDIA NIM',     placeholder: 'nvapi-...' },
+          { key: 'GEMINI_API_KEY',   label: 'Google Gemini', placeholder: 'AIza...' },
+          { key: 'GROQ_API_KEY',     label: 'Groq',          placeholder: 'gsk_...' },
+          { key: 'CEREBRAS_API_KEY', label: 'Cerebras',      placeholder: 'csk-...' },
+          { key: 'MISTRAL_API_KEY',  label: 'Mistral',       placeholder: 'sk-...' },
+          { key: 'NVIDIA_API_KEY',   label: 'NVIDIA NIM',    placeholder: 'nvapi-...' },
         ].map(({ key, label, placeholder }) => (
           <div key={key} className="space-y-1.5">
-            <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-widest">
-              <span className="text-[#333]">{label}</span>
-              <span className={keyStatus[key] ? 'text-[#5a9a5a]' : 'text-[#333]'}>
-                {keyStatus[key] ? '✓ configurée' : 'non configurée'}
-              </span>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted uppercase tracking-wide">{label}</span>
+              {keyStatus[key] ? (
+                <Badge variant="success"><Check size={10} /> configurée</Badge>
+              ) : (
+                <Badge variant="neutral">non configurée</Badge>
+              )}
             </div>
             <div className="flex gap-2">
-              <input
+              <Input
+                mono
                 type={showKey[key] ? 'text' : 'password'}
                 value={apiKeys[key] ?? ''}
                 onChange={e => setApiKeys(prev => ({ ...prev, [key]: e.target.value }))}
                 placeholder={placeholder}
-                className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-1.5 text-xs font-mono text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
+                className="flex-1 text-xs py-1.5"
               />
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={showKey[key] ? <EyeOff size={13} /> : <Eye size={13} />}
                 onClick={() => setShowKey(prev => ({ ...prev, [key]: !prev[key] }))}
-                className="px-2 py-1.5 bg-[#141414] border border-[#242424] rounded text-[10px] font-mono text-[#444] hover:text-[#888] transition-colors shrink-0"
-              >
-                {showKey[key] ? 'masquer' : 'voir'}
-              </button>
+                aria-label={showKey[key] ? 'Masquer la clé' : 'Voir la clé'}
+                className="shrink-0"
+              />
             </div>
           </div>
         ))}
 
         <div className="flex items-center gap-3 pt-1">
-          <button
+          <Button
+            variant="primary"
             onClick={saveApiKeys}
             disabled={savingKeys || !Object.values(apiKeys).some(v => v.trim())}
-            className="px-4 py-1.5 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#888] hover:border-[#383838] hover:text-[#ccc] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             {savingKeys ? 'Sauvegarde...' : 'Sauvegarder'}
-          </button>
+          </Button>
           {keysMsg && (
-            <span className={`text-xs font-mono ${keysMsg.ok ? 'text-[#5a9a5a]' : 'text-[#9a5a5a]'}`}>
+            <span className={`text-xs ${keysMsg.ok ? 'text-success' : 'text-error'}`}>
               {keysMsg.text}
             </span>
           )}
         </div>
-      </section>
+      </Card>
 
       {/* ── Sessions ── */}
-      <section className="space-y-4">
+      <Card className="space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-xs font-mono text-[#444] uppercase tracking-widest">
-            Sessions kholle
-          </p>
+          <SectionTitle icon={<Archive size={15} />}>Sessions kholle</SectionTitle>
           {selectedDates.length > 0 && (
-            <button
-              onClick={archiveSelected}
-              className="text-xs font-mono text-[#555] hover:text-[#aaa] transition-colors"
-            >
+            <Button variant="ghost" size="sm" icon={<Archive size={12} />} onClick={archiveSelected}>
               Archiver la sélection ({selectedDates.length})
-            </button>
+            </Button>
           )}
         </div>
 
         {sessions.length === 0 ? (
-          <p className="text-xs font-mono text-[#2a2a2a]">Aucune session enregistrée.</p>
+          <p className="text-xs text-muted">Aucune session enregistrée.</p>
         ) : (
           <div className="space-y-2">
             {[...sessions].reverse().map((s, i) => (
-              <div
+              <Card
                 key={i}
-                className={`border rounded px-4 py-3 space-y-1 ${
-                  s.archivée ? 'border-[#1a1a1a] opacity-40' : 'border-[#1e1e1e]'
-                }`}
+                elevated
+                className={`space-y-1 ${s.archivée ? 'opacity-50' : ''}`}
               >
                 <div className="flex items-start gap-3">
                   {!s.archivée && (
@@ -512,37 +636,33 @@ export default function Settings() {
                             : prev.filter(d => d !== s.date)
                         )
                       }
-                      className="mt-0.5 accent-[#555] shrink-0"
+                      className="mt-0.5 accent-[--accent-primary] shrink-0"
                     />
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <span className="text-xs font-mono text-[#666]">{s.date}</span>
-                      <span className="text-xs font-mono text-[#888]">{s.matière}</span>
-                      <span className="text-xs font-mono text-[#5a9a5a]">
-                        {s.réussies}✓
-                      </span>
-                      <span className="text-xs font-mono text-[#9a5a5a]">
-                        {s.ratées}✗
-                      </span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-mono text-muted">{s.date}</span>
+                      <span className="text-xs text-secondary">{s.matière}</span>
+                      <Badge variant="success" mono>{s.réussies} ✓</Badge>
+                      <Badge variant="error" mono>{s.ratées} ✗</Badge>
                       {s.archivée && (
-                        <span className="text-[10px] font-mono text-[#333]">archivée</span>
+                        <Badge variant="neutral">archivée</Badge>
                       )}
                     </div>
                     {s.fichier && (
-                      <p className="text-[10px] font-mono text-[#2a2a2a] truncate mt-0.5">
+                      <p className="text-xs font-mono text-muted truncate mt-0.5">
                         {s.fichier.split(/[/\\]/).pop()}
                       </p>
                     )}
                     {s.erreurs.length > 0 && (
                       <div className="mt-1 space-y-0.5">
                         {s.erreurs.slice(0, 3).map((err, j) => (
-                          <p key={j} className="text-[10px] font-mono text-[#555] leading-relaxed">
+                          <p key={j} className="text-xs text-secondary leading-relaxed">
                             · {err}
                           </p>
                         ))}
                         {s.erreurs.length > 3 && (
-                          <p className="text-[10px] font-mono text-[#333]">
+                          <p className="text-xs text-muted">
                             +{s.erreurs.length - 3} erreurs
                           </p>
                         )}
@@ -550,11 +670,11 @@ export default function Settings() {
                     )}
                   </div>
                 </div>
-              </div>
+              </Card>
             ))}
           </div>
         )}
-      </section>
+      </Card>
     </main>
   )
 }

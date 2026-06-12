@@ -10,7 +10,6 @@ from pathlib import Path
 from threading import Thread
 from typing import Optional
 
-import ollama
 import pypdf
 import yaml
 from dotenv import load_dotenv, set_key as dotenv_set_key
@@ -36,7 +35,12 @@ from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
-from core.models import ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC, check_flm
+from core.models import (
+    ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
+    QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
+    get_ollama_installed,
+)
+from core.quota_tracker import QuotaTracker
 from core.rag import RAGEngine
 from core.voice import PiperEngine, WhisperEngine
 
@@ -106,6 +110,9 @@ class _QuotaTracker:
 
 quota_tracker = _QuotaTracker()
 
+# Persistent per-provider usage (tokens + requests) — backend/memory/quota_usage.json
+usage_tracker = QuotaTracker()
+
 
 def _provider_of(model: Optional[str]) -> str:
     if not model:
@@ -122,8 +129,6 @@ def _pick_reflection_model(preferred: Optional[str]) -> Optional[str]:
     if preferred and ":" in preferred and not preferred.startswith("ollama:"):
         return preferred
     # Fallback sur le meilleur cloud disponible
-    if os.environ.get("DEEPSEEK_API_KEY", "").strip():
-        return "deepseek:deepseek-chat"
     if os.environ.get("GEMINI_API_KEY", "").strip():
         return "gemini:gemini-2.0-flash"
     if os.environ.get("GROQ_API_KEY", "").strip():
@@ -198,43 +203,67 @@ async def voice_synthesize(req: SynthesizeRequest):
 @app.get("/models")
 async def list_models():
     loop = asyncio.get_running_loop()
-    try:
-        response = await loop.run_in_executor(None, ollama.list)
+    ollama_models = await loop.run_in_executor(None, get_ollama_installed)
+    if ollama_models is not None:
         local = [
-            {"id": m.model, "nom": m.model, "provider": "ollama", "disponible": True}
-            for m in response.models
+            {
+                "id": name, "nom": name, "provider": "ollama", "disponible": True,
+                "description": QUALITATIVE_METADATA.get(name, {}).get("description", ""),
+            }
+            for name in ollama_models
         ]
-    except Exception:
-        logger.exception("Erreur liste modèles Ollama")
-        local = [{"id": llm._model, "nom": llm._model, "provider": "ollama", "disponible": True}]
+    else:
+        # Serveur Ollama injoignable → modèle configuré affiché mais indisponible
+        local = [{"id": llm._model, "nom": llm._model, "provider": "ollama", "disponible": False}]
 
     catalog = await models_registry.get_catalog()
 
-    # FLM availability (2s timeout, non-blocking)
+    # FLM: server reachable + model physically installed in ~/.flm/models
     try:
         flm_ok = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(None, check_flm), timeout=2.5
+            loop.run_in_executor(None, check_flm), timeout=2.5
         )
     except Exception:
         flm_ok = False
+    flm_installed: set[str] = set()
+    flm_live: Optional[set[str]] = None
+    if flm_ok:
+        try:
+            flm_installed = await loop.run_in_executor(None, get_flm_installed)
+            flm_live = await loop.run_in_executor(None, flm_model_ids)
+        except Exception:
+            logger.exception("Erreur détection modèles FLM installés")
 
-    local_npu = [
-        {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": flm_ok}
-        for m in FLM_MODELS_STATIC
-    ]
+    local_npu = []
+    for m in FLM_MODELS_STATIC:
+        mid = m["id"].split("flm:", 1)[1]
+        dispo = (
+            flm_ok
+            and mid in flm_installed
+            and (flm_live is None or mid in flm_live)
+        )
+        local_npu.append(
+            {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": dispo}
+        )
 
     key_ok: dict[str, bool] = {
         "gemini":   bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "groq":     bool(os.environ.get("GROQ_API_KEY", "").strip()),
         "cerebras": bool(os.environ.get("CEREBRAS_API_KEY", "").strip()),
-        "deepseek": bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()),
+        "mistral":  bool(os.environ.get("MISTRAL_API_KEY", "").strip()),
         "nvidia":   bool(os.environ.get("NVIDIA_API_KEY", "").strip()),
     }
+
+    def _cloud_dispo(m: dict) -> bool:
+        # _disponible: True/False = verdict du /v1/models live ; None = inconnu → clé
+        if m.get("_disponible") is False:
+            return False
+        return key_ok.get(m["provider"], False)
 
     cloud: dict[str, list] = {}
     for cat, models in catalog.items():
         cloud[cat] = [
-            {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": key_ok.get(m["provider"], False)}
+            {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": _cloud_dispo(m)}
             for m in models
         ]
 
@@ -242,33 +271,59 @@ async def list_models():
     recommandations: dict[str, str] = {}
     for models in catalog.values():
         for m in models:
-            if not key_ok.get(m["provider"], False):
+            if not _cloud_dispo(m):
                 continue
             for usage in m.get("_usages", []):
                 if usage not in recommandations:
                     recommandations[usage] = m["id"]
 
-    # Apply static overrides when the target model's provider has a key
+    # Apply static overrides only when the target model exists in the live
+    # catalog and is available (avoids recommending a deprecated model ID)
+    available_ids = {
+        m["id"] for models in catalog.values() for m in models if _cloud_dispo(m)
+    }
     for usage, model_id in RECOMMENDATION_OVERRIDES.items():
-        provider = model_id.split(":", 1)[0]
-        if key_ok.get(provider, False):
+        if model_id in available_ids:
             recommandations[usage] = model_id
 
+    # "Conversation instantanée" : FLM first (si installé), fallback to Groq
+    if flm_ok and "qwen3:4b" in flm_installed:
+        recommandations["Conversation instantanée"] = "flm:qwen3:4b"
+    elif key_ok.get("groq", False):
+        recommandations["Conversation instantanée"] = "groq:llama-3.1-8b-instant"
+
     return {"local": local, "local_npu": local_npu, "cloud": cloud, "recommandations": recommandations}
+
+
+# ---------------------------------------------------------------------------
+# Quota / Usage
+# ---------------------------------------------------------------------------
+
+@app.get("/quota/usage")
+async def quota_usage():
+    return usage_tracker.get_usage()
+
+
+@app.post("/quota/reset/{provider}")
+async def quota_reset(provider: str):
+    ok = usage_tracker.reset(provider)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Provider inconnu : {provider}")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
 # Settings — API keys
 # ---------------------------------------------------------------------------
 
-_API_KEY_NAMES = ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "DEEPSEEK_API_KEY", "NVIDIA_API_KEY"]
+_API_KEY_NAMES = ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY"]
 
 
 class ApiKeysRequest(BaseModel):
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
     CEREBRAS_API_KEY: Optional[str] = None
-    DEEPSEEK_API_KEY: Optional[str] = None
+    MISTRAL_API_KEY: Optional[str] = None
     NVIDIA_API_KEY: Optional[str] = None
 
 
@@ -395,23 +450,31 @@ async def context_settings(request: Request):
 # Files
 # ---------------------------------------------------------------------------
 
+_SUPPORTED_EXT = {'.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'}
+
+
 async def _stream_load_sse(paths: list[str]):
-    """Async generator: index PDFs, stream summary tokens as SSE, send done event."""
+    """Async generator: index files, stream summary tokens as SSE, send done event."""
     loop = asyncio.get_running_loop()
     total_pages = 0
     text_parts: list[str] = []
     indexed_paths: list[str] = []
 
     for path in paths:
+        ext = Path(path).suffix.lower()
+        if ext not in _SUPPORTED_EXT:
+            logger.warning("Extension non supportée : %s", path)
+            continue
         if not os.path.exists(path):
             logger.warning("Fichier non trouvé : %s", path)
             continue
         try:
-            await loop.run_in_executor(None, rag.index_pdf, path)
-            text = await loop.run_in_executor(None, RAGEngine.read_pdf_text, path)
+            await loop.run_in_executor(None, rag.index_file, path)
+            text = await loop.run_in_executor(None, RAGEngine.read_file_text, path)
             text_parts.append(text[:3000])
-            reader = pypdf.PdfReader(path)
-            total_pages += len(reader.pages)
+            if ext == '.pdf':
+                reader = pypdf.PdfReader(path)
+                total_pages += len(reader.pages)
             indexed_paths.append(path)
         except Exception:
             logger.exception("Erreur chargement fichier %s", path)
@@ -489,10 +552,19 @@ async def files_upload(files: list[UploadFile] = File(...)):
     _FICHES_DIR.mkdir(parents=True, exist_ok=True)
     saved_paths: list[str] = []
     for upload in files:
-        dest = _FICHES_DIR / (upload.filename or "upload.pdf")
+        filename = upload.filename or "upload.bin"
+        ext = Path(filename).suffix.lower()
+        if ext not in _SUPPORTED_EXT:
+            continue
+        dest = _FICHES_DIR / filename
         content = await upload.read()
         dest.write_bytes(content)
         saved_paths.append(str(dest))
+    if not saved_paths:
+        raise HTTPException(
+            status_code=400,
+            detail="Types supportés : PDF, DOCX, TXT, MD, CSV, JSON, PNG, JPG, JPEG, WEBP",
+        )
     return StreamingResponse(
         _stream_load_sse(saved_paths), media_type="text/event-stream", headers=_SSE_HEADERS
     )
@@ -526,10 +598,10 @@ async def _stream_résumé_sse():
     text_parts: list[str] = []
     for path in active_files:
         try:
-            text = await loop.run_in_executor(None, RAGEngine.read_pdf_text, path)
+            text = await loop.run_in_executor(None, RAGEngine.read_file_text, path)
             text_parts.append(text[:3000])
         except Exception:
-            logger.exception("Erreur lecture PDF %s pour /résumé", path)
+            logger.exception("Erreur lecture fichier %s pour /résumé", path)
 
     if not text_parts:
         yield f"data: {json.dumps({'type': 'error', 'content': 'Impossible de lire les fichiers actifs.'})}\n\n"
@@ -584,14 +656,12 @@ async def skills_résumé():
 @app.get("/health")
 async def health():
     loop = asyncio.get_running_loop()
-    try:
-        response = await loop.run_in_executor(None, ollama.list)
-        models = [m.model for m in response.models]
+    models = await loop.run_in_executor(None, get_ollama_installed)
+    if models is not None:
         ctx = memory.get_context()
         active_model = ctx.get("modèle_actif", llm._model)
         ollama_ok = True
-    except Exception:
-        logger.exception("Erreur health check Ollama")
+    else:
         active_model, models, ollama_ok = "", [], False
 
     try:
@@ -915,6 +985,11 @@ async def ws_chat(websocket: WebSocket):
                     )
                     break
                 if isinstance(item, dict) and "__stats__" in item:
+                    usage_tracker.track(
+                        _provider_of(_last_model[0]),
+                        item.get("prompt_tokens", 0),
+                        item.get("output_tokens", 0),
+                    )
                     await websocket.send_text(json.dumps({
                         "type": "stats",
                         "prompt_tokens": item.get("prompt_tokens", 0),
@@ -1201,6 +1276,11 @@ async def ws_kholle(websocket: WebSocket):
                         )
                         break
                     if isinstance(item, dict) and "__stats__" in item:
+                        usage_tracker.track(
+                            _provider_of(model_override or llm._model),
+                            item.get("prompt_tokens", 0),
+                            item.get("output_tokens", 0),
+                        )
                         await websocket.send_text(json.dumps({
                             "type": "stats",
                             "prompt_tokens": item.get("prompt_tokens", 0),

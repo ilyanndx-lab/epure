@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square } from 'lucide-react'
+import { Card, Textarea } from './ui'
 import RichMessage from './RichMessage'
+import ModuleBar from './ModuleBar'
 import type { EffortLevel, StepConfig } from '../App'
 
 const API = 'http://localhost:8000'
@@ -43,14 +46,13 @@ interface Message {
 }
 
 interface ChatProps {
-  inputRef?: React.MutableRefObject<((text: string) => void) | null>
   onAssistantDone?: (text: string) => void
   playSpeech?: (text: string) => void
   stopSpeech?: () => void
   speakingText?: string | null
   onNavigate?: (module: 'chat' | 'kholle' | 'flashcards' | 'settings') => void
-  effort: EffortLevel
-  pipelineSteps: StepConfig[]
+  ttsEnabled?: boolean
+  onTtsToggle?: () => void
 }
 
 const AT_COMMANDS = [
@@ -95,68 +97,72 @@ function ThinkingBlockView({ thinking, collapsed, onToggle }: {
     : 'Réflexion...'
 
   return (
-    <div className="mt-2 mb-1 border border-[#1e1e1e] rounded bg-[#0d0d0d] overflow-hidden">
+    <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[#111] transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-elevated transition-colors duration-150"
       >
-        <span className="text-[10px] font-mono text-[#4a4a7a] flex items-center gap-2">
-          <span className={thinking.done ? '' : 'animate-pulse'}>⬡</span>
+        <span className="text-xs text-secondary flex items-center gap-2">
+          <Brain size={14} className={`text-accent2 shrink-0 ${thinking.done ? '' : 'animate-pulse'}`} />
           <span>Réflexion · {label}</span>
         </span>
-        <span className="text-[10px] font-mono text-[#333]">{collapsed ? '▸' : '▾'}</span>
+        <ChevronDown
+          size={14}
+          className={`text-muted shrink-0 transition-transform duration-150 ${collapsed ? '' : 'rotate-180'}`}
+        />
       </button>
 
       {!collapsed && (
-        <div className="border-t border-[#1a1a1a] divide-y divide-[#141414]">
+        <div className="border-t border-line divide-y divide-line">
           {thinking.steps.map((step, i) => (
             <div key={i} className="px-3 py-2">
               <div className="flex items-center gap-2 mb-1">
-                <span className={`text-[10px] font-mono shrink-0 ${
-                  step.status === 'done' ? 'text-[#5a9a5a]'
-                  : step.status === 'running' ? 'text-[#9a9a5a] animate-pulse'
-                  : step.status === 'error' ? 'text-[#9a4a4a]'
-                  : 'text-[#333]'
+                <span className={`text-xs font-mono shrink-0 inline-flex items-center gap-1.5 ${
+                  step.status === 'done' ? 'text-success'
+                  : step.status === 'running' ? 'text-warning animate-pulse'
+                  : step.status === 'error' ? 'text-error'
+                  : 'text-muted'
                 }`}>
-                  {step.status === 'done' ? '●' : step.status === 'running' ? '◉' : step.status === 'error' ? '✕' : '○'}
+                  {step.status === 'done' ? <Check size={12} /> : step.status === 'running' ? <Loader2 size={12} className="animate-spin" /> : step.status === 'error' ? <X size={12} /> : <Circle size={12} />}
                   {' '}{String(i + 1).padStart(2, '0')} {step.label}
                 </span>
-                <span className="text-[9px] font-mono text-[#333] shrink-0">
+                <span className="text-xs font-mono text-muted shrink-0">
                   {step.model.split(':').pop()}
                 </span>
                 {step.stats && (
-                  <span className="text-[9px] font-mono text-[#2a2a5a] shrink-0">
+                  <span className="text-xs font-mono text-muted shrink-0">
                     {step.stats.tps.toFixed(1)} tok/s · {step.stats.tokens} tokens · {fmtDuration(step.stats.duration_ms)}
                   </span>
                 )}
               </div>
               {step.errorMsg ? (
-                <p className="text-[10px] font-mono text-[#7a3a3a]">{step.errorMsg}</p>
+                <p className="text-xs font-mono text-error">{step.errorMsg}</p>
               ) : step.output ? (
-                <div className="text-xs text-[#666] max-h-40 overflow-y-auto">
+                <div className="text-sm text-secondary max-h-40 overflow-y-auto">
                   <RichMessage content={step.output} streaming={step.status === 'running'} />
                 </div>
               ) : step.status === 'running' ? (
-                <span className="text-[10px] font-mono text-[#333] animate-pulse">▍</span>
+                <span className="text-xs font-mono text-muted animate-pulse">▍</span>
               ) : null}
             </div>
           ))}
         </div>
       )}
-    </div>
+    </Card>
   )
 }
 
 export default function Chat({
-  inputRef,
   onAssistantDone,
   playSpeech,
   stopSpeech,
   speakingText,
   onNavigate,
-  effort,
-  pipelineSteps,
+  ttsEnabled,
+  onTtsToggle,
 }: ChatProps) {
+  const [effort, setEffort] = useState<EffortLevel>('direct')
+  const [pipelineSteps, setPipelineSteps] = useState<StepConfig[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [connected, setConnected] = useState(false)
@@ -173,11 +179,6 @@ export default function Chat({
   const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
   const inPipelineRef = useRef(false)
   const pipelineUserMsgIdxRef = useRef(-1)
-
-  useEffect(() => {
-    if (inputRef) inputRef.current = (text: string) => setInput(text)
-    return () => { if (inputRef) inputRef.current = null }
-  }, [inputRef])
 
   useEffect(() => {
     const connect = () => {
@@ -622,8 +623,9 @@ export default function Chat({
     <main className="flex flex-col flex-1 overflow-hidden">
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
         {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full">
-            <span className="text-xs font-mono text-[#2a2a2a] select-none">— en attente —</span>
+          <div className="flex flex-col items-center justify-center gap-2 h-full text-muted select-none">
+            <Sparkles size={16} />
+            <span className="text-sm">En attente d'un message</span>
           </div>
         )}
         {messages.map((msg, i) => (
@@ -631,8 +633,8 @@ export default function Chat({
             <div
               className={`max-w-[78%] ${
                 msg.role === 'user'
-                  ? 'px-4 py-3 rounded bg-[#1a1a1a] border border-[#282828] text-sm leading-relaxed text-[#d8d8d8]'
-                  : 'text-sm leading-relaxed text-[#b8b8b8] font-mono'
+                  ? 'px-4 py-3 rounded-lg bg-elevated border border-line text-sm leading-relaxed text-primary'
+                  : 'text-sm leading-relaxed text-secondary'
               }`}
             >
               {msg.role === 'user' ? (
@@ -647,17 +649,17 @@ export default function Chat({
                   )}
                 </>
               ) : msg.isError ? (
-                <p className="text-xs text-[#7a3a3a] whitespace-pre-wrap">{msg.content}</p>
+                <p className="text-xs text-error whitespace-pre-wrap">{msg.content}</p>
               ) : (
                 <RichMessage content={msg.content} streaming={streaming && i === messages.length - 1} />
               )}
               {msg.role === 'assistant' && i === messages.length - 1 && streaming && streamStats && (
-                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                <div className="mt-1 text-xs font-mono text-muted/70">
                   {streamStats.tps.toFixed(1)} tok/s · {streamStats.count} tokens
                 </div>
               )}
               {msg.role === 'assistant' && msg.stats && (
-                <div className="mt-1 text-[10px] font-mono text-[#2a2a2a]">
+                <div className="mt-1 text-xs font-mono text-muted/70">
                   {msg.stats.tps.toFixed(1)} tok/s · {msg.stats.durationMs}ms · {msg.stats.promptTokens}in / {msg.stats.outputTokens}out tokens
                 </div>
               )}
@@ -665,15 +667,15 @@ export default function Chat({
                 <div className="mt-2 flex">
                   <button
                     onClick={() => speakingText === msg.content ? stopSpeech?.() : playSpeech(msg.content)}
-                    className={`text-xs font-mono transition-colors
+                    className={`transition-colors duration-150
                       [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100
                       [@media(pointer:coarse)]:opacity-100
                       ${speakingText === msg.content
-                        ? 'text-[#5a9a5a] hover:text-[#7aba7a]'
-                        : 'text-[#333] hover:text-[#888]'}`}
+                        ? 'text-accent2 hover:text-accent2-hover'
+                        : 'text-muted hover:text-secondary'}`}
                     title={speakingText === msg.content ? 'Arrêter' : 'Lire'}
                   >
-                    {speakingText === msg.content ? '■' : '▶'}
+                    {speakingText === msg.content ? <Square size={13} fill="currentColor" /> : <Play size={13} />}
                   </button>
                 </div>
               )}
@@ -682,39 +684,56 @@ export default function Chat({
         ))}
         {streaming && messages[messages.length - 1]?.role !== 'assistant' && !inPipelineRef.current && (
           <div className="flex justify-start">
-            <span className="text-xs font-mono text-[#333] animate-pulse">▍</span>
+            <span className="text-xs font-mono text-accent2 animate-pulse">▍</span>
           </div>
         )}
         <div ref={bottomRef} />
       </div>
 
-      <div className="border-t border-[#1e1e1e] px-4 py-4 relative">
+      <ModuleBar
+        module="chat"
+        showFile
+        showMic
+        showSkills
+        showModel
+        showEffort
+        onTranscribed={(t) => setInput(prev => prev + t)}
+        ttsEnabled={ttsEnabled}
+        onTtsToggle={onTtsToggle}
+        speakingText={speakingText}
+        effort={effort}
+        onEffortChange={setEffort}
+        pipelineSteps={pipelineSteps}
+        onPipelineStepsChange={setPipelineSteps}
+      />
+
+      <div className="border-t border-line px-4 py-4 relative">
         {suggestions.length > 0 && (
-          <div className="absolute bottom-full left-4 mb-2 bg-[#141414] border border-[#282828] rounded shadow-lg overflow-hidden z-10 min-w-60">
+          <div className="absolute bottom-full left-4 mb-2 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-10 min-w-60">
             {suggestions.map((s, i) => (
               <button
                 key={s.trigger}
                 onMouseDown={e => { e.preventDefault(); applySuggestion(s.trigger) }}
-                className={`w-full text-left px-3 py-2 flex gap-3 items-baseline transition-colors ${
-                  i === selectedSuggestion ? 'bg-[#1e1e1e]' : 'hover:bg-[#181818]'
+                className={`w-full text-left px-3 py-2 flex gap-3 items-baseline transition-colors duration-150 ${
+                  i === selectedSuggestion ? 'bg-accent/10' : 'hover:bg-surface'
                 }`}
               >
-                <span className="text-xs font-mono text-[#6a9a6a] shrink-0">{s.trigger}</span>
-                <span className="text-[10px] font-mono text-[#444] truncate">{s.desc}</span>
+                <span className="text-xs font-mono text-accent2 shrink-0">{s.trigger}</span>
+                <span className="text-xs text-muted truncate">{s.desc}</span>
               </button>
             ))}
           </div>
         )}
 
         <div className="flex gap-3 items-end">
-          <textarea
+          <Textarea
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={streaming}
             placeholder={connected ? 'Message...' : 'Connexion au serveur...'}
             rows={1}
-            className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-2 text-sm text-[#e0e0e0] placeholder-[#383838] resize-none focus:outline-none focus:border-[#383838] font-mono"
+            className="flex-1"
             style={{ minHeight: '40px', maxHeight: '160px' }}
             onInput={e => {
               const el = e.currentTarget
@@ -725,13 +744,14 @@ export default function Chat({
           <button
             onClick={() => { send() }}
             disabled={streaming || !input.trim()}
-            className="px-4 py-2 bg-[#141414] border border-[#242424] rounded text-xs font-mono text-[#666] hover:border-[#383838] hover:text-[#aaa] disabled:opacity-20 disabled:cursor-not-allowed transition-colors shrink-0"
+            title="Envoyer"
+            className="p-2.5 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
           >
-            {streaming ? '...' : 'envoyer'}
+            {streaming ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           </button>
         </div>
         {!connected && (
-          <div className="mt-2 text-xs font-mono text-[#7a3333]">ws déconnecté — reconnexion...</div>
+          <div className="mt-2 text-xs font-mono text-error">ws déconnecté — reconnexion...</div>
         )}
       </div>
     </main>

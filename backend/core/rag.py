@@ -1,4 +1,5 @@
 import functools
+import json
 import logging
 import os
 import threading
@@ -13,6 +14,8 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'}
 
 
 class RAGEngine:
@@ -33,13 +36,50 @@ class RAGEngine:
             "fiches", embedding_function=self._ef
         )
 
-        # Per-instance LRU caches — cleared on index_pdf to avoid stale results
+        # Per-instance LRU caches — cleared on index_file to avoid stale results
         self._query_lru = functools.lru_cache(maxsize=50)(self._do_query)
         self._query_filtered_lru = functools.lru_cache(maxsize=50)(self._do_query_filtered)
 
-    def index_pdf(self, path: str) -> None:
-        reader = pypdf.PdfReader(str(path))
-        full_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    @staticmethod
+    def _extract_text_from_path(path: str) -> str:
+        ext = Path(path).suffix.lower()
+        if ext == '.pdf':
+            reader = pypdf.PdfReader(str(path))
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        elif ext == '.docx':
+            try:
+                from docx import Document  # python-docx
+                doc = Document(str(path))
+                return "\n".join(para.text for para in doc.paragraphs)
+            except ImportError:
+                logger.warning("python-docx non installé — pip install python-docx")
+                return ""
+        elif ext in ('.txt', '.md'):
+            return Path(path).read_text(encoding='utf-8', errors='ignore')
+        elif ext == '.csv':
+            try:
+                import pandas as pd
+                df = pd.read_csv(path, nrows=500)
+                return df.to_string(index=False)
+            except Exception:
+                return Path(path).read_text(encoding='utf-8', errors='ignore')
+        elif ext == '.json':
+            try:
+                data = json.loads(Path(path).read_text(encoding='utf-8'))
+                return json.dumps(data, ensure_ascii=False, indent=2)[:50000]
+            except Exception:
+                return Path(path).read_text(encoding='utf-8', errors='ignore')
+        elif ext in ('.png', '.jpg', '.jpeg', '.webp'):
+            name = Path(path).name
+            return f"Image : {name} (analyse vision non disponible sans modèle vision)"
+        return ""
+
+    def index_file(self, path: str) -> None:
+        ext = Path(path).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            return
+
+        full_text = self._extract_text_from_path(path)
         if not full_text.strip():
             return
 
@@ -56,7 +96,7 @@ class RAGEngine:
         chunks = []
         start = 0
         while start < len(full_text):
-            chunks.append(full_text[start : start + chunk_chars])
+            chunks.append(full_text[start: start + chunk_chars])
             start += step
 
         base_id = str(path).replace("\\", "/")
@@ -70,6 +110,10 @@ class RAGEngine:
         # Invalidate query caches since the index has changed
         self._query_lru.cache_clear()
         self._query_filtered_lru.cache_clear()
+
+    def index_pdf(self, path: str) -> None:
+        """Backward-compat alias for index_file."""
+        self.index_file(path)
 
     def _do_query(self, text: str, n: int) -> str:
         count = self._col.count()
@@ -117,35 +161,42 @@ class RAGEngine:
         return sorted(sources)
 
     @staticmethod
+    def read_file_text(path: str) -> str:
+        return RAGEngine._extract_text_from_path(path)
+
+    @staticmethod
     def read_pdf_text(path: str) -> str:
-        reader = pypdf.PdfReader(str(path))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        """Backward-compat alias for read_file_text."""
+        return RAGEngine._extract_text_from_path(path)
 
     def watch(self, folder: str) -> None:
         folder = str(folder)
         if not os.path.isdir(folder):
             return
 
-        for pdf_path in Path(folder).rglob("*.pdf"):
-            try:
-                self.index_pdf(str(pdf_path))
-            except Exception:
-                logger.exception("Erreur lors de l'indexation de %s", pdf_path)
+        for ext in SUPPORTED_EXTENSIONS:
+            for file_path in Path(folder).rglob(f"*{ext}"):
+                try:
+                    self.index_file(str(file_path))
+                except Exception:
+                    logger.exception("Erreur lors de l'indexation de %s", file_path)
 
-        handler = _PDFHandler(self)
+        handler = _FileHandler(self)
         observer = Observer()
         observer.schedule(handler, folder, recursive=True)
         observer.daemon = True
         observer.start()
 
 
-class _PDFHandler(FileSystemEventHandler):
+class _FileHandler(FileSystemEventHandler):
     def __init__(self, engine: RAGEngine):
         self._engine = engine
 
     def on_created(self, event):
-        if not event.is_directory and event.src_path.lower().endswith(".pdf"):
-            try:
-                self._engine.index_pdf(event.src_path)
-            except Exception:
-                logger.exception("Erreur lors de l'indexation de %s", event.src_path)
+        if not event.is_directory:
+            ext = Path(event.src_path).suffix.lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                try:
+                    self._engine.index_file(event.src_path)
+                except Exception:
+                    logger.exception("Erreur lors de l'indexation de %s", event.src_path)

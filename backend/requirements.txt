@@ -11,3 +11,5 @@ piper-tts
 python-dotenv
 google-generativeai
 openai
+python-docx
+pandas
