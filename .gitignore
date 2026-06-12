@@ -26,6 +26,10 @@ backend/chroma_db/
 # Données utilisateur (fiches PDF) — défaut portable de EPURE_FICHES_DIR
 /data/
 
+# Config et état par instance (générés au runtime, propres à chaque utilisateur)
+backend/memory/instance_config.json
+backend/memory/modules_state.json
+
 # Logs
 *.log
 epure_tray.log
