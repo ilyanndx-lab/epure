@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { FileSearch, Loader2, Plus, Send, Trash2 } from 'lucide-react'
+import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from './ui'
 import RichMessage from './RichMessage'
+import ModuleBar from './ModuleBar'
 
 const API = 'http://localhost:8000'
 
@@ -280,23 +283,26 @@ export default function Docs() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-1 overflow-hidden">
+    <div className="flex flex-col flex-1 overflow-hidden">
+    <div className="flex flex-1 overflow-hidden min-h-0">
 
       {/* LEFT — Bibliothèque */}
-      <div className="w-60 shrink-0 border-r border-[#1e1e1e] flex flex-col bg-[#0d0d0d]">
-        <div className="px-4 py-3 border-b border-[#1e1e1e] flex items-center justify-between">
-          <span className="text-[10px] font-mono text-[#333] uppercase tracking-[0.2em]">Documents</span>
-          <button
+      <div className="w-60 shrink-0 border-r border-line flex flex-col bg-surface">
+        <div className="px-4 py-3 border-b border-line flex items-center justify-between">
+          <span className="text-xs text-muted uppercase tracking-wide">Documents</span>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Plus size={13} />}
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            className="text-[10px] font-mono text-[#555] hover:text-[#aaa] px-2 py-0.5 rounded hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
           >
-            + charger
-          </button>
+            charger
+          </Button>
           <input
             ref={fileRef}
             type="file"
-            accept=".pdf"
+            accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.webp"
             className="hidden"
             onChange={e => {
               const f = e.target.files?.[0]
@@ -308,9 +314,9 @@ export default function Docs() {
 
         {/* Drag-drop zone */}
         <div
-          className={`mx-3 my-2 rounded border-2 border-dashed text-center text-[10px] font-mono py-3 cursor-pointer transition-colors ${
-            dragOver ? 'border-[#2a2a2a] text-[#666]' : 'border-[#191919] text-[#2a2a2a]'
-          } ${uploading ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#252525] hover:text-[#444]'}`}
+          className={`mx-3 my-2 rounded-md border border-dashed text-center text-xs py-3 cursor-pointer transition-colors duration-150 ${
+            dragOver ? 'border-accent/50 bg-accent/5 text-secondary' : 'border-line text-muted'
+          } ${uploading ? 'opacity-50 cursor-not-allowed' : 'hover:border-accent/30 hover:text-secondary'}`}
           onDragOver={e => { e.preventDefault(); setDragOver(true) }}
           onDragLeave={() => setDragOver(false)}
           onDrop={e => {
@@ -324,24 +330,19 @@ export default function Docs() {
           {uploading ? (
             uploadProg ? (
               <div className="space-y-1.5 px-2">
-                <div>indexation... {uploadProg.current}/{uploadProg.total}</div>
-                <div className="h-0.5 bg-[#181818] rounded overflow-hidden">
-                  <div
-                    className="h-full bg-[#2a4a2a] transition-all duration-300"
-                    style={{ width: `${(uploadProg.current / uploadProg.total) * 100}%` }}
-                  />
-                </div>
+                <div className="font-mono">indexation... {uploadProg.current}/{uploadProg.total}</div>
+                <ProgressBar value={(uploadProg.current / uploadProg.total) * 100} />
               </div>
             ) : (
               <span>chargement...</span>
             )
           ) : (
-            'glisser-déposer PDF'
+            'glisser-déposer un fichier'
           )}
         </div>
 
         {uploadErr && (
-          <div className="mx-3 mb-2 text-[10px] font-mono text-[#7a3a3a] px-2 py-1.5 bg-[#120808] rounded border border-[#2a1010]">
+          <div className="mx-3 mb-2 text-xs text-error px-2 py-1.5 bg-error/10 rounded-sm border border-error/30">
             {uploadErr}
           </div>
         )}
@@ -349,31 +350,36 @@ export default function Docs() {
         {/* Doc list */}
         <div className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
           {docs.length === 0 && !uploading && (
-            <div className="text-center py-8 text-[10px] font-mono text-[#282828]">
-              aucun document
+            <div className="flex flex-col items-center gap-2 py-8 text-muted select-none">
+              <FileSearch size={15} />
+              <span className="text-xs">aucun document</span>
             </div>
           )}
           {docs.map(doc => (
             <div
               key={doc.id}
               onClick={() => setSelected(doc)}
-              className={`px-3 py-2.5 rounded cursor-pointer group flex items-start justify-between gap-1 transition-colors ${
+              className={`relative px-3 py-2.5 rounded-sm cursor-pointer group flex items-start justify-between gap-1 transition-colors duration-150 ${
                 selected?.id === doc.id
-                  ? 'bg-[#1a1a1a] text-[#e0e0e0]'
-                  : 'text-[#555] hover:text-[#aaa] hover:bg-[#111]'
+                  ? 'bg-accent/10 text-primary'
+                  : 'text-secondary hover:text-primary hover:bg-elevated'
               }`}
             >
+              {selected?.id === doc.id && (
+                <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-accent" />
+              )}
               <div className="flex-1 min-w-0">
-                <div className="text-[11px] font-mono truncate leading-tight">{doc.titre}</div>
-                <div className="text-[9px] font-mono text-[#2a2a2a] mt-0.5">
+                <div className="text-xs truncate leading-tight">{doc.titre}</div>
+                <div className="text-xs font-mono text-muted mt-0.5">
                   {doc.n_pages}p · {doc.n_chunks} chunks
                 </div>
               </div>
               <button
                 onClick={e => handleUnload(doc.id, e)}
-                className="opacity-0 group-hover:opacity-100 text-[#333] hover:text-[#777] text-[10px] font-mono shrink-0 mt-0.5 transition-all"
+                title="Décharger"
+                className="opacity-0 group-hover:opacity-100 text-muted hover:text-error shrink-0 mt-0.5 transition-all duration-150"
               >
-                ✕
+                <Trash2 size={12} />
               </button>
             </div>
           ))}
@@ -384,36 +390,34 @@ export default function Docs() {
       <div className={`flex flex-col flex-1 overflow-hidden`}>
         {!selected ? (
           <div className="flex-1 flex items-center justify-center">
-            <div className="text-center font-mono text-[#222]">
-              <div className="text-2xl mb-2">◻</div>
-              <div className="text-xs">Chargez un document pour commencer</div>
+            <div className="flex flex-col items-center gap-2 text-muted select-none">
+              <FileSearch size={20} />
+              <div className="text-sm">Chargez un document pour commencer</div>
             </div>
           </div>
         ) : (
           <>
             {/* Header */}
-            <div className="px-6 py-3 border-b border-[#1e1e1e] shrink-0">
-              <div className="text-sm font-mono text-[#bbb] truncate">{selected.titre}</div>
-              <div className="text-[10px] font-mono text-[#2a2a2a] mt-0.5">
-                {selected.n_pages} pages · {selected.n_chunks} chunks indexés
+            <div className="px-6 py-3 border-b border-line shrink-0 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-primary truncate">{selected.titre}</div>
+                <div className="text-xs font-mono text-muted mt-0.5">
+                  {selected.n_pages} pages · {selected.n_chunks} chunks indexés
+                </div>
               </div>
             </div>
 
             {/* Tabs */}
-            <div className="flex border-b border-[#1e1e1e] px-4 shrink-0">
-              {(['search', 'summary', 'chat'] as const).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`px-4 py-2.5 text-[11px] font-mono border-b-2 transition-colors ${
-                    tab === t
-                      ? 'border-[#333] text-[#bbb]'
-                      : 'border-transparent text-[#3a3a3a] hover:text-[#666]'
-                  }`}
-                >
-                  {t === 'search' ? 'recherche' : t === 'summary' ? 'résumé' : 'chat'}
-                </button>
-              ))}
+            <div className="px-4 shrink-0">
+              <Tabs
+                tabs={[
+                  { id: 'search', label: 'Recherche' },
+                  { id: 'summary', label: 'Résumé' },
+                  { id: 'chat', label: 'Chat' },
+                ]}
+                active={tab}
+                onChange={id => setTab(id as Tab)}
+              />
             </div>
 
             {/* Tab content */}
@@ -421,7 +425,8 @@ export default function Docs() {
               <div className="flex flex-col flex-1 overflow-hidden">
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
                   {chatMsgs.length === 0 && (
-                    <div className="text-center text-[#252525] font-mono text-xs py-8">
+                    <div className="flex flex-col items-center gap-2 text-muted text-sm py-8 select-none">
+                      <Send size={15} />
                       Posez une question sur le document
                     </div>
                   )}
@@ -429,8 +434,8 @@ export default function Docs() {
                     <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                       <div className={`max-w-[80%] ${
                         m.role === 'user'
-                          ? 'bg-[#111] border border-[#1e1e1e] rounded px-3 py-2 text-xs font-mono text-[#ccc]'
-                          : 'text-[#b8b8b8]'
+                          ? 'bg-elevated border border-line rounded-lg px-3 py-2 text-sm text-primary'
+                          : 'text-secondary'
                       }`}>
                         {m.role === 'user'
                           ? m.content
@@ -441,22 +446,23 @@ export default function Docs() {
                   ))}
                   <div ref={chatEndRef} />
                 </div>
-                <div className="px-4 pb-4 pt-2 border-t border-[#1e1e1e] shrink-0">
+                <div className="px-4 pb-4 pt-2 border-t border-line shrink-0">
                   <div className="flex gap-2">
-                    <input
+                    <Input
                       value={chatInput}
                       onChange={e => setChatInput(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleChatSend()}
                       placeholder="Question sur le document..."
                       disabled={chatStreaming}
-                      className="flex-1 bg-[#0f0f0f] border border-[#1e1e1e] rounded px-3 py-2 text-xs font-mono text-[#ccc] placeholder-[#282828] focus:outline-none focus:border-[#252525] disabled:opacity-50"
+                      className="flex-1 text-xs disabled:opacity-50"
                     />
                     <button
                       onClick={handleChatSend}
                       disabled={chatStreaming || !chatInput.trim()}
-                      className="px-4 py-2 text-xs font-mono bg-[#141414] text-[#777] border border-[#222] rounded hover:text-[#ccc] disabled:opacity-40 transition-colors"
+                      title="Envoyer"
+                      className="p-2 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
                     >
-                      {chatStreaming ? '...' : 'envoyer'}
+                      {chatStreaming ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                     </button>
                   </div>
                 </div>
@@ -468,64 +474,64 @@ export default function Docs() {
                 {tab === 'search' && (
                   <div className="p-6 space-y-4">
                     <div className="flex gap-2">
-                      <input
+                      <Input
                         value={query}
                         onChange={e => setQuery(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && handleSearch()}
                         placeholder="Que cherchez-vous ?"
-                        className="flex-1 bg-[#0f0f0f] border border-[#1e1e1e] rounded px-3 py-2 text-xs font-mono text-[#ccc] placeholder-[#282828] focus:outline-none focus:border-[#252525]"
+                        className="flex-1 text-xs"
                       />
-                      <button
+                      <Button
+                        variant="primary"
+                        size="sm"
                         onClick={handleSearch}
                         disabled={searching || !query.trim()}
-                        className="px-4 py-2 text-xs font-mono bg-[#141414] text-[#777] border border-[#222] rounded hover:text-[#ccc] disabled:opacity-40 transition-colors"
                       >
                         {searching ? '...' : 'chercher'}
-                      </button>
+                      </Button>
                     </div>
 
                     {results.length > 0 && (
                       <div className="space-y-3">
                         {results.map((r, i) => (
-                          <div key={i} className="border border-[#1a1a1a] rounded bg-[#090909]">
-                            <div className="px-4 py-2 flex items-center justify-between border-b border-[#141414]">
-                              <div className="flex items-center gap-3">
-                                <span className="text-[9px] font-mono text-[#2a2a2a]">p.{r.page_approx}</span>
-                                <span className="text-[9px] font-mono text-[#222]">
-                                  {(r.score * 100).toFixed(0)}%
-                                </span>
+                          <Card key={i} accent="secondary" padded={false}>
+                            <div className="px-4 py-2 flex items-center justify-between border-b border-line">
+                              <div className="flex items-center gap-2">
+                                <Badge variant="neutral" mono>p.{r.page_approx}</Badge>
+                                <Badge variant="secondary" mono>{(r.score * 100).toFixed(0)}%</Badge>
                               </div>
-                              <button
+                              <Button
+                                variant="ghost"
+                                size="sm"
                                 onClick={() => handleDeepen(r.chunk_index, r.chunk)}
                                 disabled={deepStreaming[r.chunk_index]}
-                                className="text-[10px] font-mono text-[#333] hover:text-[#777] disabled:opacity-40 transition-colors"
                               >
-                                {deepStreaming[r.chunk_index] ? '...' : 'approfondir →'}
-                              </button>
+                                {deepStreaming[r.chunk_index] ? '...' : 'approfondir'}
+                              </Button>
                             </div>
-                            <pre className="px-4 py-3 text-[11px] font-mono text-[#555] leading-relaxed whitespace-pre-wrap break-words">
+                            <pre className="px-4 py-3 text-xs font-mono text-secondary leading-relaxed whitespace-pre-wrap break-words">
                               {r.chunk}
                             </pre>
                             {(deepContent[r.chunk_index] || deepStreaming[r.chunk_index]) && (
-                              <div className="border-t border-[#141414] px-4 py-3 bg-[#0d0d0d]">
+                              <div className="border-t border-line px-4 py-3 bg-elevated/50">
                                 <RichMessage
                                   content={deepContent[r.chunk_index] ?? ''}
                                   streaming={deepStreaming[r.chunk_index]}
                                 />
                               </div>
                             )}
-                          </div>
+                          </Card>
                         ))}
                       </div>
                     )}
 
                     {(synthesis || synthStreaming) && (
-                      <div className="border border-[#1a1a1a] rounded bg-[#090909] px-4 py-3">
-                        <div className="text-[9px] font-mono text-[#2a2a2a] mb-2 uppercase tracking-[0.15em]">
+                      <Card accent="secondary">
+                        <div className="text-xs text-muted mb-2 uppercase tracking-wide">
                           synthèse
                         </div>
                         <RichMessage content={synthesis} streaming={synthStreaming} />
-                      </div>
+                      </Card>
                     )}
                   </div>
                 )}
@@ -534,52 +540,29 @@ export default function Docs() {
                 {tab === 'summary' && (
                   <div className="p-6 space-y-4">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={() => handleSummarize('short')}
-                        disabled={summaryStreaming}
-                        className="px-3 py-1.5 text-xs font-mono bg-[#141414] text-[#666] border border-[#1e1e1e] rounded hover:text-[#bbb] disabled:opacity-40 transition-colors"
-                      >
+                      <Button variant="secondary" size="sm" onClick={() => handleSummarize('short')} disabled={summaryStreaming}>
                         court (200 mots)
-                      </button>
-                      <button
-                        onClick={() => handleSummarize('medium')}
-                        disabled={summaryStreaming}
-                        className="px-3 py-1.5 text-xs font-mono bg-[#141414] text-[#666] border border-[#1e1e1e] rounded hover:text-[#bbb] disabled:opacity-40 transition-colors"
-                      >
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => handleSummarize('medium')} disabled={summaryStreaming}>
                         structuré
-                      </button>
-                      <button
-                        onClick={() => handleSummarize('full')}
-                        disabled={summaryStreaming}
-                        className="px-3 py-1.5 text-xs font-mono bg-[#141414] text-[#666] border border-[#1e1e1e] rounded hover:text-[#bbb] disabled:opacity-40 transition-colors"
-                      >
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => handleSummarize('full')} disabled={summaryStreaming}>
                         complet
-                      </button>
+                      </Button>
                       <label className="flex items-center gap-2 ml-auto cursor-pointer select-none">
-                        <span className="text-[9px] font-mono text-[#2a2a2a]">cloud</span>
-                        <div
-                          onClick={() => setUseCloud(v => !v)}
-                          className={`w-7 h-3.5 rounded-full relative cursor-pointer transition-colors ${
-                            useCloud ? 'bg-[#1a3a2a]' : 'bg-[#181818]'
-                          }`}
-                        >
-                          <div
-                            className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-[#444] transition-all ${
-                              useCloud ? 'left-3.5' : 'left-0.5'
-                            }`}
-                          />
-                        </div>
+                        <span className="text-xs text-muted">cloud</span>
+                        <Toggle checked={useCloud} onChange={setUseCloud} label="Résumé via cloud" />
                       </label>
                     </div>
 
-                    <div className="text-[10px] font-mono text-[#2a2a2a] bg-[#0d0d0d] border border-[#181818] rounded px-3 py-2">
+                    <div className="text-xs text-muted bg-elevated border border-line rounded-sm px-3 py-2">
                       résumé complet : peut prendre plusieurs minutes sur un document long
                     </div>
 
                     {(summaryContent || summaryStreaming) && (
-                      <div className="border border-[#1a1a1a] rounded bg-[#090909] px-4 py-4">
+                      <Card>
                         <RichMessage content={summaryContent} streaming={summaryStreaming} />
-                      </div>
+                      </Card>
                     )}
                   </div>
                 )}
@@ -588,6 +571,8 @@ export default function Docs() {
           </>
         )}
       </div>
+    </div>
+    <ModuleBar module="docs" showFile showModel />
     </div>
   )
 }

@@ -1,6 +1,28 @@
 {
   "conversations": [
     {
+      "id": "43159b7e-cdfa-47b4-8d97-9797adb85195",
+      "date": "2026-06-06",
+      "titre": "Conversation du 06/06/2026",
+      "apercu": "bonjour ?",
+      "modèle": "flm:qwen3:4b",
+      "n_messages": 5,
+      "modules": [
+        "chat"
+      ]
+    },
+    {
+      "id": "028b2136-1ac6-4e47-bc0b-f0f6952e7423",
+      "date": "2026-06-03",
+      "titre": "Liste Python Physique Induction",
+      "apercu": "bonjour",
+      "modèle": "mistral-small:24b",
+      "n_messages": 6,
+      "modules": [
+        "chat"
+      ]
+    },
+    {
       "id": "13773818-1ef8-4367-8adc-4bffcc492184",
       "date": "2026-05-31",
       "titre": "Conversation Incrémentale",

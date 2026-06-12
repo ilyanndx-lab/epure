@@ -1,0 +1,114 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Épure — Design tokens
+   Thème via [data-theme] sur <html>. Défaut : dark.
+   Les variantes -rgb (triplets) servent aux utilitaires Tailwind avec alpha
+   (ex: bg-accent/10). Toujours garder hex et triplet synchronisés.
+   ───────────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme='dark'] {
+  /* Fonds — gris chauds, pas de noir pur */
+  --bg-base: #1a1815;
+  --bg-surface: #232019;
+  --bg-elevated: #2a2620;
+  --border: #383330;
+
+  --bg-base-rgb: 26 24 21;
+  --bg-surface-rgb: 35 32 25;
+  --bg-elevated-rgb: 42 38 32;
+  --border-rgb: 56 51 48;
+
+  /* Texte */
+  --text-primary: #ece8e0;
+  --text-secondary: #a8a298;
+  --text-muted: #6b6660;
+
+  --text-primary-rgb: 236 232 224;
+  --text-secondary-rgb: 168 162 152;
+  --text-muted-rgb: 107 102 96;
+
+  /* Ombres */
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.25);
+  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.45);
+
+  /* Voile derrière les modales */
+  --scrim: rgb(10 9 7 / 0.6);
+}
+
+[data-theme='light'] {
+  /* Fonds — crème chaud */
+  --bg-base: #f5f1e8;
+  --bg-surface: #fffdf7;
+  --bg-elevated: #ffffff;
+  --border: #e0d8c8;
+
+  --bg-base-rgb: 245 241 232;
+  --bg-surface-rgb: 255 253 247;
+  --bg-elevated-rgb: 255 255 255;
+  --border-rgb: 224 216 200;
+
+  --text-primary: #2a2620;
+  --text-secondary: #5a544a;
+  --text-muted: #8a8478;
+
+  --text-primary-rgb: 42 38 32;
+  --text-secondary-rgb: 90 84 74;
+  --text-muted-rgb: 138 132 120;
+
+  /* Ombres plus prononcées en light */
+  --shadow-sm: 0 1px 3px rgb(42 38 32 / 0.08);
+  --shadow-md: 0 4px 14px rgb(42 38 32 / 0.12);
+  --shadow-lg: 0 12px 36px rgb(42 38 32 / 0.16);
+
+  --scrim: rgb(42 38 32 / 0.35);
+}
+
+:root {
+  /* Accents — identiques light/dark */
+  --accent-primary: #8b5cf6;
+  --accent-primary-hover: #7c3aed;
+  --accent-secondary: #2dd4bf;
+  --accent-secondary-hover: #14b8a6;
+  --gradient-primary: linear-gradient(135deg, #8b5cf6, #2dd4bf);
+
+  --accent-primary-rgb: 139 92 246;
+  --accent-primary-hover-rgb: 124 58 237;
+  --accent-secondary-rgb: 45 212 191;
+  --accent-secondary-hover-rgb: 20 184 166;
+
+  /* Texte/éléments posés sur un fond accent ou dégradé */
+  --on-accent: #ffffff;
+  --on-accent-rgb: 255 255 255;
+
+  /* Sémantique */
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --error: #f87171;
+  --info: #2dd4bf;
+
+  --success-rgb: 74 222 128;
+  --warning-rgb: 251 191 36;
+  --error-rgb: 248 113 113;
+  --info-rgb: 45 212 191;
+
+  /* Espacement — échelle 4px */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+
+  /* Rayons */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* Typographie */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}

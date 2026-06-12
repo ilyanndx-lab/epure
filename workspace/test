@@ -1,0 +1,68 @@
+# -*- coding: utf-8 -*-
+"""TP11"""
+import numpy as np
+import matplotlib.pyplot as plt
+
+l0=7.3
+leq=np.array([9.9,10.4,11.1,11.7,12.5,13.0,13.7,14.3,15.1])
+xeq=(leq-l0)*10**(-2)
+m=np.array([20,24,30,34,40,44,50,54,60])
+mbis=m*10**(-3)
+
+X=mbis
+Y=xeq
+
+delta_mbis=1*10**-3
+u_mbis=delta_mbis/2*np.sqrt(3)
+u_leq=10**-3/np.sqrt(3)
+u_l0=10**-3/np.sqrt(3)
+u_xeq=np.sqrt((u_leq)**2/leq+(u_l0)**2/l0)
+
+"""tracé de la courbe"""
+plt.subplot(211)
+plt.plot(mbis,xeq,'x',color='green',label='valeurs de l experience')
+plt.title("xeq en fonction de m")
+plt.xlabel("m en kg")
+plt.ylabel("xeq en m")
+plt.errorbar(X,Y, yerr=2*u_xeq, label='mesures')
+plt.grid()
+
+"""régression linéaire"""
+a,b=np.polyfit(X,Y,1)
+R=np.corrcoef(X,Y)
+plt.plot(X,a*X+b,color='pink',label='régression linéaire')
+plt.legend()
+print('pente= ',str(a),'m/kg')
+print('ordonnée à l origine= ',str(b),'m')
+print('coeff de corrélation= ', R[0,1])
+plt.text(0.02,0.075,'pente =' +str(a)+'m/kg')
+plt.text(0.02,0.07,'coeff de corrélation= '+str(round(R[1,0],3)))
+# print('constante de raideur k =',9.81/a)
+# plt.text(0.02,0.065,'constante de raideur k = '+str(9.81/a)+'N/m')
+
+"""Monte Carlo"""
+N=10000 #nombre de jeux simulés
+liste_a=[]
+liste_b=[]#creation de listes qui contiendront les valeurs simulées de a et de b
+for i in range(N):
+    n=len(m)#nbr de mesures au sein de chaque jeu
+    m_MC=mbis+delta_mbis*np.random.uniform(-1,1,n)
+    xeq_MC=xeq+u_xeq*np.sqrt(3)*np.random.uniform(-1,1,n)
+    a_MC,b_MC=np.polyfit(m_MC,xeq_MC,1)
+    liste_a.append(a_MC)
+    liste_b.append(b_MC)
+
+amoy=np.mean(liste_a)
+u_a=np.std(liste_a,ddof=1)
+g=9.81
+u_g=0.01
+k=g/amoy
+u_k=k*np.sqrt((u_g/g)**2+(u_a/amoy)**2)
+print('constante de raideur =',round(k,5),'N/m')# round permet de choisir le nombre de chiffres significatifs pour k
+print('incertitudes sur k',u_k,'N/m')
+
+"""Tracé d'un histogramme"""
+plt.subplot(212)
+plt.hist(liste_a,bins='auto',edgecolor='k')
+plt.xlabel('valeurs de a simulées')
+plt.ylabel('nombre de mesures')

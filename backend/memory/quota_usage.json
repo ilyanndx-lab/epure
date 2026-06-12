@@ -1,0 +1,32 @@
+{
+  "cerebras": {
+    "tokens_input": 0,
+    "tokens_output": 0,
+    "requests": 0,
+    "reset_date": "2026-06-12"
+  },
+  "gemini": {
+    "tokens_input": 0,
+    "tokens_output": 0,
+    "requests": 0,
+    "reset_date": "2026-06-12"
+  },
+  "groq": {
+    "tokens_input": 41,
+    "tokens_output": 2,
+    "requests": 1,
+    "reset_date": "2026-06-12"
+  },
+  "mistral": {
+    "tokens_input": 17,
+    "tokens_output": 15,
+    "requests": 1,
+    "reset_date": "2026-06"
+  },
+  "nvidia": {
+    "tokens_input": 0,
+    "tokens_output": 0,
+    "requests": 0,
+    "reset_date": "2026-06-12"
+  }
+}

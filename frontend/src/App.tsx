@@ -8,7 +8,6 @@ import Code from './components/Code'
 import Docs from './components/Docs'
 import History from './components/History'
 import Settings from './components/Settings'
-import ConnectorBar from './components/ConnectorBar'
 
 type Module = 'chat' | 'kholle' | 'flashcards' | 'code' | 'docs' | 'admin' | 'history' | 'settings'
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
@@ -20,10 +19,7 @@ export default function App() {
   const [activeModule, setActiveModule] = useState<Module>('chat')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
-  const [effort, setEffort] = useState<EffortLevel>('direct')
-  const [pipelineSteps, setPipelineSteps] = useState<StepConfig[]>([])
 
-  const activeInputRef = useRef<((text: string) => void) | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   const stopSpeech = useCallback(() => {
@@ -76,28 +72,28 @@ export default function App() {
   )
 
   return (
-    <div className="flex h-screen w-full bg-[#0d0d0d] text-[#e0e0e0] overflow-hidden">
+    <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
       <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
       <div className="flex flex-col flex-1 overflow-hidden">
         {activeModule === 'chat' && (
           <Chat
-            inputRef={activeInputRef}
             onAssistantDone={onAssistantDone}
             playSpeech={playSpeech}
             stopSpeech={stopSpeech}
             speakingText={speakingText}
             onNavigate={setActiveModule}
-            effort={effort}
-            pipelineSteps={pipelineSteps}
+            ttsEnabled={ttsEnabled}
+            onTtsToggle={() => setTtsEnabled(v => !v)}
           />
         )}
         {activeModule === 'kholle' && (
           <Kholle
-            inputRef={activeInputRef}
             onAssistantDone={onAssistantDone}
             playSpeech={playSpeech}
             stopSpeech={stopSpeech}
             speakingText={speakingText}
+            ttsEnabled={ttsEnabled}
+            onTtsToggle={() => setTtsEnabled(v => !v)}
           />
         )}
         {activeModule === 'flashcards' && <Flashcards />}
@@ -106,16 +102,6 @@ export default function App() {
         {activeModule === 'admin' && <Admin />}
         {activeModule === 'history' && <History />}
         {activeModule === 'settings' && <Settings />}
-        <ConnectorBar
-          activeInputRef={activeInputRef}
-          ttsEnabled={ttsEnabled}
-          onTtsToggle={() => setTtsEnabled(v => !v)}
-          speakingText={speakingText}
-          effort={effort}
-          onEffortChange={setEffort}
-          pipelineSteps={pipelineSteps}
-          onPipelineStepsChange={setPipelineSteps}
-        />
       </div>
     </div>
   )

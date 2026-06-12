@@ -1,0 +1,32 @@
+{
+  "id": "43159b7e-cdfa-47b4-8d97-9797adb85195",
+  "date": "2026-06-06",
+  "titre": "Conversation du 06/06/2026",
+  "modèle": "flm:qwen3:4b",
+  "modules": [
+    "chat"
+  ],
+  "n_messages": 5,
+  "messages": [
+    {
+      "role": "user",
+      "content": "bonjour ?"
+    },
+    {
+      "role": "user",
+      "content": "bonjour ?"
+    },
+    {
+      "role": "assistant",
+      "content": "\n\nBonjour ! Comment puis-je vous aider aujourd'hui ? 😊"
+    },
+    {
+      "role": "user",
+      "content": "je ne sais pas, dis moi"
+    },
+    {
+      "role": "assistant",
+      "content": "\n\nBonjour ! 😊  \nJe suis là pour vous aider, mais je ne sais pas exactement ce que vous cherchez. Pourriez-vous m’expliquer un peu plus ce que vous avez en tête ?  \nPar exemple :  \n- Avez-vous un problème à résoudre ?  \n- Voulez-vous des conseils sur quelque chose ?  \n- Souhaiteriez-vous simplement parler ?  \n\nN’hésitez pas à me dire ce que vous avez en tête ! 🌟"
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -8,11 +10,52 @@
 
 body {
   margin: 0;
-  background: #0d0d0d;
-  color: #e0e0e0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
 }
 
 #root {
   height: 100vh;
   display: flex;
+}
+
+/* Focus visible — violet, accessible */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: rgb(var(--accent-primary-rgb) / 0.3);
+}
+
+/* Scrollbars discrètes, thémées */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-full);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Texte en dégradé violet→turquoise (logo, titres forts) */
+.text-gradient {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }

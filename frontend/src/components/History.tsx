@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { ArrowLeft, Clock, Search, Trash2, X } from 'lucide-react'
+import { Badge, Button, Card, Input } from './ui'
 import RichMessage from './RichMessage'
 
 const API = 'http://localhost:8000'
@@ -92,17 +94,14 @@ export default function History() {
 
   if (selected) {
     return (
-      <div className="flex-1 overflow-y-auto px-6 py-6 font-mono space-y-4">
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
         <div className="flex items-center gap-4">
-          <button
-            onClick={() => setSelected(null)}
-            className="text-xs text-[#444] hover:text-[#aaa] transition-colors"
-          >
-            ← retour
-          </button>
+          <Button variant="ghost" size="sm" icon={<ArrowLeft size={14} />} onClick={() => setSelected(null)}>
+            retour
+          </Button>
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-[#ccc] truncate">{selected.titre}</p>
-            <p className="text-[10px] text-[#333]">
+            <p className="text-sm text-primary truncate">{selected.titre}</p>
+            <p className="text-xs font-mono text-muted">
               {selected.date} · {selected.modèle} · {selected.n_messages} messages
             </p>
           </div>
@@ -111,13 +110,13 @@ export default function History() {
         <div className="space-y-4">
           {selected.messages.map((m, i) => (
             <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[78%] px-4 py-3 rounded text-sm ${
+              <div className={`max-w-[78%] ${
                 m.role === 'user'
-                  ? 'bg-[#1a1a1a] border border-[#282828] text-[#d8d8d8] font-mono'
-                  : 'text-[#b8b8b8] font-mono'
+                  ? 'px-4 py-3 rounded-lg bg-elevated border border-line text-primary'
+                  : 'text-secondary'
               }`}>
                 {m.role === 'user'
-                  ? <p className="whitespace-pre-wrap break-words text-xs m-0">{m.content}</p>
+                  ? <p className="whitespace-pre-wrap break-words text-sm m-0">{m.content}</p>
                   : <RichMessage content={m.content} />
                 }
               </div>
@@ -133,80 +132,81 @@ export default function History() {
   const displayList: (ConvSummary | SearchResult)[] = searchResults !== null ? searchResults : conversations
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 font-mono space-y-4">
+    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
       {/* Search bar */}
       <div className="flex gap-2">
-        <input
+        <Input
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && search()}
           placeholder="Rechercher dans les échanges passés..."
-          className="flex-1 bg-[#141414] border border-[#242424] rounded px-3 py-2 text-xs text-[#e0e0e0] placeholder-[#333] focus:outline-none focus:border-[#383838]"
+          className="flex-1 text-xs"
         />
-        <button
-          onClick={search}
-          disabled={searching}
-          className="px-3 py-2 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-xs text-[#888] hover:border-[#444] hover:text-[#ccc] disabled:opacity-30 transition-colors"
-        >
+        <Button variant="secondary" size="sm" icon={<Search size={13} />} onClick={search} disabled={searching}>
           {searching ? '...' : 'Chercher'}
-        </button>
+        </Button>
         {searchResults !== null && (
-          <button
+          <Button
+            variant="ghost" size="sm" icon={<X size={13} />}
             onClick={() => { setSearchResults(null); setSearchQuery('') }}
-            className="px-3 py-2 text-xs text-[#444] hover:text-[#888] transition-colors"
-          >
-            ✕
-          </button>
+            aria-label="Effacer la recherche"
+          />
         )}
       </div>
 
       {/* Loading overlay */}
       {loading && (
-        <p className="text-xs text-[#444]">Chargement...</p>
+        <p className="text-xs text-muted">Chargement...</p>
       )}
 
       {/* List */}
       {displayList.length === 0 ? (
-        <p className="text-xs text-[#2a2a2a]">
-          {searchResults !== null ? 'Aucun résultat.' : 'Aucune conversation enregistrée.'}
-        </p>
+        <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted select-none">
+          <Clock size={16} />
+          <span className="text-sm">
+            {searchResults !== null ? 'Aucun résultat.' : 'Aucune conversation enregistrée.'}
+          </span>
+        </div>
       ) : (
         <div className="space-y-2">
           {displayList.map(c => {
             const isSummary = 'apercu' in c
             const isSearch = 'extrait' in c
             return (
-              <div
+              <Card
                 key={c.id}
-                className="border border-[#1e1e1e] rounded px-4 py-3 hover:border-[#2a2a2a] transition-colors cursor-pointer group"
+                accent={isSearch ? 'secondary' : 'none'}
+                className="cursor-pointer group hover:border-accent/30 transition-colors duration-150"
                 onClick={() => openConversation(c.id)}
               >
                 <div className="flex items-start gap-3">
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs text-[#ccc] truncate">{c.titre}</p>
-                    <p className="text-[10px] text-[#444] mt-0.5">
-                      {c.date} · {c.modèle}
-                      {isSummary && ` · ${(c as ConvSummary).n_messages} msg`}
+                    <p className="text-sm text-primary truncate">{c.titre}</p>
+                    <p className="text-xs font-mono text-muted mt-0.5 flex items-center gap-2">
+                      {c.date}
+                      <Badge variant="secondary" mono>{c.modèle.split(':').pop()}</Badge>
+                      {isSummary && <span>{(c as ConvSummary).n_messages} msg</span>}
                     </p>
                     {isSummary && (c as ConvSummary).apercu && (
-                      <p className="text-[10px] text-[#333] mt-1 truncate">
+                      <p className="text-xs text-muted mt-1 truncate">
                         {(c as ConvSummary).apercu}
                       </p>
                     )}
                     {isSearch && (
-                      <p className="text-[10px] text-[#333] mt-1 line-clamp-2">
+                      <p className="text-xs text-secondary mt-1 line-clamp-2">
                         {(c as SearchResult).extrait}
                       </p>
                     )}
                   </div>
                   <button
                     onClick={e => deleteConversation(c.id, e)}
-                    className="text-[10px] text-[#2a2a2a] hover:text-[#888] shrink-0 opacity-0 group-hover:opacity-100 transition-all"
+                    title="Supprimer"
+                    className="p-1 rounded-sm text-muted hover:text-error shrink-0 opacity-0 group-hover:opacity-100 transition-all duration-150"
                   >
-                    ✕
+                    <Trash2 size={13} />
                   </button>
                 </div>
-              </div>
+              </Card>
             )
           })}
         </div>
