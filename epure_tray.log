@@ -51350,3 +51350,307 @@ INFO:core.voice:Modèle Piper prêt : fr_FR-upmc-medium
 [2026-06-12 17:54:22] Services arrÃªtÃ©s
 [2026-06-12 17:54:30] ArrÃªt demandÃ©
 [2026-06-12 17:54:40] Services arrÃªtÃ©s
+[2026-06-12 20:13:48] ArrÃªt demandÃ©
+[2026-06-12 20:13:49] ArrÃªt demandÃ©
+[2026-06-12 20:14:00] Services arrÃªtÃ©s
+[2026-06-12 20:14:01] Services arrÃªtÃ©s
+[2026-06-12 20:14:07] ArrÃªt demandÃ©
+[2026-06-12 20:14:10] === Ã‰pure dÃ©marrage ===
+[2026-06-12 20:14:19] Services arrÃªtÃ©s
+[2026-06-12 20:14:21] Lancement ollama serve
+[2026-06-12 20:14:21] Lancement flm serve
+Error: listen tcp 0.0.0.0:11434: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
+[2026-06-12 20:14:25] Lancement uvicorn
+[2026-06-12 20:14:31] Lancement npm run dev
+[2026-06-12 20:14:31] Services dÃ©marrÃ©s â€” ouverture du navigateur dans 8 s
+
+> frontend@0.0.0 dev
+> vite
+
+Port 5173 is in use, trying another one...
+[2m20:14:33[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m Re-optimizing dependencies because vite config has changed
+
+  [32m[1mVITE[22m v8.0.14[39m  [2mready in [0m[1m1074[22m[2m[0m ms[22m
+
+  [32mâžœ[39m  [1mLocal[22m:   [36mhttp://localhost:[1m5174[22m/[39m
+  [32mâžœ[39m  [1mNetwork[22m: [36mhttp://172.30.144.1:[1m5174[22m/[39m
+  [32mâžœ[39m  [1mNetwork[22m: [36mhttp://10.154.51.70:[1m5174[22m/[39m
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO:sentence_transformers.base.model:Loading SentenceTransformer model from sentence-transformers/all-MiniLM-L6-v2.
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/sentence_bert_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 2829.87it/s]
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+INFO:httpx:HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2 "HTTP/1.1 200 OK"
+INFO:core.voice:Chargement du modèle Whisper : small
+INFO:httpx:HTTP Request: GET https://huggingface.co/api/models/Systran/faster-whisper-small/revision/main "HTTP/1.1 200 OK"
+INFO:core.voice:Modèle Whisper prêt
+INFO:core.voice:Modèle Piper prêt : fr_FR-upmc-medium
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.23s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.23s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:02<00:00,  2.08s/it]Batches: 100%|##########| 1/1 [00:02<00:00,  2.08s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.60s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.60s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.23s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.23s/it]
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]Batches: 100%|##########| 1/1 [00:01<00:00,  1.26s/it]Batches: 100%|##########| 1/1 [00:01<00:00,  1.26s/it]
+INFO:     Started server process [42720]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58905 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:55708 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:50903 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51854 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61874 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49768 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     connection closed
+INFO:     127.0.0.1:63121 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59669 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63121 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54730 - "GET /orchestrator/presets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64065 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63121 - "GET /orchestrator/presets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54730 - "GET /rag/files HTTP/1.1" 200 OK
+INFO:core.models:Cerebras: 2 modèles récupérés via /v1/models
+INFO:core.models:Mistral: 69 modèles récupérés via /v1/models
+INFO:core.models:NVIDIA: 121 modèles récupérés via /v1/models
+INFO:core.models:Groq: 16 modèles récupérés via /v1/models
+INFO:     127.0.0.1:55145 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:52138 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54730 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64150 - "GET /models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54730 - "GET /models HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54730 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55778 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55027 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55027 - "OPTIONS /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55027 - "PATCH /context/settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60214 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61403 - "GET /health HTTP/1.1" 200 OK
+INFO:main:TTFT Web: 0.427s (query='que peux tu me dire des ia locales en 2026 ?', len=0)
+INFO:main:TTFT RAG: 0.000s
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 72, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 72, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:     127.0.0.1:60880 - "GET /health HTTP/1.1" 200 OK
+INFO:core.memory:Memory retrieve: timeout (>2s) \u2192 fallback ['style']
+INFO:core.memory:Memory context: 'que peux tu me dire des ia locales en 20' \u2192 sections=['style'] ~6 tokens
+INFO:main:TTFT Memory: 2.030s
+C:\Users\Ilyan\epure\backend\core\llm.py:153: FutureWarning: 
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving 
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  import google.generativeai as genai
+INFO:main:TTFT total: 5.064s
+INFO:     127.0.0.1:51262 - "GET /health HTTP/1.1" 200 OK
+INFO:httpx:HTTP Request: POST http://localhost:11434/api/chat "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:56414 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57924 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59153 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61886 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61874 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60262 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56014 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50707 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56492 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53181 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54777 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54030 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53032 - "GET /health HTTP/1.1" 200 OK
+INFO:     connection closed
+INFO:     127.0.0.1:62500 - "GET /memory/profile HTTP/1.1" 200 OK
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 72, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:     127.0.0.1:54663 - "GET /memory/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50168 - "GET /settings/api-keys HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60603 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55639 - "GET /quota/usage HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62500 - "GET /memory/profile HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65310 - "GET /memory/consolidation-log HTTP/1.1" 200 OK
+ERROR:core.memory:Erreur lecture C:\Users\Ilyan\epure\backend\memory\memory_sessions.json
+Traceback (most recent call last):
+  File "C:\Users\Ilyan\epure\backend\core\memory.py", line 72, in _read
+    return json.loads(path.read_text(encoding="utf-8"))
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ilyan\AppData\Local\Python\pythoncore-3.14-64\Lib\json\__init__.py", line 341, in loads
+    raise JSONDecodeError("Unexpected UTF-8 BOM (decode using utf-8-sig)",
+                          s, 0)
+json.decoder.JSONDecodeError: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)
+INFO:     127.0.0.1:54663 - "GET /memory/sessions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50168 - "GET /settings/api-keys HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60603 - "GET /context HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55639 - "GET /quota/usage HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62500 - "GET /memory/consolidation-log HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56295 - "WebSocket /ws/chat" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:62500 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56943 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61997 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63458 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51535 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56170 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61410 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53726 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55007 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55228 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55794 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50408 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64133 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51282 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61699 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50348 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64790 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60110 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50783 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56744 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51708 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59097 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58271 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51472 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59337 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63417 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50624 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59451 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57662 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60176 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52394 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65406 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55345 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52608 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50657 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59819 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58799 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64127 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65398 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63955 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50598 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55451 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63300 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64687 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49808 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57869 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49397 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62048 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58219 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57792 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63592 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54857 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63293 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50960 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59605 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63290 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61512 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54640 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61972 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53542 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57811 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58761 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59938 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58381 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64612 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58178 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53133 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63345 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52208 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52365 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53431 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52082 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50301 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55125 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58367 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53736 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62637 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55748 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54725 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63341 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49669 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50523 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64028 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60654 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49669 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55600 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61577 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60206 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54150 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58178 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65260 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56175 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57357 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59947 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58613 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57010 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50877 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55958 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62912 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56803 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51483 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59279 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62426 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60907 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51200 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63487 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60428 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56775 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54968 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65211 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59846 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50701 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50807 - "GET /health HTTP/1.1" 200 OK

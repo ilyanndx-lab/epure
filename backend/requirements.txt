@@ -1,15 +1,4 @@
-﻿fastapi
+fastapi
 uvicorn
 ollama
 pyyaml
-chromadb
-sentence-transformers
-pypdf
-watchdog
-faster-whisper
-piper-tts
-python-dotenv
-google-generativeai
-openai
-python-docx
-pandas
