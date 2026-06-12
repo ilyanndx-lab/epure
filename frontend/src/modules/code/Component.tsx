@@ -5,9 +5,9 @@ import {
   FlaskConical, FolderPlus, Loader2, Monitor, Package, Play, RefreshCw,
   Save, Terminal as TerminalIcon, Wrench, X, Zap,
 } from 'lucide-react'
-import { Badge, Button, Input, Select, Toggle } from './ui'
-import RichMessage from './RichMessage'
-import ModuleBar from './ModuleBar'
+import { Badge, Button, Input, Select, Toggle } from '../../components/ui'
+import RichMessage from '../../components/RichMessage'
+import ModuleBar from '../../components/ModuleBar'
 
 const API = 'http://localhost:8000'
 
