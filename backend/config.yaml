@@ -8,12 +8,9 @@ generation:
   max_tokens: 2048
 
 rag:
-  # Dossiers surveillés, résolus sous EPURE_FICHES_DIR (cf. .env.example).
-  # Chemins relatifs = portables ; un chemin absolu reste utilisé tel quel.
-  watch_folders:
-    - Maths
-    - Physique-Chimie
-    - SI
+  # Réglages techniques uniquement. Les dossiers de fiches (racine +
+  # watch_folders) sont désormais pilotés par la config d'instance
+  # (backend/memory/instance_config.json, éditable depuis Réglages).
   chunk_size: 500
   chunk_overlap: 50
   n_results: 3

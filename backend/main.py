@@ -39,8 +39,8 @@ from core.orchestrator import OrchestratorEngine
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
+from core.instance import instance_config, fiches_root, fiches_watch_paths
 from core.memory import MemoryEngine
-from core.paths import FICHES_DIR as _FICHES_DIR, resolve_under_fiches as _resolve_under_fiches
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
@@ -189,12 +189,26 @@ piper = PiperEngine(
     voice=_voice_cfg.get("piper_voice", "fr_FR-upmc-medium"),
 )
 
-for _folder in _cfg.get("rag", {}).get("watch_folders", []):
-    _resolved = _resolve_under_fiches(_folder)
-    _resolved.mkdir(parents=True, exist_ok=True)
-    rag.watch(str(_resolved))
+# Dossiers de fiches surveillés : pilotés par la config d'instance
+# (instance_config.fiches), plus par config.yaml. Suivi des dossiers déjà
+# surveillés pour pouvoir n'ajouter que les nouveaux après une mise à jour.
+_watched_folders: set[str] = set()
 
-# _FICHES_DIR est résolu de façon portable dans core.paths (cf. EPURE_FICHES_DIR).
+
+def _apply_fiches_watch() -> None:
+    for _p in fiches_watch_paths():
+        _sp = str(_p)
+        if _sp in _watched_folders:
+            continue
+        try:
+            _p.mkdir(parents=True, exist_ok=True)
+            rag.watch(_sp)
+            _watched_folders.add(_sp)
+        except Exception:
+            logger.exception("Erreur surveillance dossier fiches %s", _sp)
+
+
+_apply_fiches_watch()
 
 _KHOLLE_SYSTEM = (
     "Tu es un professeur de kholle de classe préparatoire scientifique (MPSI/MP). "
@@ -590,14 +604,15 @@ async def files_load(req: LoadFilesRequest):
 
 @app.post("/files/upload")
 async def files_upload(files: list[UploadFile] = File(...)):
-    _FICHES_DIR.mkdir(parents=True, exist_ok=True)
+    _fiches_dir = fiches_root()
+    _fiches_dir.mkdir(parents=True, exist_ok=True)
     saved_paths: list[str] = []
     for upload in files:
         filename = upload.filename or "upload.bin"
         ext = Path(filename).suffix.lower()
         if ext not in _SUPPORTED_EXT:
             continue
-        dest = _FICHES_DIR / filename
+        dest = _fiches_dir / filename
         content = await upload.read()
         dest.write_bytes(content)
         saved_paths.append(str(dest))
