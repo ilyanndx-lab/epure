@@ -100,124 +100,20 @@ async def _unhandled_exception_handler(request: Request, exc: Exception):
         content={"detail": "Erreur interne du serveur", "type": exc.__class__.__name__},
     )
 
-# Monte les routeurs des modules non-core actifs (modules.<id>.router).
-# Les 7 modules core restent décorés directement sur `app` plus bas.
-_register_routers(app)
-
-with open(Path(__file__).parent / "config.yaml") as f:
-    _cfg = yaml.safe_load(f)
-
-llm = LLMEngine()
-rag = RAGEngine()
-memory = MemoryEngine(llm=llm)  # resets context_session on startup
-docanalysis = DocAnalysisEngine(chroma_client=rag._client, embedding_function=rag._ef, llm=llm)
-code_agent = CodeAgent(llm=llm)
-_CODE_WORKSPACE.mkdir(parents=True, exist_ok=True)
-
-
-# ── QuotaTracker (session, reset quotidien) ──────────────────────────────────
-
-from datetime import date as _date
-
-
-class _QuotaTracker:
-    _STEPS = ("reflection", "generation", "verification", "tests", "other")
-
-    def __init__(self):
-        self._day = str(_date.today())
-        self._reset()
-
-    def _check_day(self):
-        today = str(_date.today())
-        if today != self._day:
-            self._day = today
-            self._reset()
-
-    def _reset(self):
-        self.total = 0
-        self.by_provider: dict[str, int] = {}
-        self.by_step: dict[str, int] = {s: 0 for s in self._STEPS}
-
-    def track(self, step: str, provider: str, tokens: int):
-        self._check_day()
-        self.total += tokens
-        self.by_provider[provider] = self.by_provider.get(provider, 0) + tokens
-        key = step if step in self.by_step else "other"
-        self.by_step[key] += tokens
-
-    def get_usage(self) -> dict:
-        self._check_day()
-        return {
-            "session": {"total_tokens": self.total, "providers": dict(self.by_provider)},
-            "session_tokens_by_step": dict(self.by_step),
-        }
-
-    def reset(self):
-        self._reset()
-
-
-quota_tracker = _QuotaTracker()
-
-# Persistent per-provider usage (tokens + requests) — backend/memory/quota_usage.json
-usage_tracker = QuotaTracker()
-
-
-def _provider_of(model: Optional[str]) -> str:
-    if not model:
-        return "local"
-    if ":" in model:
-        prefix = model.split(":", 1)[0]
-        return prefix if prefix not in ("ollama",) else "local"
-    return "local"
-
-
-def _pick_reflection_model(preferred: Optional[str]) -> Optional[str]:
-    """Retourne un modèle cloud pour la réflexion, ou None si aucun disponible."""
-    # Si le modèle préféré est déjà cloud, l'utiliser
-    if preferred and ":" in preferred and not preferred.startswith("ollama:"):
-        return preferred
-    # Fallback sur le meilleur cloud disponible
-    if os.environ.get("GEMINI_API_KEY", "").strip():
-        return "gemini:gemini-2.0-flash"
-    if os.environ.get("GROQ_API_KEY", "").strip():
-        return "groq:llama-3.3-70b-versatile"
-    return None  # Pas de cloud disponible → skip réflexion
-flashcards_engine = FlashcardsEngine()
-admin_engine = AdminEngine(llm, rag)
-models_registry = ModelsRegistry()
-history_engine = HistoryEngine(llm, rag._client, rag._ef)
-consolidation_engine = ConsolidationEngine(llm, memory, history_engine)
-orchestrator = OrchestratorEngine(llm)
-
-_voice_cfg = _cfg.get("voice", {})
-whisper = WhisperEngine(
-    model_size=_voice_cfg.get("whisper_model", "small"),
-    language=_voice_cfg.get("language", "fr"),
+# Moteurs partagés et helpers transverses : créés une seule fois dans
+# core.runtime, injectés ici et dans les routeurs de modules (alias conservés
+# pour ne pas toucher au corps des endpoints non encore migrés).
+from core.runtime import (
+    llm, rag, memory, docanalysis, code_agent,
+    flashcards_engine, admin_engine, models_registry, history_engine,
+    consolidation_engine, orchestrator, whisper, piper,
+    quota_tracker, usage_tracker,
+    provider_of as _provider_of,
+    pick_reflection_model as _pick_reflection_model,
+    apply_fiches_watch as _apply_fiches_watch,
+    SSE_HEADERS as _SSE_HEADERS,
+    API_KEY_NAMES as _API_KEY_NAMES,
 )
-piper = PiperEngine(
-    voice=_voice_cfg.get("piper_voice", "fr_FR-upmc-medium"),
-)
-
-# Dossiers de fiches surveillés : pilotés par la config d'instance
-# (instance_config.fiches), plus par config.yaml. Suivi des dossiers déjà
-# surveillés pour pouvoir n'ajouter que les nouveaux après une mise à jour.
-_watched_folders: set[str] = set()
-
-
-def _apply_fiches_watch() -> None:
-    for _p in fiches_watch_paths():
-        _sp = str(_p)
-        if _sp in _watched_folders:
-            continue
-        try:
-            _p.mkdir(parents=True, exist_ok=True)
-            rag.watch(_sp)
-            _watched_folders.add(_sp)
-        except Exception:
-            logger.exception("Erreur surveillance dossier fiches %s", _sp)
-
-
-_apply_fiches_watch()
 
 _KHOLLE_SYSTEM = (
     "Tu es un professeur de kholle de classe préparatoire scientifique (MPSI/MP). "
@@ -2313,3 +2209,9 @@ async def ws_code(websocket: WebSocket):
 
     except WebSocketDisconnect:
         pass
+
+
+# ── Montage des routeurs de modules ─────────────────────────────────────────
+# Monte tous les modules actifs disposant d'un modules/<id>/router.py (core ou
+# non). Les modules core pas encore migrés restent décorés sur `app` ci-dessus.
+_register_routers(app)
