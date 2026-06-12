@@ -1312,14 +1312,6 @@ async def orchestrator_presets_delete(preset_id: str):
     return {"ok": True}
 
 
-# ---------------------------------------------------------------------------
-# History
-# ---------------------------------------------------------------------------
-
-class HistorySearchRequest(BaseModel):
-    query: str
-
-
 @app.post("/memory/consolidate")
 async def memory_consolidate(request: Request):
     body = await request.json()
@@ -1334,36 +1326,6 @@ async def memory_consolidation_log():
     loop = asyncio.get_running_loop()
     log = await loop.run_in_executor(None, consolidation_engine.get_log)
     return {"log": log}
-
-
-@app.get("/history")
-async def history_list():
-    loop = asyncio.get_running_loop()
-    conversations = await loop.run_in_executor(None, history_engine.list_conversations)
-    return conversations
-
-
-@app.get("/history/{conv_id}")
-async def history_get(conv_id: str):
-    loop = asyncio.get_running_loop()
-    conv = await loop.run_in_executor(None, history_engine.get_conversation, conv_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation introuvable")
-    return conv
-
-
-@app.delete("/history/{conv_id}")
-async def history_delete(conv_id: str):
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, history_engine.delete_conversation, conv_id)
-    return {"ok": True}
-
-
-@app.post("/history/search")
-async def history_search(req: HistorySearchRequest):
-    loop = asyncio.get_running_loop()
-    results = await loop.run_in_executor(None, history_engine.search_history, req.query)
-    return {"results": results}
 
 
 # ---------------------------------------------------------------------------
