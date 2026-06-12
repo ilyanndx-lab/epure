@@ -20,7 +20,7 @@ import yaml
 from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 _ENV_FILE = Path(__file__).parent / ".env"
@@ -50,17 +50,50 @@ from core.quota_tracker import QuotaTracker
 from core.rag import RAGEngine
 from core.voice import PiperEngine, WhisperEngine
 
-logging.basicConfig(level=logging.INFO)
+# ── Logging uniforme (format + niveau configurable via EPURE_LOG_LEVEL) ──────
+_LOG_LEVEL = os.environ.get("EPURE_LOG_LEVEL", "INFO").strip().upper()
+logging.basicConfig(
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,  # remplace toute config posée par une dépendance importée plus tôt
+)
 logger = logging.getLogger(__name__)
+# Réduit le bruit des bibliothèques tierces très verbeuses.
+for _noisy in ("httpx", "watchdog", "sentence_transformers", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-app = FastAPI()
+app = FastAPI(title="Épure", version="1.0.0")
+
+# ── CORS explicite : origines via EPURE_CORS_ORIGINS, jamais "*" ──────────────
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get("EPURE_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",")
+    if o.strip()
+]
+logger.info("CORS — origines autorisées : %s", _cors_origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Gestion d'erreurs : JSON propre pour toute exception non gérée ────────────
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """Renvoie un JSON uniforme (500) au lieu d'une trace brute.
+
+    Les HTTPException conservent leur traitement dédié (codes/détails voulus).
+    """
+    logger.exception("Erreur non gérée sur %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Erreur interne du serveur", "type": exc.__class__.__name__},
+    )
 
 with open(Path(__file__).parent / "config.yaml") as f:
     _cfg = yaml.safe_load(f)
