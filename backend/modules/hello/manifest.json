@@ -1,0 +1,13 @@
+{
+  "id": "hello",
+  "version": "1.0.0",
+  "nom": "Hello",
+  "icon": "Sparkles",
+  "description": "Module de démonstration (ping backend + composant généré)",
+  "frontend": { "component": "Component" },
+  "backend": { "prefix": "/hello" },
+  "core_module": false,
+  "origin": "builtin",
+  "status": "active",
+  "removable": true
+}
