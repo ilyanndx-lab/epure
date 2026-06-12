@@ -5,9 +5,9 @@
   "icon": "Code2",
   "description": "Agent de code multi-langages avec exécution et vérification",
   "frontend": { "component": "Code" },
-  "backend": { "prefix": "/code" },
+  "backend": { "prefix": "" },
   "core_module": true,
   "origin": "builtin",
   "status": "active",
-  "removable": false
+  "removable": true
 }
