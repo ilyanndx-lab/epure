@@ -151,6 +151,7 @@ export default function Settings() {
   const modules = useModules()
   const [models, setModels] = useState<ModelOption[]>([])
   const [addModuleOpen, setAddModuleOpen] = useState(false)
+  const [dragId, setDragId] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [saving, setSaving] = useState(false)
@@ -236,6 +237,23 @@ export default function Settings() {
     if (i < 0 || j < 0 || j >= arr.length) return
     const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp
     void updateInstance({ modules_activés: arr })
+  }, [config.modules_activés])
+
+  // Drag-and-drop : déplace le module tiré juste avant la cible.
+  const reorderTo = useCallback((targetId: string) => {
+    setDragId(dragged => {
+      if (dragged && dragged !== targetId) {
+        const arr = [...config.modules_activés]
+        const from = arr.indexOf(dragged)
+        const to = arr.indexOf(targetId)
+        if (from >= 0 && to >= 0) {
+          arr.splice(from, 1)
+          arr.splice(to, 0, dragged)
+          void updateInstance({ modules_activés: arr })
+        }
+      }
+      return null
+    })
   }, [config.modules_activés])
 
   const loadQuotas = () => {
@@ -469,7 +487,14 @@ export default function Settings() {
                     return (
                       <div
                         key={id}
-                        className="flex items-center gap-2 bg-elevated border border-line rounded-sm px-2 py-1.5"
+                        draggable
+                        onDragStart={() => setDragId(id)}
+                        onDragEnd={() => setDragId(null)}
+                        onDragOver={e => e.preventDefault()}
+                        onDrop={() => reorderTo(id)}
+                        className={`flex items-center gap-2 bg-elevated border rounded-sm px-2 py-1.5 cursor-grab active:cursor-grabbing transition-opacity duration-150 ${
+                          dragId === id ? 'opacity-40 border-accent/40' : 'border-line'
+                        }`}
                       >
                         <GripVertical size={14} className="text-muted/50 shrink-0" />
                         <Icon size={15} className={`shrink-0 ${inactive ? 'text-muted' : 'text-accent'}`} />
