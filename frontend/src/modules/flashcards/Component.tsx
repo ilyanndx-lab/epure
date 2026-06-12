@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { ArrowLeft, Check, Layers, Plus, Sparkles, Trash2, X } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Select } from './ui'
+import { Badge, Button, Card, Input, ProgressBar, Select } from '../../components/ui'
 
 const API = 'http://localhost:8000'
 
