@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Archive, Boxes, Brain, Check, Cpu, Eye, EyeOff, FolderTree, Gauge, KeyRound,
-  Palette, Plus, RefreshCw, RotateCcw, User, X,
+  Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Eye, EyeOff,
+  FolderTree, Gauge, GripVertical, KeyRound, Palette, Plus, RefreshCw,
+  RotateCcw, Trash2, User, X,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from './ui'
 import { useTheme } from '../theme'
@@ -149,6 +150,7 @@ export default function Settings() {
   const config = useInstanceConfig()
   const modules = useModules()
   const [models, setModels] = useState<ModelOption[]>([])
+  const [addModuleOpen, setAddModuleOpen] = useState(false)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [saving, setSaving] = useState(false)
@@ -217,10 +219,23 @@ export default function Settings() {
     loadQuotas()
   }, [])
 
-  const toggleModule = useCallback((id: string, on: boolean) => {
-    const current = config.modules_activés
-    const next = on ? [...new Set([...current, id])] : current.filter(m => m !== id)
-    void updateInstance({ modules_activés: next })
+  const addModule = useCallback((id: string) => {
+    if (config.modules_activés.includes(id)) return
+    void updateInstance({ modules_activés: [...config.modules_activés, id] })
+    setAddModuleOpen(false)
+  }, [config.modules_activés])
+
+  const removeModule = useCallback((id: string) => {
+    void updateInstance({ modules_activés: config.modules_activés.filter(m => m !== id) })
+  }, [config.modules_activés])
+
+  const moveModule = useCallback((id: string, dir: -1 | 1) => {
+    const arr = [...config.modules_activés]
+    const i = arr.indexOf(id)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= arr.length) return
+    const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp
+    void updateInstance({ modules_activés: arr })
   }, [config.modules_activés])
 
   const loadQuotas = () => {
@@ -394,32 +409,105 @@ export default function Settings() {
           />
         </div>
 
-        {/* Modules visibles */}
-        <div className="space-y-2">
-          <label className="text-xs text-muted uppercase tracking-wide block">Modules visibles</label>
-          <div className="space-y-1.5">
-            {modules.filter(m => m.id !== 'settings').map(m => {
-              const Icon = resolveIcon(m.icon)
-              const disabledByCatalog = m.status !== 'active'
-              const on = config.modules_activés.includes(m.id) && !disabledByCatalog
-              return (
-                <div key={m.id} className="flex items-center gap-3">
-                  <Icon size={15} className={`shrink-0 ${on ? 'text-accent' : 'text-muted'}`} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-secondary">{m.nom}</p>
-                    <p className="text-xs text-muted truncate">{m.description}</p>
-                  </div>
-                  <Toggle
-                    checked={on}
-                    onChange={v => toggleModule(m.id, v)}
-                    disabled={disabledByCatalog}
-                    label={`Activer ${m.nom}`}
-                  />
+        {/* Modules visibles — ordonnés, réordonnables, supprimables */}
+        {(() => {
+          const byId = new Map(modules.map(m => [m.id, m]))
+          const ordered = config.modules_activés.filter(id => id !== 'settings')
+          const addable = modules.filter(
+            m => m.id !== 'settings' && !config.modules_activés.includes(m.id)
+          )
+          return (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between relative">
+                <label className="text-xs text-muted uppercase tracking-wide">Modules visibles</label>
+                <div className="relative">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon={<Plus size={13} />}
+                    onClick={() => setAddModuleOpen(v => !v)}
+                    disabled={addable.length === 0}
+                    aria-label="Ajouter un module"
+                  >
+                    Ajouter
+                  </Button>
+                  {addModuleOpen && addable.length > 0 && (
+                    <div className="absolute right-0 top-full mt-1 w-60 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
+                      <p className="px-3 py-2 text-xs text-muted uppercase tracking-wide border-b border-line">
+                        Modules présents sur l'appareil
+                      </p>
+                      {addable.map(m => {
+                        const Icon = resolveIcon(m.icon)
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => addModule(m.id)}
+                            className="w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-surface transition-colors duration-150"
+                          >
+                            <Icon size={15} className="text-muted shrink-0" />
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-sm text-secondary">{m.nom}</span>
+                              <span className="block text-xs text-muted truncate">{m.description}</span>
+                            </span>
+                            {!m.core_module && <Badge variant="neutral">{m.origin}</Badge>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
-              )
-            })}
-          </div>
-        </div>
+              </div>
+
+              {ordered.length === 0 ? (
+                <p className="text-xs text-muted">Aucun module activé. Utilisez « Ajouter ».</p>
+              ) : (
+                <div className="space-y-1">
+                  {ordered.map((id, idx) => {
+                    const m = byId.get(id)
+                    const Icon = resolveIcon(m?.icon ?? 'Box')
+                    const inactive = m?.status !== 'active'
+                    return (
+                      <div
+                        key={id}
+                        className="flex items-center gap-2 bg-elevated border border-line rounded-sm px-2 py-1.5"
+                      >
+                        <GripVertical size={14} className="text-muted/50 shrink-0" />
+                        <Icon size={15} className={`shrink-0 ${inactive ? 'text-muted' : 'text-accent'}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-secondary truncate">{m?.nom ?? id}</p>
+                          {inactive && <p className="text-xs text-warning">désactivé au catalogue</p>}
+                        </div>
+                        <button
+                          onClick={() => moveModule(id, -1)}
+                          disabled={idx === 0}
+                          title="Monter"
+                          className="p-1 rounded-sm text-muted hover:text-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors duration-150"
+                        >
+                          <ChevronUp size={14} />
+                        </button>
+                        <button
+                          onClick={() => moveModule(id, 1)}
+                          disabled={idx === ordered.length - 1}
+                          title="Descendre"
+                          className="p-1 rounded-sm text-muted hover:text-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors duration-150"
+                        >
+                          <ChevronDown size={14} />
+                        </button>
+                        <button
+                          onClick={() => removeModule(id)}
+                          title="Retirer de la barre"
+                          className="p-1 rounded-sm text-muted hover:text-error transition-colors duration-150"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })()}
 
         {/* Modèle actif */}
         <div>
