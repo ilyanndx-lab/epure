@@ -8,10 +8,12 @@ generation:
   max_tokens: 2048
 
 rag:
+  # Dossiers surveillés, résolus sous EPURE_FICHES_DIR (cf. .env.example).
+  # Chemins relatifs = portables ; un chemin absolu reste utilisé tel quel.
   watch_folders:
-    - C:\Users\Ilyan\Fiches\Maths
-    - C:\Users\Ilyan\Fiches\Physique-Chimie
-    - C:\Users\Ilyan\Fiches\SI
+    - Maths
+    - Physique-Chimie
+    - SI
   chunk_size: 500
   chunk_overlap: 50
   n_results: 3

@@ -23,6 +23,9 @@ env/
 # ChromaDB data
 backend/chroma_db/
 
+# Données utilisateur (fiches PDF) — défaut portable de EPURE_FICHES_DIR
+/data/
+
 # Logs
 *.log
 epure_tray.log
