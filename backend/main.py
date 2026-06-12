@@ -6,6 +6,9 @@ import os
 import re
 import shutil
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -838,6 +841,118 @@ async def flashcards_due():
 # Chat
 # ---------------------------------------------------------------------------
 
+_WEB_SEARCH_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+_WEB_SEARCH_TIMEOUT = 8.0
+
+
+def perform_web_search(query: str) -> str:
+    """Interroge l'API DuckDuckGo Instant Answer et retourne un extrait formaté.
+
+    En cas d'échec, retourne un message d'erreur court pour informer l'utilisateur.
+    """
+    if not query or not query.strip():
+        return ""
+    q = query.strip()
+    base_url = "https://api.duckduckgo.com/"
+    params = {
+        "q": q,
+        "format": "json",
+        "no_html": "1",
+        "skip_disambig": "1",
+        "t": "epure",
+    }
+    url = base_url + urllib.parse.urlencode(params)
+    # Tentatives avec différents User-Agent en cas de blocage
+    user_agents = [
+        _WEB_SEARCH_UA,
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    ]
+    last_exc = None
+    for ua in user_agents:
+        req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=_WEB_SEARCH_TIMEOUT) as resp:
+                if resp.status != 200:
+                    logger.warning("Web search HTTP %s pour %s (UA: %s)", resp.status, q, ua)
+                    last_exc = f"HTTP {resp.status}"
+                    continue  # essayer prochain UA
+                raw = resp.read().decode("utf-8", errors="replace")
+                break  # succès
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            logger.warning("Web search impossible pour %s (UA: %s) : %s", q, ua, exc)
+            last_exc = str(exc)
+            continue
+        except Exception as exc:  # pragma: no cover - imprévisible
+            logger.exception("Web search erreur inattendue pour %s (UA: %s)", q, ua)
+            last_exc = str(exc)
+            continue
+    else:
+        # Toutes les tentatives ont échoué
+        logger.error("Web search échoué après %d tentatives pour %s : %s", len(user_agents), q, last_exc)
+        return f"Erreur de recherche web : {last_exc or 'erreur inconnue'}"
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Web search JSON invalide pour %s", q)
+        return "Erreur de recherche web : réponse JSON invalide"
+
+    abstract = (data.get("Abstract") or "").strip()
+    abstract_source = (data.get("AbstractSource") or "").strip()
+    abstract_url = (data.get("AbstractURL") or "").strip()
+    definition = (data.get("Definition") or "").strip()
+    definition_source = (data.get("DefinitionSource") or "").strip()
+    definition_url = (data.get("DefinitionURL") or "").strip()
+    answer = (data.get("Answer") or "").strip()
+    answer_type = (data.get("AnswerType") or "").strip()
+
+    related = []
+    for item in data.get("RelatedTopics", []) or []:
+        if not isinstance(item, dict):
+            continue
+        # Les RelatedTopics imbriqués (sous "Topics") sont groupés par sujet
+        if "Topics" in item and isinstance(item["Topics"], list):
+            for sub in item["Topics"]:
+                text = (sub.get("Text") or "").strip()
+                if text:
+                    related.append(text)
+        else:
+            text = (item.get("Text") or "").strip()
+            if text:
+                related.append(text)
+
+    parts: list[str] = []
+    if abstract:
+        parts.append(abstract)
+    if definition and definition != abstract:
+        parts.append(f"Définition : {definition}")
+    if answer:
+        prefix = f"Réponse ({answer_type})" if answer_type else "Réponse"
+        parts.append(f"{prefix} : {answer}")
+    for r in related[:5]:
+        parts.append(f"- {r}")
+
+    if not parts:
+        # Aucun résultat exploitable, mais pas d'erreur
+        return ""
+
+    source_lines = []
+    if abstract and abstract_source:
+        source_lines.append(f"Source abstract : {abstract_source}" + (f" ({abstract_url})" if abstract_url else ""))
+    if definition and definition_source:
+        source_lines.append(f"Source définition : {definition_source}" + (f" ({definition_url})" if definition_url else ""))
+    sources_block = ("\n\n" + "\n".join(source_lines)) if source_lines else ""
+    return (
+        f"Résultats de recherche web pour « {q} » (DuckDuckGo Instant Answer) :\n"
+        + "\n".join(parts)
+        + sources_block
+    )
+
+
 @app.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
     await websocket.accept()
@@ -853,6 +968,7 @@ async def ws_chat(websocket: WebSocket):
 
             rag_override: str | None = msg.get("rag_override")
             strict_override: bool = bool(msg.get("strict_override", False))
+            web_search_override: bool = bool(msg.get("web_search_override", False))
 
             ctx = memory.get_context()
             active_files = ctx.get("fichiers_actifs", [])
@@ -878,6 +994,25 @@ async def ws_chat(websocket: WebSocket):
                 user_text = hist_query if hist_query != user_text else user_text.replace("@historique", "").strip()
                 history[-1]["content"] = user_text or msg["content"]
 
+            # @web skill
+            web_ctx = ""
+            if web_search_override:
+                _t_web = time.time()
+                web_query = user_text.strip()
+                web_results = await loop.run_in_executor(None, perform_web_search, web_query)
+                logger.info("TTFT Web: %.3fs (query=%r, len=%d)", time.time() - _t_web, web_query[:80], len(web_results))
+                if web_results:
+                    web_ctx = (
+                        "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
+                        f"{web_results}\n\n"
+                        "Si pertinent, intègre ces informations dans ta réponse et cite la source."
+                    )
+                else:
+                    web_ctx = (
+                        "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
+                        "Réponds à partir de tes connaissances en le signalant."
+                    )
+
             _t = time.time()
             if rag_override == "all":
                 chunks = await loop.run_in_executor(None, rag.query, user_text)
@@ -902,6 +1037,8 @@ async def ws_chat(websocket: WebSocket):
                 sys_parts.append(mem_ctx)
             if hist_ctx:
                 sys_parts.append(hist_ctx)
+            if web_ctx:
+                sys_parts.append(web_ctx)
             if chunks:
                 sys_parts.append(
                     "Contexte extrait de tes fiches de révision :\n"

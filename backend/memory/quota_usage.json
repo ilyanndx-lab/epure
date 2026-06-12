@@ -6,9 +6,9 @@
     "reset_date": "2026-06-12"
   },
   "gemini": {
-    "tokens_input": 0,
-    "tokens_output": 0,
-    "requests": 0,
+    "tokens_input": 148,
+    "tokens_output": 1561,
+    "requests": 3,
     "reset_date": "2026-06-12"
   },
   "groq": {
