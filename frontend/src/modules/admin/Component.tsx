@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Check, Copy, FolderCog, RefreshCw, Scan, Square, Undo2, X } from 'lucide-react'
-import { Badge, Button, Card, Modal, ProgressBar } from './ui'
+import { Badge, Button, Card, Modal, ProgressBar } from '../../components/ui'
 
 const API = 'http://localhost:8000'
 const FICHES_ROOT = 'C:\\Users\\Ilyan\\Fiches\\'
