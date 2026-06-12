@@ -41,6 +41,7 @@ from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core.instance import instance_config, fiches_root, fiches_watch_paths
 from core.memory import MemoryEngine
+from core.module_registry import list_modules as _list_modules, set_status as _set_module_status
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
@@ -403,6 +404,59 @@ async def api_keys_put(req: ApiKeysRequest):
         llm.reload_dotenv()
         models_registry.invalidate()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Instance config & modules
+# ---------------------------------------------------------------------------
+
+@app.get("/instance/config")
+async def instance_config_get():
+    return instance_config.get()
+
+
+@app.put("/instance/config")
+async def instance_config_put(request: Request):
+    """Merge partiel de la config d'instance + effets de bord côté serveur."""
+    partial = await request.json()
+    if not isinstance(partial, dict):
+        raise HTTPException(status_code=400, detail="Corps JSON attendu (objet)")
+
+    cfg = instance_config.update(partial)
+
+    # Le modèle actif est aussi stocké dans le contexte mémoire (source utilisée
+    # par le chat/orchestrateur) : on le synchronise quand il change.
+    if "providers" in partial and isinstance(partial["providers"], dict):
+        actif = partial["providers"].get("actif")
+        if actif:
+            memory.update_context(**{"modèle_actif": actif})
+
+    # Nouveaux dossiers de fiches → on les met sous surveillance (les retraits
+    # prennent effet au prochain démarrage : watchdog ne propose pas d'unwatch).
+    if "fiches" in partial:
+        _apply_fiches_watch()
+
+    return cfg
+
+
+@app.get("/modules")
+async def modules_list():
+    return {"modules": _list_modules()}
+
+
+class ModuleStatusRequest(BaseModel):
+    status: str
+
+
+@app.put("/modules/{module_id}/status")
+async def module_set_status(module_id: str, req: ModuleStatusRequest):
+    updated = _set_module_status(module_id, req.status)
+    if updated is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Module inconnu, status invalide (active|disabled), ou action interdite",
+        )
+    return updated
 
 
 # ---------------------------------------------------------------------------
