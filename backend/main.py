@@ -40,6 +40,7 @@ from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
+from core.paths import FICHES_DIR as _FICHES_DIR, resolve_under_fiches as _resolve_under_fiches
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
@@ -61,7 +62,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-with open("config.yaml") as f:
+with open(Path(__file__).parent / "config.yaml") as f:
     _cfg = yaml.safe_load(f)
 
 llm = LLMEngine()
@@ -156,9 +157,11 @@ piper = PiperEngine(
 )
 
 for _folder in _cfg.get("rag", {}).get("watch_folders", []):
-    rag.watch(_folder)
+    _resolved = _resolve_under_fiches(_folder)
+    _resolved.mkdir(parents=True, exist_ok=True)
+    rag.watch(str(_resolved))
 
-_FICHES_DIR = Path(r"C:\Users\Ilyan\Fiches")
+# _FICHES_DIR est résolu de façon portable dans core.paths (cf. EPURE_FICHES_DIR).
 
 _KHOLLE_SYSTEM = (
     "Tu es un professeur de kholle de classe préparatoire scientifique (MPSI/MP). "
