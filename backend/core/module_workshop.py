@@ -479,11 +479,17 @@ def _claude_env(engine: str) -> dict:
     return env
 
 
-def _claude_cmd(prompt: str, staging_dir: Path, engine: str = "claude_sub") -> list[str]:
-    """Commande claude headless confinée au staging (écriture seule là-dedans)."""
+def _claude_cmd(staging_dir: Path, engine: str = "claude_sub") -> list[str]:
+    """Commande claude headless confinée au staging (écriture seule là-dedans).
+
+    Le PROMPT n'est PAS passé en argument : sous Windows, claude est un .CMD et
+    un argument multi-lignes casse la ligne de commande cmd.exe (les flags après
+    le prompt — dont --permission-mode acceptEdits — sont alors perdus, et claude
+    ne peut plus écrire en headless). Le prompt est donc transmis via STDIN.
+    """
     claude = _claude_bin() or "claude"
     cmd = [
-        claude, "-p", prompt,
+        claude, "-p",
         "--output-format", "stream-json", "--verbose",
         "--add-dir", str(staging_dir),
         "--allowedTools", "Read,Edit,Write",
@@ -516,7 +522,8 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
     """Lance `claude -p` en subprocess, cwd=staging, et streame stdout (JSON)."""
     sdir = _staging_dir(module_id)
     sdir.mkdir(parents=True, exist_ok=True)
-    cmd = _claude_cmd(_claude_prompt(module_id, spec, kind), sdir, engine)
+    cmd = _claude_cmd(sdir, engine)
+    prompt = _claude_prompt(module_id, spec, kind)
     env = _claude_env(engine)
 
     yield {"type": "engine", "engine": engine, "mode": "headless", "cwd": str(sdir)}
@@ -524,8 +531,14 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
         proc = subprocess.Popen(
             cmd, cwd=str(sdir), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, text=True, creationflags=_NO_WINDOW,
+            stdin=subprocess.PIPE, text=True, creationflags=_NO_WINDOW,
         )
+        # Prompt via STDIN (cf. _claude_cmd) puis on ferme l'entrée.
+        try:
+            proc.stdin.write(prompt)  # type: ignore[union-attr]
+            proc.stdin.close()        # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Écriture du prompt sur stdin claude échouée")
     except FileNotFoundError:
         yield {"type": "error", "content": "CLI `claude` introuvable dans le PATH."}
         return
@@ -582,10 +595,10 @@ def terminal_launch_spec(module_id: str, spec: str, kind: str, engine: str) -> d
     """
     sdir = _staging_dir(module_id)
     sdir.mkdir(parents=True, exist_ok=True)
-    cmd = _claude_cmd(_claude_prompt(module_id, spec, kind), sdir, engine)
     # En mode terminal interactif on n'impose pas -p/stream-json : on ouvre claude
     # interactif dans le dossier confiné (l'utilisateur pilote).
-    interactive = [cmd[0], "--add-dir", str(sdir), "--allowedTools", "Read,Write,Edit"]
+    claude = _claude_bin() or "claude"
+    interactive = [claude, "--add-dir", str(sdir), "--allowedTools", "Read,Write,Edit"]
     if engine == "claude_gateway" and _gateway_cfg()["model"]:
         interactive += ["--model", _gateway_cfg()["model"]]
     return {"cmd": interactive, "cwd": str(sdir), "env": _claude_env(engine), "prompt": _claude_prompt(module_id, spec, kind)}
