@@ -71,6 +71,7 @@ export default function App() {
   // Modules réellement accessibles (settings toujours inclus).
   const visibleIds = new Set<string>([
     'settings',
+    'workshop',
     ...modules
       .filter(m => m.status === 'active' && config.modules_activés.includes(m.id))
       .map(m => m.id),

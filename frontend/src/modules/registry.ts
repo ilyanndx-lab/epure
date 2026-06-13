@@ -50,6 +50,8 @@ const CORE_DEFS: ModuleDef[] = [
   { id: 'admin',      label: 'Admin',       icon: 'FolderCog',     core: true, component: lazyComponent(() => import('./admin/Component')) },
   { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('./history/Component')) },
   { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('./settings/Component')) },
+  // Atelier : outil transverse (pas un module backend), composant dans components/.
+  { id: 'workshop',   label: 'Atelier',     icon: 'Hammer',        core: true, component: lazyComponent(() => import('../components/Workshop')) },
 ]
 
 // ── Modules ajoutés (composants générés) ─────────────────────────────────────
