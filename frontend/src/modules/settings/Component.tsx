@@ -13,7 +13,7 @@ const API = 'http://localhost:8000'
 
 interface ModelOption { id: string; nom: string; disponible: boolean }
 
-interface EngineStatus { available: boolean; reason: string; url?: string; model?: string; bin?: string }
+interface EngineStatus { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 
 const ENGINE_LABELS: Record<string, string> = {
   ollama: 'Ollama (local)',
@@ -617,18 +617,22 @@ export default function Settings() {
         <div className="space-y-1.5">
           {(['ollama', 'claude_sub', 'claude_gateway'] as const).map(en => {
             const info = engines?.[en]
-            const ok = info?.available ?? (en === 'ollama')
+            const ok = info?.disponible ?? false
             return (
               <div key={en} className="flex items-start gap-2">
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${ok ? 'bg-success' : 'bg-error'}`} />
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${
+                  engines ? (ok ? 'bg-success' : 'bg-error') : 'bg-line'
+                }`} />
                 <div className="flex-1 min-w-0">
                   <span className="text-sm text-secondary">{ENGINE_LABELS[en]}</span>
-                  {!ok && info?.reason && <p className="text-xs text-muted">{info.reason}</p>}
+                  {info && !ok && info.raison && <p className="text-xs text-muted">{info.raison}</p>}
                   {en === 'claude_sub' && ok && info?.bin && (
                     <p className="text-xs font-mono text-muted/70 truncate">{info.bin}</p>
                   )}
                 </div>
-                <Badge variant={ok ? 'success' : 'neutral'}>{ok ? 'disponible' : 'indisponible'}</Badge>
+                <Badge variant={ok ? 'success' : 'neutral'}>
+                  {!engines ? '…' : ok ? 'disponible' : 'indisponible'}
+                </Badge>
               </div>
             )
           })}
@@ -637,35 +641,58 @@ export default function Settings() {
         <p className="text-xs text-muted/70 leading-relaxed">
           <strong>Abonnement</strong> : installez le CLI <code className="font-mono">claude</code> et
           authentifiez-vous (<code className="font-mono">claude setup-token</code> ou{' '}
-          <code className="font-mono">claude /login</code>). <strong>Passerelle</strong> : démarrez une
-          passerelle Anthropic-compatible (ex. LiteLLM) puis renseignez son URL ci-dessous.
+          <code className="font-mono">claude</code> puis <code className="font-mono">/login</code>).{' '}
+          <strong>Passerelle</strong> : démarrez une passerelle Anthropic-compatible (ex. LiteLLM)
+          puis renseignez son URL ci-dessous.
         </p>
 
-        {/* Configuration passerelle + chemin claude */}
+        {/* Moteur + mode par défaut */}
+        <div className="flex flex-wrap gap-4">
+          <div>
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">Moteur par défaut</label>
+            <Select value={config.atelier.moteur_defaut}
+              onChange={e => void updateInstance({ atelier: { moteur_defaut: e.target.value } })}>
+              <option value="ollama">Ollama (local)</option>
+              <option value="claude_sub">Claude Code (abonnement)</option>
+              <option value="claude_gateway">Claude Code (passerelle)</option>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">Mode par défaut</label>
+            <Select value={config.atelier.mode_defaut}
+              onChange={e => void updateInstance({ atelier: { mode_defaut: e.target.value } })}>
+              <option value="headless">Headless</option>
+              <option value="terminal">Terminal</option>
+            </Select>
+          </div>
+        </div>
+
+        {/* Binaire claude */}
+        <div>
+          <label className="text-xs text-muted uppercase tracking-wide block mb-1">
+            Binaire <code className="font-mono">claude</code> (nom sur le PATH ou chemin complet)
+          </label>
+          <Input mono key={`cp-${config.atelier.claude_path}`} defaultValue={config.atelier.claude_path}
+            onBlur={e => { const v = e.target.value.trim() || 'claude'; if (v !== config.atelier.claude_path) { void updateInstance({ atelier: { claude_path: v } }); setTimeout(loadEngines, 400) } }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="claude" />
+        </div>
+
+        {/* Passerelle : URL / modèle / clé */}
         <div className="space-y-2">
-          <div>
-            <label className="text-xs text-muted uppercase tracking-wide block mb-1">URL passerelle</label>
-            <Input mono key={`gu-${config.atelier.gateway_url}`} defaultValue={config.atelier.gateway_url}
-              onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway_url) { void updateInstance({ atelier: { gateway_url: v } }); setTimeout(loadEngines, 300) } }}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-              className="w-full text-xs py-1.5" placeholder="http://localhost:4000" />
-          </div>
-          <div>
-            <label className="text-xs text-muted uppercase tracking-wide block mb-1">Modèle passerelle</label>
-            <Input mono key={`gm-${config.atelier.gateway_model}`} defaultValue={config.atelier.gateway_model}
-              onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway_model) void updateInstance({ atelier: { gateway_model: v } }) }}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-              className="w-full text-xs py-1.5" placeholder="claude-sonnet-4-5" />
-          </div>
-          <div>
-            <label className="text-xs text-muted uppercase tracking-wide block mb-1">
-              Chemin du binaire <code className="font-mono">claude</code> (si absent du PATH)
-            </label>
-            <Input mono key={`cp-${config.atelier.claude_path ?? ''}`} defaultValue={config.atelier.claude_path ?? ''}
-              onBlur={e => { const v = e.target.value.trim(); if (v !== (config.atelier.claude_path ?? '')) { void updateInstance({ atelier: { claude_path: v } }); setTimeout(loadEngines, 300) } }}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-              className="w-full text-xs py-1.5" placeholder="laisser vide pour détection auto (PATH)" />
-          </div>
+          <p className="text-xs text-muted uppercase tracking-wide">Passerelle (claude_gateway)</p>
+          <Input mono key={`gu-${config.atelier.gateway.base_url}`} defaultValue={config.atelier.gateway.base_url}
+            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(loadEngines, 400) } }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="URL — http://localhost:4000" />
+          <Input mono key={`gm-${config.atelier.gateway.model}`} defaultValue={config.atelier.gateway.model}
+            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.model) void updateInstance({ atelier: { gateway: { model: v } } }) }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="Modèle (ex : routé par la passerelle)" />
+          <Input mono type="password" key={`gk-${config.atelier.gateway.api_key}`} defaultValue={config.atelier.gateway.api_key}
+            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.api_key) void updateInstance({ atelier: { gateway: { api_key: v } } }) }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="Clé (optionnelle)" />
         </div>
       </Card>
 
