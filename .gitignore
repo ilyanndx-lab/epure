@@ -30,6 +30,11 @@ backend/chroma_db/
 backend/memory/instance_config.json
 backend/memory/modules_state.json
 
+# Atelier de modules : bac à sable et sauvegardes (runtime, non versionnés)
+backend/modules/_staging/
+backend/modules/_backups/
+frontend/src/modules/generated/_workshop_check_*/
+
 # Logs
 *.log
 epure_tray.log
