@@ -34,7 +34,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Generator, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from core.codeagent import SecurityError, _make_exec_env
 from core.instance import instance_config
@@ -51,7 +51,9 @@ _FRONTEND_MODULES = (Path(__file__).parent.parent.parent / "frontend" / "src" / 
 _FRONTEND_GENERATED = _FRONTEND_MODULES / "generated"
 
 _FILES = ("manifest.json", "router.py", "Component.tsx")
-_RESERVED_IDS = {"_staging", "_backups", "generated", "settings"}
+# Ids impossibles : collisions avec des dossiers internes. 'settings' n'est PAS
+# réservé — c'est un vrai module éditable (avec avertissement côté UI).
+_RESERVED_IDS = {"_staging", "_backups", "generated"}
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 _CLAUDE_TIMEOUT = 600  # secondes (génération headless)
 
@@ -73,7 +75,7 @@ def _modules_safe_path(relative: str) -> Path:
 class ModuleManifest(BaseModel):
     id: str
     version: str = "1.0.0"
-    nom: str
+    nom: str = ""  # défaut : id capitalisé (cf. _default_nom)
     icon: str = "Box"
     description: str = ""
     frontend: dict = {"component": "Component"}
@@ -91,6 +93,16 @@ class ModuleManifest(BaseModel):
         if v in _RESERVED_IDS:
             raise ValueError(f"id réservé : {v}")
         return v
+
+    @model_validator(mode="after")
+    def _defaults(self):
+        if not (self.nom or "").strip():
+            self.nom = self.id.capitalize()
+        if not (self.frontend or {}).get("component"):
+            self.frontend = {**(self.frontend or {}), "component": "Component"}
+        if (self.backend or {}).get("prefix") is None:
+            self.backend = {**(self.backend or {}), "prefix": ""}
+        return self
 
 
 # ── État de staging (.workshop.json) ─────────────────────────────────────────
@@ -742,6 +754,27 @@ def approve(module_id: str, app=None) -> dict:
         src = sdir / name
         if src.is_file():
             shutil.copy2(src, dest / name)
+
+    # Normalise le manifest sur disque : le LLM peut omettre/mal remplir des
+    # champs. ModuleManifest applique les défauts (nom=id capitalisé, icon=Box,
+    # prefix="", origin="workshop", removable=True, core_module=False si absents)
+    # et on FORCE status="active" — le module doit ressortir actif dans /modules
+    # quoi qu'ait produit le LLM.
+    dest_manifest = dest / "manifest.json"
+    try:
+        raw = json.loads(dest_manifest.read_text(encoding="utf-8")) if dest_manifest.is_file() else {}
+        if not isinstance(raw, dict):
+            raw = {}
+    except Exception:
+        raw = {}
+    raw["id"] = module_id
+    norm = ModuleManifest(**raw)
+    norm.status = "active"
+    dest_manifest.write_text(
+        json.dumps(norm.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    # Override de status persistant (modules_state.json) — ceinture+bretelles.
+    module_registry.set_status(module_id, "active")
 
     # Frontend : Component.tsx → emplacement existant, sinon generated/<id>/
     comp_src = sdir / "Component.tsx"
