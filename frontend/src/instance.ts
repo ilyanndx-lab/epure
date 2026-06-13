@@ -20,6 +20,7 @@ export interface InstanceConfig {
   modules_activés: string[]
   providers: { actif: string; local: string; clés_présentes: Record<string, boolean> }
   fiches: { racine: string; watch_folders: string[] }
+  atelier: { gateway_url: string; gateway_model: string; gateway_api_key?: string; claude_path?: string }
   thème: Theme
   preset_défaut: string | null
 }
@@ -30,6 +31,7 @@ export interface InstanceConfigPatch {
   modules_activés?: string[]
   providers?: Partial<InstanceConfig['providers']>
   fiches?: Partial<InstanceConfig['fiches']>
+  atelier?: Partial<InstanceConfig['atelier']>
   thème?: Theme
   preset_défaut?: string | null
 }
@@ -40,6 +42,7 @@ const DEFAULT_CONFIG: InstanceConfig = {
   modules_activés: ['chat', 'kholle', 'flashcards', 'code', 'docs', 'admin', 'history'],
   providers: { actif: 'qwen2.5:7b', local: 'qwen2.5:7b', clés_présentes: {} },
   fiches: { racine: '', watch_folders: [] },
+  atelier: { gateway_url: 'http://localhost:4000', gateway_model: 'claude-sonnet-4-5', gateway_api_key: '', claude_path: '' },
   thème: 'dark',
   preset_défaut: null,
 }
@@ -110,6 +113,7 @@ export async function updateInstance(partial: InstanceConfigPatch): Promise<void
     ...partial,
     providers: { ...config.providers, ...(partial.providers ?? {}) },
     fiches: { ...config.fiches, ...(partial.fiches ?? {}) },
+    atelier: { ...config.atelier, ...(partial.atelier ?? {}) },
   })
   try {
     const res = await fetch(`${API}/instance/config`, {
