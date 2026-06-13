@@ -363,6 +363,9 @@ async def ws_workshop(websocket: WebSocket):
     await websocket.accept()
     loop = asyncio.get_running_loop()
 
+    async def _emit(ev: dict):
+        await websocket.send_text(json.dumps(ev, ensure_ascii=False))
+
     async def _stream_generator(gen):
         """Draine un générateur synchrone (engine) vers le WebSocket."""
         queue: asyncio.Queue = asyncio.Queue()
@@ -382,14 +385,23 @@ async def ws_workshop(websocket: WebSocket):
             ev = await queue.get()
             if ev is None:
                 break
-            await websocket.send_text(json.dumps(ev, ensure_ascii=False))
+            await _emit(ev)
 
     async def _validate_and_report(mid: str):
-        res = await loop.run_in_executor(None, module_workshop.validate_staging, mid, True)
-        await websocket.send_text(json.dumps({
-            "type": "validated", "status": res["status"], "report": res["report"],
-        }, ensure_ascii=False))
-        await websocket.send_text(json.dumps({"type": "done"}, ensure_ascii=False))
+        """Gate RAPIDE (sans tsc) : la revue doit s'afficher immédiatement."""
+        await _emit({"type": "validating"})
+        res = await loop.run_in_executor(None, module_workshop.validate_staging, mid, False)
+        await _emit({"type": "validated", "status": res["status"], "report": res["report"]})
+
+    async def _background_typecheck(mid: str):
+        """tsc en tâche de fond — n'a JAMAIS bloqué l'apparition de la revue."""
+        try:
+            tc = await loop.run_in_executor(None, module_workshop.typecheck_staging, mid)
+            warns = tc.get("warnings", [])
+            if warns:
+                await _emit({"type": "typecheck", "report": {"warnings": warns}})
+        except Exception:
+            logger.exception("Type-check atelier (tâche de fond) %s", mid)
 
     try:
         while True:
@@ -397,31 +409,52 @@ async def ws_workshop(websocket: WebSocket):
             msg = json.loads(data)
             mtype = msg.get("type")
 
-            if mtype == "generate":
-                mid = msg.get("id", "")
-                kind = msg.get("kind", "new")
-                spec = msg.get("description", "")
-                engine = msg.get("engine", "ollama")
-                mode = msg.get("mode", "headless")
-
-                if engine in ("claude_sub", "claude_gateway") and mode == "terminal":
+            # Mode terminal : on ouvre la session et on attend "terminal_done"
+            # (surtout PAS de "done" ici, sinon le front fermerait la socket).
+            if (mtype == "generate"
+                    and msg.get("engine") in ("claude_sub", "claude_gateway")
+                    and msg.get("mode") == "terminal"):
+                try:
                     info = await loop.run_in_executor(
-                        None, module_workshop.open_terminal, mid, spec, kind, engine
+                        None, module_workshop.open_terminal,
+                        msg.get("id", ""), msg.get("description", ""),
+                        msg.get("kind", "new"), msg.get("engine"),
                     )
-                    await websocket.send_text(json.dumps({"type": "terminal_opened", **info}, ensure_ascii=False))
-                    continue  # attend un message "terminal_done"
+                    await _emit({"type": "terminal_opened", **info})
+                except Exception as exc:
+                    logger.exception("Ouverture terminal atelier")
+                    await _emit({"type": "error", "content": str(exc)})
+                    await _emit({"type": "done"})
+                continue
 
-                if engine == "ollama":
-                    gen = module_workshop.generate_ollama(mid, spec, kind)
-                else:
-                    gen = module_workshop.generate_claude_headless(mid, spec, kind, engine)
-                await _stream_generator(gen)
-                await _validate_and_report(mid)
+            # Messages produisant une revue : on émet TOUJOURS "done" (finally),
+            # et "error" sur exception ; le tsc part en tâche de fond après "done".
+            bg_mid = None
+            try:
+                if mtype == "generate":
+                    mid = msg.get("id", "")
+                    kind = msg.get("kind", "new")
+                    spec = msg.get("description", "")
+                    engine = msg.get("engine", "ollama")
+                    if engine == "ollama":
+                        gen = module_workshop.generate_ollama(mid, spec, kind)
+                    else:
+                        gen = module_workshop.generate_claude_headless(mid, spec, kind, engine)
+                    await _stream_generator(gen)
+                    await _validate_and_report(mid)
+                    bg_mid = mid
+                elif mtype == "terminal_done":
+                    mid = msg.get("id", "")
+                    await _validate_and_report(mid)
+                    bg_mid = mid
+            except Exception as exc:
+                logger.exception("Atelier ws : traitement du message %s", mtype)
+                await _emit({"type": "error", "content": str(exc)})
+            finally:
+                await _emit({"type": "done"})
 
-            elif mtype == "terminal_done":
-                # L'utilisateur a fermé sa session : on re-scanne + revalide.
-                mid = msg.get("id", "")
-                await _validate_and_report(mid)
+            if bg_mid:
+                asyncio.create_task(_background_typecheck(bg_mid))
 
     except WebSocketDisconnect:
         pass
