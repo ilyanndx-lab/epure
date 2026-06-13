@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { Badge, Button, Card, Input, Select, Textarea } from './ui'
 import { useInstanceConfig } from '../instance'
+import { fetchModules } from '../modules'
 
 const API = 'http://localhost:8000'
 const WS_URL = 'ws://localhost:8000/ws/workshop'
@@ -59,6 +60,7 @@ export default function Workshop() {
 
   const currentId = kind === 'new' ? newId.trim() : targetId
   const editingCore = kind === 'edit' && modules.find(m => m.id === targetId)?.core_module
+  const editingSettings = kind === 'edit' && targetId === 'settings'
 
   const refreshStaging = useCallback(async (id: string) => {
     try {
@@ -147,6 +149,9 @@ export default function Workshop() {
       )
       wsRef.current?.close()
       setPhase('idle'); setStaging(null); setReport(null); setLog('')
+      // Rafraîchit le cache partagé (Sidebar/App) → le module apparaît sans reload,
+      // + la liste locale de l'atelier (avec infos staging).
+      void fetchModules()
       fetch(`${API}/workshop/modules`).then(r => r.json()).then((d: { modules: ModuleRow[] }) => setModules(d.modules)).catch(() => {})
     } catch { setError('Activation échouée (réseau).') }
   }, [staging])
@@ -194,7 +199,17 @@ export default function Workshop() {
           </div>
         )}
 
-        {editingCore && (
+        {editingSettings ? (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-sm border border-error/50 bg-error/10">
+            <AlertTriangle size={15} className="text-error shrink-0 mt-0.5" />
+            <p className="text-xs text-secondary">
+              Vous modifiez le module <strong>Réglages</strong> lui-même. Une erreur peut vous
+              <strong> verrouiller hors de cet écran</strong> (plus moyen de réactiver des modules ni
+              de revenir en arrière depuis l'UI). Un backup horodaté est créé ; en cas de problème,
+              restaurez-le depuis backend/modules/_backups/settings/ puis redémarrez le backend.
+            </p>
+          </div>
+        ) : editingCore && (
           <div className="flex items-start gap-2 px-3 py-2 rounded-sm border border-warning/40 bg-warning/10">
             <AlertTriangle size={15} className="text-warning shrink-0 mt-0.5" />
             <p className="text-xs text-secondary">
@@ -310,7 +325,16 @@ export default function Workshop() {
             </div>
           )}
 
-          {staging.is_core && (
+          {staging.id === 'settings' ? (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-sm border border-error/50 bg-error/10">
+              <AlertTriangle size={15} className="text-error shrink-0 mt-0.5" />
+              <p className="text-xs text-secondary">
+                <strong>Module Réglages.</strong> Approuver une version cassée peut vous verrouiller
+                hors de cet écran. Vérifiez attentivement le diff ci-dessous avant d'approuver
+                (backup dans _backups/settings/).
+              </p>
+            </div>
+          ) : staging.is_core && (
             <div className="flex items-start gap-2 px-3 py-2 rounded-sm border border-warning/40 bg-warning/10">
               <AlertTriangle size={15} className="text-warning shrink-0 mt-0.5" />
               <p className="text-xs text-secondary">
