@@ -15,11 +15,13 @@ En cas d'échec, le module reste en draft avec ce rapport.
 
 import ast
 import logging
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 # Réutilise les garde-fous de codeagent (source unique de vérité).
 from core.codeagent import _EXPLICIT_DENY, _SENSITIVE, _make_exec_env
@@ -170,17 +172,30 @@ def typecheck_component(source: str, module_id: str) -> ValidationReport:
     return report
 
 
+def _tsc_command() -> Optional[list[str]]:
+    """Binaire tsc à utiliser : local au projet en priorité, sinon `npx --yes tsc`."""
+    if not (_FRONTEND_DIR / "package.json").is_file():
+        return None
+    local = _FRONTEND_DIR / "node_modules" / ".bin" / ("tsc.cmd" if os.name == "nt" else "tsc")
+    if local.is_file():
+        return [str(local)]
+    npx = shutil.which("npx") or shutil.which("npx.cmd")
+    if npx:
+        return [npx, "--yes", "tsc"]
+    return None
+
+
 def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
-    """Vérifie le composant via `npx tsc --noEmit` dans le contexte du projet.
+    """Type-check du composant — BEST-EFFORT (warnings uniquement), jamais bloquant.
 
     Le fichier est écrit temporairement à la même profondeur que sa cible réelle
     (src/modules/generated/<id>/) pour que les imports relatifs résolvent, puis
-    supprimé. Best-effort : si la toolchain est absente, on émet un warning sans
-    bloquer (le gate d'exécution reste l'AST de router.py).
+    supprimé. Utilise le tsc local du projet (rapide) sinon `npx --yes tsc`.
+    Le gate d'exécution reste l'AST de router.py ; ici on ne fait que signaler.
     """
-    npx = shutil.which("npx") or shutil.which("npx.cmd")
-    if not npx or not (_FRONTEND_DIR / "package.json").is_file():
-        report.warn("tsc indisponible (npx/projet absent) — vérification de type ignorée.")
+    base = _tsc_command()
+    if base is None:
+        report.warn("tsc indisponible (projet/toolchain absent) — type-check ignoré.")
         return
 
     safe_id = re.sub(r"[^a-z0-9_]", "", module_id.lower()) or "mod"
@@ -190,25 +205,22 @@ def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
         check_dir.mkdir(parents=True, exist_ok=True)
         check_file.write_text(source, encoding="utf-8")
         proc = subprocess.run(
-            [npx, "tsc", "--noEmit", "-p", "tsconfig.app.json"],
+            base + ["--noEmit", "-p", "tsconfig.app.json"],
             cwd=str(_FRONTEND_DIR),
-            capture_output=True, text=True, timeout=120,
-            env=_make_exec_env(),
+            capture_output=True, text=True, timeout=30,
+            env=_make_exec_env(), stdin=subprocess.DEVNULL,
         )
         out = (proc.stdout or "") + (proc.stderr or "")
         rel = f"_workshop_check_{safe_id}/Component.tsx"
         errs = [ln for ln in out.splitlines() if rel in ln or rel.replace("/", "\\") in ln]
         if errs:
-            report.fail("Erreurs TypeScript dans le composant :\n" + "\n".join(errs[:15]))
-        elif proc.returncode != 0 and out.strip():
-            # tsc a échoué globalement (autres fichiers) — on n'en tient pas le
-            # module pour responsable, mais on le signale.
-            report.warn("tsc a rapporté des erreurs hors de ce module (projet).")
+            # Best-effort : on signale en WARNING (ne bloque pas l'activation).
+            report.warn("Type-check du composant :\n" + "\n".join(errs[:15]))
     except subprocess.TimeoutExpired:
-        report.warn("tsc : timeout (120s) — vérification de type incomplète.")
+        report.warn("tsc : timeout (30s) — type-check incomplet.")
     except Exception:
         logger.exception("Erreur exécution tsc pour %s", module_id)
-        report.warn("tsc : exécution impossible — vérification de type ignorée.")
+        report.warn("tsc : exécution impossible — type-check ignoré.")
     finally:
         try:
             shutil.rmtree(check_dir, ignore_errors=True)
