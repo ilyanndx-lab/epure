@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Eye, EyeOff,
-  FolderTree, Gauge, GripVertical, KeyRound, Palette, Plus, RefreshCw,
+  FolderTree, Gauge, GripVertical, Hammer, KeyRound, Palette, Plus, RefreshCw,
   RotateCcw, Trash2, User, X,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from '../../components/ui'
@@ -12,6 +12,14 @@ import { useModules, resolveIcon } from '../../modules'
 const API = 'http://localhost:8000'
 
 interface ModelOption { id: string; nom: string; disponible: boolean }
+
+interface EngineStatus { available: boolean; reason: string; url?: string; model?: string; bin?: string }
+
+const ENGINE_LABELS: Record<string, string> = {
+  ollama: 'Ollama (local)',
+  claude_sub: 'Claude Code (abonnement)',
+  claude_gateway: 'Claude Code (passerelle)',
+}
 
 interface ModelsResponse {
   local?: ModelOption[]
@@ -150,6 +158,7 @@ export default function Settings() {
   const config = useInstanceConfig()
   const modules = useModules()
   const [models, setModels] = useState<ModelOption[]>([])
+  const [engines, setEngines] = useState<Record<string, EngineStatus> | null>(null)
   const [addModuleOpen, setAddModuleOpen] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -217,8 +226,16 @@ export default function Settings() {
       })
       .catch(() => {})
 
+    loadEngines()
     loadQuotas()
   }, [])
+
+  const loadEngines = () => {
+    fetch(`${API}/workshop/engines`)
+      .then(r => r.json())
+      .then((d: Record<string, EngineStatus>) => setEngines(d))
+      .catch(() => setEngines(null))
+  }
 
   const addModule = useCallback((id: string) => {
     if (config.modules_activés.includes(id)) return
@@ -584,6 +601,71 @@ export default function Settings() {
           <p className="text-xs text-muted/70">
             Le retrait d'un dossier prend effet au redémarrage du backend.
           </p>
+        </div>
+      </Card>
+
+      {/* ── Atelier (moteurs Claude Code) ── */}
+      <Card className="max-w-lg space-y-4">
+        <div className="flex items-center justify-between">
+          <SectionTitle icon={<Hammer size={15} />}>Atelier — moteurs</SectionTitle>
+          <Button variant="ghost" size="sm" icon={<RefreshCw size={12} />} onClick={loadEngines}>
+            Re-tester
+          </Button>
+        </div>
+
+        {/* Disponibilité des 3 moteurs */}
+        <div className="space-y-1.5">
+          {(['ollama', 'claude_sub', 'claude_gateway'] as const).map(en => {
+            const info = engines?.[en]
+            const ok = info?.available ?? (en === 'ollama')
+            return (
+              <div key={en} className="flex items-start gap-2">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${ok ? 'bg-success' : 'bg-error'}`} />
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm text-secondary">{ENGINE_LABELS[en]}</span>
+                  {!ok && info?.reason && <p className="text-xs text-muted">{info.reason}</p>}
+                  {en === 'claude_sub' && ok && info?.bin && (
+                    <p className="text-xs font-mono text-muted/70 truncate">{info.bin}</p>
+                  )}
+                </div>
+                <Badge variant={ok ? 'success' : 'neutral'}>{ok ? 'disponible' : 'indisponible'}</Badge>
+              </div>
+            )
+          })}
+        </div>
+
+        <p className="text-xs text-muted/70 leading-relaxed">
+          <strong>Abonnement</strong> : installez le CLI <code className="font-mono">claude</code> et
+          authentifiez-vous (<code className="font-mono">claude setup-token</code> ou{' '}
+          <code className="font-mono">claude /login</code>). <strong>Passerelle</strong> : démarrez une
+          passerelle Anthropic-compatible (ex. LiteLLM) puis renseignez son URL ci-dessous.
+        </p>
+
+        {/* Configuration passerelle + chemin claude */}
+        <div className="space-y-2">
+          <div>
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">URL passerelle</label>
+            <Input mono key={`gu-${config.atelier.gateway_url}`} defaultValue={config.atelier.gateway_url}
+              onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway_url) { void updateInstance({ atelier: { gateway_url: v } }); setTimeout(loadEngines, 300) } }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="w-full text-xs py-1.5" placeholder="http://localhost:4000" />
+          </div>
+          <div>
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">Modèle passerelle</label>
+            <Input mono key={`gm-${config.atelier.gateway_model}`} defaultValue={config.atelier.gateway_model}
+              onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway_model) void updateInstance({ atelier: { gateway_model: v } }) }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="w-full text-xs py-1.5" placeholder="claude-sonnet-4-5" />
+          </div>
+          <div>
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">
+              Chemin du binaire <code className="font-mono">claude</code> (si absent du PATH)
+            </label>
+            <Input mono key={`cp-${config.atelier.claude_path ?? ''}`} defaultValue={config.atelier.claude_path ?? ''}
+              onBlur={e => { const v = e.target.value.trim(); if (v !== (config.atelier.claude_path ?? '')) { void updateInstance({ atelier: { claude_path: v } }); setTimeout(loadEngines, 300) } }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="w-full text-xs py-1.5" placeholder="laisser vide pour détection auto (PATH)" />
+          </div>
         </div>
       </Card>
 

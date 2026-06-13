@@ -215,7 +215,17 @@ def _gateway_cfg() -> dict:
     return {
         "url": atelier.get("gateway_url", "http://localhost:4000"),
         "model": atelier.get("gateway_model", "claude-sonnet-4-5"),
+        "api_key": (atelier.get("gateway_api_key") or "").strip(),
     }
+
+
+def _claude_bin() -> Optional[str]:
+    """Localise le binaire `claude` : chemin configuré (atelier.claude_path) sinon PATH."""
+    atelier = (instance_config.get().get("atelier") or {})
+    cp = (atelier.get("claude_path") or "").strip()
+    if cp and Path(cp).exists():
+        return cp
+    return shutil.which("claude") or shutil.which("claude.cmd")
 
 
 def gateway_reachable(url: Optional[str] = None) -> bool:
@@ -232,22 +242,28 @@ def gateway_reachable(url: Optional[str] = None) -> bool:
 
 
 def engines_status() -> dict:
-    """Disponibilité des 3 moteurs pour l'UI."""
-    claude_cli = bool(shutil.which("claude") or shutil.which("claude.cmd"))
+    """Disponibilité des 3 moteurs pour l'UI (avec diagnostic actionnable)."""
+    claude_bin = _claude_bin()
+    claude_cli = bool(claude_bin)
     gw = _gateway_cfg()
     gw_ok = claude_cli and gateway_reachable(gw["url"])
+    no_cli = (
+        "CLI `claude` introuvable : installez-le (npm i -g @anthropic-ai/claude-code) "
+        "puis authentifiez-vous, ou renseignez son chemin dans Réglages › Atelier."
+    )
     return {
         "ollama": {"available": True, "reason": ""},
         "claude_sub": {
             "available": claude_cli,
-            "reason": "" if claude_cli else "CLI `claude` introuvable (PATH).",
+            "reason": "" if claude_cli else no_cli,
+            "bin": claude_bin or "",
         },
         "claude_gateway": {
             "available": gw_ok,
             "reason": (
                 "" if gw_ok
-                else ("CLI `claude` introuvable." if not claude_cli
-                      else f"Passerelle injoignable : {gw['url']}")
+                else (no_cli if not claude_cli
+                      else f"Passerelle injoignable : {gw['url']} (démarrez la passerelle ou corrigez l'URL dans Réglages › Atelier)")
             ),
             "url": gw["url"],
             "model": gw["model"],
@@ -351,29 +367,37 @@ def _write_blocks_from_text(module_id: str, text: str) -> list[str]:
 # ── Génération : moteurs claude_* (CLI) ──────────────────────────────────────
 
 def _claude_env(engine: str) -> dict:
-    """Env minimal (clés API retirées) + ce qu'il faut pour la passerelle."""
+    """Env minimal (clés API retirées) + ce qu'il faut pour authentifier claude.
+
+    Important : _make_exec_env retire toute variable contenant TOKEN/KEY/SECRET —
+    ce qui inclut CLAUDE_CODE_OAUTH_TOKEN (jeton d'abonnement headless). On le
+    re-injecte explicitement, ainsi que le répertoire de config, sinon
+    l'authentification par abonnement échoue en subprocess.
+    """
     env = _make_exec_env()
-    # claude a besoin de son répertoire de config pour l'auth abonnement.
-    for k in ("USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME"):
+    for k in ("USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+              "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN"):
         if os.environ.get(k):
             env[k] = os.environ[k]
     if engine == "claude_gateway":
+        # ANTHROPIC_BASE_URL désactive l'OAuth abonnement → fournir un jeton/clé.
         gw = _gateway_cfg()
         env["ANTHROPIC_BASE_URL"] = gw["url"]
         env["ANTHROPIC_MODEL"] = gw["model"]
-        # Beaucoup de passerelles exigent une clé non vide (placeholder).
-        env.setdefault("ANTHROPIC_API_KEY", os.environ.get("GATEWAY_API_KEY", "sk-gateway-local"))
+        env["ANTHROPIC_API_KEY"] = gw["api_key"] or os.environ.get("GATEWAY_API_KEY", "sk-gateway-local")
+    # claude_sub : surtout NE PAS définir ANTHROPIC_API_KEY (il primerait sur
+    # l'abonnement) — _make_exec_env l'a déjà retiré, on ne le réintroduit pas.
     return env
 
 
 def _claude_cmd(prompt: str, staging_dir: Path) -> list[str]:
     """Commande claude headless confinée au staging (écriture seule là-dedans)."""
-    claude = shutil.which("claude") or shutil.which("claude.cmd") or "claude"
+    claude = _claude_bin() or "claude"
     return [
         claude, "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--add-dir", str(staging_dir),
-        "--allowedTools", "Read,Write,Edit",
+        "--allowedTools", "Read,Edit,Write",
         "--permission-mode", "acceptEdits",
     ]
 

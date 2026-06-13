@@ -141,6 +141,27 @@ résolus sous `EPURE_FICHES_DIR` (un chemin absolu reste utilisé tel quel).
 
 ---
 
+## Atelier — moteurs de génération Claude Code
+
+L'Atelier (création/modification de modules) propose 3 moteurs. Leur disponibilité
+est diagnostiquée dans **Réglages › Atelier — moteurs** (bouton « Re-tester »).
+
+- **Ollama (local)** — toujours disponible (utilise le modèle actif).
+- **Claude Code (abonnement)** `claude_sub` — nécessite le CLI `claude` :
+  ```bash
+  npm install -g @anthropic-ai/claude-code      # installe le CLI
+  claude setup-token                            # auth abonnement (jeton OAuth, headless)
+  #   ou, en interactif : lancer `claude` puis /login
+  ```
+  Le backend détecte `claude` via le PATH ; s'il n'y est pas, renseignez son chemin
+  dans **Réglages › Atelier** (champ « Chemin du binaire claude »). Ne définissez
+  **pas** `ANTHROPIC_API_KEY` (elle primerait sur l'abonnement).
+- **Claude Code (passerelle)** `claude_gateway` — nécessite le CLI `claude` **et**
+  une passerelle Anthropic-compatible locale (ex. [LiteLLM](https://docs.litellm.ai/)
+  exposant `/v1/messages`, routant vers Ollama/Bedrock/…). Renseignez l'URL + le
+  modèle (+ clé éventuelle) dans **Réglages › Atelier**. Le backend pointe
+  `ANTHROPIC_BASE_URL` dessus pour les générations.
+
 ## Tests
 
 ```bash
