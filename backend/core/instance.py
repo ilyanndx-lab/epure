@@ -62,6 +62,12 @@ def _default_config() -> dict:
         },
         "thème": "dark",
         "preset_défaut": None,
+        "atelier": {
+            # Passerelle Anthropic-compatible (LiteLLM / claude-code-router) pour
+            # le moteur claude_gateway. URL + modèle configurables.
+            "gateway_url": "http://localhost:4000",
+            "gateway_model": "claude-sonnet-4-5",
+        },
     }
 
 
@@ -112,6 +118,7 @@ class InstanceConfig:
         merged["instance_id"] = cfg.get("instance_id") or base["instance_id"]
         merged["providers"] = {**base["providers"], **(cfg.get("providers") or {})}
         merged["fiches"] = {**base["fiches"], **(cfg.get("fiches") or {})}
+        merged["atelier"] = {**base["atelier"], **(cfg.get("atelier") or {})}
         return merged
 
     @staticmethod
