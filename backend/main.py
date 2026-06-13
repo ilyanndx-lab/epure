@@ -39,6 +39,7 @@ from core.orchestrator import OrchestratorEngine
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
+from core import module_workshop
 from core.instance import instance_config, fiches_root, fiches_watch_paths
 from core.memory import MemoryEngine
 from core.module_registry import (
@@ -267,6 +268,163 @@ async def module_set_status(module_id: str, req: ModuleStatusRequest):
             detail="Module inconnu, status invalide (active|disabled), ou action interdite",
         )
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Workshop / Atelier de modules
+# ---------------------------------------------------------------------------
+
+@app.get("/workshop/engines")
+async def workshop_engines():
+    """Disponibilité des 3 moteurs (claude_gateway désactivé si injoignable)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, module_workshop.engines_status)
+
+
+@app.get("/workshop/modules")
+async def workshop_modules():
+    """Tous les modules (pour la liste « modifier »), avec is_core/staging."""
+    mods = _list_modules()
+    staging = {m["id"]: m for m in module_workshop.list_staging()}
+    for m in mods:
+        m["staging"] = staging.get(m["id"])
+    return {"modules": mods, "staging": list(staging.values())}
+
+
+class WorkshopGenerateRequest(BaseModel):
+    id: str
+    engine: str = "ollama"
+    mode: str = "headless"
+
+
+class WorkshopEditRequest(BaseModel):
+    engine: str = "ollama"
+    mode: str = "headless"
+
+
+@app.post("/workshop/generate")
+async def workshop_generate(req: WorkshopGenerateRequest):
+    """Création : prépare le staging d'un NOUVEAU module (génération via /ws/workshop)."""
+    try:
+        meta = await asyncio.get_running_loop().run_in_executor(
+            None, module_workshop.prepare, req.id, "new", req.engine, req.mode
+        )
+    except (ValueError, module_workshop.SecurityError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return meta
+
+
+@app.post("/workshop/{module_id}/edit")
+async def workshop_edit(module_id: str, req: WorkshopEditRequest):
+    """Modification : copie le module actif dans le staging (génération via /ws/workshop)."""
+    try:
+        meta = await asyncio.get_running_loop().run_in_executor(
+            None, module_workshop.prepare, module_id, "edit", req.engine, req.mode
+        )
+    except (ValueError, module_workshop.SecurityError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return meta
+
+
+@app.get("/workshop/staging/{module_id}")
+async def workshop_staging_get(module_id: str):
+    """Les 3 fichiers stagés + diff vs actif (si édition)."""
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, module_workshop.read_staging, module_id
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/workshop/{module_id}/approve")
+async def workshop_approve(module_id: str):
+    """Activation manuelle : backup + déplacement + remontage + modules_activés."""
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, module_workshop.approve, module_id, app)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result)
+    return result
+
+
+@app.post("/workshop/{module_id}/reject")
+async def workshop_reject(module_id: str):
+    return await asyncio.get_running_loop().run_in_executor(
+        None, module_workshop.reject, module_id
+    )
+
+
+@app.websocket("/ws/workshop")
+async def ws_workshop(websocket: WebSocket):
+    """Stream de génération (ollama / claude headless) + pilotage mode terminal."""
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+
+    async def _stream_generator(gen):
+        """Draine un générateur synchrone (engine) vers le WebSocket."""
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _worker():
+            try:
+                for ev in gen:
+                    asyncio.run_coroutine_threadsafe(queue.put(ev), loop)
+            except Exception as exc:
+                logger.exception("Erreur génération atelier")
+                asyncio.run_coroutine_threadsafe(queue.put({"type": "error", "content": str(exc)}), loop)
+            finally:
+                asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+
+        Thread(target=_worker, daemon=True).start()
+        while True:
+            ev = await queue.get()
+            if ev is None:
+                break
+            await websocket.send_text(json.dumps(ev, ensure_ascii=False))
+
+    async def _validate_and_report(mid: str):
+        res = await loop.run_in_executor(None, module_workshop.validate_staging, mid, True)
+        await websocket.send_text(json.dumps({
+            "type": "validated", "status": res["status"], "report": res["report"],
+        }, ensure_ascii=False))
+        await websocket.send_text(json.dumps({"type": "done"}, ensure_ascii=False))
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            mtype = msg.get("type")
+
+            if mtype == "generate":
+                mid = msg.get("id", "")
+                kind = msg.get("kind", "new")
+                spec = msg.get("description", "")
+                engine = msg.get("engine", "ollama")
+                mode = msg.get("mode", "headless")
+
+                if engine in ("claude_sub", "claude_gateway") and mode == "terminal":
+                    info = await loop.run_in_executor(
+                        None, module_workshop.open_terminal, mid, spec, kind, engine
+                    )
+                    await websocket.send_text(json.dumps({"type": "terminal_opened", **info}, ensure_ascii=False))
+                    continue  # attend un message "terminal_done"
+
+                if engine == "ollama":
+                    gen = module_workshop.generate_ollama(mid, spec, kind)
+                else:
+                    gen = module_workshop.generate_claude_headless(mid, spec, kind, engine)
+                await _stream_generator(gen)
+                await _validate_and_report(mid)
+
+            elif mtype == "terminal_done":
+                # L'utilisateur a fermé sa session : on re-scanne + revalide.
+                mid = msg.get("id", "")
+                await _validate_and_report(mid)
+
+    except WebSocketDisconnect:
+        pass
 
 
 # ---------------------------------------------------------------------------
