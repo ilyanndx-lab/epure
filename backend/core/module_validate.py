@@ -28,6 +28,9 @@ from core.codeagent import _EXPLICIT_DENY, _SENSITIVE, _make_exec_env
 
 logger = logging.getLogger(__name__)
 
+# Pas de fenêtre console visible quand on lance tsc/npx (.cmd) sous Windows.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 _FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
 
 # Modules dont l'import seul est refusé dans un router généré.
@@ -209,6 +212,7 @@ def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
             cwd=str(_FRONTEND_DIR),
             capture_output=True, text=True, timeout=30,
             env=_make_exec_env(), stdin=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
         )
         out = (proc.stdout or "") + (proc.stderr or "")
         rel = f"_workshop_check_{safe_id}/Component.tsx"
