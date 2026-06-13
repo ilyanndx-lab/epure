@@ -31,6 +31,7 @@ import time
 import urllib.request
 from difflib import unified_diff
 from pathlib import Path
+from threading import Thread
 from typing import Generator, Optional
 
 from pydantic import BaseModel, field_validator
@@ -505,7 +506,8 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(sdir), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, text=True,
         )
     except FileNotFoundError:
         yield {"type": "error", "content": "CLI `claude` introuvable dans le PATH."}
@@ -515,20 +517,36 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
         yield {"type": "error", "content": f"Lancement claude échoué : {exc}"}
         return
 
-    start = time.time()
+    # Watchdog : tue le process après _CLAUDE_TIMEOUT MÊME s'il ne sort rien
+    # (le timeout dans la boucle ne se déclenche qu'à l'arrivée d'une ligne →
+    # un claude muet pouvait figer indéfiniment).
+    timed_out = {"flag": False}
+
+    def _watchdog():
+        try:
+            proc.wait(timeout=_CLAUDE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            timed_out["flag"] = True
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    Thread(target=_watchdog, daemon=True).start()
+
     try:
         for line in proc.stdout:  # type: ignore[union-attr]
             line = line.rstrip()
             if line:
                 yield {"type": "token", "content": line + "\n"}
-            if time.time() - start > _CLAUDE_TIMEOUT:
-                proc.kill()
-                yield {"type": "error", "content": f"Timeout claude ({_CLAUDE_TIMEOUT}s)."}
-                return
         proc.wait(timeout=10)
     except Exception as exc:
         logger.exception("Streaming claude échoué")
         yield {"type": "error", "content": str(exc)}
+        return
+
+    if timed_out["flag"]:
+        yield {"type": "error", "content": f"Timeout claude ({_CLAUDE_TIMEOUT}s) — process tué (aucune sortie)."}
         return
 
     # On ne lit QUE le staging confiné, quoi que claude ait pu tenter ailleurs.
