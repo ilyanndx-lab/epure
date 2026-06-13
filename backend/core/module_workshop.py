@@ -643,6 +643,18 @@ def validate_staging(module_id: str, run_tsc: bool = True) -> dict:
     return {"status": meta["status"], "report": report}
 
 
+def typecheck_staging(module_id: str) -> dict:
+    """tsc sur le composant stagé, en tâche de fond (best-effort). Retourne ses
+    warnings — ne change jamais le verdict d'activation (report.ok du gate)."""
+    from core.module_validate import typecheck_component
+    comp = _staging_dir(module_id) / "Component.tsx"
+    if not comp.is_file():
+        return {"warnings": []}
+    rep = typecheck_component(comp.read_text(encoding="utf-8", errors="replace"), module_id)
+    # tsc est best-effort : on remonte tout (warnings + éventuelles erreurs) en warnings.
+    return {"warnings": rep.warnings + rep.errors}
+
+
 # ── Approbation / rejet ──────────────────────────────────────────────────────
 
 def _backup_existing(module_id: str) -> Optional[str]:
