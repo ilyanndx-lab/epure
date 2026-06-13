@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe } from 'lucide-react'
-import { Card, Textarea, Toggle } from './ui'
-import RichMessage from './RichMessage'
-import ModuleBar from './ModuleBar'
-import type { EffortLevel, StepConfig } from '../App'
+import { Card, Textarea, Toggle } from '../../components/ui'
+import RichMessage from '../../components/RichMessage'
+import ModuleBar from '../../components/ModuleBar'
+import type { EffortLevel, StepConfig } from '../../App'
 
 const API = 'http://localhost:8000'
 const WS_URL = 'ws://localhost:8000/ws/chat'
