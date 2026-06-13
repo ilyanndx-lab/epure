@@ -162,6 +162,14 @@ def validate_component_tsx(source: str, module_id: str, run_tsc: bool = True) ->
     return report
 
 
+def typecheck_component(source: str, module_id: str) -> ValidationReport:
+    """Type-check tsc SEUL (best-effort, warnings) — lancé en tâche de fond,
+    découplé du gate rapide qui débloque la revue."""
+    report = ValidationReport()
+    _run_tsc(source, module_id, report)
+    return report
+
+
 def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
     """Vérifie le composant via `npx tsc --noEmit` dans le contexte du projet.
 
