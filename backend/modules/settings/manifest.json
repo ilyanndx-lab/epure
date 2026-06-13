@@ -5,7 +5,7 @@
   "icon": "Settings",
   "description": "Profil, préférences et personnalisation de l'instance",
   "frontend": { "component": "Settings" },
-  "backend": { "prefix": "/settings" },
+  "backend": { "prefix": "" },
   "core_module": true,
   "origin": "builtin",
   "status": "active",
