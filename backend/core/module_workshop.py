@@ -211,25 +211,26 @@ def prepare(module_id: str, kind: str, engine: str, mode: str) -> dict:
 # ── Passerelle / disponibilité des moteurs ───────────────────────────────────
 
 def _gateway_cfg() -> dict:
-    atelier = (instance_config.get().get("atelier") or {})
+    gw = ((instance_config.get().get("atelier") or {}).get("gateway") or {})
     return {
-        "url": atelier.get("gateway_url", "http://localhost:4000"),
-        "model": atelier.get("gateway_model", "claude-sonnet-4-5"),
-        "api_key": (atelier.get("gateway_api_key") or "").strip(),
+        "base_url": gw.get("base_url", "http://localhost:4000"),
+        "model": (gw.get("model") or "").strip(),
+        "api_key": (gw.get("api_key") or "").strip(),
     }
 
 
 def _claude_bin() -> Optional[str]:
-    """Localise le binaire `claude` : chemin configuré (atelier.claude_path) sinon PATH."""
-    atelier = (instance_config.get().get("atelier") or {})
-    cp = (atelier.get("claude_path") or "").strip()
-    if cp and Path(cp).exists():
-        return cp
-    return shutil.which("claude") or shutil.which("claude.cmd")
+    """Localise le binaire `claude` : atelier.claude_path (nom PATH ou chemin complet)."""
+    cp = ((instance_config.get().get("atelier") or {}).get("claude_path") or "claude").strip()
+    # Chemin (contient un séparateur) → utilisé tel quel s'il existe.
+    if os.sep in cp or (os.altsep and os.altsep in cp):
+        return cp if Path(cp).exists() else None
+    # Nom simple → résolution via le PATH.
+    return shutil.which(cp) or shutil.which(cp + ".cmd")
 
 
 def gateway_reachable(url: Optional[str] = None) -> bool:
-    url = url or _gateway_cfg()["url"]
+    url = url or _gateway_cfg()["base_url"]
     for path in ("/health", "/v1/models", "/"):
         try:
             req = urllib.request.Request(url.rstrip("/") + path, method="GET")
@@ -241,32 +242,93 @@ def gateway_reachable(url: Optional[str] = None) -> bool:
     return False
 
 
+def _ollama_status() -> tuple[bool, str]:
+    """Ping du serveur Ollama + au moins un modèle présent."""
+    try:
+        from core.models import get_ollama_installed
+        models = get_ollama_installed()
+    except Exception:
+        return False, "Vérification Ollama impossible."
+    if models is None:
+        return False, "Serveur Ollama injoignable (localhost:11434)."
+    if not models:
+        return False, "Ollama actif mais aucun modèle installé (`ollama pull …`)."
+    return True, ""
+
+
+def _claude_version_ok(claude_bin: Optional[str]) -> bool:
+    """`<claude_path> --version` exécutable (CLI présent et fonctionnel)."""
+    if not claude_bin:
+        return False
+    try:
+        r = subprocess.run(
+            [claude_bin, "--version"], capture_output=True, text=True,
+            timeout=20, env=_claude_env("claude_sub"),
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _claude_auth_detected() -> bool:
+    """Auth d'abonnement présente : jeton setup-token (env) ou credentials de login."""
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip():
+        return True
+    candidates: list[Path] = []
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if cfg_dir:
+        candidates.append(Path(cfg_dir) / ".credentials.json")
+    home = Path.home()
+    candidates += [
+        home / ".claude" / ".credentials.json",
+        home / ".config" / "claude" / ".credentials.json",
+    ]
+    for c in candidates:
+        try:
+            if c.is_file() and c.stat().st_size > 2:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def engines_status() -> dict:
-    """Disponibilité des 3 moteurs pour l'UI (avec diagnostic actionnable)."""
+    """Disponibilité des 3 moteurs : {disponible, raison} (+ infos utiles)."""
     claude_bin = _claude_bin()
-    claude_cli = bool(claude_bin)
-    gw = _gateway_cfg()
-    gw_ok = claude_cli and gateway_reachable(gw["url"])
+    ver_ok = _claude_version_ok(claude_bin)
     no_cli = (
-        "CLI `claude` introuvable : installez-le (npm i -g @anthropic-ai/claude-code) "
-        "puis authentifiez-vous, ou renseignez son chemin dans Réglages › Atelier."
+        "CLI `claude` introuvable/inexécutable — installez-le "
+        "(npm i -g @anthropic-ai/claude-code) ou corrigez claude_path (Réglages › Atelier)."
     )
+
+    o_ok, o_raison = _ollama_status()
+
+    if not ver_ok:
+        sub_ok, sub_raison = False, no_cli
+    elif _claude_auth_detected():
+        sub_ok, sub_raison = True, ""
+    else:
+        sub_ok, sub_raison = False, (
+            "Pas d'auth d'abonnement détectée — lancez `claude setup-token` "
+            "(ou `claude` puis /login), puis Re-tester."
+        )
+
+    gw = _gateway_cfg()
+    if not ver_ok:
+        gw_ok, gw_raison = False, no_cli
+    elif not gateway_reachable(gw["base_url"]):
+        gw_ok, gw_raison = False, (
+            f"Passerelle injoignable : {gw['base_url']} (démarrez-la ou corrigez l'URL)."
+        )
+    else:
+        gw_ok, gw_raison = True, ""
+
     return {
-        "ollama": {"available": True, "reason": ""},
-        "claude_sub": {
-            "available": claude_cli,
-            "reason": "" if claude_cli else no_cli,
-            "bin": claude_bin or "",
-        },
+        "ollama": {"disponible": o_ok, "raison": o_raison},
+        "claude_sub": {"disponible": sub_ok, "raison": sub_raison, "bin": claude_bin or ""},
         "claude_gateway": {
-            "available": gw_ok,
-            "reason": (
-                "" if gw_ok
-                else (no_cli if not claude_cli
-                      else f"Passerelle injoignable : {gw['url']} (démarrez la passerelle ou corrigez l'URL dans Réglages › Atelier)")
-            ),
-            "url": gw["url"],
-            "model": gw["model"],
+            "disponible": gw_ok, "raison": gw_raison,
+            "base_url": gw["base_url"], "model": gw["model"],
         },
     }
 
@@ -380,26 +442,40 @@ def _claude_env(engine: str) -> dict:
         if os.environ.get(k):
             env[k] = os.environ[k]
     if engine == "claude_gateway":
-        # ANTHROPIC_BASE_URL désactive l'OAuth abonnement → fournir un jeton/clé.
+        # ANTHROPIC_BASE_URL désactive l'OAuth abonnement → fournir clé/jeton, et
+        # ne PAS laisser le jeton d'abonnement traîner.
         gw = _gateway_cfg()
-        env["ANTHROPIC_BASE_URL"] = gw["url"]
-        env["ANTHROPIC_MODEL"] = gw["model"]
-        env["ANTHROPIC_API_KEY"] = gw["api_key"] or os.environ.get("GATEWAY_API_KEY", "sk-gateway-local")
-    # claude_sub : surtout NE PAS définir ANTHROPIC_API_KEY (il primerait sur
-    # l'abonnement) — _make_exec_env l'a déjà retiré, on ne le réintroduit pas.
+        env["ANTHROPIC_BASE_URL"] = gw["base_url"]
+        if gw["model"]:
+            env["ANTHROPIC_MODEL"] = gw["model"]
+        if gw["api_key"]:
+            env["ANTHROPIC_AUTH_TOKEN"] = gw["api_key"]
+            env["ANTHROPIC_API_KEY"] = gw["api_key"]
+        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+    else:
+        # claude_sub : surtout PAS d'ANTHROPIC_API_KEY (sinon bascule en
+        # facturation API au lieu de l'abonnement). _make_exec_env l'a déjà
+        # retirée ; on s'assure qu'aucune variable Anthropic ne subsiste.
+        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"):
+            env.pop(k, None)
     return env
 
 
-def _claude_cmd(prompt: str, staging_dir: Path) -> list[str]:
+def _claude_cmd(prompt: str, staging_dir: Path, engine: str = "claude_sub") -> list[str]:
     """Commande claude headless confinée au staging (écriture seule là-dedans)."""
     claude = _claude_bin() or "claude"
-    return [
+    cmd = [
         claude, "-p", prompt,
         "--output-format", "stream-json", "--verbose",
         "--add-dir", str(staging_dir),
         "--allowedTools", "Read,Edit,Write",
         "--permission-mode", "acceptEdits",
     ]
+    if engine == "claude_gateway":
+        model = _gateway_cfg()["model"]
+        if model:
+            cmd += ["--model", model]
+    return cmd
 
 
 def _claude_prompt(module_id: str, spec: str, kind: str) -> str:
@@ -422,7 +498,7 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
     """Lance `claude -p` en subprocess, cwd=staging, et streame stdout (JSON)."""
     sdir = _staging_dir(module_id)
     sdir.mkdir(parents=True, exist_ok=True)
-    cmd = _claude_cmd(_claude_prompt(module_id, spec, kind), sdir)
+    cmd = _claude_cmd(_claude_prompt(module_id, spec, kind), sdir, engine)
     env = _claude_env(engine)
 
     yield {"type": "engine", "engine": engine, "mode": "headless", "cwd": str(sdir)}
@@ -471,10 +547,12 @@ def terminal_launch_spec(module_id: str, spec: str, kind: str, engine: str) -> d
     """
     sdir = _staging_dir(module_id)
     sdir.mkdir(parents=True, exist_ok=True)
-    cmd = _claude_cmd(_claude_prompt(module_id, spec, kind), sdir)
+    cmd = _claude_cmd(_claude_prompt(module_id, spec, kind), sdir, engine)
     # En mode terminal interactif on n'impose pas -p/stream-json : on ouvre claude
     # interactif dans le dossier confiné (l'utilisateur pilote).
     interactive = [cmd[0], "--add-dir", str(sdir), "--allowedTools", "Read,Write,Edit"]
+    if engine == "claude_gateway" and _gateway_cfg()["model"]:
+        interactive += ["--model", _gateway_cfg()["model"]]
     return {"cmd": interactive, "cwd": str(sdir), "env": _claude_env(engine), "prompt": _claude_prompt(module_id, spec, kind)}
 
 

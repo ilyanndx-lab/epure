@@ -4,6 +4,7 @@ import {
   ShieldCheck, FilePlus2, FilePen,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, Select, Textarea } from './ui'
+import { useInstanceConfig } from '../instance'
 
 const API = 'http://localhost:8000'
 const WS_URL = 'ws://localhost:8000/ws/workshop'
@@ -13,7 +14,7 @@ type Mode = 'headless' | 'terminal'
 type Kind = 'new' | 'edit'
 type Phase = 'idle' | 'generating' | 'terminal' | 'review'
 
-interface EngineInfo { available: boolean; reason: string; url?: string; model?: string }
+interface EngineInfo { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 interface ModuleRow { id: string; nom: string; core_module?: boolean; status?: string }
 interface Report { ok: boolean; errors: string[]; warnings: string[] }
 interface Staging {
@@ -27,6 +28,7 @@ interface Staging {
 const FILE_TABS = ['router.py', 'Component.tsx', 'manifest.json'] as const
 
 export default function Workshop() {
+  const config = useInstanceConfig()
   const [engines, setEngines] = useState<Record<Engine, EngineInfo> | null>(null)
   const [modules, setModules] = useState<ModuleRow[]>([])
 
@@ -34,8 +36,8 @@ export default function Workshop() {
   const [newId, setNewId] = useState('')
   const [targetId, setTargetId] = useState('')
   const [description, setDescription] = useState('')
-  const [engine, setEngine] = useState<Engine>('ollama')
-  const [mode, setMode] = useState<Mode>('headless')
+  const [engine, setEngine] = useState<Engine>(() => (config.atelier.moteur_defaut as Engine) || 'ollama')
+  const [mode, setMode] = useState<Mode>(() => (config.atelier.mode_defaut as Mode) || 'headless')
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [log, setLog] = useState('')
@@ -144,7 +146,7 @@ export default function Workshop() {
     setPhase('idle'); setStaging(null); setReport(null); setLog('')
   }, [staging])
 
-  const engineUnavailable = engines ? !engines[engine]?.available : false
+  const engineUnavailable = engines ? !engines[engine]?.disponible : false
 
   return (
     <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 space-y-6">
@@ -203,7 +205,7 @@ export default function Workshop() {
             <Select value={engine} onChange={e => setEngine(e.target.value as Engine)}>
               {(['ollama', 'claude_sub', 'claude_gateway'] as Engine[]).map(en => {
                 const info = engines?.[en]
-                const ok = info?.available ?? (en === 'ollama')
+                const ok = info?.disponible ?? (en === 'ollama')
                 return (
                   <option key={en} value={en} disabled={!ok}>
                     {en === 'ollama' ? 'Ollama (local)' : en === 'claude_sub' ? 'Claude (abonnement)' : 'Claude (passerelle)'}
@@ -230,7 +232,7 @@ export default function Workshop() {
         </div>
 
         {engineUnavailable && engines && (
-          <p className="text-xs text-warning">{engines[engine]?.reason}</p>
+          <p className="text-xs text-warning">{engines[engine]?.raison}</p>
         )}
         {error && <p className="text-xs text-error whitespace-pre-wrap">{error}</p>}
         {approveResult && <p className="text-xs text-success">{approveResult}</p>}

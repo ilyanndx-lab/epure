@@ -63,14 +63,17 @@ def _default_config() -> dict:
         "thème": "dark",
         "preset_défaut": None,
         "atelier": {
+            # Binaire `claude` (nom sur le PATH ou chemin complet).
+            "claude_path": "claude",
             # Passerelle Anthropic-compatible (LiteLLM / claude-code-router) pour
-            # le moteur claude_gateway. URL + modèle configurables.
-            "gateway_url": "http://localhost:4000",
-            "gateway_model": "claude-sonnet-4-5",
-            # Clé/jeton attendu par la passerelle (placeholder si vide).
-            "gateway_api_key": "",
-            # Chemin explicite vers le binaire `claude` si absent du PATH du backend.
-            "claude_path": "",
+            # le moteur claude_gateway.
+            "gateway": {
+                "base_url": "http://localhost:4000",
+                "model": "",
+                "api_key": "",
+            },
+            "moteur_defaut": "ollama",
+            "mode_defaut": "headless",
         },
     }
 
@@ -115,6 +118,17 @@ class InstanceConfig:
                 self._cache = self._merge_defaults(self._load())
 
     @staticmethod
+    def _deep_merge(base: dict, patch: dict) -> dict:
+        """Fusion récursive : les sous-dictionnaires sont fusionnés, pas remplacés."""
+        out = dict(base)
+        for k, v in patch.items():
+            if isinstance(v, dict) and isinstance(out.get(k), dict):
+                out[k] = InstanceConfig._deep_merge(out[k], v)
+            else:
+                out[k] = v
+        return out
+
+    @staticmethod
     def _merge_defaults(cfg: dict) -> dict:
         base = _default_config()
         merged = {**base, **cfg}
@@ -122,17 +136,21 @@ class InstanceConfig:
         merged["instance_id"] = cfg.get("instance_id") or base["instance_id"]
         merged["providers"] = {**base["providers"], **(cfg.get("providers") or {})}
         merged["fiches"] = {**base["fiches"], **(cfg.get("fiches") or {})}
-        merged["atelier"] = {**base["atelier"], **(cfg.get("atelier") or {})}
+        # atelier : fusion profonde (gateway imbriqué) + on ne garde que les clés
+        # connues (migration depuis l'ancien schéma plat).
+        atelier = InstanceConfig._deep_merge(base["atelier"], cfg.get("atelier") or {})
+        merged["atelier"] = {k: atelier.get(k, base["atelier"][k]) for k in base["atelier"]}
         return merged
 
     @staticmethod
     def _apply_partial(cfg: dict, partial: dict) -> None:
-        """Merge partiel en place. Champs imbriqués (providers, fiches) fusionnés."""
+        """Merge partiel en place. Sous-dictionnaires fusionnés en profondeur
+        (providers, fiches, atelier.gateway)."""
         for k, v in partial.items():
             if k == "instance_id":
                 continue  # immuable
             if isinstance(v, dict) and isinstance(cfg.get(k), dict):
-                merged = {**cfg[k], **v}
+                merged = InstanceConfig._deep_merge(cfg[k], v)
                 merged.pop("clés_présentes", None)  # dérivé : jamais persisté
                 cfg[k] = merged
             else:
