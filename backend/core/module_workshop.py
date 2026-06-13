@@ -43,6 +43,10 @@ from core import module_registry
 
 logger = logging.getLogger(__name__)
 
+# Évite l'ouverture de fenêtres console visibles (qui volent le focus) quand on
+# lance claude/.cmd en subprocess sous Windows. 0 sur les autres OS.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 # ── Racines confinées ────────────────────────────────────────────────────────
 MODULES_DIR = (Path(__file__).parent.parent / "modules").resolve()
 STAGING_DIR = MODULES_DIR / "_staging"
@@ -277,6 +281,7 @@ def _claude_version_ok(claude_bin: Optional[str]) -> bool:
         r = subprocess.run(
             [claude_bin, "--version"], capture_output=True, text=True,
             timeout=20, env=_claude_env("claude_sub"),
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
         )
         return r.returncode == 0
     except Exception:
@@ -519,7 +524,7 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
         proc = subprocess.Popen(
             cmd, cwd=str(sdir), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, text=True,
+            stdin=subprocess.DEVNULL, text=True, creationflags=_NO_WINDOW,
         )
     except FileNotFoundError:
         yield {"type": "error", "content": "CLI `claude` introuvable dans le PATH."}
