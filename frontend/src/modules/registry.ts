@@ -49,7 +49,7 @@ const CORE_DEFS: ModuleDef[] = [
   { id: 'docs',       label: 'Docs',        icon: 'FileSearch',    core: true, component: lazyComponent(() => import('./docs/Component')) },
   { id: 'admin',      label: 'Admin',       icon: 'FolderCog',     core: true, component: lazyComponent(() => import('./admin/Component')) },
   { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('./history/Component')) },
-  { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('../components/Settings')) },
+  { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('./settings/Component')) },
 ]
 
 // ── Modules ajoutés (composants générés) ─────────────────────────────────────

@@ -4,10 +4,10 @@ import {
   FolderTree, Gauge, GripVertical, KeyRound, Palette, Plus, RefreshCw,
   RotateCcw, Trash2, User, X,
 } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from './ui'
-import { useTheme } from '../theme'
-import { useInstanceConfig, updateInstance } from '../instance'
-import { useModules, resolveIcon } from '../modules'
+import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from '../../components/ui'
+import { useTheme } from '../../theme'
+import { useInstanceConfig, updateInstance } from '../../instance'
+import { useModules, resolveIcon } from '../../modules'
 
 const API = 'http://localhost:8000'
 
