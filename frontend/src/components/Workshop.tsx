@@ -12,7 +12,7 @@ const WS_URL = 'ws://localhost:8000/ws/workshop'
 type Engine = 'ollama' | 'claude_sub' | 'claude_gateway'
 type Mode = 'headless' | 'terminal'
 type Kind = 'new' | 'edit'
-type Phase = 'idle' | 'generating' | 'terminal' | 'review'
+type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review'
 
 interface EngineInfo { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 interface ModuleRow { id: string; nom: string; core_module?: boolean; status?: string }
@@ -88,6 +88,7 @@ export default function Workshop() {
 
     // 2) Stream la génération via WebSocket.
     setPhase('generating')
+    wsRef.current?.close()  // ferme une éventuelle session précédente
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
     ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode }))
@@ -104,12 +105,20 @@ export default function Workshop() {
         setLog(prev => prev + `\n✓ ${data.path}\n`)
       } else if (data.type === 'error') {
         setError(data.content ?? 'Erreur de génération')
+      } else if (data.type === 'validating') {
+        setPhase('validating')
       } else if (data.type === 'validated') {
         setReport(data.report)
         void refreshStaging(id).then(() => setPhase('review'))
-      } else if (data.type === 'done') {
-        ws.close()
+      } else if (data.type === 'typecheck') {
+        // tsc arrive APRÈS la revue : on ajoute ses warnings sans toucher à
+        // report.ok (qui gouverne l'approbation).
+        const warns: string[] = data.report?.warnings ?? []
+        if (warns.length) setReport(prev => (prev ? { ...prev, warnings: [...prev.warnings, ...warns] } : prev))
       }
+      // NB : pas de ws.close() sur "done" — on garde la socket ouverte pour
+      // recevoir le {type:"typecheck"} de fond. Elle est fermée à l'approbation,
+      // au rejet, à une nouvelle génération ou au démontage.
     }
     ws.onerror = () => setError('Erreur WebSocket atelier.')
   }, [currentId, kind, description, engine, mode, refreshStaging])
@@ -133,8 +142,10 @@ export default function Workshop() {
       }
       setApproveResult(
         `Module activé.${data.backup ? ` Sauvegarde : ${data.backup}.` : ''}` +
-        (data.restart_required ? ' Redémarrage du backend requis pour appliquer les changements de routes.' : ' Routes montées à chaud.')
+        (data.restart_required ? ' Redémarrage du backend requis pour appliquer les changements de routes.' : ' Routes montées à chaud.') +
+        ` Composant copié dans src/modules/generated/${staging.id}/ — en dev Vite le charge à chaud ; en build, reconstruisez le frontend.`
       )
+      wsRef.current?.close()
       setPhase('idle'); setStaging(null); setReport(null); setLog('')
       fetch(`${API}/workshop/modules`).then(r => r.json()).then((d: { modules: ModuleRow[] }) => setModules(d.modules)).catch(() => {})
     } catch { setError('Activation échouée (réseau).') }
@@ -143,6 +154,7 @@ export default function Workshop() {
   const reject = useCallback(async () => {
     if (!staging) return
     await fetch(`${API}/workshop/${staging.id}/reject`, { method: 'POST' }).catch(() => {})
+    wsRef.current?.close()
     setPhase('idle'); setStaging(null); setReport(null); setLog('')
   }, [staging])
 
@@ -226,8 +238,8 @@ export default function Workshop() {
           )}
           <Button variant="primary" icon={<Play size={14} />}
             onClick={startGeneration}
-            disabled={phase === 'generating' || engineUnavailable || !currentId || !description.trim()}>
-            {phase === 'generating' ? 'Génération…' : 'Générer'}
+            disabled={phase === 'generating' || phase === 'validating' || engineUnavailable || !currentId || !description.trim()}>
+            {phase === 'generating' ? 'Génération…' : phase === 'validating' ? 'Validation…' : 'Générer'}
           </Button>
         </div>
 
@@ -261,11 +273,11 @@ export default function Workshop() {
       )}
 
       {/* ── Stream de génération ── */}
-      {(phase === 'generating' || (log && phase !== 'review')) && (
+      {(phase === 'generating' || phase === 'validating' || (log && phase !== 'review')) && (
         <Card className="max-w-2xl">
           <p className="text-xs text-muted uppercase tracking-wide mb-2 flex items-center gap-2">
-            {phase === 'generating' && <Loader2 size={13} className="animate-spin text-accent2" />}
-            Génération
+            {(phase === 'generating' || phase === 'validating') && <Loader2 size={13} className="animate-spin text-accent2" />}
+            {phase === 'validating' ? 'Validation' : 'Génération'}
           </p>
           <pre className="text-xs font-mono text-secondary max-h-56 overflow-y-auto whitespace-pre-wrap">{log || '…'}</pre>
         </Card>
