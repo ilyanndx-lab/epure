@@ -5,9 +5,9 @@
   "icon": "MessageSquare",
   "description": "Conversation multi-modèles avec orchestration et recherche web",
   "frontend": { "component": "Chat" },
-  "backend": { "prefix": "/ws/chat" },
+  "backend": { "prefix": "" },
   "core_module": true,
   "origin": "builtin",
   "status": "active",
-  "removable": false
+  "removable": true
 }

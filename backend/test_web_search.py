@@ -17,8 +17,9 @@ from unittest import mock
 # S'assurer de pouvoir importer main depuis le dossier backend.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import main
-from main import perform_web_search
+# perform_web_search a migré dans le module chat (modules/chat/router.py).
+from modules.chat import router as chat_router
+perform_web_search = chat_router.perform_web_search
 
 
 class _FakeResponse:
@@ -79,14 +80,14 @@ def _urlopen_router(responses):
 class WebSearchOfflineTest(unittest.TestCase):
     def setUp(self):
         # Le cache est un état global au module : repartir propre à chaque test.
-        main._web_search_cache.clear()
+        chat_router._web_search_cache.clear()
 
     def test_empty_query_returns_empty(self):
         self.assertEqual(perform_web_search("   "), "")
 
     def test_instant_answer(self):
         fake = _urlopen_router({"api.duckduckgo.com": _INSTANT_JSON})
-        with mock.patch.object(main.urllib.request, "urlopen", side_effect=fake):
+        with mock.patch.object(chat_router.urllib.request, "urlopen", side_effect=fake):
             out = perform_web_search("python instant")
         self.assertIn("Instant Answer", out)
         self.assertIn("langage de programmation", out)
@@ -99,7 +100,7 @@ class WebSearchOfflineTest(unittest.TestCase):
                 "html.duckduckgo.com": _HTML_BODY,  # → déclenche le fallback
             }
         )
-        with mock.patch.object(main.urllib.request, "urlopen", side_effect=fake):
+        with mock.patch.object(chat_router.urllib.request, "urlopen", side_effect=fake):
             out = perform_web_search("python fallback")
         self.assertIn("DuckDuckGo HTML", out)
         self.assertIn("langage interprété", out)  # entité HTML déséchappée
@@ -107,7 +108,7 @@ class WebSearchOfflineTest(unittest.TestCase):
 
     def test_cache_avoids_second_fetch(self):
         fake = mock.Mock(side_effect=_urlopen_router({"api.duckduckgo.com": _INSTANT_JSON}))
-        with mock.patch.object(main.urllib.request, "urlopen", fake):
+        with mock.patch.object(chat_router.urllib.request, "urlopen", fake):
             first = perform_web_search("python cache")
             calls_after_first = fake.call_count
             second = perform_web_search("python cache")
@@ -116,9 +117,9 @@ class WebSearchOfflineTest(unittest.TestCase):
         self.assertEqual(fake.call_count, 1)  # 2e appel servi par le cache
 
     def test_network_error_returns_message(self):
-        err = main.urllib.error.URLError("offline")
+        err = chat_router.urllib.error.URLError("offline")
         fake = _urlopen_router({"api.duckduckgo.com": err, "html.duckduckgo.com": err})
-        with mock.patch.object(main.urllib.request, "urlopen", side_effect=fake):
+        with mock.patch.object(chat_router.urllib.request, "urlopen", side_effect=fake):
             out = perform_web_search("python erreur")
         self.assertTrue(out.startswith("Erreur de recherche web"), out)
 

@@ -42,7 +42,7 @@ function lazyComponent(loader: ModuleLoader): ComponentType<SharedModuleProps> {
 
 // ── Modules core (label/icône de repli ; le manifeste backend fait foi) ──────
 const CORE_DEFS: ModuleDef[] = [
-  { id: 'chat',       label: 'Chat',        icon: 'MessageSquare', core: true, component: lazyComponent(() => import('../components/Chat')) },
+  { id: 'chat',       label: 'Chat',        icon: 'MessageSquare', core: true, component: lazyComponent(() => import('./chat/Component')) },
   { id: 'kholle',     label: 'Kholle',      icon: 'GraduationCap', core: true, component: lazyComponent(() => import('./kholle/Component')) },
   { id: 'flashcards', label: 'Flashcards',  icon: 'Layers',        core: true, component: lazyComponent(() => import('./flashcards/Component')) },
   { id: 'code',       label: 'Code',        icon: 'Code2',         core: true, component: lazyComponent(() => import('./code/Component')) },
