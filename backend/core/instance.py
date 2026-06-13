@@ -67,6 +67,10 @@ def _default_config() -> dict:
             # le moteur claude_gateway. URL + modèle configurables.
             "gateway_url": "http://localhost:4000",
             "gateway_model": "claude-sonnet-4-5",
+            # Clé/jeton attendu par la passerelle (placeholder si vide).
+            "gateway_api_key": "",
+            # Chemin explicite vers le binaire `claude` si absent du PATH du backend.
+            "claude_path": "",
         },
     }
 
