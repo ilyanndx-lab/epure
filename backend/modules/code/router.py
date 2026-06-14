@@ -21,6 +21,7 @@ from core.codeagent import (
     read_file as _code_read,
     delete_path as _code_delete,
     create_folder as _code_mkdir,
+    rename_path as _code_rename,
     get_tree as _code_tree,
     SecurityError as _CodeSecurityError,
     install_package as _code_install,
@@ -47,6 +48,11 @@ class CodeFileRequest(BaseModel):
 
 class CodeFolderRequest(BaseModel):
     path: str
+
+
+class CodeRenameRequest(BaseModel):
+    old: str
+    new: str
 
 
 @router.get("/code/files")
@@ -100,6 +106,17 @@ async def code_folder_create(req: CodeFolderRequest):
     except _CodeSecurityError as e:
         raise HTTPException(status_code=403, detail=str(e))
     return {"ok": True, "result": result}
+
+
+@router.post("/code/rename")
+async def code_rename(req: CodeRenameRequest):
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, _code_rename, req.old, req.new)
+    except _CodeSecurityError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    ok = not result.startswith("Erreur")
+    return {"ok": ok, "result": result}
 
 
 class CodeInstallRequest(BaseModel):
@@ -176,6 +193,7 @@ async def ws_code(websocket: WebSocket):
                 content = msg.get("content", "")
                 file_context = msg.get("file_context", "")
                 pipeline = msg.get("pipeline") or None
+                history = msg.get("history") or None
 
                 # Pipeline présent → utiliser ses modèles ; sinon fallback legacy
                 if pipeline:
@@ -187,11 +205,12 @@ async def ws_code(websocket: WebSocket):
 
                 queue: asyncio.Queue = asyncio.Queue()
 
-                def _agent_worker(q, _content, _file_ctx, _model, _ref_model, _pipeline):
+                def _agent_worker(q, _content, _file_ctx, _model, _ref_model, _pipeline, _history):
                     try:
                         for event in code_agent.run_turn(
                             _content, _file_ctx, model=_model,
                             reflection_model=_ref_model, pipeline=_pipeline,
+                            history=_history,
                         ):
                             asyncio.run_coroutine_threadsafe(q.put(event), loop)
                     except Exception as exc:
@@ -204,7 +223,7 @@ async def ws_code(websocket: WebSocket):
 
                 Thread(
                     target=_agent_worker,
-                    args=(queue, content, file_context, model, reflection_model, pipeline),
+                    args=(queue, content, file_context, model, reflection_model, pipeline, history),
                     daemon=True,
                 ).start()
 

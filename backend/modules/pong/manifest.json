@@ -1,0 +1,17 @@
+{
+  "id": "pong",
+  "version": "1.0.0",
+  "nom": "Pong",
+  "icon": "Circle",
+  "description": "Module de jeu Pong",
+  "frontend": {
+    "component": "Component"
+  },
+  "backend": {
+    "prefix": "/pong"
+  },
+  "core_module": false,
+  "origin": "workshop",
+  "status": "active",
+  "removable": true
+}

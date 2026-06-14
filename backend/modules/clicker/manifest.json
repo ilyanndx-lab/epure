@@ -1,0 +1,17 @@
+{
+  "id": "clicker",
+  "version": "1.0.0",
+  "nom": "Clicker",
+  "icon": "MousePointer",
+  "description": "Module de clicker avec compteur",
+  "frontend": {
+    "component": "Component"
+  },
+  "backend": {
+    "prefix": ""
+  },
+  "core_module": false,
+  "origin": "workshop",
+  "status": "active",
+  "removable": true
+}

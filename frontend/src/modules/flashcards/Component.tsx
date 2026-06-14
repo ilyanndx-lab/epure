@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { usePersistentState } from '../../usePersistentState'
 import { ArrowLeft, Check, Layers, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Select } from '../../components/ui'
 
@@ -91,10 +92,10 @@ export default function Flashcards() {
 
   // ── Generate state ──────────────────────────────────────────────────────
   const [availableFiles, setAvailableFiles] = useState<string[]>([])
-  const [genSource, setGenSource] = useState('')
-  const [genNom, setGenNom] = useState('')
-  const [genN, setGenN] = useState(20)
-  const [genAuto, setGenAuto] = useState(false)
+  const [genSource, setGenSource] = usePersistentState<string>('epure.flashcards.genSource', '')
+  const [genNom, setGenNom] = usePersistentState<string>('epure.flashcards.genNom', '')
+  const [genN, setGenN] = usePersistentState<number>('epure.flashcards.genN', 20)
+  const [genAuto, setGenAuto] = usePersistentState<boolean>('epure.flashcards.genAuto', false)
   const [generating, setGenerating] = useState(false)
   const [genText, setGenText] = useState('')
   const genTextRef = useRef('')

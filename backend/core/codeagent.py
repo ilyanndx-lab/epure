@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Generator, Optional
@@ -13,10 +14,16 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path("C:/Users/Ilyan/epure/workspace").resolve()
 
-GUI_LIBS = frozenset(["pygame", "tkinter", "turtle", "wx", "PyQt", "pyglet", "kivy"])
+# Libs qui ouvrent une fenêtre : on les lance en process externe (sinon un
+# plt.show()/mainloop bloque jusqu'au timeout). matplotlib.pyplot compris.
+GUI_LIBS = frozenset(["pygame", "tkinter", "turtle", "wx", "PyQt", "pyglet", "kivy",
+                      "matplotlib", "pyplot"])
 
+# On exécute avec le MÊME interpréteur que celui qui lance le backend
+# (sys.executable), pas un "python" ambigu du PATH. Sinon un package installé
+# via `sys.executable -m pip` reste introuvable pour un autre python.py du PATH.
 _EXEC_CMDS: dict[str, list[str] | None] = {
-    ".py":   ["python", "-u"],
+    ".py":   [sys.executable, "-u"],
     ".js":   ["node"],
     ".ts":   ["npx", "ts-node"],
     ".sh":   ["bash"],
@@ -25,6 +32,93 @@ _EXEC_CMDS: dict[str, list[str] | None] = {
 }
 _MAX_READ = 50_000
 _EXEC_TIMEOUT = 30
+
+# ── Interpréteur Python : primaire + repli ───────────────────────────────────
+# Certains packages n'ont pas encore de wheel pour la version qui lance le
+# backend (ex. Python 3.14). On détecte un interpréteur de repli (ex. 3.11) et,
+# si une install échoue sur le primaire, on bascule l'install ET l'exécution
+# dessus pour que le code retrouve ses dépendances.
+
+_FALLBACK_VERSIONS = ("3.11", "3.12", "3.10", "3.13")
+_fallback_python_cache: Optional[str] = None  # résolu une fois
+_fallback_resolved = False
+# Interpréteur réellement utilisé pour exécuter le code (bascule vers le repli
+# quand une install n'a réussi que là).
+_exec_python_path: str = sys.executable
+
+
+def _py_launcher(version: str) -> Optional[str]:
+    """Résout le chemin réel d'un Python via le lanceur Windows `py -X.Y`."""
+    if not shutil.which("py"):
+        return None
+    try:
+        out = subprocess.run(
+            ["py", f"-{version}", "-c", "import sys; print(sys.executable)"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode == 0:
+            path = out.stdout.strip()
+            if path and Path(path).exists():
+                return path
+    except Exception:
+        return None
+    return None
+
+
+def _python_is_sane(python: str) -> bool:
+    """Vérifie que l'interpréteur démarre vraiment avec SA stdlib et a pip.
+    Lancé avec l'env propre (sans PYTHONPATH du primaire)."""
+    try:
+        out = subprocess.run(
+            [python, "-c", "import threading, ssl, ctypes, pip; print('ok')"],
+            capture_output=True, text=True, timeout=20, env=_make_exec_env(python),
+        )
+        return out.returncode == 0 and "ok" in out.stdout
+    except Exception:
+        return False
+
+
+def find_fallback_python() -> Optional[str]:
+    """Interpréteur de repli SAIN (différent du primaire), résolu une seule fois.
+    Priorité : variable EPURE_PYTHON_FALLBACK, puis lanceur `py -3.11/3.12/...`.
+    On écarte tout candidat qui ne démarre pas correctement (stdlib incohérente,
+    pas de pip…)."""
+    global _fallback_python_cache, _fallback_resolved
+    if _fallback_resolved:
+        return _fallback_python_cache
+
+    candidates: list[str] = []
+    env_path = os.environ.get("EPURE_PYTHON_FALLBACK", "").strip()
+    if env_path and Path(env_path).exists():
+        candidates.append(env_path)
+    for ver in _FALLBACK_VERSIONS:
+        exe = _py_launcher(ver)
+        if exe:
+            candidates.append(exe)
+
+    primary = Path(sys.executable).resolve()
+    chosen: Optional[str] = None
+    for cand in candidates:
+        try:
+            if Path(cand).resolve() == primary:
+                continue
+        except OSError:
+            continue
+        if _python_is_sane(cand):
+            chosen = cand
+            break
+        logger.warning("Python de repli ignoré (interpréteur cassé) : %s", cand)
+
+    _fallback_python_cache = chosen
+    _fallback_resolved = True
+    if chosen:
+        logger.info("Python de repli détecté : %s", chosen)
+    return chosen
+
+
+def _exec_python() -> str:
+    """Interpréteur courant pour exécuter du Python (primaire ou repli actif)."""
+    return _exec_python_path
 
 
 class SecurityError(Exception):
@@ -144,6 +238,20 @@ def create_folder(path: str) -> str:
     return f"Dossier créé : {path}"
 
 
+def rename_path(old: str, new: str) -> str:
+    """Renomme/déplace un fichier ou dossier dans le workspace (confiné)."""
+    src = _safe_path(old)
+    dst = _safe_path(new)
+    if not src.exists():
+        return f"Erreur : introuvable — {old}"
+    if dst.exists():
+        return f"Erreur : la cible existe déjà — {new}"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+    logger.info("rename_path: %s → %s", src, dst)
+    return f"Renommé : {old} → {new}"
+
+
 _SENSITIVE = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS")
 _EXPLICIT_DENY = {
     "GROQ_API_KEY", "GEMINI_API_KEY", "CEREBRAS_API_KEY",
@@ -151,11 +259,20 @@ _EXPLICIT_DENY = {
 }
 
 
-def _make_exec_env() -> dict:
-    """Minimal env with Python packages accessible, no sensitive vars."""
+def _make_exec_env(python: Optional[str] = None) -> dict:
+    """Env minimal pour lancer `python` (défaut : l'interpréteur primaire).
+
+    IMPORTANT : on n'injecte le PYTHONPATH du backend (= sys.path de Python 3.14)
+    QUE si la cible est ce même interpréteur. Pour un interpréteur différent
+    (repli 3.11), injecter ce PYTHONPATH lui ferait charger la stdlib de 3.14 →
+    crash (`_thread.start_joinable_thread`). On le laisse alors utiliser sa
+    propre stdlib. On ne pose jamais PYTHONHOME.
+    """
+    same_interp = python is None or (
+        Path(python).resolve() == Path(sys.executable).resolve()
+    )
     env = {
         "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
         "USERPROFILE": os.environ.get("USERPROFILE", ""),
         "APPDATA": os.environ.get("APPDATA", ""),
         "LOCALAPPDATA": os.environ.get("LOCALAPPDATA", ""),
@@ -164,6 +281,8 @@ def _make_exec_env() -> dict:
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
         "PYTHONIOENCODING": "utf-8",
     }
+    if same_interp:
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
     # Remove empty values and any accidentally included sensitive vars
     return {
         k: v for k, v in env.items()
@@ -177,7 +296,19 @@ def compile_latex(path: str) -> dict:
     if not target.exists():
         return {"stdout": "", "stderr": f"Fichier introuvable : {path}", "returncode": -1, "duration_ms": 0}
     if not shutil.which("pdflatex"):
-        return {"stdout": "", "stderr": "pdflatex non installé — installez TeX Live ou MiKTeX", "returncode": -1, "duration_ms": 0}
+        return {
+            "stdout": "",
+            "stderr": (
+                "pdflatex introuvable — aucune distribution TeX n'est installée.\n"
+                "Installez MiKTeX (puis rouvrez l'app pour rafraîchir le PATH) :\n"
+                "    winget install --id MiKTeX.MiKTeX -e\n"
+                "ou TeX Live :\n"
+                "    winget install --id TeXLive.TeXLive -e\n"
+                "À défaut de winget : https://miktex.org/download"
+            ),
+            "returncode": -1,
+            "duration_ms": 0,
+        }
     t0 = time.time()
     try:
         result = subprocess.run(
@@ -202,10 +333,65 @@ def compile_latex(path: str) -> dict:
         return {"stdout": "", "stderr": str(exc), "returncode": -1, "duration_ms": 0}
 
 
+_GUI_GRACE = 2.0  # délai pour distinguer un vrai lancement d'un crash immédiat
+
+
+def _launch_gui(target: Path) -> dict:
+    """Lance une appli GUI dans une fenêtre externe. Si elle plante dans les
+    premières secondes (module manquant, exception…), on capture la sortie et on
+    la remonte au lieu de laisser la fenêtre clignoter sans message."""
+    # Sortie redirigée vers un fichier temp : ne bloque pas un process GUI qui dure,
+    # et reste lisible si le process meurt tout de suite.
+    log = tempfile.NamedTemporaryFile(mode="w+", suffix=".log", delete=False, encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            [_exec_python(), str(target)], cwd=str(WORKSPACE), env=_make_exec_env(_exec_python()),
+            stdout=log, stderr=subprocess.STDOUT,
+        )
+    except Exception as exc:
+        log.close()
+        try:
+            os.unlink(log.name)
+        except OSError:
+            pass
+        return {"stdout": "", "stderr": str(exc), "returncode": -1, "duration_ms": 0}
+
+    try:
+        # S'il se termine pendant le délai de grâce → crash (ou script très court).
+        proc.wait(timeout=_GUI_GRACE)
+        log.flush()
+        log.seek(0)
+        output = log.read().strip()
+        log.close()
+        try:
+            os.unlink(log.name)
+        except OSError:
+            pass
+        if proc.returncode == 0:
+            # Terminé proprement très vite : on traite comme une exécution normale.
+            return {"stdout": output, "stderr": "", "returncode": 0, "duration_ms": 0}
+        logger.warning("_launch_gui: crash immédiat — %s (rc=%s)", target.name, proc.returncode)
+        return {
+            "stdout": "",
+            "stderr": output or f"Le programme s'est fermé immédiatement (code {proc.returncode}).",
+            "returncode": proc.returncode,
+            "duration_ms": 0,
+        }
+    except subprocess.TimeoutExpired:
+        # Toujours vivant après le délai → vraie fenêtre GUI, on la laisse tourner.
+        log.close()  # le process garde son propre handle vers le fichier
+        return {"external": True, "stdout": "", "stderr": "", "returncode": 0, "duration_ms": 0}
+
+
 def execute_code(path: str, args: str = "") -> dict:
     target = _safe_path(path)
     if target.suffix not in _EXEC_CMDS:
-        return {"stdout": "", "stderr": f"Extension non autorisée : {target.suffix}", "returncode": -1, "duration_ms": 0}
+        allowed = ", ".join(sorted(_EXEC_CMDS))
+        return {"stdout": "",
+                "stderr": (f"Extension non exécutable : « {target.suffix or '(aucune)'} ». "
+                           f"Extensions gérées : {allowed}. "
+                           f"Renommez le fichier (ex. en .py) pour l'exécuter."),
+                "returncode": -1, "duration_ms": 0}
     if not target.exists():
         return {"stdout": "", "stderr": f"Fichier introuvable : {path}", "returncode": -1, "duration_ms": 0}
 
@@ -223,21 +409,19 @@ def execute_code(path: str, args: str = "") -> dict:
         try:
             src = target.read_text(encoding="utf-8", errors="replace")
             if any(lib in src for lib in GUI_LIBS):
-                try:
-                    subprocess.Popen(["python", str(target)], cwd=str(WORKSPACE))
-                    return {"external": True, "stdout": "", "stderr": "", "returncode": 0, "duration_ms": 0}
-                except Exception as exc:
-                    return {"stdout": "", "stderr": str(exc), "returncode": -1, "duration_ms": 0}
+                return _launch_gui(target)
         except Exception:
             pass
 
-    cmd_base = _EXEC_CMDS[target.suffix]
-    cmd = cmd_base + [str(target)]  # type: ignore[operator]
+    if target.suffix == ".py":
+        cmd = [_exec_python(), "-u", str(target)]
+    else:
+        cmd = list(_EXEC_CMDS[target.suffix]) + [str(target)]  # type: ignore[operator]
 
     if args.strip():
         cmd += args.strip().split()
 
-    env = _make_exec_env()
+    env = _make_exec_env(_exec_python()) if target.suffix == ".py" else _make_exec_env()
 
     t0 = time.time()
     try:
@@ -273,6 +457,30 @@ def _pkg_base_name(package: str) -> str:
     return re.split(r'[>=<!~\[]', package)[0].strip().lower()
 
 
+_INSTALL_TIMEOUT = 300  # gros builds (3.14 compile parfois depuis les sources)
+
+
+def _run_pip_install(cmd: list[str], env: dict) -> Generator:
+    """Lance une commande pip et streame sa sortie. Yield des dicts line, puis un
+    rc final via la clé '__rc__'."""
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, cwd=str(WORKSPACE), env=env,
+    )
+    try:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            stripped = line.rstrip()
+            if stripped:
+                yield {"type": "line", "line": stripped}
+        proc.wait(timeout=_INSTALL_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        yield {"type": "error", "line": f"Timeout ({_INSTALL_TIMEOUT}s dépassé)"}
+        yield {"__rc__": -1}
+        return
+    yield {"__rc__": proc.returncode}
+
+
 def install_package(package: str) -> Generator:
     """Stream pip install output line by line. Yields dicts: line | done | error."""
     package = package.strip()
@@ -281,41 +489,100 @@ def install_package(package: str) -> Generator:
         return
 
     base = _pkg_base_name(package)
+
+    # Module déjà fourni par la stdlib → inutile (et impossible) à installer via pip.
+    stdlib = getattr(sys, "stdlib_module_names", frozenset())
+    if base.replace("-", "_") in stdlib:
+        yield {"type": "line",
+               "line": f"« {base} » fait partie de la bibliothèque standard Python — "
+                       f"pas besoin de l'installer, importez-le directement."}
+        yield {"type": "done", "returncode": 0, "package": package}
+        return
+
     binary_only = base in _BINARY_ONLY_PKGS
 
-    logger.info("install_package: pip install %s (binary_only=%s)", package, binary_only)
-    cmd = [sys.executable, "-m", "pip", "install", package,
-           "--quiet", "--progress-bar", "off"]
-    if binary_only:
-        cmd += ["--only-binary", ":all:"]
+    def _py_version(python: str) -> str:
+        if python == sys.executable:
+            return ".".join(str(v) for v in sys.version_info[:3])
+        try:
+            out = subprocess.run([python, "-c", "import sys;print('.'.join(map(str,sys.version_info[:3])))"],
+                                 capture_output=True, text=True, timeout=10)
+            return out.stdout.strip() or "?"
+        except Exception:
+            return "?"
 
-    env = _make_exec_env()
-    # pip needs APPDATA/LOCALAPPDATA on Windows for its cache
-    for k in ("APPDATA", "LOCALAPPDATA", "USERPROFILE"):
-        if os.environ.get(k):
-            env[k] = os.environ[k]
+    def _attempt(python: str) -> Generator:
+        """Tente l'install sur un interpréteur donné : prefer-binary puis, en cas
+        d'échec, only-binary. Yield les lignes, puis {'__rc__': code}.
+        L'env est construit pour CET interpréteur (pas de PYTHONPATH croisé)."""
+        env = _make_exec_env(python)  # pip a APPDATA/LOCALAPPDATA via _make_exec_env
+        base_cmd = [python, "-m", "pip", "install", package,
+                    "--progress-bar", "off", "--no-input", "--prefer-binary"]
+        cmd = base_cmd + (["--only-binary", ":all:"] if binary_only else [])
+        logger.info("install_package: %s", " ".join(cmd))
+        rc = -1
+        for ev in _run_pip_install(cmd, env):
+            if "__rc__" in ev:
+                rc = ev["__rc__"]
+            else:
+                yield ev
+        if rc != 0 and not binary_only:
+            yield {"type": "line",
+                   "line": "↻ échec — nouvelle tentative en wheel précompilé (--only-binary :all:)…"}
+            for ev in _run_pip_install(base_cmd + ["--only-binary", ":all:"], env):
+                if "__rc__" in ev:
+                    rc = ev["__rc__"]
+                else:
+                    yield ev
+        yield {"__rc__": rc}
 
+    global _exec_python_path
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, cwd=str(WORKSPACE), env=env,
-        )
-        for line in proc.stdout:  # type: ignore[union-attr]
-            stripped = line.rstrip()
-            if stripped:
-                yield {"type": "line", "line": stripped}
-        proc.wait(timeout=120)
-        if proc.returncode == 0:
-            yield {"type": "done", "returncode": 0, "package": package}
-        else:
-            yield {"type": "done", "returncode": proc.returncode, "package": package}
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        logger.warning("install_package: timeout — %s", package)
-        yield {"type": "error", "line": "Timeout (120s dépassé)"}
+        # 1) Interpréteur primaire (celui qui exécute le code en ce moment).
+        primary = _exec_python()
+        prim_ver = _py_version(primary)
+        yield {"type": "line", "line": f"$ pip install {package}  (Python {prim_ver})"}
+        rc = -1
+        for ev in _attempt(primary):
+            if "__rc__" in ev:
+                rc = ev["__rc__"]
+            else:
+                yield ev
+
+        # 2) Repli : échec sur le primaire → on retente sur un autre Python (ex. 3.11)
+        #    et, si ça marche, on bascule l'exécution dessus.
+        if rc != 0:
+            fallback = find_fallback_python()
+            if fallback and fallback != primary:
+                fb_ver = _py_version(fallback)
+                yield {"type": "line",
+                       "line": f"↻ échec sur Python {prim_ver} — bascule sur Python {fb_ver} ({fallback})…"}
+                rc_fb = -1
+                for ev in _attempt(fallback):
+                    if "__rc__" in ev:
+                        rc_fb = ev["__rc__"]
+                    else:
+                        yield ev
+                if rc_fb == 0:
+                    _exec_python_path = fallback
+                    rc = 0
+                    yield {"type": "line",
+                           "line": f"✓ installé sur Python {fb_ver}. L'exécution utilisera "
+                                   f"désormais cette version pour retrouver ce package."}
+                else:
+                    rc = rc_fb
+
+        if rc != 0:
+            fb = find_fallback_python()
+            hint = (f"Aucun wheel compatible Python {prim_ver} pour « {base} »"
+                    + ("" if fb else " — et aucun interpréteur de repli détecté (installez Python 3.11 "
+                                     "ou définissez EPURE_PYTHON_FALLBACK)."))
+            yield {"type": "line", "line": f"✗ pip a renvoyé le code {rc}. {hint}"}
+        yield {"type": "done", "returncode": rc, "package": package}
     except Exception as exc:
         logger.exception("install_package: %s", package)
         yield {"type": "error", "line": str(exc)}
+        yield {"type": "done", "returncode": -1, "package": package}
 
 
 # ── Tool parser ─────────────────────────────────────────────────────────────
@@ -522,6 +789,7 @@ class CodeAgent:
         model: Optional[str] = None,
         reflection_model: Optional[str] = None,
         pipeline: Optional[dict] = None,
+        history: Optional[list] = None,
     ) -> Generator:
         WORKSPACE.mkdir(parents=True, exist_ok=True)
         system = _SYSTEM.format(
@@ -573,6 +841,14 @@ class CodeAgent:
 
         # ── Génération code ──────────────────────────────────────────────────
         messages: list[dict] = [{"role": "system", "content": system}]
+        # Contexte des tours précédents : l'IA voit ce qui a déjà été demandé et
+        # répondu (utile surtout pour corriger un code généré juste avant).
+        if history:
+            for h in history:
+                role = h.get("role")
+                text = (h.get("content") or "").strip()
+                if role in ("user", "assistant") and text:
+                    messages.append({"role": role, "content": text[:4000]})
         if reflection_ctx:
             messages.append({
                 "role": "system",
@@ -593,6 +869,8 @@ class CodeAgent:
 
         # ── Exécution des tools ──────────────────────────────────────────────
         created_files: list[str] = []
+        edited_files: list[str] = []
+        deleted_files: list[str] = []
         calls = parse_tool_calls(full)
 
         # Fallback : code block présent mais aucun tool appelé
@@ -628,8 +906,13 @@ class CodeAgent:
                     "result": result.get("result", ""),
                     "status": result.get("status", "error"),
                 }
-                if tool_name == "create_file" and result.get("status") == "success":
-                    created_files.append(path)
+                if result.get("status") == "success":
+                    if tool_name == "create_file":
+                        created_files.append(path)
+                    elif tool_name in ("edit_file", "write_file", "patch_file"):
+                        edited_files.append(path)
+                    elif tool_name == "delete_file":
+                        deleted_files.append(path)
 
         # ── Vérification (toujours active, modèle configurable) ──────────────
         for fpath in created_files:
@@ -645,5 +928,36 @@ class CodeAgent:
             result_lower = ver_result.lower()
             if tests_enabled and not any(w in result_lower for w in _CRITICAL_WORDS):
                 yield {"type": "tests_prompt", "path": fpath}
+
+        # ── Conclusion : une phrase résumant les changements ─────────────────
+        if created_files or edited_files or deleted_files:
+            changes = []
+            if created_files:
+                changes.append("créé " + ", ".join(dict.fromkeys(created_files)))
+            if edited_files:
+                changes.append("modifié " + ", ".join(dict.fromkeys(edited_files)))
+            if deleted_files:
+                changes.append("supprimé " + ", ".join(dict.fromkeys(deleted_files)))
+            facts = " ; ".join(changes)
+            sentence = ""
+            try:
+                concl_msgs = [
+                    {"role": "system", "content":
+                        "Résume en UNE phrase courte (français, à la première personne) "
+                        "ce qui vient d'être fait, à partir des faits fournis. "
+                        "Pas de liste, pas de markdown, pas de code."},
+                    {"role": "user", "content":
+                        f"Demande : {message}\nFichiers touchés : {facts}\n"
+                        f"Réponse produite (extrait) : {full[:1200]}"},
+                ]
+                for item in self._llm.stream(concl_msgs, model=eff_code_model, max_tokens=120):
+                    if isinstance(item, str):
+                        sentence += item
+            except Exception:
+                logger.exception("Conclusion run_turn")
+            sentence = sentence.strip() or f"C'est fait : j'ai {facts}."
+            yield {"type": "conclusion", "content": sentence,
+                   "created": created_files, "edited": edited_files, "deleted": deleted_files}
+            yield {"type": "tokens", "step": "generation", "count": _approx_tokens(sentence) + 40}
 
         yield {"type": "done"}

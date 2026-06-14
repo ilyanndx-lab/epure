@@ -2,12 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
 import {
   Brain, Check, ChevronDown, ChevronRight, Code2, CornerDownLeft, FilePlus,
-  FlaskConical, FolderPlus, Loader2, Monitor, Package, Play, RefreshCw,
+  FlaskConical, FolderPlus, Loader2, Maximize2, Monitor, Package, Pencil, Play, RefreshCw,
   Save, Terminal as TerminalIcon, Wrench, X, Zap,
 } from 'lucide-react'
 import { Badge, Button, Input, Select, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
+import { usePersistentState } from '../../usePersistentState'
 
 const API = 'http://localhost:8000'
 
@@ -38,6 +39,8 @@ type ChatEventType =
   | { type: 'execute_result'; stdout: string; stderr: string; returncode: number; duration_ms: number }
   | { type: 'execute_external'; path: string }
   | { type: 'html_preview'; content: string }
+  | { type: 'conclusion'; content: string }
+  | { type: 'error'; content: string }
 
 interface TurnStats {
   reflection: number
@@ -73,13 +76,14 @@ function extLang(path: string): string {
 // ── File Tree ──────────────────────────────────────────────────────────────
 
 function TreeNodeItem({
-  node, depth, activeFile, onSelect, onDelete,
+  node, depth, activeFile, onSelect, onDelete, onRename,
 }: {
   node: TreeNode
   depth: number
   activeFile: string | null
   onSelect: (path: string) => void
   onDelete: (path: string, e: React.MouseEvent) => void
+  onRename: (node: TreeNode, e: React.MouseEvent) => void
 }) {
   const [open, setOpen] = useState(depth === 0)
   const isActive = node.type === 'file' && activeFile === node.path
@@ -93,7 +97,21 @@ function TreeNodeItem({
           onClick={() => setOpen(o => !o)}
         >
           {open ? <ChevronDown size={11} className="shrink-0" /> : <ChevronRight size={11} className="shrink-0" />}
-          <span>{node.name}/</span>
+          <span className="truncate flex-1">{node.name}/</span>
+          <button
+            onClick={e => onRename(node, e)}
+            title="Renommer"
+            className="opacity-0 group-hover:opacity-100 text-muted hover:text-accent shrink-0 ml-1 transition-colors duration-150"
+          >
+            <Pencil size={10} />
+          </button>
+          <button
+            onClick={e => onDelete(node.path, e)}
+            title="Supprimer"
+            className="opacity-0 group-hover:opacity-100 text-muted hover:text-error shrink-0 ml-0.5 transition-colors duration-150"
+          >
+            <X size={11} />
+          </button>
         </div>
         {open && node.children?.map(child => (
           <TreeNodeItem
@@ -103,6 +121,7 @@ function TreeNodeItem({
             activeFile={activeFile}
             onSelect={onSelect}
             onDelete={onDelete}
+            onRename={onRename}
           />
         ))}
       </div>
@@ -118,15 +137,101 @@ function TreeNodeItem({
       onClick={() => onSelect(node.path)}
     >
       {isActive && <span className="absolute left-0 top-1 bottom-1 w-0.5 rounded-full bg-accent" />}
-      <span className="truncate">{node.name}</span>
+      <span className="truncate flex-1">{node.name}</span>
+      <button
+        onClick={e => onRename(node, e)}
+        title="Renommer"
+        className="opacity-0 group-hover:opacity-100 text-muted hover:text-accent shrink-0 ml-1 transition-colors duration-150"
+      >
+        <Pencil size={10} />
+      </button>
       <button
         onClick={e => onDelete(node.path, e)}
         title="Supprimer"
-        className="opacity-0 group-hover:opacity-100 text-muted hover:text-error shrink-0 ml-1 transition-colors duration-150"
+        className="opacity-0 group-hover:opacity-100 text-muted hover:text-error shrink-0 ml-0.5 transition-colors duration-150"
       >
         <X size={11} />
       </button>
     </div>
+  )
+}
+
+// ── Vue plein écran (web ou terminal) ───────────────────────────────────────
+
+type Expanded =
+  | { kind: 'html'; content: string }
+  | { kind: 'terminal'; stdout: string; stderr: string; returncode: number; duration_ms: number }
+
+function FullscreenView({ data, onClose }: { data: Expanded; onClose: () => void }) {
+  // Échap pour fermer
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const isHtml = data.kind === 'html'
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/70 backdrop-blur-sm p-4 sm:p-8">
+      <div className="flex flex-col flex-1 min-h-0 rounded-lg overflow-hidden border border-line shadow-2xl bg-surface">
+        {/* Barre de titre façon fenêtre / onglet de navigateur */}
+        <div className="flex items-center gap-2 px-3 py-2 bg-[#16140f] border-b border-[#2a2620] shrink-0">
+          <span className="flex gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-[#ff5f56]" />
+            <span className="w-3 h-3 rounded-full bg-[#ffbd2e]" />
+            <span className="w-3 h-3 rounded-full bg-[#27c93f]" />
+          </span>
+          <span className="text-xs font-mono text-[#8a8478] flex items-center gap-1.5 ml-2">
+            {isHtml
+              ? <><Code2 size={12} /> aperçu web</>
+              : <><TerminalIcon size={12} /> terminal · {data.duration_ms >= 1000 ? `${(data.duration_ms / 1000).toFixed(1)}s` : `${data.duration_ms}ms`}</>}
+          </span>
+          {!isHtml && (
+            <span className={`text-xs font-mono ${data.returncode === 0 ? 'text-success' : 'text-error'}`}>
+              exit {data.returncode}
+            </span>
+          )}
+          <button
+            onClick={onClose}
+            title="Fermer (Échap)"
+            className="ml-auto text-[#8a8478] hover:text-[#d4cfc4] transition-colors duration-150 p-1 rounded-sm hover:bg-white/5"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Contenu */}
+        {isHtml ? (
+          <iframe
+            sandbox="allow-scripts allow-forms allow-modals allow-popups"
+            srcDoc={data.content}
+            className="flex-1 w-full bg-white"
+            title="Aperçu web plein écran"
+          />
+        ) : (
+          <div className="flex-1 overflow-auto bg-[#100e0a] px-5 py-4 font-mono text-sm leading-relaxed">
+            {data.stdout && <pre className="text-[#d4cfc4] whitespace-pre-wrap break-words">{data.stdout}</pre>}
+            {data.stderr && <pre className="text-error whitespace-pre-wrap break-words">{data.stderr}</pre>}
+            {!data.stdout && !data.stderr && (
+              <span className="text-[#8a8478]">(pas de sortie)</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ExpandButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Ouvrir en grand"
+      className="text-[#8a8478] hover:text-[#d4cfc4] transition-colors duration-150 p-0.5 rounded-sm hover:bg-white/5"
+    >
+      <Maximize2 size={12} />
+    </button>
   )
 }
 
@@ -135,9 +240,11 @@ function TreeNodeItem({
 function Terminal({
   event,
   onInstall,
+  onExpand,
 }: {
   event: Extract<ChatEventType, { type: 'execute_result' }>
   onInstall: (pkg: string) => void
+  onExpand: (data: Expanded) => void
 }) {
   console.log('[execute_result]', event)
   const ms = event.duration_ms
@@ -157,8 +264,17 @@ function Terminal({
           <TerminalIcon size={11} />
           output · {dur}
         </span>
-        <span className={`text-xs font-mono ${event.returncode === 0 ? 'text-success' : 'text-error'}`}>
-          exit {event.returncode}
+        <span className="flex items-center gap-2">
+          <span className={`text-xs font-mono ${event.returncode === 0 ? 'text-success' : 'text-error'}`}>
+            exit {event.returncode}
+          </span>
+          <ExpandButton onClick={() => onExpand({
+            kind: 'terminal',
+            stdout: event.stdout,
+            stderr: event.stderr,
+            returncode: event.returncode,
+            duration_ms: event.duration_ms,
+          })} />
         </span>
       </div>
       <div className="bg-[#100e0a] px-3 py-2 font-mono text-xs leading-relaxed">
@@ -221,12 +337,14 @@ function ChatEventView({
   onExecuteCancel,
   onInstall,
   onGenerateTests,
+  onExpand,
 }: {
   event: ChatEventType
   onExecuteConfirm: (path: string, args: string) => void
   onExecuteCancel: () => void
   onInstall: (pkg: string) => void
   onGenerateTests: (path: string) => void
+  onExpand: (data: Expanded) => void
 }) {
   if (event.type === 'text') {
     return <RichMessage content={event.content} streaming={event.streaming} />
@@ -331,7 +449,7 @@ function ChatEventView({
     )
   }
   if (event.type === 'execute_result') {
-    return <Terminal event={event} onInstall={onInstall} />
+    return <Terminal event={event} onInstall={onInstall} onExpand={onExpand} />
   }
   if (event.type === 'execute_external') {
     return (
@@ -343,17 +461,40 @@ function ChatEventView({
       </div>
     )
   }
+  if (event.type === 'error') {
+    return (
+      <div className="mt-2 flex items-start gap-2 rounded-md border border-error/40 bg-error/5 px-3 py-2">
+        <X size={13} className="text-error shrink-0 mt-0.5" />
+        <span className="text-xs text-error leading-relaxed whitespace-pre-wrap break-words">{event.content}</span>
+      </div>
+    )
+  }
+  if (event.type === 'conclusion') {
+    return (
+      <div className="mt-2 flex items-start gap-2 rounded-md border border-success/30 bg-success/5 px-3 py-2">
+        <Check size={13} className="text-success shrink-0 mt-0.5" />
+        <span className="text-xs text-secondary leading-relaxed">{event.content}</span>
+      </div>
+    )
+  }
   if (event.type === 'html_preview') {
     return (
       <div className="mt-2 border border-line rounded-md overflow-hidden">
-        <div className="px-3 py-1 bg-elevated border-b border-line text-xs font-mono text-muted">
-          html preview
+        <div className="px-3 py-1 bg-elevated border-b border-line text-xs font-mono text-muted flex items-center justify-between">
+          <span>aperçu web</span>
+          <button
+            onClick={() => onExpand({ kind: 'html', content: event.content })}
+            title="Ouvrir en grand"
+            className="text-muted hover:text-secondary transition-colors duration-150 flex items-center gap-1"
+          >
+            <Maximize2 size={11} /> plein écran
+          </button>
         </div>
         {/* fond blanc fixe : le HTML arbitraire suppose une page claire */}
         <iframe
           sandbox="allow-scripts"
           srcDoc={event.content}
-          className="w-full h-48 bg-on-accent"
+          className="w-full h-48 bg-on-accent cursor-pointer"
           title="HTML preview"
         />
       </div>
@@ -459,9 +600,11 @@ const EMPTY_PIPELINE: PipelineConfig = {
 
 export default function Code() {
   const [tree, setTree] = useState<TreeNode[]>([])
-  const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
-  const [activeFile, setActiveFile] = useState<string | null>(null)
-  const [chatTurns, setChatTurns] = useState<ChatTurn[]>([])
+  // Persistés : la progression (fichiers ouverts, fichier actif, conversation)
+  // survit à un rechargement (notamment le reload Vite après approbation atelier).
+  const [openFiles, setOpenFiles] = usePersistentState<OpenFile[]>('epure.code.openFiles', [])
+  const [activeFile, setActiveFile] = usePersistentState<string | null>('epure.code.activeFile', null)
+  const [chatTurns, setChatTurns] = usePersistentState<ChatTurn[]>('epure.code.chatTurns', [])
   const [chatInput, setChatInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [stepConfig, setStepConfig] = useState<PipelineConfig>(EMPTY_PIPELINE)
@@ -475,6 +618,7 @@ export default function Code() {
   const [pkgLines, setPkgLines] = useState<{ text: string; ok: boolean }[]>([])
 
   const [usage, setUsage] = useState<UsageStats | null>(null)
+  const [expanded, setExpanded] = useState<Expanded | null>(null)
 
   const [editorHeight, setEditorHeight] = useState<number | null>(null)
   const editorWrapperRef = useRef<HTMLDivElement>(null)
@@ -720,11 +864,22 @@ export default function Code() {
           events: [...turn.events, { type: 'html_preview', content: msg.content }],
         }))
 
+      } else if (msg.type === 'conclusion') {
+        patchLast(turn => ({
+          ...turn,
+          events: [...closeStreaming(turn.events), { type: 'conclusion', content: msg.content }],
+        }))
+
       } else if (msg.type === 'done') {
         patchLast(turn => ({ ...turn, events: closeStreaming(turn.events) }))
         setStreaming(false)
 
       } else if (msg.type === 'error') {
+        patchLast(turn => ({
+          ...turn,
+          events: [...closeStreaming(turn.events),
+                   { type: 'error', content: msg.content || 'Erreur inconnue' }],
+        }))
         setStreaming(false)
       }
     }
@@ -799,6 +954,38 @@ export default function Code() {
     if (activeFile === path) setActiveFile(null)
     fetchTree()
   }, [activeFile, fetchTree])
+
+  const handleRename = useCallback(async (node: TreeNode, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const parent = node.path.includes('/') ? node.path.slice(0, node.path.lastIndexOf('/') + 1) : ''
+    const proposed = window.prompt(`Renommer « ${node.name} » en :`, node.name)
+    if (!proposed) return
+    const newName = proposed.trim()
+    if (!newName || newName === node.name) return
+    // Si l'utilisateur ne met pas de slash, on garde le même dossier parent.
+    const newPath = newName.includes('/') ? newName : parent + newName
+    try {
+      const res = await fetch(`${API}/code/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old: node.path, new: newPath }),
+      })
+      const data = await res.json()
+      if (!data.ok) { window.alert(data.result ?? 'Renommage impossible'); return }
+      // Met à jour les onglets/fichier actif ouverts sous l'ancien chemin.
+      setOpenFiles(prev => prev.map(f =>
+        f.path === node.path ? { ...f, path: newPath }
+        : f.path.startsWith(node.path + '/') ? { ...f, path: newPath + f.path.slice(node.path.length) }
+        : f
+      ))
+      setActiveFile(cur =>
+        cur === node.path ? newPath
+        : cur && cur.startsWith(node.path + '/') ? newPath + cur.slice(node.path.length)
+        : cur
+      )
+      fetchTree()
+    } catch { window.alert('Renommage échoué (réseau).') }
+  }, [fetchTree])
 
   const handleCreateItem = useCallback(async () => {
     if (!newItemName.trim()) return
@@ -883,6 +1070,22 @@ export default function Code() {
       ? `${activeFile}\n\`\`\`\n${activeContent.slice(0, 3000)}\n\`\`\``
       : ''
 
+    // Historique des tours précédents → l'IA garde le contexte (utile pour
+    // corriger un code généré juste avant). On garde les 6 derniers tours.
+    const history: { role: string; content: string }[] = []
+    for (const turn of chatTurns.slice(-6)) {
+      if (turn.role === 'user') {
+        const txt = (turn.events[0] as { content?: string })?.content ?? ''
+        if (txt) history.push({ role: 'user', content: txt })
+      } else {
+        const txt = turn.events
+          .filter(e => e.type === 'text' || e.type === 'conclusion')
+          .map(e => (e as { content: string }).content)
+          .join('\n').trim()
+        if (txt) history.push({ role: 'assistant', content: txt })
+      }
+    }
+
     const emptyStats: TurnStats = { reflection: 0, generation: 0, verification: 0, tests: 0 }
     setChatTurns(prev => [
       ...prev,
@@ -895,8 +1098,9 @@ export default function Code() {
       content,
       file_context: fileCtx,
       pipeline: stepConfig,
+      history,
     }))
-  }, [chatInput, streaming, activeFile, openFiles, stepConfig])
+  }, [chatInput, streaming, activeFile, openFiles, stepConfig, chatTurns])
 
   const generateTests = useCallback((path: string) => {
     const ws = wsRef.current
@@ -1027,6 +1231,7 @@ export default function Code() {
                 activeFile={activeFile}
                 onSelect={openFile}
                 onDelete={handleDeleteFile}
+                onRename={handleRename}
               />
             ))
           )}
@@ -1121,7 +1326,7 @@ export default function Code() {
                 </div>
                 {pkgLines.length > 0 && (
                   // sortie pip : volontairement sombre comme le terminal
-                  <div className="bg-[#100e0a] rounded-sm border border-line px-2 py-1.5 max-h-24 overflow-y-auto">
+                  <div className="bg-[#100e0a] rounded-sm border border-line px-2 py-1.5 max-h-60 overflow-y-auto">
                     {pkgLines.map((l, i) => (
                       <div key={i} className={`text-xs font-mono leading-relaxed ${l.ok ? 'text-[#d4cfc4]' : 'text-error'}`}>
                         {l.text}
@@ -1236,6 +1441,7 @@ export default function Code() {
                       }}
                       onInstall={installPackage}
                       onGenerateTests={generateTests}
+                      onExpand={setExpanded}
                     />
                   ))}
                   {turn.stats && (turn.stats.reflection + turn.stats.generation + turn.stats.verification + turn.stats.tests) > 0 && (
@@ -1275,6 +1481,8 @@ export default function Code() {
       </div>
 
       </div>  {/* end 3-column flex */}
+
+      {expanded && <FullscreenView data={expanded} onClose={() => setExpanded(null)} />}
 
       <ModuleBar module="code" showModel />
     </div>

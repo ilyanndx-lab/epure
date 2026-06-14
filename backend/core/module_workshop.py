@@ -38,7 +38,9 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from core.codeagent import SecurityError, _make_exec_env
 from core.instance import instance_config
-from core.module_validate import validate_component_tsx, validate_router_py
+from core.module_validate import (
+    validate_component_tsx, validate_router_py, ui_component_exports,
+)
 from core import module_registry
 
 logger = logging.getLogger(__name__)
@@ -158,6 +160,19 @@ def _active_files(module_id: str) -> dict:
     comp = _frontend_component_path(module_id, must_exist=True)
     if comp and comp.is_file():
         out["Component.tsx"] = comp.read_text(encoding="utf-8", errors="replace")
+    return out
+
+
+def _staging_files(module_id: str) -> dict:
+    """Contenu des 3 fichiers en staging (dict vide si le staging n'existe pas)."""
+    sdir = STAGING_DIR / module_id
+    if not sdir.is_dir():
+        return {}
+    out = {}
+    for name in _FILES:
+        f = sdir / name
+        if f.is_file():
+            out[name] = f.read_text(encoding="utf-8", errors="replace")
     return out
 
 
@@ -359,7 +374,8 @@ _FILE_BLOCK_RE = re.compile(
 )
 
 
-def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict) -> list[dict]:
+def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict,
+                   feedback: Optional[str] = None) -> list[dict]:
     ex = _few_shot()
     fewshot = (
         "Exemple de module valide (hello) :\n"
@@ -381,29 +397,68 @@ def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict) -> list[
         f"{module_id}/...).\n"
         "- Component.tsx : composant React par défaut. Imports : "
         "`../../../components/ui` pour l'UI, `../../registry` pour SharedModuleProps. "
+        f"Depuis components/ui, tu ne peux importer QUE ces composants (aucun autre "
+        f"n'existe — pas de Label, CardHeader, etc.) : {', '.join(ui_component_exports()) or 'Button, Card, Badge, Input, Textarea, Toggle, Select, Tooltip, Tabs, ProgressBar, Modal, ThemeToggle'}. "
+        "Pour tout le reste (label, titre…), utilise des balises HTML standard. "
         "INTERDIT : dangerouslySetInnerHTML, eval. Appelle le backend via "
         "fetch('http://localhost:8000/...').\n"
+        "- PERSISTANCE : pour tout état qui doit survivre à un rechargement de page "
+        "(texte saisi, contenu généré, sélections, onglet courant), utilise "
+        "`usePersistentState` au lieu de `useState` — même signature, premier "
+        "argument = clé unique préfixée par l'id du module. "
+        f"Import : `import {{ usePersistentState }} from '../../../usePersistentState'`. "
+        f"Ex : `const [texte, setTexte] = usePersistentState('{module_id}.texte', '')`. "
+        "Garde `useState` pour l'éphémère (chargement, flags, données re-fetchées au montage).\n"
     )
-    if kind == "edit":
-        rules += (
+    # Fichiers existants à montrer : édition classique OU correction (la tentative
+    # précédente est en staging). Indispensable pour une correction CIBLÉE — sinon
+    # l'IA régénère à l'aveugle et refait la même erreur.
+    have_current = any((current or {}).get(n, "").strip() for n in _FILES)
+    if have_current:
+        intro = (
+            "\nVoici les fichiers de la TENTATIVE PRÉCÉDENTE (celle qui vient d'être "
+            "rejetée). Pars de CE code et corrige uniquement ce qu'il faut :"
+            if feedback else
             "\nC'est une MODIFICATION. Voici les fichiers actuels — modifie-les "
-            "selon la demande en gardant ce qui marche :\n"
+            "selon la demande en gardant ce qui marche :"
+        )
+        rules += (
+            f"{intro}\n"
             f"===FILE:manifest.json===\n{current.get('manifest.json','')}\n"
             f"===FILE:router.py===\n{current.get('router.py','')}\n"
             f"===FILE:Component.tsx===\n{current.get('Component.tsx','')}\n===END===\n"
         )
+    user = f"Demande pour le module « {module_id} » :\n{spec}"
+    if feedback:
+        # On renvoie l'erreur EXACTE du validateur en tête du message (pas noyée),
+        # avec une consigne impérative de corriger précisément ces points.
+        user = (
+            "⚠️ CORRECTION. La version précédente (ci-dessus) a été REJETÉE par le "
+            "validateur pour les raisons PRÉCISES suivantes. Corrige EXACTEMENT ces "
+            "points, NE réintroduis PAS la même erreur, garde le reste identique, et "
+            "renvoie les 3 fichiers complets dans le format imposé.\n"
+            f"=== ERREURS À CORRIGER ===\n{feedback}\n=== FIN ERREURS ===\n\n"
+            + user
+        )
     return [
         {"role": "system", "content": rules + "\n" + fewshot},
-        {"role": "user", "content": f"Demande pour le module « {module_id} » :\n{spec}"},
+        {"role": "user", "content": user},
     ]
 
 
-def generate_ollama(module_id: str, spec: str, kind: str, model: Optional[str] = None) -> Generator:
-    """Génère les 3 fichiers via LLMEngine.stream, écrit dans le staging confiné."""
+def generate_ollama(module_id: str, spec: str, kind: str, model: Optional[str] = None,
+                    feedback: Optional[str] = None) -> Generator:
+    """Génère les 3 fichiers via LLMEngine.stream, écrit dans le staging confiné.
+    `model` force le modèle Ollama ; `feedback` injecte les erreurs à corriger."""
     from core.runtime import llm  # import tardif (évite de charger les moteurs en test)
 
-    current = _active_files(module_id) if kind == "edit" else {}
-    messages = _ollama_prompt(module_id, spec, kind, current)
+    # En correction d'erreur, on repart des fichiers en staging (ceux qui ont
+    # échoué), sinon de l'actif pour une édition classique.
+    if feedback:
+        current = _staging_files(module_id) or (_active_files(module_id) if kind == "edit" else {})
+    else:
+        current = _active_files(module_id) if kind == "edit" else {}
+    messages = _ollama_prompt(module_id, spec, kind, current, feedback)
     if model is None:
         model = (instance_config.get().get("providers") or {}).get("actif") or None
 

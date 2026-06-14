@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { usePersistentState } from '../../usePersistentState'
 import {
   Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Eye, EyeOff,
   FolderTree, Gauge, GripVertical, Hammer, KeyRound, Palette, Plus, RefreshCw,
@@ -168,7 +169,7 @@ export default function Settings() {
   const [selectedDates, setSelectedDates] = useState<string[]>([])
 
   // Consolidation state
-  const [consolidCloud, setConsolidCloud] = useState(false)
+  const [consolidCloud, setConsolidCloud] = usePersistentState<boolean>('epure.settings.consolidCloud', false)
   const [consolidating, setConsolidating] = useState(false)
   const [consolidResult, setConsolidResult] = useState<string | null>(null)
   const [consolidLog, setConsolidLog] = useState<Record<string, unknown>[]>([])

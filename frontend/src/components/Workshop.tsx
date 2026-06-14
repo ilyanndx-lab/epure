@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Hammer, AlertTriangle, Check, X, RefreshCw, Loader2, Play, Terminal,
-  ShieldCheck, FilePlus2, FilePen,
+  ShieldCheck, FilePlus2, FilePen, Bug, Cpu,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, Select, Textarea } from './ui'
 import { useInstanceConfig } from '../instance'
 import { fetchModules } from '../modules'
+import { usePersistentState } from '../usePersistentState'
 
 const API = 'http://localhost:8000'
 const WS_URL = 'ws://localhost:8000/ws/workshop'
@@ -33,28 +34,54 @@ export default function Workshop() {
   const [engines, setEngines] = useState<Record<Engine, EngineInfo> | null>(null)
   const [modules, setModules] = useState<ModuleRow[]>([])
 
-  const [kind, setKind] = useState<Kind>('new')
-  const [newId, setNewId] = useState('')
-  const [targetId, setTargetId] = useState('')
-  const [description, setDescription] = useState('')
-  const [engine, setEngine] = useState<Engine>(() => (config.atelier.moteur_defaut as Engine) || 'ollama')
-  const [mode, setMode] = useState<Mode>(() => (config.atelier.mode_defaut as Mode) || 'headless')
+  // Persistés : le formulaire (description, moteur, modèle…) survit au reload
+  // complet déclenché par Vite après l'approbation d'un module.
+  const [kind, setKind] = usePersistentState<Kind>('epure.workshop.kind', 'new')
+  const [newId, setNewId] = usePersistentState<string>('epure.workshop.newId', '')
+  const [targetId, setTargetId] = usePersistentState<string>('epure.workshop.targetId', '')
+  const [description, setDescription] = usePersistentState<string>('epure.workshop.description', '')
+  const [engine, setEngine] = usePersistentState<Engine>('epure.workshop.engine', () => (config.atelier.moteur_defaut as Engine) || 'ollama')
+  const [mode, setMode] = usePersistentState<Mode>('epure.workshop.mode', () => (config.atelier.mode_defaut as Mode) || 'headless')
+  const [models, setModels] = useState<{ id: string; nom: string }[]>([])
+  const [model, setModel] = usePersistentState<string>('epure.workshop.model', '')
 
-  const [phase, setPhase] = useState<Phase>('idle')
-  const [log, setLog] = useState('')
+  // Revue persistée : le code généré + le rapport survivent à un rechargement.
+  const [phase, setPhase] = usePersistentState<Phase>('epure.workshop.phase', 'idle')
+  const [log, setLog] = usePersistentState<string>('epure.workshop.log', '')
   const [terminalInfo, setTerminalInfo] = useState<{ cwd?: string; cmd?: string[] } | null>(null)
-  const [staging, setStaging] = useState<Staging | null>(null)
-  const [report, setReport] = useState<Report | null>(null)
-  const [activeTab, setActiveTab] = useState<string>('router.py')
+  const [staging, setStaging] = usePersistentState<Staging | null>('epure.workshop.staging', null)
+  const [report, setReport] = usePersistentState<Report | null>('epure.workshop.report', null)
+  const [activeTab, setActiveTab] = usePersistentState<string>('epure.workshop.activeTab', 'router.py')
   const [error, setError] = useState<string | null>(null)
   const [approveResult, setApproveResult] = useState<string | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
 
+  // Après un rechargement, la socket est fermée : une phase « en cours » devient
+  // obsolète. On bascule sur la revue si du code généré subsiste, sinon idle.
+  useEffect(() => {
+    if (phase === 'generating' || phase === 'validating' || phase === 'terminal') {
+      setPhase(staging ? 'review' : 'idle')
+    }
+    // au montage uniquement
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     fetch(`${API}/workshop/engines`).then(r => r.json()).then(setEngines).catch(() => {})
     fetch(`${API}/workshop/modules`).then(r => r.json())
       .then((d: { modules: ModuleRow[] }) => setModules(d.modules)).catch(() => {})
+    // Modèles disponibles → sélecteur local (sans passer par les Réglages).
+    fetch(`${API}/models`).then(r => r.json()).then((d) => {
+      const all = [
+        ...(d.local ?? []),
+        ...(d.local_npu ?? []),
+        ...(Object.values(d.cloud ?? {}).flat() as { id: string; nom: string }[]),
+      ]
+      setModels(all)
+      const actif = (config as { providers?: { actif?: string } }).providers?.actif
+      setModel(prev => prev || actif || all[0]?.id || '')
+    }).catch(() => {})
     return () => wsRef.current?.close()
   }, [])
 
@@ -69,31 +96,36 @@ export default function Workshop() {
     } catch { /* ignore */ }
   }, [])
 
-  const startGeneration = useCallback(async () => {
-    setError(null); setApproveResult(null); setStaging(null); setReport(null); setLog('')
+  const startGeneration = useCallback(async (feedback?: string) => {
+    setError(null); setApproveResult(null); setLog('')
+    if (!feedback) { setStaging(null); setReport(null) }
     const id = currentId
     if (!id) { setError('Indiquez un identifiant de module.'); return }
     if (!description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
 
     // 1) Prépare le staging (création ou édition).
-    try {
-      const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
-      const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
-      const res = await fetch(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      })
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
-        setError(typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)); return
-      }
-    } catch { setError('Backend injoignable.'); return }
+    //    En correction d'erreur (feedback), le staging existe déjà — on ne le
+    //    réinitialise pas, sinon on perdrait les fichiers à corriger.
+    if (!feedback) {
+      try {
+        const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
+        const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
+        const res = await fetch(url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        })
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
+          setError(typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)); return
+        }
+      } catch { setError('Backend injoignable.'); return }
+    }
 
     // 2) Stream la génération via WebSocket.
     setPhase('generating')
     wsRef.current?.close()  // ferme une éventuelle session précédente
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode }))
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode, model, feedback }))
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data)
       if (data.type === 'token') {
@@ -123,7 +155,15 @@ export default function Workshop() {
       // au rejet, à une nouvelle génération ou au démontage.
     }
     ws.onerror = () => setError('Erreur WebSocket atelier.')
-  }, [currentId, kind, description, engine, mode, refreshStaging])
+  }, [currentId, kind, description, engine, mode, model, refreshStaging])
+
+  // Renvoie les erreurs de validation à l'IA pour qu'elle les corrige (même
+  // staging, modèle éventuellement changé via le sélecteur).
+  const fixError = useCallback(() => {
+    const errs = [...(report?.errors ?? []), ...(report?.warnings ?? [])]
+    const feedback = errs.length ? errs.join('\n') : (error ?? 'Le module a échoué.')
+    void startGeneration(feedback)
+  }, [report, error, startGeneration])
 
   const finishTerminal = useCallback(() => {
     const ws = wsRef.current
@@ -242,6 +282,19 @@ export default function Workshop() {
               })}
             </Select>
           </div>
+          {engine === 'ollama' && (
+            <div className="min-w-[12rem]">
+              <label className="text-xs text-muted uppercase tracking-wide mb-1 flex items-center gap-1">
+                <Cpu size={11} /> Modèle
+              </label>
+              <Select mono value={model} onChange={e => setModel(e.target.value)} className="w-full">
+                {models.length === 0 && <option value="">(modèle par défaut)</option>}
+                {models.map(m => (
+                  <option key={m.id} value={m.id}>{m.nom}</option>
+                ))}
+              </Select>
+            </div>
+          )}
           {engine.startsWith('claude') && (
             <div>
               <label className="text-xs text-muted uppercase tracking-wide block mb-1">Mode</label>
@@ -252,7 +305,7 @@ export default function Workshop() {
             </div>
           )}
           <Button variant="primary" icon={<Play size={14} />}
-            onClick={startGeneration}
+            onClick={() => startGeneration()}
             disabled={phase === 'generating' || phase === 'validating' || engineUnavailable || !currentId || !description.trim()}>
             {phase === 'generating' ? 'Génération…' : phase === 'validating' ? 'Validation…' : 'Générer'}
           </Button>
@@ -375,10 +428,19 @@ export default function Workshop() {
               Approuver & activer
             </Button>
             <Button variant="ghost" size="sm" icon={<X size={13} />} onClick={reject}>Rejeter</Button>
-            <Button variant="ghost" size="sm" icon={<RefreshCw size={13} />} onClick={startGeneration}>Régénérer</Button>
+            <Button variant="ghost" size="sm" icon={<RefreshCw size={13} />} onClick={() => startGeneration()}>Régénérer</Button>
+            {!report?.ok && (
+              <Button variant="secondary" size="sm" icon={<Bug size={13} />} onClick={fixError}>
+                Corriger l'erreur (renvoyer à l'IA)
+              </Button>
+            )}
           </div>
           {!report?.ok && (
-            <p className="text-xs text-muted">Validation échouée — le module reste en brouillon, activation impossible.</p>
+            <p className="text-xs text-muted">
+              Validation échouée — le module reste en brouillon, activation impossible.
+              Vous pouvez changer de modèle ci-dessus puis cliquer « Corriger l'erreur » : l'IA
+              reçoit les messages d'erreur et tente de les résoudre.
+            </p>
           )}
         </Card>
       )}

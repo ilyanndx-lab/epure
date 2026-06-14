@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { usePersistentState } from '../../usePersistentState'
 import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe } from 'lucide-react'
 import { Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
@@ -162,10 +163,10 @@ export default function Chat({
   ttsEnabled,
   onTtsToggle,
 }: ChatProps) {
-  const [effort, setEffort] = useState<EffortLevel>('direct')
+  const [effort, setEffort] = usePersistentState<EffortLevel>('epure.chat.effort', 'direct')
   const [pipelineSteps, setPipelineSteps] = useState<StepConfig[]>([])
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState('')
+  const [messages, setMessages] = usePersistentState<Message[]>('epure.chat.messages', [])
+  const [input, setInput] = usePersistentState<string>('epure.chat.input', '')
   const [connected, setConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
@@ -175,8 +176,8 @@ export default function Chat({
   // Recherche web : active = force une recherche avant la réponse.
   // Mode 'once' = réinitialisé après chaque message (défaut, non handicapant) ;
   // 'always' = reste actif jusqu'à désactivation explicite.
-  const [webSearch, setWebSearch] = useState(false)
-  const [webSearchMode, setWebSearchMode] = useState<'once' | 'always'>('once')
+  const [webSearch, setWebSearch] = usePersistentState<boolean>('epure.chat.webSearch', false)
+  const [webSearchMode, setWebSearchMode] = usePersistentState<'once' | 'always'>('epure.chat.webSearchMode', 'once')
   const [webMenuOpen, setWebMenuOpen] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)

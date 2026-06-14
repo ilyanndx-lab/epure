@@ -1,0 +1,7 @@
+﻿model_list:
+  - model_name: epure-gw
+    litellm_params:
+      model: ollama_chat/qwen2.5:7b
+      api_base: http://localhost:11434
+general_settings:
+  master_key: sk-epure-local
