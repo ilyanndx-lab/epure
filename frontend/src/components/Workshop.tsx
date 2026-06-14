@@ -39,6 +39,8 @@ export default function Workshop() {
   const [description, setDescription] = useState('')
   const [engine, setEngine] = useState<Engine>(() => (config.atelier.moteur_defaut as Engine) || 'ollama')
   const [mode, setMode] = useState<Mode>(() => (config.atelier.mode_defaut as Mode) || 'headless')
+  const [ollamaModels, setOllamaModels] = useState<string[]>([])
+  const [ollamaModel, setOllamaModel] = useState('')
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [log, setLog] = useState('')
@@ -55,6 +57,12 @@ export default function Workshop() {
     fetch(`${API}/workshop/engines`).then(r => r.json()).then(setEngines).catch(() => {})
     fetch(`${API}/workshop/modules`).then(r => r.json())
       .then((d: { modules: ModuleRow[] }) => setModules(d.modules)).catch(() => {})
+    fetch(`${API}/models`).then(r => r.json())
+      .then((d: { local?: { id: string; provider: string; disponible?: boolean }[] }) =>
+        setOllamaModels((d.local ?? [])
+          .filter(m => m.provider === 'ollama' && m.disponible !== false)
+          .map(m => m.id)))
+      .catch(() => {})
     return () => wsRef.current?.close()
   }, [])
 
@@ -93,7 +101,10 @@ export default function Workshop() {
     wsRef.current?.close()  // ferme une éventuelle session précédente
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode }))
+    ws.onopen = () => ws.send(JSON.stringify({
+      type: 'generate', id, kind, description, engine, mode,
+      ollama_model: engine === 'ollama' ? (ollamaModel || null) : null,
+    }))
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data)
       if (data.type === 'token') {
@@ -123,7 +134,7 @@ export default function Workshop() {
       // au rejet, à une nouvelle génération ou au démontage.
     }
     ws.onerror = () => setError('Erreur WebSocket atelier.')
-  }, [currentId, kind, description, engine, mode, refreshStaging])
+  }, [currentId, kind, description, engine, mode, ollamaModel, refreshStaging])
 
   const finishTerminal = useCallback(() => {
     const ws = wsRef.current
@@ -242,6 +253,15 @@ export default function Workshop() {
               })}
             </Select>
           </div>
+          {engine === 'ollama' && (
+            <div>
+              <label className="text-xs text-muted uppercase tracking-wide block mb-1">Modèle</label>
+              <Select value={ollamaModel} onChange={e => setOllamaModel(e.target.value)}>
+                <option value="">Modèle actif (défaut)</option>
+                {ollamaModels.map(m => <option key={m} value={m}>{m}</option>)}
+              </Select>
+            </div>
+          )}
           {engine.startsWith('claude') && (
             <div>
               <label className="text-xs text-muted uppercase tracking-wide block mb-1">Mode</label>
