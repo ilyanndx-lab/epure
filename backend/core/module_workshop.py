@@ -358,6 +358,29 @@ _FILE_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+# Blocs de raisonnement émis par certains modèles locaux (qwen3, deepseek-r1…).
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+# Fence markdown éventuel entourant le corps d'un fichier (```json / ```python / ```tsx …).
+_FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_+-]*\r?\n(?P<body>.*?)\r?\n```\s*$", re.DOTALL)
+
+# Fallback : bloc de code fence balisé par langage, quand les balises ===FILE:=== manquent.
+_LANG_FENCE_RE = re.compile(r"```(?P<lang>[a-zA-Z0-9_+-]*)\r?\n(?P<body>.*?)```", re.DOTALL)
+
+# Modèle local par défaut quand aucun n'est ni passé ni configuré.
+_OLLAMA_GEN_TOKENS = 8000
+
+
+def _strip_thinking(text: str) -> str:
+    """Retire les blocs <think>…</think> des modèles à raisonnement (qwen3, r1)."""
+    return _THINK_RE.sub("", text)
+
+
+def _strip_fence(body: str) -> str:
+    """Retire un fence markdown qui entourerait le corps d'un fichier."""
+    m = _FENCE_RE.match(body)
+    return m.group("body") if m else body
+
 
 def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict) -> list[dict]:
     ex = _few_shot()
@@ -372,6 +395,11 @@ def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict) -> list[
         "sans aucun texte autour :\n"
         "===FILE:manifest.json===\n<json>\n===FILE:router.py===\n<python>\n"
         "===FILE:Component.tsx===\n<tsx>\n===END===\n\n"
+        "FORMAT IMPÉRATIF (sinon le module est rejeté automatiquement) :\n"
+        "- Mets le contenu BRUT de chaque fichier juste après sa balise ===FILE:===.\n"
+        "- N'entoure PAS le contenu de balises markdown (pas de ``` ni ```json/```python/```tsx).\n"
+        "- N'écris AUCUN commentaire ni explication hors des fichiers (pas de raisonnement à voix haute dans la sortie).\n"
+        "- Produis les 3 fichiers, dans l'ordre, puis ===END===.\n\n"
         "Contraintes STRICTES (sinon le module sera rejeté) :\n"
         f"- manifest.json : id=\"{module_id}\", backend.prefix=\"\", "
         "frontend.component=\"Component\", origin=\"workshop\".\n"
@@ -398,8 +426,16 @@ def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict) -> list[
     ]
 
 
+_OLLAMA_MAX_TRIES = 2
+
+
 def generate_ollama(module_id: str, spec: str, kind: str, model: Optional[str] = None) -> Generator:
-    """Génère les 3 fichiers via LLMEngine.stream, écrit dans le staging confiné."""
+    """Génère les 3 fichiers via LLMEngine.stream, écrit dans le staging confiné.
+
+    Robuste aux petits modèles locaux : retire le raisonnement <think>…</think>,
+    tolère les fences markdown, et réessaie (avec relance ciblée) tant que les 3
+    fichiers ne sont pas tous produits — jusqu'à _OLLAMA_MAX_TRIES essais.
+    """
     from core.runtime import llm  # import tardif (évite de charger les moteurs en test)
 
     current = _active_files(module_id) if kind == "edit" else {}
@@ -408,34 +444,79 @@ def generate_ollama(module_id: str, spec: str, kind: str, model: Optional[str] =
         model = (instance_config.get().get("providers") or {}).get("actif") or None
 
     yield {"type": "engine", "engine": "ollama", "model": model or "local"}
-    full = ""
-    try:
-        for item in llm.stream(messages, model=model, max_tokens=6000):
-            if isinstance(item, str):
-                full += item
-                yield {"type": "token", "content": item}
-    except Exception as exc:
-        logger.exception("Génération ollama échouée pour %s", module_id)
-        yield {"type": "error", "content": f"Génération échouée : {exc}"}
-        return
 
-    written = _write_blocks_from_text(module_id, full)
+    written: dict[str, str] = {}
+    for attempt in range(1, _OLLAMA_MAX_TRIES + 1):
+        full = ""
+        try:
+            for item in llm.stream(messages, model=model, max_tokens=_OLLAMA_GEN_TOKENS):
+                if isinstance(item, str):
+                    full += item
+                    yield {"type": "token", "content": item}
+        except Exception as exc:
+            logger.exception("Génération ollama échouée pour %s", module_id)
+            yield {"type": "error", "content": f"Génération échouée : {exc}"}
+            return
+
+        for name in _write_blocks_from_text(module_id, full):
+            if name not in written:
+                written[name] = name
+                yield {"type": "file_written", "path": name}
+
+        missing = [n for n in _FILES if n not in written]
+        if not missing:
+            break
+        if attempt < _OLLAMA_MAX_TRIES:
+            yield {"type": "token",
+                   "content": f"\n[relance {attempt + 1}/{_OLLAMA_MAX_TRIES} — fichiers manquants : {', '.join(missing)}]\n"}
+            # Relance ciblée : on demande UNIQUEMENT les fichiers absents, même format.
+            messages = messages + [
+                {"role": "assistant", "content": full[-4000:]},
+                {"role": "user", "content": (
+                    "Il manque " + ", ".join(missing) + ". Reproduis SEULEMENT ce(s) "
+                    "fichier(s) au format ===FILE:nom===\\n<contenu brut>\\n, sans markdown "
+                    "ni explication, puis ===END===."
+                )},
+            ]
+
     if not written:
-        yield {"type": "error", "content": "Aucun fichier exploitable généré (format ===FILE:===)."}
+        yield {"type": "error",
+               "content": "Aucun fichier exploitable généré (format ===FILE:=== attendu) après "
+                          f"{_OLLAMA_MAX_TRIES} essais. Essayez un modèle plus capable (ex. qwen3)."}
         return
-    for name in written:
-        yield {"type": "file_written", "path": name}
-    yield {"type": "generation_done", "files": written}
+    yield {"type": "generation_done", "files": list(written)}
 
 
 def _write_blocks_from_text(module_id: str, text: str) -> list[str]:
-    """Parse les blocs ===FILE:name=== et écrit chaque fichier autorisé en staging."""
-    written: list[str] = []
+    """Parse les blocs ===FILE:name=== (ou fallback fences) et écrit en staging.
+
+    Tolère : raisonnement <think>…</think>, fences markdown autour du contenu, et
+    — si aucune balise ===FILE:=== — un fallback par fences de langage (json →
+    manifest.json, python → router.py, tsx/typescript → Component.tsx).
+    """
+    text = _strip_thinking(text)
+    blocks: dict[str, str] = {}
+
     for m in _FILE_BLOCK_RE.finditer(text):
         name = m.group("name").strip()
-        if name not in _FILES:
-            continue
-        body = m.group("body").strip("\n")
+        if name in _FILES:
+            blocks[name] = _strip_fence(m.group("body").strip("\n"))
+
+    # Fallback : aucune balise ===FILE:=== exploitable → on tente les fences de langage.
+    if not blocks:
+        lang_map = {
+            "json": "manifest.json",
+            "python": "router.py", "py": "router.py",
+            "tsx": "Component.tsx", "typescript": "Component.tsx",
+            "ts": "Component.tsx", "jsx": "Component.tsx",
+        }
+        for m in _LANG_FENCE_RE.finditer(text):
+            name = lang_map.get(m.group("lang").lower())
+            if name and name not in blocks:
+                blocks[name] = m.group("body").strip("\n")
+
+    written: list[str] = []
+    for name, body in blocks.items():
         # Écriture confinée (lève SecurityError si hors modules/).
         target = _modules_safe_path(f"_staging/{module_id}/{name}")
         target.parent.mkdir(parents=True, exist_ok=True)
