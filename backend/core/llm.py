@@ -33,6 +33,39 @@ _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
 }
 
 
+def _provider_error_message(provider: str, model_id: str, exc: Exception) -> str:
+    """Transforme une exception provider en message clair et actionnable.
+
+    Récupère le code HTTP et le message renvoyé par l'API (OpenAI SDK) pour
+    expliquer POURQUOI ça échoue (modèle inexistant, clé refusée, quota…) au lieu
+    d'un générique « [Erreur nvidia] ».
+    """
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    # Message renvoyé par l'API si disponible (body JSON {'message': ...}).
+    detail = ""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("message") or body.get("detail") or ""
+    if not detail:
+        detail = getattr(exc, "message", "") or str(exc)
+    detail = (detail or "").strip()
+
+    label = f"{provider}:{model_id}"
+    if status in (401, 403):
+        return (f"[{label}] clé API refusée (HTTP {status}). "
+                f"Vérifiez {provider.upper()}_API_KEY dans les Réglages. {detail}").strip()
+    if status == 404:
+        return (f"[{label}] modèle introuvable chez {provider} (HTTP 404). "
+                f"Cet identifiant n'existe pas/plus dans le catalogue. {detail}").strip()
+    if status == 429:
+        return f"[{label}] quota/débit dépassé (HTTP 429). Réessayez plus tard. {detail}".strip()
+    if status == 400:
+        return f"[{label}] requête refusée (HTTP 400). {detail}".strip()
+    if status:
+        return f"[{label}] erreur HTTP {status}. {detail}".strip()
+    return f"[{label}] échec d'appel : {detail or type(exc).__name__}".strip()
+
+
 def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     system_parts: list[str] = []
     contents: list[dict] = []
@@ -216,9 +249,9 @@ class LLMEngine:
                 ),
             )
             return response.text
-        except Exception:
-            logger.exception("Erreur generate Gemini")
-            return "[Erreur Gemini]"
+        except Exception as exc:
+            logger.warning("Generate Gemini (%s) échec : %s", model, exc)
+            return f"[gemini:{model.split('gemini:', 1)[-1]}] échec : {exc}"
 
     # ── OpenAI-compatible providers ──────────────────────────────────────────
 
@@ -229,27 +262,37 @@ class LLMEngine:
         output_tokens = 0
         mt = max_tokens or self._gen["max_tokens"]
 
-        try:
-            stream = client.chat.completions.create(
+        def _create(with_usage: bool):
+            kwargs = dict(
                 model=model_id, messages=oai, stream=True,
-                stream_options={"include_usage": True},
-                temperature=self._gen["temperature"],
-                max_tokens=mt,
+                temperature=self._gen["temperature"], max_tokens=mt,
             )
-        except Exception:
-            # Provider doesn't support stream_options — retry without
-            stream = client.chat.completions.create(
-                model=model_id, messages=oai, stream=True,
-                temperature=self._gen["temperature"],
-                max_tokens=mt,
-            )
+            if with_usage:
+                kwargs["stream_options"] = {"include_usage": True}
+            return client.chat.completions.create(**kwargs)
 
-        for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-            if getattr(chunk, "usage", None):
-                prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+        try:
+            stream = _create(with_usage=True)
+        except Exception:
+            # Le provider peut ne pas gérer stream_options : on retente sans.
+            # Si ça échoue encore, c'est une vraie erreur API → message explicite.
+            try:
+                stream = _create(with_usage=False)
+            except Exception as exc:
+                logger.warning("Stream %s (%s) refusé : %s", provider, model_id, exc)
+                raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
+
+        try:
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                if getattr(chunk, "usage", None):
+                    prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+        except Exception as exc:
+            # Erreur survenue en cours de streaming (coupure, refus serveur…).
+            logger.warning("Stream %s (%s) interrompu : %s", provider, model_id, exc)
+            raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
 
         yield {
             "__stats__": True,
@@ -268,6 +311,6 @@ class LLMEngine:
                 max_tokens=self._gen["max_tokens"],
             )
             return response.choices[0].message.content or ""
-        except Exception:
-            logger.exception("Erreur generate %s", provider)
-            return f"[Erreur {provider}]"
+        except Exception as exc:
+            logger.warning("Generate %s (%s) refusé : %s", provider, model_id, exc)
+            return _provider_error_message(provider, model_id, exc)

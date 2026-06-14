@@ -34,6 +34,7 @@ backend/memory/modules_state.json
 backend/modules/_staging/
 backend/modules/_backups/
 frontend/src/modules/generated/_workshop_check_*/
+frontend/src/modules/_workshop_check/
 
 # Logs
 *.log

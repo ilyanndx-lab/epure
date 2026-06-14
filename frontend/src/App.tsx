@@ -1,9 +1,11 @@
 import { useState, useRef, useCallback, useEffect, Suspense } from 'react'
 import { Loader2 } from 'lucide-react'
 import Sidebar from './components/Sidebar'
+import ModuleErrorBoundary from './components/ModuleErrorBoundary'
 import { useInstanceConfig } from './instance'
 import { useModules } from './modules'
 import { getModuleDef, type SharedModuleProps } from './modules/registry'
+import { usePersistentState } from './usePersistentState'
 
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
@@ -13,7 +15,7 @@ const API = 'http://localhost:8000'
 export default function App() {
   const config = useInstanceConfig()
   const modules = useModules()
-  const [activeModule, setActiveModule] = useState<string>('chat')
+  const [activeModule, setActiveModule] = usePersistentState<string>('epure.activeModule', 'chat')
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
 
@@ -103,21 +105,23 @@ export default function App() {
     <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
       <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
       <div className="flex flex-col flex-1 overflow-hidden">
-        <Suspense
-          fallback={
-            <div className="flex flex-1 items-center justify-center text-muted">
-              <Loader2 size={18} className="animate-spin" />
-            </div>
-          }
-        >
-          {Active ? (
-            <Active {...sharedProps} />
-          ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted">
-              Module « {activeModule} » sans interface frontend
-            </div>
-          )}
-        </Suspense>
+        <ModuleErrorBoundary moduleId={activeModule} onNavigate={setActiveModule}>
+          <Suspense
+            fallback={
+              <div className="flex flex-1 items-center justify-center text-muted">
+                <Loader2 size={18} className="animate-spin" />
+              </div>
+            }
+          >
+            {Active ? (
+              <Active {...sharedProps} />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted">
+                Module « {activeModule} » sans interface frontend
+              </div>
+            )}
+          </Suspense>
+        </ModuleErrorBoundary>
       </div>
     </div>
   )

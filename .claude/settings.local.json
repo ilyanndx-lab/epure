@@ -49,7 +49,8 @@
       "Bash(node debug_css.mjs)",
       "Bash(curl -s \"http://localhost:5173/src/index.css\")",
       "Bash(grep -o \"bg-surface\\\\|bg-accent\\\\\\\\\\\\\\\\/10\\\\|--tw-bg-opacity\\\\|@tailwind\")",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "Bash(pip freeze *)"
     ]
   }
 }

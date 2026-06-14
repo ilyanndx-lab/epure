@@ -1,0 +1,17 @@
+{
+  "id": "minuteur",
+  "version": "1.0.0",
+  "nom": "Minuteur",
+  "icon": "Timer",
+  "description": "Module minuteur simple avec démarrage, pause et réinitialisation, et mode Pomodoro",
+  "frontend": {
+    "component": "Component"
+  },
+  "backend": {
+    "prefix": ""
+  },
+  "core_module": false,
+  "origin": "workshop",
+  "status": "active",
+  "removable": true
+}

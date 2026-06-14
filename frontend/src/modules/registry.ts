@@ -56,8 +56,13 @@ const CORE_DEFS: ModuleDef[] = [
 
 // ── Modules ajoutés (composants générés) ─────────────────────────────────────
 // chemin : './generated/<id>/Component.tsx'
-const generatedLoaders = import.meta.glob('./generated/**/*.tsx')
-const GENERATED_DEFS: ModuleDef[] = Object.entries(generatedLoaders).map(([path, loader]) => {
+// On EXCLUT les dossiers préfixés '_' (ex. _workshop_check_<id>, créé/supprimé
+// par le type-check de l'atelier). Sinon leur apparition/disparition modifie
+// l'ensemble du glob → Vite recharge toute la page (F5) en pleine revue.
+const generatedLoaders = import.meta.glob(['./generated/**/*.tsx', '!./generated/_*/**'])
+const GENERATED_DEFS: ModuleDef[] = Object.entries(generatedLoaders)
+  .filter(([path]) => !(path.split('/')[2] ?? '').startsWith('_'))
+  .map(([path, loader]) => {
   const id = path.split('/')[2] ?? path
   return {
     id,

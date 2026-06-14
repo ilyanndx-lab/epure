@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { usePersistentState } from '../../usePersistentState'
 import { GraduationCap, Play, Square, Send, ArrowRight, Loader2, CheckCircle2, XCircle } from 'lucide-react'
 import { Button, Card, ProgressBar, Textarea } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
@@ -29,10 +30,10 @@ const basename = (path: string) => path.split(/[/\\]/).pop() ?? path
 
 export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speakingText, ttsEnabled, onTtsToggle }: KholleProps) {
   // Config state
-  const [mode, setMode] = useState<Mode>('generate')
+  const [mode, setMode] = usePersistentState<Mode>('epure.kholle.mode', 'generate')
   const [indexedFiles, setIndexedFiles] = useState<string[]>([])
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
-  const [questionText, setQuestionText] = useState('')
+  const [selectedFiles, setSelectedFiles] = usePersistentState<string[]>('epure.kholle.selectedFiles', [])
+  const [questionText, setQuestionText] = usePersistentState<string>('epure.kholle.questionText', '')
   const [configError, setConfigError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
 

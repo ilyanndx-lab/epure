@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { usePersistentState } from '../../usePersistentState'
 import { FileSearch, Loader2, Plus, Send, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
@@ -49,8 +50,8 @@ async function* readSSE(res: Response) {
 
 export default function Docs() {
   const [docs, setDocs] = useState<DocInfo[]>([])
-  const [selected, setSelected] = useState<DocInfo | null>(null)
-  const [tab, setTab] = useState<Tab>('search')
+  const [selected, setSelected] = usePersistentState<DocInfo | null>('epure.docs.selected', null)
+  const [tab, setTab] = usePersistentState<Tab>('epure.docs.tab', 'search')
 
   // Upload
   const [uploading, setUploading] = useState(false)
@@ -60,7 +61,7 @@ export default function Docs() {
   const fileRef = useRef<HTMLInputElement>(null)
 
   // Search
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = usePersistentState<string>('epure.docs.query', '')
   const [searching, setSearching] = useState(false)
   const [results, setResults] = useState<SearchResult[]>([])
   const [synthesis, setSynthesis] = useState('')
@@ -71,11 +72,11 @@ export default function Docs() {
   // Summary
   const [summaryContent, setSummaryContent] = useState('')
   const [summaryStreaming, setSummaryStreaming] = useState(false)
-  const [useCloud, setUseCloud] = useState(false)
+  const [useCloud, setUseCloud] = usePersistentState<boolean>('epure.docs.useCloud', false)
 
   // Chat
-  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([])
-  const [chatInput, setChatInput] = useState('')
+  const [chatMsgs, setChatMsgs] = usePersistentState<ChatMsg[]>('epure.docs.chatMsgs', [])
+  const [chatInput, setChatInput] = usePersistentState<string>('epure.docs.chatInput', '')
   const [chatStreaming, setChatStreaming] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)

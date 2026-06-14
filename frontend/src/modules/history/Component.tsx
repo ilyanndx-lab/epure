@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { usePersistentState } from '../../usePersistentState'
 import { ArrowLeft, Clock, Search, Trash2, X } from 'lucide-react'
 import { Badge, Button, Card, Input } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
@@ -34,7 +35,7 @@ interface SearchResult {
 
 export default function History() {
   const [conversations, setConversations] = useState<ConvSummary[]>([])
-  const [searchQuery, setSearchQuery] = useState('')
+  const [searchQuery, setSearchQuery] = usePersistentState<string>('epure.history.searchQuery', '')
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null)
   const [searching, setSearching] = useState(false)
   const [selected, setSelected] = useState<ConvFull | null>(null)

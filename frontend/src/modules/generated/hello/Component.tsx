@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Sparkles } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
+import { usePersistentState } from '../../../usePersistentState'
 
 const API = 'http://localhost:8000'
 
@@ -8,9 +9,16 @@ const API = 'http://localhost:8000'
  * Composant du module de démonstration « hello ».
  * Découvert automatiquement par registry.ts via import.meta.glob — aucun import
  * à écrire dans App.tsx / Sidebar.tsx.
+ *
+ * Persistance : tout état de progression (texte saisi, contenu généré, sélection)
+ * utilise usePersistentState('hello.<clé>', défaut) pour survivre à un reload.
+ * On garde useState pour l'éphémère (loading, flags).
  */
 export default function HelloModule(_props: SharedModuleProps) {
-  const [result, setResult] = useState<string | null>(null)
+  // Persisté : survit à un rechargement de page (F5 ou reload de l'atelier).
+  const [note, setNote] = usePersistentState<string>('hello.note', '')
+  const [result, setResult] = usePersistentState<string | null>('hello.result', null)
+  // Éphémère : pas besoin de persister un flag de chargement.
   const [loading, setLoading] = useState(false)
 
   const ping = async () => {
@@ -36,6 +44,12 @@ export default function HelloModule(_props: SharedModuleProps) {
         backend monté automatiquement. Aucune édition d'App.tsx, Sidebar.tsx ou
         main.py n'a été nécessaire pour l'ajouter.
       </p>
+      <input
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        placeholder="Tapez une note — elle survit à un rechargement"
+        className="w-full max-w-lg bg-elevated border border-line rounded-md px-3 py-2 text-sm text-primary placeholder-muted focus:outline-none focus:border-accent"
+      />
       <div className="flex items-center gap-3">
         <button
           onClick={ping}

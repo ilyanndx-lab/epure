@@ -148,6 +148,39 @@ _TSX_DENY = [
 _TSX_EVAL_RE = re.compile(r"\beval\s*\(")
 _TSX_NEWFUNC_RE = re.compile(r"\bnew\s+Function\s*\(")
 
+# Import depuis le barrel UI partagé : `import { A, B } from '.../components/ui'`.
+_UI_IMPORT_RE = re.compile(
+    r"import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['\"][^'\"]*components/ui(?:/index)?(?:\.ts)?['\"]"
+)
+_UI_INDEX = _FRONTEND_DIR / "src" / "components" / "ui" / "index.ts"
+
+
+def ui_component_exports() -> list[str]:
+    """Noms réellement exportés par src/components/ui/index.ts.
+
+    Source unique de vérité partagée par la validation ET le prompt de l'atelier,
+    pour que le LLM n'invente pas de composants (Label, CardHeader…) inexistants.
+    """
+    try:
+        src = _UI_INDEX.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    names: set[str] = set()
+    # export { default as Button } from './Button'  ou  export { A, B as C } ...
+    for block in re.findall(r"export\s*\{([^}]*)\}", src):
+        for part in block.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            # 'default as Button' / 'Foo as Bar' → on garde le nom exposé (après 'as').
+            m = re.search(r"\bas\s+(\w+)$", part)
+            names.add(m.group(1) if m else part)
+    # export const/function/class X  /  export default X
+    for m in re.finditer(r"export\s+(?:const|function|class)\s+(\w+)", src):
+        names.add(m.group(1))
+    names.discard("default")
+    return sorted(names)
+
 
 def validate_component_tsx(source: str, module_id: str, run_tsc: bool = True) -> ValidationReport:
     """Valide le composant frontend : motifs interdits + tsc --noEmit (best-effort)."""
@@ -160,6 +193,28 @@ def validate_component_tsx(source: str, module_id: str, run_tsc: bool = True) ->
         report.fail("eval(...) est interdit dans le composant.")
     if _TSX_NEWFUNC_RE.search(source):
         report.fail("new Function(...) est interdit dans le composant.")
+
+    # Imports UI : refuse tout composant inexistant dans components/ui (cause
+    # fréquente du crash « does not provide an export named 'X' » à l'activation).
+    allowed = ui_component_exports()
+    if allowed:
+        imported: set[str] = set()
+        for block in _UI_IMPORT_RE.findall(source):
+            for part in block.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                # 'Foo as Bar' → le nom importé réel est 'Foo' (avant 'as').
+                name = re.split(r"\s+as\s+", part)[0].strip()
+                if name:
+                    imported.add(name)
+        unknown = sorted(n for n in imported if n not in allowed)
+        if unknown:
+            report.fail(
+                f"Composant(s) UI inexistant(s) importé(s) depuis components/ui : "
+                f"{', '.join(unknown)}. Exports disponibles : {', '.join(allowed)}. "
+                f"N'importez QUE ceux-là (ou créez vos éléments avec des balises HTML)."
+            )
 
     if run_tsc:
         _run_tsc(source, module_id, report)
@@ -191,9 +246,12 @@ def _tsc_command() -> Optional[list[str]]:
 def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
     """Type-check du composant — BEST-EFFORT (warnings uniquement), jamais bloquant.
 
-    Le fichier est écrit temporairement à la même profondeur que sa cible réelle
-    (src/modules/generated/<id>/) pour que les imports relatifs résolvent, puis
-    supprimé. Utilise le tsc local du projet (rapide) sinon `npx --yes tsc`.
+    Le fichier est écrit dans src/modules/_workshop_check/<id>/ : MÊME profondeur
+    que la cible réelle (src/modules/generated/<id>/) pour que les imports
+    relatifs (../../../components/ui, ../../registry…) résolvent, mais HORS de
+    generated/ — sinon son apparition/suppression déclenche un full reload Vite
+    (le watcher de import.meta.glob('./generated/**') se déclenche sur tout
+    ajout/retrait dans l'arbre, même exclu du résultat). Puis supprimé.
     Le gate d'exécution reste l'AST de router.py ; ici on ne fait que signaler.
     """
     base = _tsc_command()
@@ -202,7 +260,7 @@ def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
         return
 
     safe_id = re.sub(r"[^a-z0-9_]", "", module_id.lower()) or "mod"
-    check_dir = _FRONTEND_DIR / "src" / "modules" / "generated" / f"_workshop_check_{safe_id}"
+    check_dir = _FRONTEND_DIR / "src" / "modules" / "_workshop_check" / safe_id
     check_file = check_dir / "Component.tsx"
     try:
         check_dir.mkdir(parents=True, exist_ok=True)
@@ -215,7 +273,7 @@ def _run_tsc(source: str, module_id: str, report: ValidationReport) -> None:
             creationflags=_NO_WINDOW,
         )
         out = (proc.stdout or "") + (proc.stderr or "")
-        rel = f"_workshop_check_{safe_id}/Component.tsx"
+        rel = f"_workshop_check/{safe_id}/Component.tsx"
         errs = [ln for ln in out.splitlines() if rel in ln or rel.replace("/", "\\") in ln]
         if errs:
             # Best-effort : on signale en WARNING (ne bloque pas l'activation).
