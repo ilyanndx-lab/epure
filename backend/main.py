@@ -437,7 +437,8 @@ async def ws_workshop(websocket: WebSocket):
                     spec = msg.get("description", "")
                     engine = msg.get("engine", "ollama")
                     if engine == "ollama":
-                        gen = module_workshop.generate_ollama(mid, spec, kind)
+                        ollama_model = msg.get("ollama_model") or None
+                        gen = module_workshop.generate_ollama(mid, spec, kind, model=ollama_model)
                     else:
                         gen = module_workshop.generate_claude_headless(mid, spec, kind, engine)
                     await _stream_generator(gen)
