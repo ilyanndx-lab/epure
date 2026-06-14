@@ -1,0 +1,17 @@
+{
+  "id": "vroom",
+  "version": "1.0.0",
+  "nom": "Vroom",
+  "icon": "Car",
+  "description": "Jeu de course/conduite 2D avec physique avancée et progression infinie",
+  "frontend": {
+    "component": "Component"
+  },
+  "backend": {
+    "prefix": ""
+  },
+  "core_module": false,
+  "origin": "workshop",
+  "status": "active",
+  "removable": true
+}
