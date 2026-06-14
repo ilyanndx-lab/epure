@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { usePersistentState } from '../../usePersistentState'
-import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe } from 'lucide-react'
+import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, RotateCcw } from 'lucide-react'
 import { Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
@@ -189,6 +189,10 @@ export default function Chat({
   const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
   const inPipelineRef = useRef(false)
   const pipelineUserMsgIdxRef = useRef(-1)
+  // Arrêt : ignore les events de streaming entrants après un stop manuel.
+  const cancelledRef = useRef(false)
+  // Dernier message envoyé (pour « relancer »).
+  const lastSentRef = useRef<Record<string, unknown> | null>(null)
 
   useEffect(() => {
     const connect = () => {
@@ -197,6 +201,10 @@ export default function Chat({
       ws.onclose = () => { setConnected(false); setTimeout(connect, 2000) }
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
+
+        // Après un arrêt manuel : on ignore les tokens encore en vol, mais on
+        // laisse passer done/error pour réinitialiser proprement l'état.
+        if (cancelledRef.current && data.type !== 'done' && data.type !== 'error') return
 
         if (data.type === 'pipeline_info') {
           inPipelineRef.current = true
@@ -364,9 +372,11 @@ export default function Chat({
           onAssistantDone?.(lastAssistantRef.current)
           lastAssistantRef.current = ''
           inPipelineRef.current = false
+          cancelledRef.current = false
 
         } else if (data.type === 'error') {
           inPipelineRef.current = false
+          cancelledRef.current = false
           setMessages(prev => [...prev, { role: 'assistant', content: data.content, isError: true }])
           setStreaming(false)
           setStreamStats(null)
@@ -525,6 +535,49 @@ export default function Chat({
 
   // ── Send ──────────────────────────────────────────────────────────────────
 
+  // Envoi d'un message « normal » (hors commandes /…) — factorisé pour être
+  // réutilisé par « relancer ».
+  const sendUserText = useCallback((rawText: string) => {
+    if (!connected) return
+    cancelledRef.current = false
+
+    let cleanText = rawText
+    let ragOverride: string | undefined
+    let strictOverride = false
+    let webSearchOverride = webSearch
+
+    let again = true
+    while (again) {
+      again = false
+      if (cleanText === '@cours' || cleanText.startsWith('@cours ')) {
+        ragOverride = 'all'; cleanText = cleanText.replace(/^@cours\s*/, '').trim(); again = true
+      } else if (cleanText === '@strict' || cleanText.startsWith('@strict ')) {
+        strictOverride = true; cleanText = cleanText.replace(/^@strict\s*/, '').trim(); again = true
+      } else if (cleanText === '@web' || cleanText.startsWith('@web ')) {
+        webSearchOverride = true; cleanText = cleanText.replace(/^@web\s*/, '').trim(); again = true
+      }
+    }
+
+    pushMsg('user', rawText)
+    setStreaming(true)
+    tokenCountRef.current = 0
+    streamStartRef.current = null
+    pendingOllamaStatsRef.current = null
+    setStreamStats(null)
+    inPipelineRef.current = false
+    pipelineUserMsgIdxRef.current = -1
+
+    const wsMsg: Record<string, unknown> = { role: 'user', content: cleanText || rawText, effort }
+    if (effort !== 'direct' && pipelineSteps.length > 0) wsMsg.steps = pipelineSteps
+    if (ragOverride) wsMsg.rag_override = ragOverride
+    if (strictOverride) wsMsg.strict_override = true
+    if (webSearchOverride) wsMsg.web_search_override = true
+    lastSentRef.current = wsMsg
+    wsRef.current?.send(JSON.stringify(wsMsg))
+
+    if (webSearch && webSearchMode === 'once') setWebSearch(false)
+  }, [connected, effort, pipelineSteps, webSearch, webSearchMode, pushMsg, setWebSearch])
+
   const send = useCallback(async () => {
     const rawText = input.trim()
     if (!rawText || streaming) return
@@ -557,6 +610,7 @@ export default function Chat({
             return
           }
           if (!connected) return
+          cancelledRef.current = false
           pushMsg('user', rawText)
           setStreaming(true)
           tokenCountRef.current = 0
@@ -575,61 +629,33 @@ export default function Chat({
       return
     }
 
-    if (!connected) return
-
-    let cleanText = rawText
-    let ragOverride: string | undefined
-    let strictOverride = false
-    // Le bouton (icône Globe) force la recherche web ; @web le fait aussi.
-    let webSearchOverride = webSearch
-
-    let again = true
-    while (again) {
-      again = false
-      if (cleanText === '@cours' || cleanText.startsWith('@cours ')) {
-        ragOverride = 'all'
-        cleanText = cleanText.replace(/^@cours\s*/, '').trim()
-        again = true
-      } else if (cleanText === '@strict' || cleanText.startsWith('@strict ')) {
-        strictOverride = true
-        cleanText = cleanText.replace(/^@strict\s*/, '').trim()
-        again = true
-      } else if (cleanText === '@web' || cleanText.startsWith('@web ')) {
-        webSearchOverride = true
-        cleanText = cleanText.replace(/^@web\s*/, '').trim()
-        again = true
-      }
-    }
-
-    pushMsg('user', rawText)
-    setStreaming(true)
-    tokenCountRef.current = 0
-    streamStartRef.current = null
-    pendingOllamaStatsRef.current = null
-    setStreamStats(null)
-    inPipelineRef.current = false
-    pipelineUserMsgIdxRef.current = -1
-
-    const wsMsg: Record<string, unknown> = {
-      role: 'user',
-      content: cleanText || rawText,
-      effort,
-    }
-    if (effort !== 'direct' && pipelineSteps.length > 0) {
-      wsMsg.steps = pipelineSteps
-    }
-    if (ragOverride) wsMsg.rag_override = ragOverride
-    if (strictOverride) wsMsg.strict_override = true
-    if (webSearchOverride) wsMsg.web_search_override = true
-    wsRef.current?.send(JSON.stringify(wsMsg))
-
-    // Mode 'once' : on désactive après envoi pour ne pas pénaliser les
-    // messages suivants ; 'always' reste actif.
-    if (webSearch && webSearchMode === 'once') setWebSearch(false)
+    // Message normal : délégué à sendUserText (réutilisé par « relancer »).
+    sendUserText(rawText)
   }, [
-    input, connected, streaming, effort, pipelineSteps, webSearch, webSearchMode,
+    input, connected, streaming, sendUserText,
     streamSSE, handleMémoire, handleModèle, handleLacunes, handleNavigate,
   ])
+
+  // ── Stop & relancer ─────────────────────────────────────────────────────────
+
+  const stop = useCallback(() => {
+    if (!streaming) return
+    // Arrêt côté client : on cesse d'afficher les tokens et on débloque l'UI.
+    // (Le backend termine sa génération en silence ; ses tokens sont ignorés
+    // grâce à cancelledRef, et le 'done' final réinitialise l'état.)
+    cancelledRef.current = true
+    setStreaming(false)
+    setStreamStats(null)
+    inPipelineRef.current = false
+  }, [streaming])
+
+  const relancer = useCallback(() => {
+    if (streaming || !connected) return
+    const lastUser = [...messages].reverse().find(m => m.role === 'user')
+    if (lastUser) sendUserText(lastUser.content)
+  }, [streaming, connected, messages, sendUserText])
+
+  const canResume = !streaming && messages.some(m => m.role === 'user')
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
 
@@ -871,14 +897,35 @@ export default function Chat({
               el.style.height = `${Math.min(el.scrollHeight, 160)}px`
             }}
           />
-          <button
-            onClick={() => { send() }}
-            disabled={streaming || !input.trim()}
-            title="Envoyer"
-            className="p-2.5 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
-          >
-            {streaming ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-          </button>
+          {streaming ? (
+            <button
+              onClick={stop}
+              title="Arrêter la génération"
+              className="p-2.5 rounded-md bg-error/90 text-on-accent shadow-sm hover:opacity-90 transition-all duration-150 shrink-0"
+            >
+              <Square size={16} fill="currentColor" />
+            </button>
+          ) : (
+            <>
+              {canResume && !input.trim() && (
+                <button
+                  onClick={relancer}
+                  title="Relancer le dernier message"
+                  className="p-2.5 rounded-md border border-line text-muted hover:text-secondary hover:bg-elevated transition-all duration-150 shrink-0"
+                >
+                  <RotateCcw size={16} />
+                </button>
+              )}
+              <button
+                onClick={() => { send() }}
+                disabled={!input.trim()}
+                title="Envoyer"
+                className="p-2.5 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
+              >
+                <Send size={16} />
+              </button>
+            </>
+          )}
         </div>
         {!connected && (
           <div className="mt-2 text-xs font-mono text-error">ws déconnecté — reconnexion...</div>

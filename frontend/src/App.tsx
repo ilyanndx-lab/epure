@@ -16,6 +16,10 @@ export default function App() {
   const config = useInstanceConfig()
   const modules = useModules()
   const [activeModule, setActiveModule] = usePersistentState<string>('epure.activeModule', 'chat')
+  // Modules déjà visités : on les garde MONTÉS (cachés) pour que leurs tâches
+  // (streaming chat, génération…) continuent en arrière-plan quand on change de
+  // module. On n'ajoute jamais, on ne retire pas → pas d'interruption.
+  const [mountedIds, setMountedIds] = useState<string[]>([activeModule])
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
 
@@ -88,6 +92,11 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeModule, config.modules_activés, modules])
 
+  // Monte le module actif s'il ne l'est pas déjà (et le garde monté ensuite).
+  useEffect(() => {
+    setMountedIds(prev => (prev.includes(activeModule) ? prev : [...prev, activeModule]))
+  }, [activeModule])
+
   // Props partagées passées à tout module rendu.
   const sharedProps: SharedModuleProps = {
     onAssistantDone,
@@ -99,29 +108,44 @@ export default function App() {
     onTtsToggle: () => setTtsEnabled(v => !v),
   }
 
-  const Active = getModuleDef(activeModule)?.component
+  const activeHasInterface = !!getModuleDef(activeModule)
 
   return (
     <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
       <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
       <div className="flex flex-col flex-1 overflow-hidden">
-        <ModuleErrorBoundary moduleId={activeModule} onNavigate={setActiveModule}>
-          <Suspense
-            fallback={
-              <div className="flex flex-1 items-center justify-center text-muted">
-                <Loader2 size={18} className="animate-spin" />
-              </div>
-            }
-          >
-            {Active ? (
-              <Active {...sharedProps} />
-            ) : (
-              <div className="flex flex-1 items-center justify-center text-sm text-muted">
-                Module « {activeModule} » sans interface frontend
-              </div>
-            )}
-          </Suspense>
-        </ModuleErrorBoundary>
+        {/* Tous les modules visités restent montés ; seul l'actif est affiché.
+            Leurs tâches (WebSocket, streaming) ne sont donc pas interrompues. */}
+        {mountedIds.map(id => {
+          const def = getModuleDef(id)
+          if (!def) return null
+          const C = def.component
+          const isActive = id === activeModule
+          return (
+            <div
+              key={id}
+              className="flex flex-col flex-1 min-h-0 overflow-hidden"
+              style={{ display: isActive ? 'flex' : 'none' }}
+            >
+              <ModuleErrorBoundary moduleId={id} onNavigate={setActiveModule}>
+                <Suspense
+                  fallback={
+                    <div className="flex flex-1 items-center justify-center text-muted">
+                      <Loader2 size={18} className="animate-spin" />
+                    </div>
+                  }
+                >
+                  <C {...sharedProps} />
+                </Suspense>
+              </ModuleErrorBoundary>
+            </div>
+          )
+        })}
+        {!activeHasInterface && (
+          <div className="flex flex-1 items-center justify-center text-sm text-muted">
+            Module « {activeModule} » sans interface frontend
+          </div>
+        )}
       </div>
     </div>
   )
