@@ -11,7 +11,7 @@ import { usePersistentState } from '../usePersistentState'
 const API = 'http://localhost:8000'
 const WS_URL = 'ws://localhost:8000/ws/workshop'
 
-type Engine = 'ollama' | 'claude_sub' | 'claude_gateway'
+type Engine = 'ollama' | 'claude_sub' | 'claude_gateway' | 'aider'
 type Mode = 'headless' | 'terminal'
 type Kind = 'new' | 'edit'
 type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review'
@@ -125,7 +125,7 @@ export default function Workshop() {
     wsRef.current?.close()  // ferme une éventuelle session précédente
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode, model, feedback }))
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode, ollama_model: (engine === 'ollama' || engine === 'aider') ? (model || null) : null, feedback }))
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data)
       if (data.type === 'token') {
@@ -270,19 +270,22 @@ export default function Workshop() {
           <div>
             <label className="text-xs text-muted uppercase tracking-wide block mb-1">Moteur</label>
             <Select value={engine} onChange={e => setEngine(e.target.value as Engine)}>
-              {(['ollama', 'claude_sub', 'claude_gateway'] as Engine[]).map(en => {
+              {(['ollama', 'aider', 'claude_sub', 'claude_gateway'] as Engine[]).map(en => {
                 const info = engines?.[en]
                 const ok = info?.disponible ?? (en === 'ollama')
                 return (
                   <option key={en} value={en} disabled={!ok}>
-                    {en === 'ollama' ? 'Ollama (local)' : en === 'claude_sub' ? 'Claude (abonnement)' : 'Claude (passerelle)'}
+                    {en === 'ollama' ? 'Ollama (local)'
+                      : en === 'aider' ? 'aider (local/cloud)'
+                      : en === 'claude_sub' ? 'Claude (abonnement)'
+                      : 'Claude (passerelle)'}
                     {ok ? '' : ' — indisponible'}
                   </option>
                 )
               })}
             </Select>
           </div>
-          {engine === 'ollama' && (
+          {(engine === 'ollama' || engine === 'aider') && (
             <div className="min-w-[12rem]">
               <label className="text-xs text-muted uppercase tracking-wide mb-1 flex items-center gap-1">
                 <Cpu size={11} /> Modèle

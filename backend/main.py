@@ -436,15 +436,13 @@ async def ws_workshop(websocket: WebSocket):
                     kind = msg.get("kind", "new")
                     spec = msg.get("description", "")
                     engine = msg.get("engine", "ollama")
-                    model = msg.get("model") or None
-                    feedback = msg.get("feedback") or None
+                    ollama_model = msg.get("ollama_model") or None
                     if engine == "ollama":
-                        gen = module_workshop.generate_ollama(mid, spec, kind, model=model, feedback=feedback)
+                        gen = module_workshop.generate_ollama(mid, spec, kind, model=ollama_model)
+                    elif engine == "aider":
+                        gen = module_workshop.generate_aider_headless(mid, spec, kind, model=ollama_model)
                     else:
-                        # claude_* : pas de sélection de modèle ; on intègre le
-                        # feedback d'erreur dans la description.
-                        eff_spec = spec if not feedback else f"{spec}\n\n[Corrige ces erreurs]\n{feedback}"
-                        gen = module_workshop.generate_claude_headless(mid, eff_spec, kind, engine)
+                        gen = module_workshop.generate_claude_headless(mid, spec, kind, engine)
                     await _stream_generator(gen)
                     await _validate_and_report(mid)
                     bg_mid = mid

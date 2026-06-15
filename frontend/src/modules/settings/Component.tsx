@@ -16,6 +16,9 @@ interface ModelOption { id: string; nom: string; disponible: boolean }
 
 interface EngineStatus { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 
+// État local d'un bouton « Tester » (propre à chaque bouton, pas de partage).
+interface TestState { testing: boolean; result: { ok: boolean; msg: string } | null }
+
 const ENGINE_LABELS: Record<string, string> = {
   ollama: 'Ollama (local)',
   claude_sub: 'Claude Code (abonnement)',
@@ -160,6 +163,8 @@ export default function Settings() {
   const modules = useModules()
   const [models, setModels] = useState<ModelOption[]>([])
   const [engines, setEngines] = useState<Record<string, EngineStatus> | null>(null)
+  const [aiderTest, setAiderTest] = useState<TestState>({ testing: false, result: null })
+  const [gatewayTest, setGatewayTest] = useState<TestState>({ testing: false, result: null })
   const [addModuleOpen, setAddModuleOpen] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -186,6 +191,9 @@ export default function Settings() {
   const [savingKeys, setSavingKeys] = useState(false)
   const [keysMsg, setKeysMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({})
+  // Modèles cloud disponibles par provider (clé = nom du provider, ex. "nvidia").
+  // Les IDs sont déjà au format Épure "provider:model_id".
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({})
 
   useEffect(() => {
     fetch(`${API}/memory/profile`)
@@ -202,6 +210,11 @@ export default function Settings() {
       .then(r => r.json())
       .then((d: Record<string, boolean>) => setKeyStatus(d))
       .catch(err => console.error('GET /settings/api-keys:', err))
+
+    fetch(`${API}/settings/provider-models`)
+      .then(r => r.json())
+      .then((d: { providers: Record<string, string[]> }) => setProviderModels(d.providers ?? {}))
+      .catch(err => console.error('GET /settings/provider-models:', err))
 
     fetch(`${API}/context`)
       .then(r => r.json())
@@ -236,6 +249,29 @@ export default function Settings() {
       .then(r => r.json())
       .then((d: Record<string, EngineStatus>) => setEngines(d))
       .catch(() => setEngines(null))
+  }
+
+  const testAider = async () => {
+    setAiderTest({ testing: true, result: null })
+    try {
+      const r = await fetch(`${API}/settings/test/aider`, { method: 'POST' })
+      const d = await r.json() as { ok: boolean; version: string; raison: string }
+      setAiderTest({ testing: false, result: { ok: d.ok, msg: d.ok ? (d.version || 'aider OK') : (d.raison || 'Échec') } })
+    } catch {
+      setAiderTest({ testing: false, result: { ok: false, msg: 'Backend injoignable.' } })
+    }
+  }
+
+  const testGateway = async () => {
+    setGatewayTest({ testing: true, result: null })
+    try {
+      const r = await fetch(`${API}/settings/test/gateway`, { method: 'POST' })
+      const d = await r.json() as { ok: boolean; url: string; raison: string }
+      // En cas d'échec, d.raison contient déjà « Passerelle injoignable : <url> ».
+      setGatewayTest({ testing: false, result: { ok: d.ok, msg: d.ok ? 'joignable' : (d.raison || `injoignable : ${d.url}`) } })
+    } catch {
+      setGatewayTest({ testing: false, result: { ok: false, msg: 'Backend injoignable.' } })
+    }
   }
 
   const addModule = useCallback((id: string) => {
@@ -679,13 +715,48 @@ export default function Settings() {
             className="w-full text-xs py-1.5" placeholder="claude" />
         </div>
 
+        {/* Binaire aider + test de connectivité */}
+        <div>
+          <label className="text-xs text-muted uppercase tracking-wide block mb-1">Chemin aider</label>
+          <div className="flex items-center gap-2">
+            <Input mono key={`ap-${config.atelier.aider_path}`} defaultValue={config.atelier.aider_path}
+              onBlur={e => { const v = e.target.value.trim() || 'aider'; if (v !== config.atelier.aider_path) { void updateInstance({ atelier: { aider_path: v } }); setTimeout(loadEngines, 400) } }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="flex-1 text-xs py-1.5" placeholder="aider (nom sur le PATH ou chemin complet)" />
+            <Button variant="secondary" size="sm" onClick={() => void testAider()} disabled={aiderTest.testing}>
+              {aiderTest.testing ? 'Test…' : 'Tester'}
+            </Button>
+          </div>
+          {aiderTest.result && (
+            <div className="mt-1.5 flex items-center gap-2 min-w-0">
+              <Badge variant={aiderTest.result.ok ? 'success' : 'error'}>
+                {aiderTest.result.ok ? 'OK' : 'erreur'}
+              </Badge>
+              <span className="text-xs text-muted truncate">{aiderTest.result.msg}</span>
+            </div>
+          )}
+        </div>
+
         {/* Passerelle : URL / modèle / clé */}
         <div className="space-y-2">
           <p className="text-xs text-muted uppercase tracking-wide">Passerelle (claude_gateway)</p>
-          <Input mono key={`gu-${config.atelier.gateway.base_url}`} defaultValue={config.atelier.gateway.base_url}
-            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(loadEngines, 400) } }}
-            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-            className="w-full text-xs py-1.5" placeholder="URL — http://localhost:4000" />
+          <div className="flex items-center gap-2">
+            <Input mono key={`gu-${config.atelier.gateway.base_url}`} defaultValue={config.atelier.gateway.base_url}
+              onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(loadEngines, 400) } }}
+              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              className="flex-1 text-xs py-1.5" placeholder="URL — http://localhost:4000" />
+            <Button variant="secondary" size="sm" onClick={() => void testGateway()} disabled={gatewayTest.testing}>
+              {gatewayTest.testing ? 'Test…' : 'Tester'}
+            </Button>
+          </div>
+          {gatewayTest.result && (
+            <div className="flex items-center gap-2 min-w-0">
+              <Badge variant={gatewayTest.result.ok ? 'success' : 'error'}>
+                {gatewayTest.result.ok ? 'joignable' : 'erreur'}
+              </Badge>
+              <span className="text-xs text-muted truncate">{gatewayTest.result.msg}</span>
+            </div>
+          )}
           <Input mono key={`gm-${config.atelier.gateway.model}`} defaultValue={config.atelier.gateway.model}
             onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.model) void updateInstance({ atelier: { gateway: { model: v } } }) }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
@@ -945,6 +1016,32 @@ export default function Settings() {
                 className="shrink-0"
               />
             </div>
+            {(() => {
+              // provider dérivé du nom de clé : GEMINI_API_KEY → "gemini".
+              const provider = key.replace('_API_KEY', '').toLowerCase()
+              const models = providerModels[provider]
+              if (!keyStatus[key] || !models?.length) return null
+              return (
+                <details className="rounded border border-line">
+                  <summary className="cursor-pointer list-none flex items-center gap-2 px-2 py-1.5 text-xs text-muted">
+                    <span>Modèles disponibles</span>
+                    <Badge variant="neutral">{models.length}</Badge>
+                  </summary>
+                  <div className="flex flex-wrap gap-1.5 px-2 pb-2 pt-1">
+                    {models.map(mid => (
+                      <code
+                        key={mid}
+                        onClick={() => void navigator.clipboard.writeText(mid)}
+                        title="Copier l'identifiant"
+                        className="text-xs font-mono text-secondary bg-elevated border border-line rounded px-1.5 py-0.5 cursor-pointer hover:border-accent/50"
+                      >
+                        {mid}
+                      </code>
+                    ))}
+                  </div>
+                </details>
+              )
+            })()}
           </div>
         ))}
 

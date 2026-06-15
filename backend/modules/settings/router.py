@@ -11,6 +11,8 @@ import io
 import json
 import logging
 import os
+import shutil
+import subprocess
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -21,7 +23,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.instance import fiches_root
+from core.instance import fiches_root, instance_config
 from core.rag import RAGEngine
 from core.runtime import (
     API_KEY_NAMES,
@@ -260,6 +262,11 @@ async def _stream_load_sse(paths: list[str]):
         def _worker(msgs, q, lp, model):
             try:
                 for token in llm.stream(msgs, model=model):
+                    # Résumé fichiers : texte uniquement. Écarte les sentinelles
+                    # dict (__stats__, __reasoning__) — sinon `accumulated += item`
+                    # plus bas lèverait un TypeError.
+                    if not isinstance(token, str):
+                        continue
                     asyncio.run_coroutine_threadsafe(q.put(token), lp)
             except Exception as exc:
                 logger.exception("Erreur streaming résumé fichiers")
@@ -397,3 +404,72 @@ async def memory_consolidation_log():
     loop = asyncio.get_running_loop()
     log = await loop.run_in_executor(None, consolidation_engine.get_log)
     return {"log": log}
+
+
+# ── Atelier : tests de connectivité des moteurs ───────────────────────────────
+
+@router.post("/settings/test/aider")
+def test_aider():
+    """Teste que le binaire `aider` (atelier.aider_path) répond à --version."""
+    atelier = instance_config.get().get("atelier") or {}
+    ap = (atelier.get("aider_path") or "aider").strip()
+    bin_path = shutil.which(ap) or shutil.which(ap + ".cmd") or (ap if os.path.exists(ap) else None)
+    if not bin_path:
+        return {"ok": False, "version": "", "raison": f"Binaire '{ap}' introuvable dans le PATH."}
+    try:
+        r = subprocess.run([bin_path, "--version"], capture_output=True, text=True, timeout=15)
+        ok = r.returncode == 0
+        version = (r.stdout or r.stderr or "").strip().splitlines()[0] if ok else ""
+        return {"ok": ok, "version": version, "raison": "" if ok else r.stderr.strip()[:200]}
+    except Exception as exc:
+        return {"ok": False, "version": "", "raison": str(exc)}
+
+
+@router.post("/settings/test/gateway")
+def test_gateway():
+    """Teste que la passerelle claude_gateway est joignable."""
+    from core.module_workshop import gateway_reachable, _gateway_cfg
+
+    gw = _gateway_cfg()
+    url = gw["base_url"]
+    ok = gateway_reachable(url)
+    return {"ok": ok, "url": url, "raison": "" if ok else f"Passerelle injoignable : {url}"}
+
+
+# Providers cloud → clé API qui les active (réutilise les listes statiques de
+# core.models comme source des modèles, plutôt que de les redéfinir).
+_PROVIDER_KEY = {
+    "nvidia": "NVIDIA_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Fallback Gemini si core.models ne l'expose pas (ne devrait pas arriver).
+_GEMINI_FALLBACK = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
+
+
+@router.get("/settings/provider-models")
+def provider_models():
+    """Modèles disponibles par provider cloud, limités aux providers dont la clé
+    API est définie dans l'environnement. Les IDs suivent la convention Épure
+    `provider:model_id` (ex. "gemini:gemini-2.0-flash")."""
+    from core import models as _models
+    from core.models import (
+        _NVIDIA_STATIC, _GROQ_STATIC, _CEREBRAS_STATIC, _MISTRAL_STATIC,
+    )
+
+    provider_static = {
+        "nvidia": _NVIDIA_STATIC,
+        "groq": _GROQ_STATIC,
+        "cerebras": _CEREBRAS_STATIC,
+        "mistral": _MISTRAL_STATIC,
+        "gemini": getattr(_models, "_GEMINI_STATIC", None) or _GEMINI_FALLBACK,
+    }
+    result: dict[str, list[str]] = {}
+    for provider, models in provider_static.items():
+        key_name = _PROVIDER_KEY.get(provider, "")
+        if os.environ.get(key_name, "").strip():
+            result[provider] = [f"{provider}:{mid}" for mid in models]
+    return {"providers": result}
