@@ -1,9 +1,9 @@
 {
-  "id": "vroom",
+  "id": "dinosaure",
   "version": "1.0.0",
-  "nom": "Vroom",
+  "nom": "Dinosaure",
   "icon": "Box",
-  "description": "Module de course 2D avec véhicules et pistes",
+  "description": "Un jeu de dinosaure rétro amélioré avec score et niveaux",
   "frontend": {
     "component": "Component"
   },
