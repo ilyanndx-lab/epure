@@ -1081,19 +1081,24 @@ def _remount(app, module_id: str) -> None:
     app.openapi_schema = None  # invalide le schéma OpenAPI mis en cache
 
 
-def approve(module_id: str, app=None) -> dict:
+def approve(module_id: str, app=None, force: bool = False) -> dict:
     """Active le module après revue : backup → déplacement → reload → activation.
 
-    Refuse si la validation n'est pas passée (status != pending_review).
+    Refuse si la validation n'est pas passée (status != pending_review), SAUF si
+    force=True (activation manuelle explicite par l'utilisateur, malgré des
+    erreurs de validation — code potentiellement cassé/non sûr, à ses risques).
     """
     meta = _read_meta(module_id)
     if not meta:
         raise ValueError("Aucun staging à approuver.")
     # Revalidation (gate d'exécution) — on ne fait jamais confiance au status seul.
     res = validate_staging(module_id, run_tsc=False)
-    if not res["report"]["ok"]:
+    if not res["report"]["ok"] and not force:
         return {"ok": False, "report": res["report"], "status": "draft",
                 "detail": "Validation échouée — activation refusée."}
+    if not res["report"]["ok"]:
+        logger.warning("Activation FORCÉE de %s malgré des erreurs : %s",
+                       module_id, res["report"]["errors"])
 
     sdir = _staging_dir(module_id)
     backup = _backup_existing(module_id)
