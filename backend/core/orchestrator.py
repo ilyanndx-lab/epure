@@ -18,6 +18,7 @@ _KEY_MAP = {
     "mistral":  "MISTRAL_API_KEY",
     "nvidia":   "NVIDIA_API_KEY",
     "gemini":   "GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "flm":      None,
 }
 
