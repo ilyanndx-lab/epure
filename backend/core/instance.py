@@ -68,6 +68,8 @@ def _default_config() -> dict:
             "claude_path": "claude",
             # Binaire `aider` (nom sur le PATH ou chemin complet).
             "aider_path": "aider",
+            # Timeout (minutes) d'une génération aider headless.
+            "aider_timeout_min": 15,
             # Passerelle Anthropic-compatible (LiteLLM / claude-code-router) pour
             # le moteur claude_gateway. start_command : commande de démarrage
             # optionnelle, lancée par le bouton « Démarrer » des Réglages.

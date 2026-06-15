@@ -386,7 +386,10 @@ async def ws_workshop(websocket: WebSocket):
         await websocket.send_text(json.dumps(ev, ensure_ascii=False))
 
     async def _stream_generator(gen):
-        """Draine un générateur synchrone (engine) vers le WebSocket."""
+        """Draine un générateur synchrone (engine) vers le WebSocket.
+        Retourne {"paused": bool} : True si l'engine a émis un événement 'paused'
+        (timeout aider) → on NE valide PAS (le travail est conservé pour reprise)."""
+        state = {"paused": False}
         queue: asyncio.Queue = asyncio.Queue()
 
         def _worker():
@@ -404,7 +407,10 @@ async def ws_workshop(websocket: WebSocket):
             ev = await queue.get()
             if ev is None:
                 break
+            if ev.get("type") == "paused":
+                state["paused"] = True
             await _emit(ev)
+        return state
 
     async def _validate_and_report(mid: str):
         """Gate RAPIDE (sans tsc) : la revue doit s'afficher immédiatement."""
@@ -465,15 +471,23 @@ async def ws_workshop(websocket: WebSocket):
                     if engine == "ollama":
                         gen = module_workshop.generate_ollama(mid, spec, kind, model=ollama_model, feedback=feedback)
                     elif engine == "aider":
-                        gen = module_workshop.generate_aider_headless(mid, spec, kind, model=ollama_model)
+                        architect = bool(msg.get("aider_architect", False))
+                        gen = module_workshop.generate_aider_headless(mid, spec, kind, model=ollama_model, architect=architect)
                     else:
                         # claude_* : pas de sélection de modèle ; on intègre le
                         # feedback d'erreur dans la description.
                         eff_spec = spec if not feedback else f"{spec}\n\n[Corrige ces erreurs]\n{feedback}"
                         gen = module_workshop.generate_claude_headless(mid, eff_spec, kind, engine)
-                    await _stream_generator(gen)
-                    await _validate_and_report(mid)
-                    bg_mid = mid
+                    st = await _stream_generator(gen)
+                    if not st["paused"]:
+                        await _validate_and_report(mid)
+                        bg_mid = mid
+                elif mtype == "resume":
+                    mid = msg.get("id", "")
+                    st = await _stream_generator(module_workshop.resume_aider_headless(mid))
+                    if not st["paused"]:
+                        await _validate_and_report(mid)
+                        bg_mid = mid
                 elif mtype == "terminal_done":
                     mid = msg.get("id", "")
                     await _validate_and_report(mid)

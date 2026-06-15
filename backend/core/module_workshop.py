@@ -807,117 +807,157 @@ _AIDER_CLOUD: dict[str, tuple[str, str, str]] = {
 }
 
 
-def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optional[str] = None) -> Generator:
-    """Lance aider en headless (--message), cwd=staging, streame stdout.
+def _aider_timeout() -> int:
+    """Délai (secondes) avant pause d'une génération aider, depuis la config."""
+    mn = ((instance_config.get().get("atelier") or {}).get("aider_timeout_min") or 15)
+    try:
+        return max(60, int(mn) * 60)
+    except Exception:
+        return 900
 
-    model peut être :
-    - None / nom Ollama simple  → local Ollama : --model ollama_chat/<model>
-    - 'provider:model_id'       → cloud : --model <prefix>/<model_id> + OPENAI_API_BASE
+
+def _aider_resolve(model: Optional[str]) -> tuple[str, dict]:
+    """(modèle aider, env supplémentaire) à partir d'un id Épure.
+
+    ATTENTION : un nom Ollama contient un ':' (tag, ex. « mistral-small:24b »).
+    On ne traite le préfixe comme provider cloud que s'il est dans _AIDER_CLOUD ;
+    sinon toute la chaîne (tag compris) est un nom Ollama. Lève ValueError si la
+    clé du provider cloud est absente.
     """
-    aider_bin = _aider_bin()
-    if not aider_bin:
-        yield {"type": "error", "content": "aider introuvable. Installez : pip install aider-chat"}
-        return
-
-    sdir = _staging_dir(module_id)
-    sdir.mkdir(parents=True, exist_ok=True)
-
-    # Résolution du modèle et de l'env.
-    # ATTENTION : un nom Ollama contient un ':' qui fait partie du TAG
-    # (ex. « mistral-small:24b », « qwen2.5-coder:7b »). On ne traite donc le
-    # préfixe comme un provider cloud QUE s'il appartient à _AIDER_CLOUD ;
-    # sinon la chaîne entière (tag compris) est un nom de modèle Ollama.
-    extra_env: dict = {"OLLAMA_API_BASE": os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")}
+    extra_env = {"OLLAMA_API_BASE": os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")}
     chosen = (model or (instance_config.get().get("providers") or {}).get("actif") or "").strip()
     provider, sep, rest = chosen.partition(":")
     if sep and provider in _AIDER_CLOUD:
         base_url, key_name, prefix = _AIDER_CLOUD[provider]
         api_key = os.environ.get(key_name, "").strip()
         if not api_key:
-            yield {"type": "error", "content": f"{key_name} non configurée dans les Réglages."}
-            return
+            raise ValueError(f"{key_name} non configurée dans les Réglages.")
         if provider == "deepseek":
-            # Provider natif litellm : il lit DEEPSEEK_API_KEY, pas OPENAI_*.
             extra_env["DEEPSEEK_API_KEY"] = api_key
         else:
             extra_env["OPENAI_API_BASE"] = base_url
             extra_env["OPENAI_API_KEY"] = api_key
-        aider_model = f"{prefix}/{rest}"
-    elif chosen:
-        aider_model = f"ollama_chat/{chosen}"
+        return f"{prefix}/{rest}", extra_env
+    if chosen:
+        return f"ollama_chat/{chosen}", extra_env
+    return "ollama_chat/qwen2.5-coder:7b", extra_env
+
+
+def _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore):
+    """Commande aider headless confinée (--no-git), avec flags de fiabilité.
+
+    --no-git est INDISPENSABLE : le staging est imbriqué dans le dépôt git d'Épure ;
+    sans ça aider s'attache au dépôt parent (repo-map sur tout le code) au lieu
+    d'écrire juste les 3 fichiers dans le cwd. L'historique de chat est persisté
+    dans le staging pour permettre la reprise (--restore-chat-history).
+    """
+    cmd = [aider_bin, "--no-git", "--chat-history-file", ".aider.chat.history.md", "--model", aider_model]
+    if restore:
+        cmd += ["--restore-chat-history"]
+    if architect:
+        # Modèle éditeur moins cher pour DeepSeek (pro raisonne, flash applique).
+        editor_model = aider_model
+        if aider_model.startswith("deepseek/") and "v4-pro" in aider_model:
+            editor_model = "deepseek/deepseek-v4-flash"
+        cmd += ["--architect", "--editor-model", editor_model, "--editor-edit-format", edit_fmt]
     else:
-        aider_model = "ollama_chat/qwen2.5-coder:7b"
+        cmd += ["--edit-format", edit_fmt]
+    cmd += ["--message", message, "--yes-always", "--no-auto-commits", "--no-check-update",
+            "--no-show-model-warnings", "--no-detect-urls", "--chat-language", "French",
+            "--map-tokens", "0", "manifest.json", "router.py", "Component.tsx"]
+    return cmd
 
-    prompt = _claude_prompt(module_id, spec, kind)
-    env = _local_agent_env(extra_env)
 
-    cmd = [
-        aider_bin,
-        # --no-git est INDISPENSABLE : le staging est imbriqué dans le dépôt git
-        # d'Épure ; sans ça aider s'attache au dépôt parent (repo-map sur tout le
-        # code, lent/instable avec un petit modèle local) au lieu d'écrire juste
-        # les 3 fichiers du module dans le cwd confiné.
-        "--no-git",
-        "--model", aider_model,
-        "--message", prompt,
-        "--yes-always",
-        "--no-auto-commits",
-        "--no-check-update",
-        "--no-show-model-warnings",
-        "manifest.json", "router.py", "Component.tsx",
-    ]
-
-    yield {"type": "engine", "engine": "aider", "model": aider_model}
-
+def _run_aider_proc(module_id, sdir, cmd, env) -> Generator:
+    """Exécute aider, streame stdout. Sur timeout → PAUSE (status 'paused',
+    travail conservé) au lieu de tuer + erreur — permet la reprise."""
     timed_out = {"flag": False}
-    try:
-        proc = subprocess.Popen(
-            cmd, cwd=str(sdir), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, text=True,
-            # aider écrit en UTF-8 ; sans ça, l'encodage par défaut Windows (cp1252)
-            # transforme les accents en mojibake (Ã©, Ã¨) dans le journal.
-            encoding="utf-8", errors="replace",
-            creationflags=_NO_WINDOW,
-        )
-    except FileNotFoundError:
-        yield {"type": "error", "content": "aider introuvable dans le PATH."}
-        return
-    except Exception as exc:
-        yield {"type": "error", "content": f"Lancement aider échoué : {exc}"}
-        return
+    proc = subprocess.Popen(cmd, cwd=str(sdir), env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True,
+                            encoding="utf-8", errors="replace", creationflags=_NO_WINDOW)
 
     def _watchdog():
         try:
-            proc.wait(timeout=_CLAUDE_TIMEOUT)
+            proc.wait(timeout=_aider_timeout())
         except subprocess.TimeoutExpired:
             timed_out["flag"] = True
             try:
-                proc.kill()
+                proc.terminate()
             except Exception:
                 pass
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     Thread(target=_watchdog, daemon=True).start()
-
-    try:
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                yield {"type": "token", "content": line + "\n"}
-        proc.wait(timeout=10)
-    except Exception as exc:
-        yield {"type": "error", "content": str(exc)}
-        return
-
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            yield {"type": "token", "content": line + "\n"}
+    proc.wait(timeout=10)
     if timed_out["flag"]:
-        yield {"type": "error", "content": f"Timeout aider ({_CLAUDE_TIMEOUT}s) — process tué."}
+        meta = _read_meta(module_id) or {}
+        meta["status"] = "paused"
+        _write_meta(module_id, meta)
+        yield {"type": "paused", "content": f"Délai atteint ({_aider_timeout()//60} min) — travail conservé. Cliquez « Continuer » pour reprendre."}
         return
-
     present = [n for n in _FILES if (sdir / n).is_file()]
     if not present:
-        yield {"type": "error", "content": "aider n'a produit aucun des 3 fichiers dans le staging."}
+        yield {"type": "error", "content": "aider n'a produit aucun des 3 fichiers."}
         return
     yield {"type": "generation_done", "files": present}
+
+
+def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optional[str] = None,
+                            architect: bool = False) -> Generator:
+    """Lance aider en headless (--message), cwd=staging, streame stdout.
+    Sur timeout, met en PAUSE (reprise via resume_aider_headless)."""
+    aider_bin = _aider_bin()
+    if not aider_bin:
+        yield {"type": "error", "content": "aider introuvable. Installez : pip install aider-chat"}
+        return
+    sdir = _staging_dir(module_id)
+    sdir.mkdir(parents=True, exist_ok=True)
+    try:
+        aider_model, extra_env = _aider_resolve(model)
+    except ValueError as e:
+        yield {"type": "error", "content": str(e)}
+        return
+    meta = _read_meta(module_id) or {}
+    meta["aider"] = {"model": model, "architect": bool(architect), "kind": kind}
+    _write_meta(module_id, meta)
+    edit_fmt = "whole" if kind == "new" else "diff"
+    cmd = _aider_cmd(aider_bin, aider_model, _claude_prompt(module_id, spec, kind), edit_fmt, architect, restore=False)
+    yield {"type": "engine", "engine": "aider", "model": aider_model, "architect": bool(architect)}
+    yield from _run_aider_proc(module_id, sdir, cmd, _local_agent_env(extra_env))
+
+
+def resume_aider_headless(module_id: str) -> Generator:
+    """Reprend une génération aider en pause : restaure l'historique de chat et
+    demande à aider de continuer là où il s'était arrêté (sans tout réécrire)."""
+    aider_bin = _aider_bin()
+    if not aider_bin:
+        yield {"type": "error", "content": "aider introuvable."}
+        return
+    sdir = _staging_dir(module_id)
+    a = (_read_meta(module_id) or {}).get("aider") or {}
+    try:
+        aider_model, extra_env = _aider_resolve(a.get("model"))
+    except ValueError as e:
+        yield {"type": "error", "content": str(e)}
+        return
+    architect = bool(a.get("architect"))
+    edit_fmt = "diff" if any((sdir / n).is_file() and (sdir / n).stat().st_size > 2 for n in _FILES) else "whole"
+    cont = ("Reprends EXACTEMENT là où tu t'es arrêté le travail précédent (voir l'historique). "
+            "Les fichiers déjà écrits sont dans le dossier courant. Termine manifest.json, "
+            "router.py et Component.tsx selon la demande initiale, sans tout réécrire de zéro.")
+    cmd = _aider_cmd(aider_bin, aider_model, cont, edit_fmt, architect, restore=True)
+    yield {"type": "engine", "engine": "aider", "model": aider_model, "architect": architect, "resumed": True}
+    yield from _run_aider_proc(module_id, sdir, cmd, _local_agent_env(extra_env))
 
 
 def terminal_launch_spec(module_id: str, spec: str, kind: str, engine: str) -> dict:
