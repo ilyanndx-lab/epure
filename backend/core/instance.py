@@ -65,6 +65,8 @@ def _default_config() -> dict:
         "atelier": {
             # Binaire `claude` (nom sur le PATH ou chemin complet).
             "claude_path": "claude",
+            # Binaire `aider` (nom sur le PATH ou chemin complet).
+            "aider_path": "aider",
             # Passerelle Anthropic-compatible (LiteLLM / claude-code-router) pour
             # le moteur claude_gateway.
             "gateway": {

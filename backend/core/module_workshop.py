@@ -261,6 +261,27 @@ def _claude_bin() -> Optional[str]:
     return shutil.which(cp) or shutil.which(cp + ".cmd")
 
 
+def _aider_bin() -> Optional[str]:
+    """Localise le binaire `aider` : atelier.aider_path (nom PATH ou chemin complet)."""
+    ap = ((instance_config.get().get("atelier") or {}).get("aider_path") or "aider").strip()
+    if os.sep in ap or (os.altsep and os.altsep in ap):
+        return ap if Path(ap).exists() else None
+    return shutil.which(ap) or shutil.which(ap + ".cmd")
+
+
+def _local_agent_env(extra: Optional[dict] = None) -> dict:
+    """Env minimal pour moteurs locaux (aider, opencode) : PATH + variables home seulement.
+    Aucune clé API cloud — local pur par défaut. extra = variables supplémentaires à injecter."""
+    env = _make_exec_env()
+    for k in ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+              "OLLAMA_HOST", "OLLAMA_API_BASE"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    if extra:
+        env.update(extra)
+    return env
+
+
 def gateway_reachable(url: Optional[str] = None) -> bool:
     url = url or _gateway_cfg()["base_url"]
     for path in ("/health", "/v1/models", "/"):
@@ -297,6 +318,20 @@ def _claude_version_ok(claude_bin: Optional[str]) -> bool:
             [claude_bin, "--version"], capture_output=True, text=True,
             timeout=20, env=_claude_env("claude_sub"),
             stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _bin_version_ok(bin_path: Optional[str]) -> bool:
+    """Vérifie que bin_path --version s'exécute sans erreur."""
+    if not bin_path:
+        return False
+    try:
+        r = subprocess.run(
+            [bin_path, "--version"], capture_output=True, text=True,
+            timeout=15, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
         )
         return r.returncode == 0
     except Exception:
@@ -356,6 +391,20 @@ def engines_status() -> dict:
     else:
         gw_ok, gw_raison = True, ""
 
+    # ── aider ────────────────────────────────────────────────────────────────
+    aider_bin = _aider_bin()
+    aider_ver_ok = _bin_version_ok(aider_bin)
+    if not aider_ver_ok:
+        aid_ok, aid_raison = False, (
+            "Binaire `aider` introuvable — installez-le : "
+            "pip install aider-chat (ou uv tool install --python 3.12 aider-chat), "
+            "puis Re-tester."
+        )
+    elif not o_ok:
+        aid_ok, aid_raison = False, f"Ollama requis pour aider local : {o_raison}"
+    else:
+        aid_ok, aid_raison = True, ""
+
     return {
         "ollama": {"disponible": o_ok, "raison": o_raison},
         "claude_sub": {"disponible": sub_ok, "raison": sub_raison, "bin": claude_bin or ""},
@@ -363,6 +412,7 @@ def engines_status() -> dict:
             "disponible": gw_ok, "raison": gw_raison,
             "base_url": gw["base_url"], "model": gw["model"],
         },
+        "aider": {"disponible": aid_ok, "raison": aid_raison, "bin": aider_bin or ""},
     }
 
 
@@ -638,6 +688,129 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
     present = [n for n in _FILES if (sdir / n).is_file()]
     if not present:
         yield {"type": "error", "content": "claude n'a produit aucun des 3 fichiers attendus dans le staging."}
+        return
+    yield {"type": "generation_done", "files": present}
+
+
+# ── Providers cloud supportés par aider (mapping Épure → aider) ──────────
+_AIDER_CLOUD: dict[str, tuple[str, str, str]] = {
+    # provider → (base_url, env_key_name, model_prefix)
+    "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY",  "openai"),
+    "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY",    "groq"),
+    "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY","openai"),
+    "mistral":  ("https://api.mistral.ai/v1",           "MISTRAL_API_KEY", "mistral"),
+}
+
+
+def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optional[str] = None) -> Generator:
+    """Lance aider en headless (--message), cwd=staging, streame stdout.
+
+    model peut être :
+    - None / nom Ollama simple  → local Ollama : --model ollama_chat/<model>
+    - 'provider:model_id'       → cloud : --model <prefix>/<model_id> + OPENAI_API_BASE
+    """
+    aider_bin = _aider_bin()
+    if not aider_bin:
+        yield {"type": "error", "content": "aider introuvable. Installez : pip install aider-chat"}
+        return
+
+    sdir = _staging_dir(module_id)
+    sdir.mkdir(parents=True, exist_ok=True)
+
+    # Résolution du modèle et de l'env
+    extra_env: dict = {"OLLAMA_API_BASE": os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")}
+    if model and ":" in model:
+        provider, model_id = model.split(":", 1)
+        if provider in _AIDER_CLOUD:
+            base_url, key_name, prefix = _AIDER_CLOUD[provider]
+            api_key = os.environ.get(key_name, "").strip()
+            if not api_key:
+                yield {"type": "error", "content": f"{key_name} non configurée dans les Réglages."}
+                return
+            extra_env["OPENAI_API_BASE"] = base_url
+            extra_env["OPENAI_API_KEY"] = api_key
+            aider_model = f"{prefix}/{model_id}"
+        else:
+            aider_model = f"ollama_chat/{model_id}"
+    elif model:
+        aider_model = f"ollama_chat/{model}"
+    else:
+        fallback = (instance_config.get().get("providers") or {}).get("actif") or ""
+        if ":" in fallback:
+            provider, model_id = fallback.split(":", 1)
+            if provider in _AIDER_CLOUD:
+                base_url, key_name, prefix = _AIDER_CLOUD[provider]
+                api_key = os.environ.get(key_name, "").strip()
+                if api_key:
+                    extra_env["OPENAI_API_BASE"] = base_url
+                    extra_env["OPENAI_API_KEY"] = api_key
+                    aider_model = f"{prefix}/{model_id}"
+                else:
+                    aider_model = "ollama_chat/qwen2.5-coder:7b"
+            else:
+                aider_model = f"ollama_chat/{model_id}"
+        else:
+            aider_model = f"ollama_chat/{fallback}" if fallback else "ollama_chat/qwen2.5-coder:7b"
+
+    prompt = _claude_prompt(module_id, spec, kind)
+    env = _local_agent_env(extra_env)
+
+    cmd = [
+        aider_bin,
+        "--model", aider_model,
+        "--message", prompt,
+        "--yes-always",
+        "--no-auto-commits",
+        "--no-check-update",
+        "--no-show-model-warnings",
+        "manifest.json", "router.py", "Component.tsx",
+    ]
+
+    yield {"type": "engine", "engine": "aider", "model": aider_model}
+
+    timed_out = {"flag": False}
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=str(sdir), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, text=True, creationflags=_NO_WINDOW,
+        )
+    except FileNotFoundError:
+        yield {"type": "error", "content": "aider introuvable dans le PATH."}
+        return
+    except Exception as exc:
+        yield {"type": "error", "content": f"Lancement aider échoué : {exc}"}
+        return
+
+    def _watchdog():
+        try:
+            proc.wait(timeout=_CLAUDE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            timed_out["flag"] = True
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    Thread(target=_watchdog, daemon=True).start()
+
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                yield {"type": "token", "content": line + "\n"}
+        proc.wait(timeout=10)
+    except Exception as exc:
+        yield {"type": "error", "content": str(exc)}
+        return
+
+    if timed_out["flag"]:
+        yield {"type": "error", "content": f"Timeout aider ({_CLAUDE_TIMEOUT}s) — process tué."}
+        return
+
+    present = [n for n in _FILES if (sdir / n).is_file()]
+    if not present:
+        yield {"type": "error", "content": "aider n'a produit aucun des 3 fichiers dans le staging."}
         return
     yield {"type": "generation_done", "files": present}
 
