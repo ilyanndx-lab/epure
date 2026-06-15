@@ -791,12 +791,16 @@ def generate_claude_headless(module_id: str, spec: str, kind: str, engine: str) 
 
 
 # ── Providers cloud supportés par aider (mapping Épure → aider) ──────────
+# provider → (base_url, env_key_name, model_prefix)
+# Tous routés via le chemin OpenAI-compatible de litellm (prefix "openai") :
+# aider lit alors OPENAI_API_BASE + OPENAI_API_KEY (ce que l'on injecte). Les
+# prefix natifs litellm ("mistral/", "groq/") liraient MISTRAL_API_KEY/GROQ_API_KEY
+# et ignoreraient notre clé → échec d'auth même avec une clé valide.
 _AIDER_CLOUD: dict[str, tuple[str, str, str]] = {
-    # provider → (base_url, env_key_name, model_prefix)
     "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY",  "openai"),
-    "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY",    "groq"),
+    "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY",    "openai"),
     "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY","openai"),
-    "mistral":  ("https://api.mistral.ai/v1",           "MISTRAL_API_KEY", "mistral"),
+    "mistral":  ("https://api.mistral.ai/v1",           "MISTRAL_API_KEY", "openai"),
 }
 
 
