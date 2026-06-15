@@ -61,7 +61,7 @@ interface QuotaEntry {
 
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini', groq: 'Groq', cerebras: 'Cerebras',
-  nvidia: 'NVIDIA NIM', mistral: 'Mistral',
+  nvidia: 'NVIDIA NIM', mistral: 'Mistral', deepseek: 'DeepSeek',
 }
 
 function quotaBarColor(pct: number): 'gradient' | 'warning' | 'error' {
@@ -185,7 +185,7 @@ export default function Settings() {
 
   // API keys state
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({
-    GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '',
+    GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '', DEEPSEEK_API_KEY: '',
   })
   const [showKey, setShowKey] = useState<Record<string, boolean>>({})
   const [savingKeys, setSavingKeys] = useState(false)
@@ -402,7 +402,7 @@ export default function Settings() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const status: Record<string, boolean> = await fetch(`${API}/settings/api-keys`).then(r => r.json())
       setKeyStatus(status)
-      setApiKeys({ GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '' })
+      setApiKeys({ GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '', DEEPSEEK_API_KEY: '' })
       setKeysMsg({ ok: true, text: 'Clés sauvegardées' })
       setTimeout(() => setKeysMsg(null), 2000)
     } catch (err) {
@@ -1003,6 +1003,7 @@ export default function Settings() {
           { key: 'CEREBRAS_API_KEY', label: 'Cerebras',      placeholder: 'csk-...' },
           { key: 'MISTRAL_API_KEY',  label: 'Mistral',       placeholder: 'sk-...' },
           { key: 'NVIDIA_API_KEY',   label: 'NVIDIA NIM',    placeholder: 'nvapi-...' },
+          { key: 'DEEPSEEK_API_KEY', label: 'DeepSeek',      placeholder: 'sk-...' },
         ].map(({ key, label, placeholder }) => (
           <div key={key} className="space-y-1.5">
             <div className="flex items-center justify-between">

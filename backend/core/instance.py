@@ -34,13 +34,14 @@ _CONFIG_FILE = Path(__file__).parent.parent / "memory" / "instance_config.json"
 # accessible (sinon impossible de réactiver un module).
 _CORE_MODULES = ["chat", "kholle", "flashcards", "code", "docs", "admin", "history"]
 
-_API_KEY_NAMES = ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY"]
+_API_KEY_NAMES = ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY", "DEEPSEEK_API_KEY"]
 _KEY_TO_PROVIDER = {
     "GEMINI_API_KEY": "gemini",
     "GROQ_API_KEY": "groq",
     "CEREBRAS_API_KEY": "cerebras",
     "MISTRAL_API_KEY": "mistral",
     "NVIDIA_API_KEY": "nvidia",
+    "DEEPSEEK_API_KEY": "deepseek",
 }
 
 _DEFAULT_LOCAL_MODEL = "qwen2.5:7b"

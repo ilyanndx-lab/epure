@@ -96,6 +96,17 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "description": "Français + sciences · RGPD",
         "usages": ["Discussion libre", "Kholle physique"],
     },
+    # DeepSeek (API officielle)
+    "deepseek-v4-pro": {
+        "categorie": "puissant",
+        "description": "Raisonnement avancé · DeepSeek",
+        "usages": ["Code", "Kholle maths", "Kholle physique"],
+    },
+    "deepseek-v4-flash": {
+        "categorie": "rapide",
+        "description": "Rapide · DeepSeek",
+        "usages": ["Chat rapide", "Code"],
+    },
     # Ollama qualitative metadata
     "qwen2.5-coder:7b": {
         "categorie": "puissant",
@@ -141,6 +152,8 @@ _NOM_MAP: dict[str, str] = {
     "deepseek-ai/deepseek-v4-flash":  "DeepSeek V4 Flash (NIM)",
     "codestral-latest":               "Codestral",
     "mistral-small-latest":           "Mistral Small",
+    "deepseek-v4-pro":                "DeepSeek V4 Pro",
+    "deepseek-v4-flash":              "DeepSeek V4 Flash",
     "llama3.1-8b":  "Llama 3.1 8B",
     "llama-4-scout":   "Llama 4 Scout",
     "llama-4-maverick":"Llama 4 Maverick",
@@ -173,6 +186,9 @@ _NVIDIA_STATIC = [
 ]
 _MISTRAL_STATIC = ["codestral-latest", "mistral-small-latest"]
 _GEMINI_STATIC  = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.1-flash-lite"]
+# DeepSeek API officielle (api.deepseek.com). deepseek-chat / deepseek-reasoner
+# ont été retirés le 2026-07-24 — on n'expose que les v4.
+_DEEPSEEK_STATIC = ["deepseek-v4-pro", "deepseek-v4-flash"]
 
 # FastFlowLM (local NPU) — static list, availability checked at request time
 FLM_MODELS_STATIC: list[dict] = [
@@ -405,6 +421,9 @@ class ModelsRegistry:
     def _fetch_nvidia(self) -> Optional[list[str]]:
         return self._fetch_models("NVIDIA", "https://integrate.api.nvidia.com/v1/models", "NVIDIA_API_KEY")
 
+    def _fetch_deepseek(self) -> Optional[list[str]]:
+        return self._fetch_models("DeepSeek", "https://api.deepseek.com/v1/models", "DEEPSEEK_API_KEY")
+
     # ── Async orchestration ──────────────────────────────────────────────────
 
     async def _guarded(self, func) -> Optional[list]:
@@ -419,11 +438,12 @@ class ModelsRegistry:
             return None
 
     async def _build(self) -> dict:
-        groq_ids, cerebras_ids, mistral_ids, nvidia_ids = await asyncio.gather(
+        groq_ids, cerebras_ids, mistral_ids, nvidia_ids, deepseek_ids = await asyncio.gather(
             self._guarded(self._fetch_groq),
             self._guarded(self._fetch_cerebras),
             self._guarded(self._fetch_mistral),
             self._guarded(self._fetch_nvidia),
+            self._guarded(self._fetch_deepseek),
         )
 
         rapide: list[dict] = []
@@ -449,9 +469,10 @@ class ModelsRegistry:
         # Groq/Cerebras: the live list is the surface; static fallback on failure
         _add("groq", groq_ids if groq_ids else _GROQ_STATIC, groq_ids)
         _add("cerebras", cerebras_ids if cerebras_ids else _CEREBRAS_STATIC, cerebras_ids)
-        # NVIDIA/Mistral: curated surface, live list only validates availability
+        # NVIDIA/Mistral/DeepSeek: curated surface, live list only validates availability
         _add("nvidia", _NVIDIA_STATIC, nvidia_ids)
         _add("mistral", _MISTRAL_STATIC, mistral_ids)
+        _add("deepseek", _DEEPSEEK_STATIC, deepseek_ids)
         # Gemini: pas de /v1/models OpenAI-compatible — availability = key presence
         _add("gemini", _GEMINI_STATIC, None)
 

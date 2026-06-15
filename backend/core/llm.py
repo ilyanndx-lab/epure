@@ -29,6 +29,7 @@ _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
     "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY"),
     "mistral":  ("https://api.mistral.ai/v1",           "MISTRAL_API_KEY"),
     "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
+    "deepseek": ("https://api.deepseek.com/v1",         "DEEPSEEK_API_KEY"),
     "flm":      ("http://localhost:11435/v1",           None),
 }
 

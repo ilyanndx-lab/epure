@@ -50,7 +50,15 @@
       "Bash(curl -s \"http://localhost:5173/src/index.css\")",
       "Bash(grep -o \"bg-surface\\\\|bg-accent\\\\\\\\\\\\\\\\/10\\\\|--tw-bg-opacity\\\\|@tailwind\")",
       "Bash(netstat -ano)",
-      "Bash(pip freeze *)"
+      "Bash(pip freeze *)",
+      "Bash(python -c \"import json;c=json.load\\(open\\('memory/instance_config.json'\\)\\);print\\('actif:',c.get\\('providers',{}\\).get\\('actif'\\)\\);print\\('atelier.moteur_defaut:',c.get\\('atelier',{}\\).get\\('moteur_defaut'\\)\\)\")",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(python -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\([m.get\\('model'\\) for m in d.get\\('models',[]\\)]\\)\")",
+      "Bash(python -m py_compile main.py)",
+      "Bash(ls _staging/diagtest)",
+      "Bash(python -m py_compile core/module_workshop.py)",
+      "Bash(git push *)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

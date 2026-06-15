@@ -100,6 +100,7 @@ class ApiKeysRequest(BaseModel):
     CEREBRAS_API_KEY: Optional[str] = None
     MISTRAL_API_KEY: Optional[str] = None
     NVIDIA_API_KEY: Optional[str] = None
+    DEEPSEEK_API_KEY: Optional[str] = None
 
 
 @router.get("/settings/api-keys")
@@ -452,6 +453,7 @@ _PROVIDER_KEY = {
     "cerebras": "CEREBRAS_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
 }
 
 # Fallback Gemini si core.models ne l'expose pas (ne devrait pas arriver).
@@ -465,7 +467,7 @@ def provider_models():
     `provider:model_id` (ex. "gemini:gemini-2.0-flash")."""
     from core import models as _models
     from core.models import (
-        _NVIDIA_STATIC, _GROQ_STATIC, _CEREBRAS_STATIC, _MISTRAL_STATIC,
+        _NVIDIA_STATIC, _GROQ_STATIC, _CEREBRAS_STATIC, _MISTRAL_STATIC, _DEEPSEEK_STATIC,
     )
 
     provider_static = {
@@ -474,6 +476,7 @@ def provider_models():
         "cerebras": _CEREBRAS_STATIC,
         "mistral": _MISTRAL_STATIC,
         "gemini": getattr(_models, "_GEMINI_STATIC", None) or _GEMINI_FALLBACK,
+        "deepseek": _DEEPSEEK_STATIC,
     }
     result: dict[str, list[str]] = {}
     for provider, models in provider_static.items():

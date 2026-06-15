@@ -801,6 +801,9 @@ _AIDER_CLOUD: dict[str, tuple[str, str, str]] = {
     "groq":     ("https://api.groq.com/openai/v1",      "GROQ_API_KEY",    "openai"),
     "cerebras": ("https://api.cerebras.ai/v1",          "CEREBRAS_API_KEY","openai"),
     "mistral":  ("https://api.mistral.ai/v1",           "MISTRAL_API_KEY", "openai"),
+    # DeepSeek : aider le gère NATIVEMENT (prefix "deepseek/" + DEEPSEEK_API_KEY),
+    # donc on n'utilise PAS le chemin OpenAI-compatible (cf. branche dédiée plus bas).
+    "deepseek": ("https://api.deepseek.com",            "DEEPSEEK_API_KEY","deepseek"),
 }
 
 
@@ -833,8 +836,12 @@ def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optiona
         if not api_key:
             yield {"type": "error", "content": f"{key_name} non configurée dans les Réglages."}
             return
-        extra_env["OPENAI_API_BASE"] = base_url
-        extra_env["OPENAI_API_KEY"] = api_key
+        if provider == "deepseek":
+            # Provider natif litellm : il lit DEEPSEEK_API_KEY, pas OPENAI_*.
+            extra_env["DEEPSEEK_API_KEY"] = api_key
+        else:
+            extra_env["OPENAI_API_BASE"] = base_url
+            extra_env["OPENAI_API_KEY"] = api_key
         aider_model = f"{prefix}/{rest}"
     elif chosen:
         aider_model = f"ollama_chat/{chosen}"
