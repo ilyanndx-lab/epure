@@ -258,8 +258,10 @@ export default function Settings() {
     loadQuotas()
   }, [])
 
-  const loadEngines = () => {
-    fetch(`${API}/workshop/engines`)
+  const loadEngines = (force = false) => {
+    // Au montage : on lit le cache backend (rapide). « Re-tester » / après édition
+    // d'un chemin : force=true relance les checks (claude/aider --version, etc.).
+    fetch(`${API}/workshop/engines${force ? '?force=true' : ''}`)
       .then(r => r.json())
       .then((d: Record<string, EngineStatus>) => setEngines(d))
       .catch(() => setEngines(null))
@@ -283,7 +285,7 @@ export default function Settings() {
       const r = await fetch(`${API}/settings/gateway/start`, { method: 'POST' })
       const d = await r.json()
       setGatewayStartMsg({ ok: d.ok, msg: d.raison || (d.ok ? 'Lancée' : 'Échec') })
-      setTimeout(loadEngines, 2000)  // laisse la passerelle démarrer avant de re-tester
+      setTimeout(() => loadEngines(true), 2000)  // laisse la passerelle démarrer avant de re-tester
     } catch {
       setGatewayStartMsg({ ok: false, msg: 'Réseau indisponible' })
     } finally {
@@ -667,7 +669,7 @@ export default function Settings() {
       <Card className="max-w-lg space-y-4">
         <div className="flex items-center justify-between">
           <SectionTitle icon={<Hammer size={15} />}>Atelier — moteurs</SectionTitle>
-          <Button variant="ghost" size="sm" icon={<RefreshCw size={12} />} onClick={loadEngines}>
+          <Button variant="ghost" size="sm" icon={<RefreshCw size={12} />} onClick={() => loadEngines(true)}>
             Re-tester
           </Button>
         </div>
@@ -754,7 +756,7 @@ export default function Settings() {
             Binaire <code className="font-mono">claude</code> (nom sur le PATH ou chemin complet)
           </label>
           <Input mono key={`cp-${config.atelier.claude_path}`} defaultValue={config.atelier.claude_path}
-            onBlur={e => { const v = e.target.value.trim() || 'claude'; if (v !== config.atelier.claude_path) { void updateInstance({ atelier: { claude_path: v } }); setTimeout(loadEngines, 400) } }}
+            onBlur={e => { const v = e.target.value.trim() || 'claude'; if (v !== config.atelier.claude_path) { void updateInstance({ atelier: { claude_path: v } }); setTimeout(() => loadEngines(true), 400) } }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
             className="w-full text-xs py-1.5" placeholder="claude" />
         </div>
@@ -765,7 +767,7 @@ export default function Settings() {
             Binaire <code className="font-mono">aider</code> (nom sur le PATH ou chemin complet)
           </label>
           <Input mono key={`ap-${config.atelier.aider_path}`} defaultValue={config.atelier.aider_path}
-            onBlur={e => { const v = e.target.value.trim() || 'aider'; if (v !== config.atelier.aider_path) { void updateInstance({ atelier: { aider_path: v } }); setTimeout(loadEngines, 400) } }}
+            onBlur={e => { const v = e.target.value.trim() || 'aider'; if (v !== config.atelier.aider_path) { void updateInstance({ atelier: { aider_path: v } }); setTimeout(() => loadEngines(true), 400) } }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
             className="w-full text-xs py-1.5" placeholder="aider" />
         </div>
@@ -774,7 +776,7 @@ export default function Settings() {
         <div className="space-y-2">
           <p className="text-xs text-muted uppercase tracking-wide">Passerelle (claude_gateway)</p>
           <Input mono key={`gu-${config.atelier.gateway.base_url}`} defaultValue={config.atelier.gateway.base_url}
-            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(loadEngines, 400) } }}
+            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(() => loadEngines(true), 400) } }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
             className="w-full text-xs py-1.5" placeholder="URL — http://localhost:4000" />
           <Input mono key={`gm-${config.atelier.gateway.model}`} defaultValue={config.atelier.gateway.model}

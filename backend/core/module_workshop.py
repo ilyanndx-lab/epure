@@ -55,6 +55,7 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 MODULES_DIR = (Path(__file__).parent.parent / "modules").resolve()
 STAGING_DIR = MODULES_DIR / "_staging"
 BACKUPS_DIR = MODULES_DIR / "_backups"
+_ATELIER_DIR = MODULES_DIR / "_atelier"
 _FRONTEND_MODULES = (Path(__file__).parent.parent.parent / "frontend" / "src" / "modules").resolve()
 _FRONTEND_GENERATED = _FRONTEND_MODULES / "generated"
 
@@ -64,6 +65,65 @@ _FILES = ("manifest.json", "router.py", "Component.tsx")
 _RESERVED_IDS = {"_staging", "_backups", "generated"}
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,30}$")
 _CLAUDE_TIMEOUT = 600  # secondes (génération headless)
+
+
+# ── Contexte atelier : conventions + index + reads autorisés ──────────────────
+
+def _write_module_index() -> Path:
+    """Génère _atelier/MODULE_INDEX.md : id, nom, description de chaque module actif."""
+    _ATELIER_DIR.mkdir(parents=True, exist_ok=True)
+    lines = ["# Modules existants dans cette instance Épure\n"]
+    for m in module_registry.list_modules():
+        lines.append(f"- **{m.get('id')}** ({m.get('nom','')}) — {m.get('description','') or 'sans description'}")
+    p = _ATELIER_DIR / "MODULE_INDEX.md"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+# Fichiers/dossiers JAMAIS exposés en lecture (fuite de secrets / données perso).
+_READ_DENY = ("\\.env", "credential", "secret", "/memory/", "/chroma_db/", "/history/", "\\.key")
+
+def _read_is_safe(path: Path) -> bool:
+    s = str(path).replace("\\", "/").lower()
+    return not any(re.search(d, s) for d in _READ_DENY)
+
+def _atelier_read_files(extra: Optional[list[str]] = None) -> list[str]:
+    """Chemins --read (lecture seule) : conventions + index + exemple hello + extras autorisés."""
+    out: list[str] = []
+    conv = _ATELIER_DIR / "CONVENTIONS.md"
+    if conv.is_file():
+        out.append(str(conv))
+    out.append(str(_write_module_index()))
+    for name in ("manifest.json", "router.py"):
+        f = MODULES_DIR / "hello" / name
+        if f.is_file():
+            out.append(str(f))
+    for e in (extra or []):
+        p = Path(e).expanduser()
+        if not p.is_absolute():
+            p = (MODULES_DIR.parent.parent / e).resolve()  # racine projet
+        if p.exists() and _read_is_safe(p):
+            if p.is_dir():
+                for sub in list(p.rglob("*.py"))[:20] + list(p.rglob("*.tsx"))[:20] + list(p.rglob("*.md"))[:10]:
+                    if _read_is_safe(sub):
+                        out.append(str(sub))
+            else:
+                out.append(str(p))
+    return out
+
+
+def grant_read(module_id: str, path: str) -> bool:
+    """Autorise un dossier/fichier en lecture pour l'atelier (ajout à meta.extra_reads).
+    Refuse si inexistant ou non sûr (secrets / données perso). Renvoie True si accordé."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = (MODULES_DIR.parent.parent / path).resolve()
+    if not (p.exists() and _read_is_safe(p)):
+        return False
+    meta = _read_meta(module_id) or {}
+    a = meta.setdefault("aider", {})
+    a["extra_reads"] = list({*(a.get("extra_reads") or []), str(p)})
+    _write_meta(module_id, meta)
+    return True
 
 
 def _modules_safe_path(relative: str) -> Path:
@@ -414,7 +474,7 @@ def _claude_version_ok(claude_bin: Optional[str]) -> bool:
     try:
         r = subprocess.run(
             [claude_bin, "--version"], capture_output=True, text=True,
-            timeout=20, env=_claude_env("claude_sub"),
+            timeout=8, env=_claude_env("claude_sub"),
             stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
         )
         return r.returncode == 0
@@ -429,7 +489,7 @@ def _bin_version_ok(bin_path: Optional[str]) -> bool:
     try:
         r = subprocess.run(
             [bin_path, "--version"], capture_output=True, text=True,
-            timeout=15, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+            timeout=8, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
         )
         return r.returncode == 0
     except Exception:
@@ -458,16 +518,40 @@ def _claude_auth_detected() -> bool:
     return False
 
 
-def engines_status() -> dict:
-    """Disponibilité des 3 moteurs : {disponible, raison} (+ infos utiles)."""
+_engines_cache: dict = {"data": None, "at": 0.0}
+_ENGINES_TTL = 60  # s — les checks (subprocess --version, réseau) coûtent ~10 s ;
+                   # on les met en cache pour ne pas les rejouer à chaque ouverture.
+
+
+def engines_status(force: bool = False) -> dict:
+    """Disponibilité des moteurs : {disponible, raison} (+ infos utiles).
+
+    Résultat mis en cache _ENGINES_TTL s (force=True pour « Re-tester »). Les
+    checks lents (claude/aider --version, ping passerelle, ollama) sont lancés en
+    PARALLÈLE — sinon ~13 s en séquentiel à chaque chargement des Réglages/Atelier.
+    """
+    now = time.time()
+    if not force and _engines_cache["data"] is not None and now - _engines_cache["at"] < _ENGINES_TTL:
+        return _engines_cache["data"]
+
     claude_bin = _claude_bin()
-    ver_ok = _claude_version_ok(claude_bin)
+    aider_bin = _aider_bin()
+    gw = _gateway_cfg()
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as _ex:
+        _f_claude = _ex.submit(_claude_version_ok, claude_bin)
+        _f_ollama = _ex.submit(_ollama_status)
+        _f_gw = _ex.submit(gateway_reachable, gw["base_url"])
+        _f_aider = _ex.submit(_bin_version_ok, aider_bin)
+        ver_ok = _f_claude.result()
+        o_ok, o_raison = _f_ollama.result()
+        gw_reach = _f_gw.result()
+        aider_ver_ok = _f_aider.result()
+
     no_cli = (
         "CLI `claude` introuvable/inexécutable — installez-le "
         "(npm i -g @anthropic-ai/claude-code) ou corrigez claude_path (Réglages › Atelier)."
     )
-
-    o_ok, o_raison = _ollama_status()
 
     if not ver_ok:
         sub_ok, sub_raison = False, no_cli
@@ -479,10 +563,9 @@ def engines_status() -> dict:
             "(ou `claude` puis /login), puis Re-tester."
         )
 
-    gw = _gateway_cfg()
     if not ver_ok:
         gw_ok, gw_raison = False, no_cli
-    elif not gateway_reachable(gw["base_url"]):
+    elif not gw_reach:
         gw_ok, gw_raison = False, (
             f"Passerelle injoignable : {gw['base_url']} (démarrez-la ou corrigez l'URL)."
         )
@@ -490,8 +573,6 @@ def engines_status() -> dict:
         gw_ok, gw_raison = True, ""
 
     # ── aider ────────────────────────────────────────────────────────────────
-    aider_bin = _aider_bin()
-    aider_ver_ok = _bin_version_ok(aider_bin)
     if not aider_ver_ok:
         aid_ok, aid_raison = False, (
             "Binaire `aider` introuvable — installez-le : "
@@ -503,7 +584,7 @@ def engines_status() -> dict:
     else:
         aid_ok, aid_raison = True, ""
 
-    return {
+    result = {
         "ollama": {"disponible": o_ok, "raison": o_raison},
         "claude_sub": {"disponible": sub_ok, "raison": sub_raison, "bin": claude_bin or ""},
         "claude_gateway": {
@@ -512,6 +593,9 @@ def engines_status() -> dict:
         },
         "aider": {"disponible": aid_ok, "raison": aid_raison, "bin": aider_bin or ""},
     }
+    _engines_cache["data"] = result
+    _engines_cache["at"] = time.time()
+    return result
 
 
 # ── Génération : moteur ollama (LLMEngine.stream + balises) ───────────────────
@@ -843,18 +927,23 @@ def _aider_resolve(model: Optional[str]) -> tuple[str, dict]:
     return "ollama_chat/qwen2.5-coder:7b", extra_env
 
 
-def _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore):
+def _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore,
+               chat_mode=None, read_files=None):
     """Commande aider headless confinée (--no-git), avec flags de fiabilité.
 
     --no-git est INDISPENSABLE : le staging est imbriqué dans le dépôt git d'Épure ;
     sans ça aider s'attache au dépôt parent (repo-map sur tout le code) au lieu
     d'écrire juste les 3 fichiers dans le cwd. L'historique de chat est persisté
     dans le staging pour permettre la reprise (--restore-chat-history).
+    chat_mode="ask" → mode Plan (discute, n'édite pas). read_files → fichiers
+    en lecture seule (--read) : conventions, index des modules, exemple…
     """
     cmd = [aider_bin, "--no-git", "--chat-history-file", ".aider.chat.history.md", "--model", aider_model]
     if restore:
         cmd += ["--restore-chat-history"]
-    if architect:
+    if chat_mode == "ask":
+        cmd += ["--chat-mode", "ask"]                      # Plan : discute, n'édite pas
+    elif architect:
         # Modèle éditeur moins cher pour DeepSeek (pro raisonne, flash applique).
         editor_model = aider_model
         if aider_model.startswith("deepseek/") and "v4-pro" in aider_model:
@@ -862,6 +951,8 @@ def _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore):
         cmd += ["--architect", "--editor-model", editor_model, "--editor-edit-format", edit_fmt]
     else:
         cmd += ["--edit-format", edit_fmt]
+    for rf in (read_files or []):
+        cmd += ["--read", rf]
     cmd += ["--message", message, "--yes-always", "--no-auto-commits", "--no-check-update",
             "--no-show-model-warnings", "--no-detect-urls", "--chat-language", "French",
             "--map-tokens", "0", "manifest.json", "router.py", "Component.tsx"]
@@ -912,13 +1003,17 @@ def _run_aider_proc(module_id, sdir, cmd, env) -> Generator:
     yield {"type": "generation_done", "files": present}
 
 
-def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optional[str] = None,
-                            architect: bool = False) -> Generator:
-    """Lance aider en headless (--message), cwd=staging, streame stdout.
-    Sur timeout, met en PAUSE (reprise via resume_aider_headless)."""
+def aider_converse(module_id: str, message: str, mode: str = "plan", restore: bool = False,
+                   model: Optional[str] = None, architect: bool = False, kind: str = "new",
+                   extra_reads: Optional[list[str]] = None) -> Generator:
+    """Un tour de conversation aider (Plan ou Construire), multi-tours via l'historique.
+
+    mode="plan" → --chat-mode ask (discute, n'édite pas) ; mode="build" → édite.
+    extra_reads cumulés dans meta.aider pour rester disponibles aux tours suivants.
+    """
     aider_bin = _aider_bin()
     if not aider_bin:
-        yield {"type": "error", "content": "aider introuvable. Installez : pip install aider-chat"}
+        yield {"type": "error", "content": "aider introuvable. pip install aider-chat"}
         return
     sdir = _staging_dir(module_id)
     sdir.mkdir(parents=True, exist_ok=True)
@@ -928,36 +1023,41 @@ def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optiona
         yield {"type": "error", "content": str(e)}
         return
     meta = _read_meta(module_id) or {}
-    meta["aider"] = {"model": model, "architect": bool(architect), "kind": kind}
+    prev = meta.get("aider") or {}
+    reads = list({*(prev.get("extra_reads") or []), *(extra_reads or [])})
+    meta["aider"] = {"model": model, "architect": bool(architect), "kind": kind, "extra_reads": reads}
     _write_meta(module_id, meta)
-    edit_fmt = "whole" if kind == "new" else "diff"
-    cmd = _aider_cmd(aider_bin, aider_model, _claude_prompt(module_id, spec, kind), edit_fmt, architect, restore=False)
-    yield {"type": "engine", "engine": "aider", "model": aider_model, "architect": bool(architect)}
+    edit_fmt = "whole" if kind == "new" and not any((sdir / n).is_file() and (sdir / n).stat().st_size > 2 for n in _FILES) else "diff"
+    chat_mode = "ask" if mode == "plan" else None
+    cmd = _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore,
+                     chat_mode=chat_mode, read_files=_atelier_read_files(reads))
+    yield {"type": "engine", "engine": "aider", "model": aider_model, "mode": mode, "architect": bool(architect)}
     yield from _run_aider_proc(module_id, sdir, cmd, _local_agent_env(extra_env))
+
+
+def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optional[str] = None,
+                            architect: bool = False, mode: str = "build") -> Generator:
+    """Compat : délègue à aider_converse. mode='build' génère les fichiers ;
+    mode='plan' demande d'abord un plan + questions sans rien créer."""
+    if mode == "build":
+        message = _claude_prompt(module_id, spec, kind)
+    else:
+        message = (spec + "\n\nProduis d'abord un PLAN détaillé (fichiers, routes, modèle LLM "
+                   "via core.runtime.llm) et la LISTE de tes questions et des accès dont tu as besoin. "
+                   "Ne crée AUCUN fichier pour l'instant.")
+    yield from aider_converse(module_id, message, mode=mode, restore=False, model=model,
+                              architect=architect, kind=kind)
 
 
 def resume_aider_headless(module_id: str) -> Generator:
-    """Reprend une génération aider en pause : restaure l'historique de chat et
-    demande à aider de continuer là où il s'était arrêté (sans tout réécrire)."""
-    aider_bin = _aider_bin()
-    if not aider_bin:
-        yield {"type": "error", "content": "aider introuvable."}
-        return
-    sdir = _staging_dir(module_id)
+    """Compat : reprend une génération aider en pause via aider_converse (restore)."""
     a = (_read_meta(module_id) or {}).get("aider") or {}
-    try:
-        aider_model, extra_env = _aider_resolve(a.get("model"))
-    except ValueError as e:
-        yield {"type": "error", "content": str(e)}
-        return
-    architect = bool(a.get("architect"))
-    edit_fmt = "diff" if any((sdir / n).is_file() and (sdir / n).stat().st_size > 2 for n in _FILES) else "whole"
     cont = ("Reprends EXACTEMENT là où tu t'es arrêté le travail précédent (voir l'historique). "
             "Les fichiers déjà écrits sont dans le dossier courant. Termine manifest.json, "
             "router.py et Component.tsx selon la demande initiale, sans tout réécrire de zéro.")
-    cmd = _aider_cmd(aider_bin, aider_model, cont, edit_fmt, architect, restore=True)
-    yield {"type": "engine", "engine": "aider", "model": aider_model, "architect": architect, "resumed": True}
-    yield from _run_aider_proc(module_id, sdir, cmd, _local_agent_env(extra_env))
+    yield from aider_converse(module_id, cont, mode="build", restore=True,
+                              model=a.get("model"), architect=bool(a.get("architect")),
+                              kind=a.get("kind", "new"))
 
 
 def terminal_launch_spec(module_id: str, spec: str, kind: str, engine: str) -> dict:

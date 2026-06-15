@@ -13,7 +13,7 @@ const WS_URL = 'ws://localhost:8000/ws/workshop'
 type Engine = 'ollama' | 'claude_sub' | 'claude_gateway' | 'aider'
 type Mode = 'headless' | 'terminal'
 type Kind = 'new' | 'edit'
-type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review' | 'paused'
+type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review' | 'paused' | 'chatting'
 
 interface EngineInfo { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 interface ModuleRow { id: string; nom: string; core_module?: boolean; status?: string }
@@ -62,7 +62,17 @@ export default function Workshop() {
   const [autoMax, setAutoMax] = usePersistentState<number>('epure.workshop.autoMax', 0)
   const autoLeft = useRef(0)
 
+  // Conversation aider (Plan/Construire) : fil de bulles + saisie + mode + accès lecture.
+  const [turns, setTurns] = useState<{ role: 'user' | 'aider', text: string }[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [aiderMode, setAiderMode] = useState<'plan' | 'build'>('plan')
+  const [grantPath, setGrantPath] = useState('')
+  const [grantMsg, setGrantMsg] = useState<string | null>(null)
+
   const wsRef = useRef<WebSocket | null>(null)
+  // true pendant une conversation aider → les tokens vont dans `turns` (bulles),
+  // pas dans `log` (flux one-shot ollama/claude).
+  const chatRef = useRef(false)
   // Ref vers resumeGeneration : permet à bindSocket de la rappeler (auto-reprise)
   // sans dépendance circulaire entre les deux useCallback.
   const resumeRef = useRef<() => void>(() => {})
@@ -120,9 +130,26 @@ export default function Workshop() {
     ws.onmessage = (ev) => {
       const data = JSON.parse(ev.data)
       if (data.type === 'token') {
-        setLog(prev => prev + (data.content ?? ''))
+        if (chatRef.current) {
+          // Conversation : on accumule dans la dernière bulle aider.
+          setTurns(prev => {
+            const last = prev[prev.length - 1]
+            if (last?.role === 'aider') return [...prev.slice(0, -1), { ...last, text: last.text + (data.content ?? '') }]
+            return [...prev, { role: 'aider', text: data.content ?? '' }]
+          })
+        } else {
+          setLog(prev => prev + (data.content ?? ''))
+        }
       } else if (data.type === 'engine') {
-        setLog(prev => prev + `[moteur ${data.engine}${data.model ? ' · ' + data.model : ''}${data.architect ? ' · architect' : ''}${data.resumed ? ' · reprise' : ''}]\n`)
+        if (chatRef.current) {
+          // Nouveau tour → nouvelle bulle aider (mode/architect en méta visuelle).
+          setPhase('chatting')
+          setTurns(prev => [...prev, { role: 'aider', text: '' }])
+        } else {
+          setLog(prev => prev + `[moteur ${data.engine}${data.model ? ' · ' + data.model : ''}${data.architect ? ' · architect' : ''}${data.resumed ? ' · reprise' : ''}]\n`)
+        }
+      } else if (data.type === 'read_granted') {
+        setGrantMsg(data.ok ? `Accès accordé en lecture : ${data.path}` : `Refusé (introuvable ou non autorisé) : ${data.path}`)
       } else if (data.type === 'terminal_opened') {
         setTerminalInfo({ cwd: data.cwd, cmd: data.cmd })
         setPhase('terminal')
@@ -149,6 +176,7 @@ export default function Workshop() {
 
   const startGeneration = useCallback(async (feedback?: string) => {
     setError(null); setApproveResult(null); setLog('')
+    chatRef.current = false  // flux one-shot ollama/claude → tokens dans le log
     if (!feedback) { setStaging(null); setReport(null) }
     const id = currentId
     if (!id) { setError('Indiquez un identifiant de module.'); return }
@@ -202,6 +230,67 @@ export default function Workshop() {
     }
   }, [currentId, bindSocket])
   resumeRef.current = resumeGeneration
+
+  // Envoie un tour de conversation aider (workshop_chat). Réutilise la socket si
+  // ouverte, sinon la rouvre (cas reload). Pousse la bulle utilisateur.
+  const sendChat = useCallback((message: string, chatMode: 'plan' | 'build') => {
+    const id = currentId
+    if (!id || !message.trim()) return
+    chatRef.current = true
+    setError(null)
+    setTurns(prev => [...prev, { role: 'user', text: message }])
+    setChatInput('')
+    setPhase('chatting')
+    const payload = JSON.stringify({ type: 'workshop_chat', id, message, mode: chatMode, kind, model: model || null, architect: aiderArchitect })
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(payload)
+    } else {
+      const nws = new WebSocket(WS_URL)
+      wsRef.current = nws
+      nws.onopen = () => nws.send(payload)
+      bindSocket(nws, id)
+    }
+  }, [currentId, kind, model, aiderArchitect, bindSocket])
+
+  // « Générer » en mode aider : prépare le staging (new/edit) puis lance le 1er
+  // tour en mode Plan avec la description comme message.
+  const startAiderChat = useCallback(async () => {
+    const id = currentId
+    if (!id) { setError('Indiquez un identifiant de module.'); return }
+    if (!description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
+    setError(null); setApproveResult(null); setStaging(null); setReport(null); setTurns([]); setLog('')
+    try {
+      const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
+      const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
+        setError(typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)); return
+      }
+    } catch { setError('Backend injoignable.'); return }
+    // Socket fraîche liée au bon id (évite une closure d'id obsolète).
+    wsRef.current?.close(); wsRef.current = null
+    sendChat(description, 'plan')
+  }, [currentId, description, kind, engine, mode, sendChat])
+
+  // Autorise un dossier/fichier en lecture pour les prochains tours.
+  const grantRead = useCallback(() => {
+    const id = currentId
+    const path = grantPath.trim()
+    if (!id || !path) return
+    const payload = JSON.stringify({ type: 'grant_read', id, path })
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(payload)
+    } else {
+      const nws = new WebSocket(WS_URL)
+      wsRef.current = nws
+      nws.onopen = () => nws.send(payload)
+      bindSocket(nws, id)
+    }
+    setGrantPath('')
+  }, [currentId, grantPath, bindSocket])
 
   // Renvoie le contenu du champ éditable (erreurs de validation pré-remplies, ou
   // erreur d'exécution collée par l'utilisateur) à l'IA. Le staging actuel est
@@ -396,9 +485,11 @@ export default function Workshop() {
             </div>
           )}
           <Button variant="primary" icon={<Play size={14} />}
-            onClick={() => startGeneration()}
-            disabled={phase === 'generating' || phase === 'validating' || engineUnavailable || !currentId || !description.trim()}>
-            {phase === 'generating' ? 'Génération…' : phase === 'validating' ? 'Validation…' : 'Générer'}
+            onClick={() => engine === 'aider' ? startAiderChat() : startGeneration()}
+            disabled={phase === 'generating' || phase === 'validating' || phase === 'chatting' || engineUnavailable || !currentId || !description.trim()}>
+            {phase === 'generating' ? 'Génération…' : phase === 'validating' ? 'Validation…'
+              : phase === 'chatting' ? 'Conversation…'
+              : engine === 'aider' ? 'Démarrer (Plan)' : 'Générer'}
           </Button>
         </div>
 
@@ -431,14 +522,62 @@ export default function Workshop() {
         </Card>
       )}
 
-      {/* ── Stream de génération ── */}
-      {(phase === 'generating' || phase === 'validating' || (log && phase !== 'review' && phase !== 'paused')) && (
+      {/* ── Stream de génération (ollama/claude one-shot) ── */}
+      {(phase === 'generating' || phase === 'validating' || (log && phase !== 'review' && phase !== 'paused' && phase !== 'chatting')) && (
         <Card className="max-w-2xl">
           <p className="text-xs text-muted uppercase tracking-wide mb-2 flex items-center gap-2">
             {(phase === 'generating' || phase === 'validating') && <Loader2 size={13} className="animate-spin text-accent2" />}
             {phase === 'validating' ? 'Validation' : 'Génération'}
           </p>
           <pre className="text-xs font-mono text-secondary max-h-56 overflow-y-auto whitespace-pre-wrap">{log || '…'}</pre>
+        </Card>
+      )}
+
+      {/* ── Conversation aider (Plan / Construire) ── */}
+      {phase === 'chatting' && (
+        <Card className="max-w-2xl space-y-3">
+          <p className="text-sm text-secondary flex items-center gap-2">
+            <Bug size={15} className="text-accent2" /> Conversation aider — {currentId}
+          </p>
+
+          {/* Fil des bulles */}
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {turns.length === 0 && <p className="text-xs text-muted">Démarrage…</p>}
+            {turns.map((t, i) => (
+              <div key={i} className={t.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+                <pre className={`text-xs font-mono whitespace-pre-wrap rounded-sm p-2 max-w-[85%] ${
+                  t.role === 'user' ? 'bg-accent/10 text-primary' : 'bg-elevated border border-line text-secondary'
+                }`}>{t.text || '…'}</pre>
+              </div>
+            ))}
+          </div>
+
+          {/* Mode + saisie */}
+          <div className="flex items-center gap-2">
+            <Select value={aiderMode} onChange={e => setAiderMode(e.target.value as 'plan' | 'build')}>
+              <option value="plan">Plan (discuter)</option>
+              <option value="build">Construire</option>
+            </Select>
+            <Button variant="secondary" size="sm" icon={<Play size={13} />}
+              onClick={() => sendChat('Construis maintenant les 3 fichiers selon le plan validé.', 'build')}>
+              Construire maintenant
+            </Button>
+          </div>
+          <div className="flex gap-2 items-end">
+            <Textarea value={chatInput} onChange={e => setChatInput(e.target.value)} rows={2}
+              placeholder="Votre message à aider (questions, précisions, corrections)…" className="flex-1" />
+            <Button variant="primary" size="sm" onClick={() => sendChat(chatInput, aiderMode)}
+              disabled={!chatInput.trim()}>Envoyer</Button>
+          </div>
+
+          {/* Accès lecture */}
+          <div className="flex gap-2 items-center">
+            <Input value={grantPath} onChange={e => setGrantPath(e.target.value)}
+              placeholder="Autoriser en lecture (dossier/fichier, ex : backend/modules/hello)"
+              className="flex-1 text-xs py-1.5 font-mono" />
+            <Button variant="ghost" size="sm" onClick={grantRead} disabled={!grantPath.trim()}>Autoriser</Button>
+          </div>
+          {grantMsg && <p className="text-xs text-muted">{grantMsg}</p>}
         </Card>
       )}
 

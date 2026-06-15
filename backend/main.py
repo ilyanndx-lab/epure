@@ -276,10 +276,10 @@ async def module_set_status(module_id: str, req: ModuleStatusRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/workshop/engines")
-async def workshop_engines():
-    """Disponibilité des 3 moteurs (claude_gateway désactivé si injoignable)."""
+async def workshop_engines(force: bool = False):
+    """Disponibilité des moteurs (résultat mis en cache ; force=true → re-test)."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, module_workshop.engines_status)
+    return await loop.run_in_executor(None, module_workshop.engines_status, force)
 
 
 @app.get("/workshop/modules")
@@ -488,6 +488,27 @@ async def ws_workshop(websocket: WebSocket):
                     if not st["paused"]:
                         await _validate_and_report(mid)
                         bg_mid = mid
+                elif mtype == "workshop_chat":
+                    mid = msg.get("id", "")
+                    sdir = module_workshop._staging_dir(mid)
+                    restore = (sdir / ".aider.chat.history.md").is_file()
+                    gen = module_workshop.aider_converse(
+                        mid, msg.get("message", ""),
+                        mode=msg.get("mode", "plan"),
+                        restore=restore,
+                        model=msg.get("model") or None,
+                        architect=bool(msg.get("architect", False)),
+                        kind=msg.get("kind", "new"),
+                        extra_reads=msg.get("extra_reads") or None,
+                    )
+                    st = await _stream_generator(gen)
+                    if msg.get("mode") == "build" and not st["paused"]:
+                        await _validate_and_report(mid)
+                        bg_mid = mid
+                elif mtype == "grant_read":
+                    mid, path = msg.get("id", ""), (msg.get("path", "") or "").strip()
+                    ok = module_workshop.grant_read(mid, path)
+                    await _emit({"type": "read_granted", "ok": ok, "path": path})
                 elif mtype == "terminal_done":
                     mid = msg.get("id", "")
                     await _validate_and_report(mid)
