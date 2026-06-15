@@ -13,7 +13,7 @@ const WS_URL = 'ws://localhost:8000/ws/workshop'
 type Engine = 'ollama' | 'claude_sub' | 'claude_gateway' | 'aider'
 type Mode = 'headless' | 'terminal'
 type Kind = 'new' | 'edit'
-type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review'
+type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review' | 'paused'
 
 interface EngineInfo { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 interface ModuleRow { id: string; nom: string; core_module?: boolean; status?: string }
@@ -57,8 +57,15 @@ export default function Workshop() {
   // survit au F5 comme le reste de la revue).
   const [feedbackText, setFeedbackText] = usePersistentState<string>('epure.workshop.feedback', '')
   const [revalidating, setRevalidating] = useState(false)
+  const [aiderArchitect, setAiderArchitect] = useState(false)
+  // Auto-reprise après une pause aider (timeout) : nb max de reprises automatiques.
+  const [autoMax, setAutoMax] = usePersistentState<number>('epure.workshop.autoMax', 0)
+  const autoLeft = useRef(0)
 
   const wsRef = useRef<WebSocket | null>(null)
+  // Ref vers resumeGeneration : permet à bindSocket de la rappeler (auto-reprise)
+  // sans dépendance circulaire entre les deux useCallback.
+  const resumeRef = useRef<() => void>(() => {})
 
   // Après un rechargement, la socket est fermée : une phase « en cours » devient
   // obsolète. On bascule sur la revue si du code généré subsiste, sinon idle.
@@ -107,6 +114,39 @@ export default function Workshop() {
     } catch { /* ignore */ }
   }, [])
 
+  // Handlers WS partagés par la génération ET la reprise, pour réagir aux mêmes
+  // events (dont 'paused'). Sur 'paused', auto-reprise tant que autoLeft > 0.
+  const bindSocket = useCallback((ws: WebSocket, id: string) => {
+    ws.onmessage = (ev) => {
+      const data = JSON.parse(ev.data)
+      if (data.type === 'token') {
+        setLog(prev => prev + (data.content ?? ''))
+      } else if (data.type === 'engine') {
+        setLog(prev => prev + `[moteur ${data.engine}${data.model ? ' · ' + data.model : ''}${data.architect ? ' · architect' : ''}${data.resumed ? ' · reprise' : ''}]\n`)
+      } else if (data.type === 'terminal_opened') {
+        setTerminalInfo({ cwd: data.cwd, cmd: data.cmd })
+        setPhase('terminal')
+      } else if (data.type === 'file_written') {
+        setLog(prev => prev + `\n✓ ${data.path}\n`)
+      } else if (data.type === 'error') {
+        setError(data.content ?? 'Erreur de génération')
+      } else if (data.type === 'validating') {
+        setPhase('validating')
+      } else if (data.type === 'validated') {
+        setReport(data.report)
+        void refreshStaging(id).then(() => setPhase('review'))
+      } else if (data.type === 'paused') {
+        setPhase('paused')
+        if (autoLeft.current > 0) { autoLeft.current--; resumeRef.current() }
+      } else if (data.type === 'typecheck') {
+        const warns: string[] = data.report?.warnings ?? []
+        if (warns.length) setReport(prev => (prev ? { ...prev, warnings: [...prev.warnings, ...warns] } : prev))
+      }
+      // Pas de ws.close() sur "done" : socket gardée pour le {type:"typecheck"} de fond.
+    }
+    ws.onerror = () => setError('Erreur WebSocket atelier.')
+  }, [refreshStaging])
+
   const startGeneration = useCallback(async (feedback?: string) => {
     setError(null); setApproveResult(null); setLog('')
     if (!feedback) { setStaging(null); setReport(null) }
@@ -138,37 +178,30 @@ export default function Workshop() {
     wsRef.current?.close()  // ferme une éventuelle session précédente
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode, ollama_model: (engine === 'ollama' || engine === 'aider') ? (model || null) : null, feedback }))
-    ws.onmessage = (ev) => {
-      const data = JSON.parse(ev.data)
-      if (data.type === 'token') {
-        setLog(prev => prev + (data.content ?? ''))
-      } else if (data.type === 'engine') {
-        setLog(prev => prev + `[moteur ${data.engine}${data.model ? ' · ' + data.model : ''}]\n`)
-      } else if (data.type === 'terminal_opened') {
-        setTerminalInfo({ cwd: data.cwd, cmd: data.cmd })
-        setPhase('terminal')
-      } else if (data.type === 'file_written') {
-        setLog(prev => prev + `\n✓ ${data.path}\n`)
-      } else if (data.type === 'error') {
-        setError(data.content ?? 'Erreur de génération')
-      } else if (data.type === 'validating') {
-        setPhase('validating')
-      } else if (data.type === 'validated') {
-        setReport(data.report)
-        void refreshStaging(id).then(() => setPhase('review'))
-      } else if (data.type === 'typecheck') {
-        // tsc arrive APRÈS la revue : on ajoute ses warnings sans toucher à
-        // report.ok (qui gouverne l'approbation).
-        const warns: string[] = data.report?.warnings ?? []
-        if (warns.length) setReport(prev => (prev ? { ...prev, warnings: [...prev.warnings, ...warns] } : prev))
-      }
-      // NB : pas de ws.close() sur "done" — on garde la socket ouverte pour
-      // recevoir le {type:"typecheck"} de fond. Elle est fermée à l'approbation,
-      // au rejet, à une nouvelle génération ou au démontage.
+    ws.onopen = () => {
+      autoLeft.current = autoMax  // budget d'auto-reprises pour CETTE génération
+      ws.send(JSON.stringify({ type: 'generate', id, kind, description, engine, mode, ollama_model: (engine === 'ollama' || engine === 'aider') ? (model || null) : null, aider_architect: engine === 'aider' ? aiderArchitect : false, feedback }))
     }
-    ws.onerror = () => setError('Erreur WebSocket atelier.')
-  }, [currentId, kind, description, engine, mode, model, refreshStaging])
+    bindSocket(ws, id)
+  }, [currentId, kind, description, engine, mode, model, aiderArchitect, autoMax, bindSocket])
+
+  // Reprend une génération aider en pause. Réutilise la socket si encore ouverte,
+  // sinon la rouvre (cas d'un rechargement) en réattachant les mêmes handlers.
+  const resumeGeneration = useCallback(() => {
+    const id = currentId
+    if (!id) return
+    setError(null); setApproveResult(null); setPhase('generating')
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resume', id }))
+    } else {
+      const nws = new WebSocket(WS_URL)
+      wsRef.current = nws
+      nws.onopen = () => nws.send(JSON.stringify({ type: 'resume', id }))
+      bindSocket(nws, id)
+    }
+  }, [currentId, bindSocket])
+  resumeRef.current = resumeGeneration
 
   // Renvoie le contenu du champ éditable (erreurs de validation pré-remplies, ou
   // erreur d'exécution collée par l'utilisateur) à l'IA. Le staging actuel est
@@ -345,6 +378,14 @@ export default function Workshop() {
               </Select>
             </div>
           )}
+          {engine === 'aider' && (
+            <label className="flex items-center gap-2 text-xs text-secondary">
+              <input type="checkbox" checked={aiderArchitect}
+                onChange={e => setAiderArchitect(e.target.checked)}
+                className="accent-[--accent-primary]" />
+              Mode architect (v4-pro plan + v4-flash édition)
+            </label>
+          )}
           {engine.startsWith('claude') && (
             <div>
               <label className="text-xs text-muted uppercase tracking-wide block mb-1">Mode</label>
@@ -391,13 +432,39 @@ export default function Workshop() {
       )}
 
       {/* ── Stream de génération ── */}
-      {(phase === 'generating' || phase === 'validating' || (log && phase !== 'review')) && (
+      {(phase === 'generating' || phase === 'validating' || (log && phase !== 'review' && phase !== 'paused')) && (
         <Card className="max-w-2xl">
           <p className="text-xs text-muted uppercase tracking-wide mb-2 flex items-center gap-2">
             {(phase === 'generating' || phase === 'validating') && <Loader2 size={13} className="animate-spin text-accent2" />}
             {phase === 'validating' ? 'Validation' : 'Génération'}
           </p>
           <pre className="text-xs font-mono text-secondary max-h-56 overflow-y-auto whitespace-pre-wrap">{log || '…'}</pre>
+        </Card>
+      )}
+
+      {/* ── En pause (timeout aider) ── */}
+      {phase === 'paused' && (
+        <Card className="max-w-2xl space-y-3">
+          <p className="text-sm text-secondary flex items-center gap-2">
+            <AlertTriangle size={15} className="text-warning" /> En pause (délai atteint)
+          </p>
+          <p className="text-xs text-muted">
+            Le travail est conservé. « Continuer » reprend là où aider s'est arrêté (sans tout réécrire).
+          </p>
+          <pre className="text-xs font-mono text-secondary max-h-56 overflow-y-auto whitespace-pre-wrap bg-elevated border border-line rounded-sm p-2">{log || '…'}</pre>
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button variant="primary" size="sm" icon={<Play size={13} />} onClick={resumeGeneration}>
+              Continuer
+            </Button>
+            <label className="flex items-center gap-2 text-xs text-secondary">
+              Auto-continuer (max
+              <Input type="number" min={0} value={String(autoMax)}
+                onChange={e => setAutoMax(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                className="w-16 text-xs py-1" />
+              fois)
+            </label>
+            <Button variant="ghost" size="sm" icon={<X size={13} />} onClick={reject}>Abandonner</Button>
+          </div>
         </Card>
       )}
 
