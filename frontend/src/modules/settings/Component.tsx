@@ -16,11 +16,9 @@ interface ModelOption { id: string; nom: string; disponible: boolean }
 
 interface EngineStatus { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 
-// État local d'un bouton « Tester » (propre à chaque bouton, pas de partage).
-interface TestState { testing: boolean; result: { ok: boolean; msg: string } | null }
-
 const ENGINE_LABELS: Record<string, string> = {
   ollama: 'Ollama (local)',
+  aider: 'aider (local/cloud)',
   claude_sub: 'Claude Code (abonnement)',
   claude_gateway: 'Claude Code (passerelle)',
 }
@@ -163,8 +161,8 @@ export default function Settings() {
   const modules = useModules()
   const [models, setModels] = useState<ModelOption[]>([])
   const [engines, setEngines] = useState<Record<string, EngineStatus> | null>(null)
-  const [aiderTest, setAiderTest] = useState<TestState>({ testing: false, result: null })
-  const [gatewayTest, setGatewayTest] = useState<TestState>({ testing: false, result: null })
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string } | null>>({})
+  const [testing, setTesting] = useState<Record<string, boolean>>({})
   const [addModuleOpen, setAddModuleOpen] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -251,27 +249,15 @@ export default function Settings() {
       .catch(() => setEngines(null))
   }
 
-  const testAider = async () => {
-    setAiderTest({ testing: true, result: null })
+  const runTest = async (endpoint: string, key: string) => {
+    setTesting(p => ({ ...p, [key]: true }))
+    setTestResult(p => ({ ...p, [key]: null }))
     try {
-      const r = await fetch(`${API}/settings/test/aider`, { method: 'POST' })
-      const d = await r.json() as { ok: boolean; version: string; raison: string }
-      setAiderTest({ testing: false, result: { ok: d.ok, msg: d.ok ? (d.version || 'aider OK') : (d.raison || 'Échec') } })
-    } catch {
-      setAiderTest({ testing: false, result: { ok: false, msg: 'Backend injoignable.' } })
-    }
-  }
-
-  const testGateway = async () => {
-    setGatewayTest({ testing: true, result: null })
-    try {
-      const r = await fetch(`${API}/settings/test/gateway`, { method: 'POST' })
-      const d = await r.json() as { ok: boolean; url: string; raison: string }
-      // En cas d'échec, d.raison contient déjà « Passerelle injoignable : <url> ».
-      setGatewayTest({ testing: false, result: { ok: d.ok, msg: d.ok ? 'joignable' : (d.raison || `injoignable : ${d.url}`) } })
-    } catch {
-      setGatewayTest({ testing: false, result: { ok: false, msg: 'Backend injoignable.' } })
-    }
+      const r = await fetch(`${API}/${endpoint}`, { method: 'POST' })
+      const d = await r.json()
+      setTestResult(p => ({ ...p, [key]: { ok: d.ok, msg: d.version || d.url || d.raison || '' } }))
+    } catch { setTestResult(p => ({ ...p, [key]: { ok: false, msg: 'Réseau indisponible' } })) }
+    finally { setTesting(p => ({ ...p, [key]: false })) }
   }
 
   const addModule = useCallback((id: string) => {
@@ -650,11 +636,13 @@ export default function Settings() {
           </Button>
         </div>
 
-        {/* Disponibilité des 3 moteurs */}
+        {/* Disponibilité des moteurs */}
         <div className="space-y-1.5">
-          {(['ollama', 'claude_sub', 'claude_gateway'] as const).map(en => {
+          {(['ollama', 'aider', 'claude_sub', 'claude_gateway'] as const).map(en => {
             const info = engines?.[en]
             const ok = info?.disponible ?? false
+            const testable = en === 'aider' || en === 'claude_gateway'
+            const result = testResult[en]
             return (
               <div key={en} className="flex items-start gap-2">
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${
@@ -667,9 +655,28 @@ export default function Settings() {
                     <p className="text-xs font-mono text-muted/70 truncate">{info.bin}</p>
                   )}
                 </div>
-                <Badge variant={ok ? 'success' : 'neutral'}>
-                  {!engines ? '…' : ok ? 'disponible' : 'indisponible'}
-                </Badge>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <Badge variant={ok ? 'success' : 'neutral'}>
+                    {!engines ? '…' : ok ? 'disponible' : 'indisponible'}
+                  </Badge>
+                  {testable && (
+                    <div className="flex items-center gap-1.5">
+                      {result && (
+                        <Badge variant={result.ok ? 'success' : 'error'} className="max-w-[12rem]" title={result.msg}>
+                          <span className="truncate">{result.msg || (result.ok ? 'OK' : 'échec')}</span>
+                        </Badge>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={testing[en]}
+                        onClick={() => void runTest(en === 'aider' ? 'settings/test/aider' : 'settings/test/gateway', en)}
+                      >
+                        {testing[en] ? 'Test…' : 'Tester'}
+                      </Button>
+                    </div>
+                  )}
+                </div>
               </div>
             )
           })}
@@ -690,6 +697,7 @@ export default function Settings() {
             <Select value={config.atelier.moteur_defaut}
               onChange={e => void updateInstance({ atelier: { moteur_defaut: e.target.value } })}>
               <option value="ollama">Ollama (local)</option>
+              <option value="aider">aider (local/cloud)</option>
               <option value="claude_sub">Claude Code (abonnement)</option>
               <option value="claude_gateway">Claude Code (passerelle)</option>
             </Select>
@@ -715,48 +723,24 @@ export default function Settings() {
             className="w-full text-xs py-1.5" placeholder="claude" />
         </div>
 
-        {/* Binaire aider + test de connectivité */}
+        {/* Binaire aider */}
         <div>
-          <label className="text-xs text-muted uppercase tracking-wide block mb-1">Chemin aider</label>
-          <div className="flex items-center gap-2">
-            <Input mono key={`ap-${config.atelier.aider_path}`} defaultValue={config.atelier.aider_path}
-              onBlur={e => { const v = e.target.value.trim() || 'aider'; if (v !== config.atelier.aider_path) { void updateInstance({ atelier: { aider_path: v } }); setTimeout(loadEngines, 400) } }}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-              className="flex-1 text-xs py-1.5" placeholder="aider (nom sur le PATH ou chemin complet)" />
-            <Button variant="secondary" size="sm" onClick={() => void testAider()} disabled={aiderTest.testing}>
-              {aiderTest.testing ? 'Test…' : 'Tester'}
-            </Button>
-          </div>
-          {aiderTest.result && (
-            <div className="mt-1.5 flex items-center gap-2 min-w-0">
-              <Badge variant={aiderTest.result.ok ? 'success' : 'error'}>
-                {aiderTest.result.ok ? 'OK' : 'erreur'}
-              </Badge>
-              <span className="text-xs text-muted truncate">{aiderTest.result.msg}</span>
-            </div>
-          )}
+          <label className="text-xs text-muted uppercase tracking-wide block mb-1">
+            Binaire <code className="font-mono">aider</code> (nom sur le PATH ou chemin complet)
+          </label>
+          <Input mono key={`ap-${config.atelier.aider_path}`} defaultValue={config.atelier.aider_path}
+            onBlur={e => { const v = e.target.value.trim() || 'aider'; if (v !== config.atelier.aider_path) { void updateInstance({ atelier: { aider_path: v } }); setTimeout(loadEngines, 400) } }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="aider" />
         </div>
 
         {/* Passerelle : URL / modèle / clé */}
         <div className="space-y-2">
           <p className="text-xs text-muted uppercase tracking-wide">Passerelle (claude_gateway)</p>
-          <div className="flex items-center gap-2">
-            <Input mono key={`gu-${config.atelier.gateway.base_url}`} defaultValue={config.atelier.gateway.base_url}
-              onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(loadEngines, 400) } }}
-              onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-              className="flex-1 text-xs py-1.5" placeholder="URL — http://localhost:4000" />
-            <Button variant="secondary" size="sm" onClick={() => void testGateway()} disabled={gatewayTest.testing}>
-              {gatewayTest.testing ? 'Test…' : 'Tester'}
-            </Button>
-          </div>
-          {gatewayTest.result && (
-            <div className="flex items-center gap-2 min-w-0">
-              <Badge variant={gatewayTest.result.ok ? 'success' : 'error'}>
-                {gatewayTest.result.ok ? 'joignable' : 'erreur'}
-              </Badge>
-              <span className="text-xs text-muted truncate">{gatewayTest.result.msg}</span>
-            </div>
-          )}
+          <Input mono key={`gu-${config.atelier.gateway.base_url}`} defaultValue={config.atelier.gateway.base_url}
+            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.base_url) { void updateInstance({ atelier: { gateway: { base_url: v } } }); setTimeout(loadEngines, 400) } }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="URL — http://localhost:4000" />
           <Input mono key={`gm-${config.atelier.gateway.model}`} defaultValue={config.atelier.gateway.model}
             onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.model) void updateInstance({ atelier: { gateway: { model: v } } }) }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
