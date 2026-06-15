@@ -867,7 +867,11 @@ def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optiona
         proc = subprocess.Popen(
             cmd, cwd=str(sdir), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, text=True, creationflags=_NO_WINDOW,
+            stdin=subprocess.DEVNULL, text=True,
+            # aider écrit en UTF-8 ; sans ça, l'encodage par défaut Windows (cp1252)
+            # transforme les accents en mojibake (Ã©, Ã¨) dans le journal.
+            encoding="utf-8", errors="replace",
+            creationflags=_NO_WINDOW,
         )
     except FileNotFoundError:
         yield {"type": "error", "content": "aider introuvable dans le PATH."}
