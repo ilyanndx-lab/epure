@@ -54,6 +54,10 @@ export default function Workshop() {
   const [activeTab, setActiveTab] = usePersistentState<string>('epure.workshop.activeTab', 'router.py')
   const [error, setError] = useState<string | null>(null)
   const [approveResult, setApproveResult] = useState<string | null>(null)
+  // Champ éditable d'erreur/consigne envoyé à « Corriger l'erreur » (persistant :
+  // survit au F5 comme le reste de la revue).
+  const [feedbackText, setFeedbackText] = usePersistentState<string>('epure.workshop.feedback', '')
+  const [revalidating, setRevalidating] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
 
@@ -66,6 +70,14 @@ export default function Workshop() {
     // au montage uniquement
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Pré-remplit le champ de correction avec les dernières erreurs de validation
+  // (l'utilisateur peut ensuite l'éditer / y coller une erreur d'exécution).
+  useEffect(() => {
+    const errs = [...(report?.errors ?? []), ...(report?.warnings ?? [])]
+    if (errs.length) setFeedbackText(errs.join('\n'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report])
 
   useEffect(() => {
     fetch(`${API}/workshop/engines`).then(r => r.json()).then(setEngines).catch(() => {})
@@ -101,7 +113,9 @@ export default function Workshop() {
     if (!feedback) { setStaging(null); setReport(null) }
     const id = currentId
     if (!id) { setError('Indiquez un identifiant de module.'); return }
-    if (!description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
+    // En correction (feedback fourni), la consigne EST le feedback : on n'exige
+    // pas de description (utile pour « Corriger l'erreur » sur un brouillon repris).
+    if (!feedback && !description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
 
     // 1) Prépare le staging (création ou édition).
     //    En correction d'erreur (feedback), le staging existe déjà — on ne le
@@ -157,13 +171,13 @@ export default function Workshop() {
     ws.onerror = () => setError('Erreur WebSocket atelier.')
   }, [currentId, kind, description, engine, mode, model, refreshStaging])
 
-  // Renvoie les erreurs de validation à l'IA pour qu'elle les corrige (même
-  // staging, modèle éventuellement changé via le sélecteur).
+  // Renvoie le contenu du champ éditable (erreurs de validation pré-remplies, ou
+  // erreur d'exécution collée par l'utilisateur) à l'IA. Le staging actuel est
+  // CONSERVÉ → reprise, pas de régénération depuis zéro.
   const fixError = useCallback(() => {
-    const errs = [...(report?.errors ?? []), ...(report?.warnings ?? [])]
-    const feedback = errs.length ? errs.join('\n') : (error ?? 'Le module a échoué.')
-    void startGeneration(feedback)
-  }, [report, error, startGeneration])
+    const fb = feedbackText.trim() || error || 'Le module a échoué — corrige-le.'
+    void startGeneration(fb)
+  }, [feedbackText, error, startGeneration])
 
   const finishTerminal = useCallback(() => {
     const ws = wsRef.current
@@ -173,10 +187,15 @@ export default function Workshop() {
     }
   }, [currentId])
 
-  const approve = useCallback(async () => {
+  const approve = useCallback(async (force = false) => {
     if (!staging) return
+    if (force && !window.confirm(
+      "Forcer l'activation malgré la validation échouée ?\n\n"
+      + "Le contrôle de sécurité/AST est ignoré : le module peut être cassé ou dangereux. "
+      + "Un backup de l'existant est créé. Continuer ?"
+    )) return
     try {
-      const res = await fetch(`${API}/workshop/${staging.id}/approve`, { method: 'POST' })
+      const res = await fetch(`${API}/workshop/${staging.id}/approve${force ? '?force=true' : ''}`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) {
         setError(typeof data.detail === 'object' ? JSON.stringify(data.detail) : (data.detail ?? 'Activation refusée'))
@@ -188,7 +207,7 @@ export default function Workshop() {
         ` Composant copié dans src/modules/generated/${staging.id}/ — en dev Vite le charge à chaud ; en build, reconstruisez le frontend.`
       )
       wsRef.current?.close()
-      setPhase('idle'); setStaging(null); setReport(null); setLog('')
+      setPhase('idle'); setStaging(null); setReport(null); setLog(''); setFeedbackText('')
       // Rafraîchit le cache partagé (Sidebar/App) → le module apparaît sans reload,
       // + la liste locale de l'atelier (avec infos staging).
       void fetchModules()
@@ -200,8 +219,31 @@ export default function Workshop() {
     if (!staging) return
     await fetch(`${API}/workshop/${staging.id}/reject`, { method: 'POST' }).catch(() => {})
     wsRef.current?.close()
-    setPhase('idle'); setStaging(null); setReport(null); setLog('')
+    setPhase('idle'); setStaging(null); setReport(null); setLog(''); setFeedbackText('')
   }, [staging])
+
+  // Re-valide le brouillon actuel SANS régénérer : recalcule le rapport (donc
+  // réactive « Approuver » si le code est devenu valide). Utile sur un brouillon
+  // repris après F5, ou après une correction manuelle des fichiers en staging.
+  const revalidate = useCallback(async () => {
+    if (!staging) return
+    setRevalidating(true)
+    try {
+      const res = await fetch(`${API}/workshop/${staging.id}/validate`, { method: 'POST' })
+      const data = await res.json()
+      if (res.ok && data.report) {
+        setReport(data.report)
+        setError(null)
+        await refreshStaging(staging.id)
+      } else {
+        setError(typeof data.detail === 'string' ? data.detail : 'Re-validation échouée.')
+      }
+    } catch {
+      setError('Re-validation échouée (réseau).')
+    } finally {
+      setRevalidating(false)
+    }
+  }, [staging, refreshStaging])
 
   const engineUnavailable = engines ? !engines[engine]?.disponible : false
 
@@ -425,24 +467,48 @@ export default function Workshop() {
             </pre>
           )}
 
+          {/* Champ erreur/consigne éditable : prérempli avec les erreurs de
+              validation ; collez-y l'erreur vue à l'ouverture du module si besoin.
+              Transmis tel quel à l'IA par « Corriger l'erreur ». */}
+          <div>
+            <label className="text-xs text-muted uppercase tracking-wide block mb-1">
+              Erreur / consigne de correction (transmise à l'IA)
+            </label>
+            <Textarea value={feedbackText} onChange={e => setFeedbackText(e.target.value)} rows={3}
+              placeholder="Erreurs de validation pré-remplies — ou collez l'erreur d'exécution / une consigne…"
+              className="w-full" />
+          </div>
+
           {/* Actions — jamais d'import/exécution avant approbation explicite */}
-          <div className="flex items-center gap-3">
-            <Button variant="primary" icon={<Check size={14} />} onClick={approve} disabled={!report?.ok}>
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button variant="primary" icon={<Check size={14} />} onClick={() => approve(false)} disabled={!report?.ok}>
               Approuver & activer
             </Button>
+            <Button variant="secondary" size="sm" icon={<Bug size={13} />} onClick={fixError}
+              disabled={phase === 'generating' || phase === 'validating'}>
+              Corriger l'erreur (reprend le code actuel)
+            </Button>
+            <Button variant="ghost" size="sm"
+              icon={<RefreshCw size={13} className={revalidating ? 'animate-spin' : ''} />}
+              onClick={revalidate} disabled={revalidating}>
+              Re-valider
+            </Button>
+            <Button variant="ghost" size="sm" icon={<RefreshCw size={13} />} onClick={() => startGeneration()}>
+              Régénérer (repart de zéro)
+            </Button>
             <Button variant="ghost" size="sm" icon={<X size={13} />} onClick={reject}>Rejeter</Button>
-            <Button variant="ghost" size="sm" icon={<RefreshCw size={13} />} onClick={() => startGeneration()}>Régénérer</Button>
             {!report?.ok && (
-              <Button variant="secondary" size="sm" icon={<Bug size={13} />} onClick={fixError}>
-                Corriger l'erreur (renvoyer à l'IA)
+              <Button variant="danger" size="sm" icon={<AlertTriangle size={13} />} onClick={() => approve(true)}>
+                Forcer l'activation
               </Button>
             )}
           </div>
           {!report?.ok && (
             <p className="text-xs text-muted">
-              Validation échouée — le module reste en brouillon, activation impossible.
-              Vous pouvez changer de modèle ci-dessus puis cliquer « Corriger l'erreur » : l'IA
-              reçoit les messages d'erreur et tente de les résoudre.
+              Validation échouée — « <strong>Corriger l'erreur</strong> » renvoie le texte ci-dessus à l'IA
+              en gardant le code actuel (pas de reprise à zéro) ; « <strong>Re-valider</strong> » recalcule
+              après correction ; « <strong>Forcer l'activation</strong> » active malgré tout
+              (⚠️ module potentiellement cassé/non sûr, un backup est créé).
             </p>
           )}
         </Card>

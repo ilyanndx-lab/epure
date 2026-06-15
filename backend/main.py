@@ -338,12 +338,30 @@ async def workshop_staging_get(module_id: str):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.post("/workshop/{module_id}/validate")
+async def workshop_validate(module_id: str):
+    """Re-valide un staging existant (sans régénérer) et renvoie le rapport.
+
+    Permet de reprendre un brouillon sauvegardé (ex. après F5) et de réactiver le
+    bouton « Approuver » si le code est valide.
+    """
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, module_workshop.validate_staging, module_id, False
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @app.post("/workshop/{module_id}/approve")
-async def workshop_approve(module_id: str):
-    """Activation manuelle : backup + déplacement + remontage + modules_activés."""
+async def workshop_approve(module_id: str, force: bool = False):
+    """Activation manuelle : backup + déplacement + remontage + modules_activés.
+
+    force=true active malgré une validation échouée (choix explicite de l'utilisateur).
+    """
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, module_workshop.approve, module_id, app)
+        result = await loop.run_in_executor(None, module_workshop.approve, module_id, app, force)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not result.get("ok"):
