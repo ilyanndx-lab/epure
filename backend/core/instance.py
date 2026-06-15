@@ -68,11 +68,13 @@ def _default_config() -> dict:
             # Binaire `aider` (nom sur le PATH ou chemin complet).
             "aider_path": "aider",
             # Passerelle Anthropic-compatible (LiteLLM / claude-code-router) pour
-            # le moteur claude_gateway.
+            # le moteur claude_gateway. start_command : commande de démarrage
+            # optionnelle, lancée par le bouton « Démarrer » des Réglages.
             "gateway": {
                 "base_url": "http://localhost:4000",
                 "model": "",
                 "api_key": "",
+                "start_command": "",
             },
             "moteur_defaut": "ollama",
             "mode_defaut": "headless",

@@ -27,6 +27,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import sysconfig
 import time
 import urllib.request
 from difflib import unified_diff
@@ -248,7 +250,36 @@ def _gateway_cfg() -> dict:
         "base_url": gw.get("base_url", "http://localhost:4000"),
         "model": (gw.get("model") or "").strip(),
         "api_key": (gw.get("api_key") or "").strip(),
+        "start_command": (gw.get("start_command") or "").strip(),
     }
+
+
+def start_gateway() -> dict:
+    """Lance la passerelle via atelier.gateway.start_command (process détaché).
+
+    Commande fournie par l'utilisateur (ex. `litellm --config cfg.yaml`) : lancée
+    via le shell, détachée du backend, sans fenêtre console. Ne bloque pas — le
+    front re-teste la joignabilité après quelques secondes.
+    """
+    cfg = _gateway_cfg()
+    cmd = cfg["start_command"]
+    if not cmd:
+        return {"ok": False, "raison": "Aucune commande de démarrage configurée (Réglages › Atelier)."}
+    if gateway_reachable(cfg["base_url"]):
+        return {"ok": True, "raison": "Passerelle déjà joignable."}
+    try:
+        flags = _NO_WINDOW
+        if os.name == "nt":
+            flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        subprocess.Popen(
+            cmd, shell=True, cwd=str(Path.home()),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=flags,
+        )
+    except Exception as exc:
+        logger.exception("Lancement passerelle échoué")
+        return {"ok": False, "raison": f"Échec du lancement : {exc}"}
+    return {"ok": True, "raison": "Commande lancée — patientez quelques secondes puis re-testez."}
 
 
 def _claude_bin() -> Optional[str]:
@@ -261,18 +292,85 @@ def _claude_bin() -> Optional[str]:
     return shutil.which(cp) or shutil.which(cp + ".cmd")
 
 
+def _script_dirs() -> list[Path]:
+    """Dossiers où pip/uv/pipx déposent les console-scripts, hors PATH du backend.
+
+    Couvre le cas fréquent : aider installé mais son dossier d'install n'est pas
+    sur le PATH du process backend (lancé avant l'install, ou uv tool / pip --user).
+    """
+    dirs: list[Path] = []
+
+    def _add(p) -> None:
+        if p:
+            dirs.append(Path(p))
+
+    # Scripts de l'env Python courant + scheme utilisateur (fiable, versionné).
+    try:
+        _add(sysconfig.get_path("scripts"))
+    except Exception:
+        pass
+    try:
+        _add(sysconfig.get_path("scripts", "nt_user" if os.name == "nt" else "posix_user"))
+    except Exception:
+        pass
+    # À côté de l'exécutable Python (venv/conda).
+    exe_dir = Path(sys.executable).parent
+    _add(exe_dir)
+    _add(exe_dir / "Scripts")
+    # Emplacements d'install courants (uv tool, pipx, pip --user POSIX).
+    _add(Path.home() / ".local" / "bin")
+    # Outils uv : ~/.local/share/uv/tools/<tool>/{Scripts,bin}
+    uv_tools = Path.home() / ".local" / "share" / "uv" / "tools"
+    try:
+        if uv_tools.is_dir():
+            for tool in uv_tools.iterdir():
+                _add(tool / "Scripts")
+                _add(tool / "bin")
+    except Exception:
+        pass
+    return dirs
+
+
 def _aider_bin() -> Optional[str]:
-    """Localise le binaire `aider` : atelier.aider_path (nom PATH ou chemin complet)."""
+    """Localise le binaire `aider`.
+
+    Ordre : atelier.aider_path (chemin complet) → PATH → à côté de l'env Python
+    du backend → emplacements d'install courants (~/.local/bin, Scripts
+    utilisateur, outils uv). Résout le cas « installé mais absent du PATH ».
+    """
     ap = ((instance_config.get().get("atelier") or {}).get("aider_path") or "aider").strip()
+    # Chemin complet fourni → tel quel s'il existe.
     if os.sep in ap or (os.altsep and os.altsep in ap):
         return ap if Path(ap).exists() else None
-    return shutil.which(ap) or shutil.which(ap + ".cmd")
+    # Nom simple → PATH d'abord.
+    found = shutil.which(ap) or shutil.which(ap + ".cmd")
+    if found:
+        return found
+    # Fallback : dossiers d'install hors PATH.
+    exe_names = [ap, ap + ".exe", ap + ".cmd"]
+    for d in _script_dirs():
+        for name in exe_names:
+            p = d / name
+            try:
+                if p.is_file():
+                    return str(p)
+            except Exception:
+                continue
+    return None
 
 
 def _local_agent_env(extra: Optional[dict] = None) -> dict:
     """Env minimal pour moteurs locaux (aider, opencode) : PATH + variables home seulement.
     Aucune clé API cloud — local pur par défaut. extra = variables supplémentaires à injecter."""
     env = _make_exec_env()
+    # CRUCIAL : aider/opencode embarquent leur PROPRE Python (uv tool / venv).
+    # _make_exec_env injecte le PYTHONPATH du backend (stdlib de pythoncore-3.14) ;
+    # imposé à un autre interpréteur, il lui fait charger une stdlib étrangère →
+    # « AssertionError: SRE module mismatch » au démarrage. On retire donc toute
+    # variable qui localise un runtime Python.
+    for k in ("PYTHONPATH", "PYTHONHOME", "PYTHONEXECUTABLE",
+              "__PYVENV_LAUNCHER__", "VIRTUAL_ENV"):
+        env.pop(k, None)
     for k in ("PATH", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
               "OLLAMA_HOST", "OLLAMA_API_BASE"):
         if os.environ.get(k):
@@ -717,46 +815,38 @@ def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optiona
     sdir = _staging_dir(module_id)
     sdir.mkdir(parents=True, exist_ok=True)
 
-    # Résolution du modèle et de l'env
+    # Résolution du modèle et de l'env.
+    # ATTENTION : un nom Ollama contient un ':' qui fait partie du TAG
+    # (ex. « mistral-small:24b », « qwen2.5-coder:7b »). On ne traite donc le
+    # préfixe comme un provider cloud QUE s'il appartient à _AIDER_CLOUD ;
+    # sinon la chaîne entière (tag compris) est un nom de modèle Ollama.
     extra_env: dict = {"OLLAMA_API_BASE": os.environ.get("OLLAMA_API_BASE", "http://127.0.0.1:11434")}
-    if model and ":" in model:
-        provider, model_id = model.split(":", 1)
-        if provider in _AIDER_CLOUD:
-            base_url, key_name, prefix = _AIDER_CLOUD[provider]
-            api_key = os.environ.get(key_name, "").strip()
-            if not api_key:
-                yield {"type": "error", "content": f"{key_name} non configurée dans les Réglages."}
-                return
-            extra_env["OPENAI_API_BASE"] = base_url
-            extra_env["OPENAI_API_KEY"] = api_key
-            aider_model = f"{prefix}/{model_id}"
-        else:
-            aider_model = f"ollama_chat/{model_id}"
-    elif model:
-        aider_model = f"ollama_chat/{model}"
+    chosen = (model or (instance_config.get().get("providers") or {}).get("actif") or "").strip()
+    provider, sep, rest = chosen.partition(":")
+    if sep and provider in _AIDER_CLOUD:
+        base_url, key_name, prefix = _AIDER_CLOUD[provider]
+        api_key = os.environ.get(key_name, "").strip()
+        if not api_key:
+            yield {"type": "error", "content": f"{key_name} non configurée dans les Réglages."}
+            return
+        extra_env["OPENAI_API_BASE"] = base_url
+        extra_env["OPENAI_API_KEY"] = api_key
+        aider_model = f"{prefix}/{rest}"
+    elif chosen:
+        aider_model = f"ollama_chat/{chosen}"
     else:
-        fallback = (instance_config.get().get("providers") or {}).get("actif") or ""
-        if ":" in fallback:
-            provider, model_id = fallback.split(":", 1)
-            if provider in _AIDER_CLOUD:
-                base_url, key_name, prefix = _AIDER_CLOUD[provider]
-                api_key = os.environ.get(key_name, "").strip()
-                if api_key:
-                    extra_env["OPENAI_API_BASE"] = base_url
-                    extra_env["OPENAI_API_KEY"] = api_key
-                    aider_model = f"{prefix}/{model_id}"
-                else:
-                    aider_model = "ollama_chat/qwen2.5-coder:7b"
-            else:
-                aider_model = f"ollama_chat/{model_id}"
-        else:
-            aider_model = f"ollama_chat/{fallback}" if fallback else "ollama_chat/qwen2.5-coder:7b"
+        aider_model = "ollama_chat/qwen2.5-coder:7b"
 
     prompt = _claude_prompt(module_id, spec, kind)
     env = _local_agent_env(extra_env)
 
     cmd = [
         aider_bin,
+        # --no-git est INDISPENSABLE : le staging est imbriqué dans le dépôt git
+        # d'Épure ; sans ça aider s'attache au dépôt parent (repo-map sur tout le
+        # code, lent/instable avec un petit modèle local) au lieu d'écrire juste
+        # les 3 fichiers du module dans le cwd confiné.
+        "--no-git",
         "--model", aider_model,
         "--message", prompt,
         "--yes-always",

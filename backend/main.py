@@ -436,13 +436,22 @@ async def ws_workshop(websocket: WebSocket):
                     kind = msg.get("kind", "new")
                     spec = msg.get("description", "")
                     engine = msg.get("engine", "ollama")
-                    ollama_model = msg.get("ollama_model") or None
+                    # Tolère l'ancien champ `model` (bundle frontend non reconstruit)
+                    # autant que le nouveau `ollama_model` — sinon le modèle choisi
+                    # est ignoré et la génération retombe sur providers.actif (souvent
+                    # un modèle cloud), produisant un module invalide → approbation
+                    # impossible.
+                    ollama_model = msg.get("ollama_model") or msg.get("model") or None
+                    feedback = msg.get("feedback") or None
                     if engine == "ollama":
-                        gen = module_workshop.generate_ollama(mid, spec, kind, model=ollama_model)
+                        gen = module_workshop.generate_ollama(mid, spec, kind, model=ollama_model, feedback=feedback)
                     elif engine == "aider":
                         gen = module_workshop.generate_aider_headless(mid, spec, kind, model=ollama_model)
                     else:
-                        gen = module_workshop.generate_claude_headless(mid, spec, kind, engine)
+                        # claude_* : pas de sélection de modèle ; on intègre le
+                        # feedback d'erreur dans la description.
+                        eff_spec = spec if not feedback else f"{spec}\n\n[Corrige ces erreurs]\n{feedback}"
+                        gen = module_workshop.generate_claude_headless(mid, eff_spec, kind, engine)
                     await _stream_generator(gen)
                     await _validate_and_report(mid)
                     bg_mid = mid

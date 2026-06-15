@@ -163,6 +163,8 @@ export default function Settings() {
   const [engines, setEngines] = useState<Record<string, EngineStatus> | null>(null)
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string } | null>>({})
   const [testing, setTesting] = useState<Record<string, boolean>>({})
+  const [startingGateway, setStartingGateway] = useState(false)
+  const [gatewayStartMsg, setGatewayStartMsg] = useState<{ ok: boolean; msg: string } | null>(null)
   const [addModuleOpen, setAddModuleOpen] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -258,6 +260,21 @@ export default function Settings() {
       setTestResult(p => ({ ...p, [key]: { ok: d.ok, msg: d.version || d.url || d.raison || '' } }))
     } catch { setTestResult(p => ({ ...p, [key]: { ok: false, msg: 'Réseau indisponible' } })) }
     finally { setTesting(p => ({ ...p, [key]: false })) }
+  }
+
+  const startGateway = async () => {
+    setStartingGateway(true)
+    setGatewayStartMsg(null)
+    try {
+      const r = await fetch(`${API}/settings/gateway/start`, { method: 'POST' })
+      const d = await r.json()
+      setGatewayStartMsg({ ok: d.ok, msg: d.raison || (d.ok ? 'Lancée' : 'Échec') })
+      setTimeout(loadEngines, 2000)  // laisse la passerelle démarrer avant de re-tester
+    } catch {
+      setGatewayStartMsg({ ok: false, msg: 'Réseau indisponible' })
+    } finally {
+      setStartingGateway(false)
+    }
   }
 
   const addModule = useCallback((id: string) => {
@@ -749,6 +766,20 @@ export default function Settings() {
             onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.api_key) void updateInstance({ atelier: { gateway: { api_key: v } } }) }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
             className="w-full text-xs py-1.5" placeholder="Clé (optionnelle)" />
+          <Input mono key={`gs-${config.atelier.gateway.start_command}`} defaultValue={config.atelier.gateway.start_command}
+            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.start_command) void updateInstance({ atelier: { gateway: { start_command: v } } }) }}
+            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+            className="w-full text-xs py-1.5" placeholder="Commande de démarrage (ex : litellm --config cfg.yaml)" />
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void startGateway()} disabled={startingGateway}>
+              {startingGateway ? 'Démarrage…' : 'Démarrer la passerelle'}
+            </Button>
+            {gatewayStartMsg && (
+              <Badge variant={gatewayStartMsg.ok ? 'success' : 'error'} className="max-w-[16rem]" title={gatewayStartMsg.msg}>
+                <span className="truncate">{gatewayStartMsg.msg}</span>
+              </Badge>
+            )}
+          </div>
         </div>
       </Card>
 
