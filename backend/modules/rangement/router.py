@@ -7,6 +7,7 @@ import os
 import json
 import asyncio
 import re
+import datetime
 
 router = APIRouter()
 
@@ -21,6 +22,7 @@ class AnalyzeRequest(BaseModel):
     files: List[FileInfo]
     theme: str = ""
     model: Optional[str] = None         # nom du fichier modèle sélectionné
+    folder_path: str = ""               # nom du dossier racine fourni par l'interface
 
 class AnalyzeResponse(BaseModel):
     plan: Dict[str, List[str]]
@@ -34,12 +36,45 @@ class DedupResponse(BaseModel):
 
 # ---------- Constantes ----------
 MODELS_DIR = r"C:\Users\Ilyan\.flm\models"
+HISTORY_FILE = "memory/rangement_history.json"
 
 # ---------- LLM NPU optionnel ----------
 try:
     import flm
 except ImportError:
     flm = None
+
+# ---------- Historique ----------
+def _load_history() -> list:
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return []
+
+def _save_history(history: list, limit=100):
+    if len(history) > limit:
+        history = history[-limit:]
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+def _build_history_entry(req: AnalyzeRequest, result: dict) -> dict:
+    return {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "folder_path": req.folder_path or "",
+        "files_count": len(req.files),
+        "plan": result.get("plan", {}),
+        "model_used": req.model if req.model else "fallback",
+    }
+
+def _append_history(req: AnalyzeRequest, result: dict):
+    entry = _build_history_entry(req, result)
+    hist = _load_history()
+    hist.append(entry)
+    _save_history(hist, limit=100)
 
 # ---------- Utilitaires (mêmes que le code d'origine) ----------
 def _categorize(ext: str) -> str:
@@ -174,11 +209,19 @@ async def list_models():
 async def analyze(req: AnalyzeRequest):
     if not req.model or flm is None:
         result = _fallback_analysis(req.files)
+        try:
+            await asyncio.to_thread(_append_history, req, result)
+        except Exception:
+            pass
         return AnalyzeResponse(**result)
 
     model_path = os.path.join(MODELS_DIR, req.model)
     if not os.path.isfile(model_path):
         result = _fallback_analysis(req.files)
+        try:
+            await asyncio.to_thread(_append_history, req, result)
+        except Exception:
+            pass
         return AnalyzeResponse(**result)
 
     return StreamingResponse(_analysis_stream(req, model_path, req.model),
@@ -197,6 +240,17 @@ async def _analysis_stream(req: AnalyzeRequest, model_path: str, model_name: str
 
     yield _sse({"type": "status", "message": "Analyse terminée, construction du résultat..."})
     yield _sse({"type": "result", "result": result})
+
+    try:
+        await asyncio.to_thread(_append_history, req, result)
+    except Exception:
+        pass
+
+@router.get("/history")
+async def get_history():
+    hist = await asyncio.to_thread(_load_history)
+    # retourne les 100 dernières entrées (la limite est déjà appliquée par _save_history)
+    return {"history": hist[-100:]}
 
 @router.post("/deduplicate", response_model=DedupResponse)
 async def dedup(files: List[FileInfo]):
