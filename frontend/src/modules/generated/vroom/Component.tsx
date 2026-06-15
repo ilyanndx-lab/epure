@@ -1,86 +1,134 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Car, Gamepad2, Settings, Coins, Target } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { usePersistentState } from '../../../usePersistentState'
-import { Button, Card, Select, Tabs, ProgressBar, Modal } from '../../../components/ui'
+import { Button, Card, Select, Tabs, Modal } from '../../../components/ui'
 
-const API = 'http://localhost:8000'
-
+/* ------------------------------------------------------------------ */
+/*  Interfaces                                                        */
+/* ------------------------------------------------------------------ */
 interface Car {
   id: string
   name: string
-  speed: number
-  acceleration: number
-  handling: number
+  speed: number          // influences max speed
+  acceleration: number   // influences acceleration force
+  handling: number       // not used directly in this simple physics
   base_price: number
 }
 
 interface Track {
   id: string
   name: string
-  difficulty: number
-  length: number
+  difficulty: number   // influences terrain amplitude
+  length: number       // track length in meters
 }
 
-interface PlayerProgress {
-  coins: number
-  selectedCar: string
-  selectedTrack: string
-  bestTimes: { [trackId: string]: number }
+/* ------------------------------------------------------------------ */
+/*  Constants                                                         */
+/* ------------------------------------------------------------------ */
+const API = 'http://localhost:8000'
+const CANVAS_W = 800
+const CANVAS_H = 400
+const PIXEL_SCALE = 5           // px per meter
+const GRAVITY = 9.8             // m/s²
+const FRICTION_COEFF = 0.3      // 1/s
+const BRAKE_DECEL = 20          // m/s² additional decel when brake pressed
+const ENGINE_FACTOR = 60        // multiplies car.acceleration to get engine force (N)
+
+/* ------------------------------------------------------------------ */
+/*  Terrain helpers                                                   */
+/* ------------------------------------------------------------------ */
+function hashStr(str: string): number {
+  let h = 0
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h) + str.charCodeAt(i)
+    h |= 0
+  }
+  return Math.abs(h)
 }
 
-const CANVAS_WIDTH = 800
-const CANVAS_HEIGHT = 400
+function generateTerrain(trackId: string, difficulty: number, trackLength: number) {
+  const seed = hashStr(trackId)
+  const step = 2
+  const points: { x: number; y: number }[] = []
+  const amp = 20 + difficulty * 8
+  const freq1 = 0.02 + (seed % 100) * 0.0005
+  const freq2 = 0.05 + ((seed >> 4) % 100) * 0.001
+  const phase1 = (seed % 360) * (Math.PI / 180)
+  const phase2 = ((seed >> 8) % 360) * (Math.PI / 180)
 
+  for (let x = 0; x <= trackLength; x += step) {
+    const y =
+      amp * Math.sin(freq1 * x + phase1) +
+      amp * 0.5 * Math.sin(freq2 * x + phase2)
+    points.push({ x, y })
+  }
+  return points
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main component                                                    */
+/* ------------------------------------------------------------------ */
 export default function VroomModule(_props: SharedModuleProps) {
+  /* ---- persistent app state ---- */
   const [activeTab, setActiveTab] = usePersistentState<string>('vroom.activeTab', 'play')
   const [selectedCarId, setSelectedCarId] = usePersistentState<string>('vroom.selectedCar', 'sport')
   const [selectedTrackId, setSelectedTrackId] = usePersistentState<string>('vroom.selectedTrack', 'forest')
   const [coins, setCoins] = usePersistentState<number>('vroom.coins', 100)
+  const [ownedCars, setOwnedCars] = usePersistentState<string[]>('vroom.ownedCars', ['sport'])
   const [bestTimes, setBestTimes] = usePersistentState<{ [trackId: string]: number }>('vroom.bestTimes', {})
 
+  /* ---- network data ---- */
   const [cars, setCars] = useState<Car[]>([])
   const [tracks, setTracks] = useState<Track[]>([])
-  const [showSettings, setShowSettings] = useState(false)
-  const [showRaceResult, setShowRaceResult] = useState(false)
-  const [raceResult, setRaceResult] = useState<{ time: number, position: number, coinsEarned: number } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Game state
+  /* ---- race UI state ---- */
   const [isRaceActive, setIsRaceActive] = useState(false)
-  const [raceStartTime, setRaceStartTime] = useState(0)
-  const [raceElapsedTime, setRaceElapsedTime] = useState(0)
+  const [gasPressed, setGasPressed] = useState(false)
+  const [brakePressed, setBrakePressed] = useState(false)
+  const [currentSpeed, setCurrentSpeed] = useState(0)
+  const [currentDistance, setCurrentDistance] = useState(0)
+  const [showRaceResult, setShowRaceResult] = useState(false)
+  const [raceResult, setRaceResult] = useState<{ distance: number; coinsEarned: number } | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const animationFrameId = useRef<number | null>(null)
 
+  /* ---- mutable refs for the game loop ---- */
+  const isRaceActiveRef = useRef(false)
+  const gasPressedRef = useRef(false)
+  const brakePressedRef = useRef(false)
+  const carXRef = useRef(0)
+  const carSpeedRef = useRef(0)
+  const carDistanceRef = useRef(0)
+  const lastTimeRef = useRef(0)
+  const terrainRef = useRef<{ x: number; y: number }[]>([])
+  const currentCarRef = useRef<Car | null>(null)
+  const currentTrackRef = useRef<Track | null>(null)
+  const animationIdRef = useRef<number | null>(null)
+
+  /* ------------------------------------------------------------------
+   *  Fetch static data (cars & tracks) on mount
+   * ------------------------------------------------------------------ */
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true)
-        const carsRes = await fetch(`${API}/cars`)
-        const tracksRes = await fetch(`${API}/tracks`)
-        const progressRes = await fetch(`${API}/player-progress`)
-
-        if (!carsRes.ok || !tracksRes.ok || !progressRes.ok) {
-          throw new Error('Erreur de chargement des données')
-        }
-
-        const carsData = await carsRes.json().then(data => data.cars)
-        const tracksData = await tracksRes.json().then(data => data.tracks)
-        const progressData: PlayerProgress = await progressRes.json()
-
+        const [carsRes, tracksRes] = await Promise.all([
+          fetch(`${API}/cars`),
+          fetch(`${API}/tracks`),
+        ])
+        if (!carsRes.ok || !tracksRes.ok) throw new Error('Erreur lors du chargement des données')
+        const carsData: Car[] = (await carsRes.json()).cars
+        const tracksData: Track[] = (await tracksRes.json()).tracks
         setCars(carsData)
         setTracks(tracksData)
-        setCoins(progressData.coins)
-        setSelectedCarId(progressData.selectedCar)
-        setSelectedTrackId(progressData.selectedTrack)
-        setBestTimes(progressData.bestTimes)
         setError(null)
-      } catch (error) {
-        console.error('Erreur de chargement des données:', error)
-        setError('Impossible de charger les données. Veuillez réessayer.')
+      } catch (e) {
+        console.error(e)
+        setError('Impossible de charger les données.')
       } finally {
         setLoading(false)
       }
@@ -88,43 +136,250 @@ export default function VroomModule(_props: SharedModuleProps) {
     fetchData()
   }, [])
 
-  const currentCar = cars.find(c => c.id === selectedCarId)
-  const currentTrack = tracks.find(t => t.id === selectedTrackId)
+  /* ---- derived values ---- */
+  const currentCar = useMemo(() => cars.find(c => c.id === selectedCarId), [cars, selectedCarId])
+  const currentTrack = useMemo(() => tracks.find(t => t.id === selectedTrackId), [tracks, selectedTrackId])
 
+  // sync refs
+  useEffect(() => { currentCarRef.current = currentCar ?? null }, [currentCar])
+  useEffect(() => { currentTrackRef.current = currentTrack ?? null }, [currentTrack])
+
+  // generate terrain when track changes
+  useEffect(() => {
+    if (!currentTrack) return
+    terrainRef.current = generateTerrain(currentTrack.id, currentTrack.difficulty, currentTrack.length)
+  }, [currentTrack])
+
+  /* ------------------------------------------------------------------
+   *  Keyboard controls
+   * ------------------------------------------------------------------ */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+        e.preventDefault()
+        setGasPressed(true)
+        gasPressedRef.current = true
+      }
+      if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+        e.preventDefault()
+        setBrakePressed(true)
+        brakePressedRef.current = true
+      }
+    }
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+        e.preventDefault()
+        setGasPressed(false)
+        gasPressedRef.current = false
+      }
+      if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+        e.preventDefault()
+        setBrakePressed(false)
+        brakePressedRef.current = false
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
+  }, [])
+
+  /* ------------------------------------------------------------------
+   *  Terrain helpers
+   * ------------------------------------------------------------------ */
+  const getHeight = useCallback((x: number): number => {
+    const pts = terrainRef.current
+    if (pts.length === 0) return 0
+    if (x <= pts[0].x) return pts[0].y
+    if (x >= pts[pts.length - 1].x) return pts[pts.length - 1].y
+    let lo = 0, hi = pts.length - 1
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1
+      if (pts[mid].x <= x) lo = mid
+      else hi = mid
+    }
+    const t = (x - pts[lo].x) / (pts[hi].x - pts[lo].x)
+    return pts[lo].y + t * (pts[hi].y - pts[lo].y)
+  }, [])
+
+  const getSlope = useCallback((x: number): number => {
+    const pts = terrainRef.current
+    if (pts.length < 2) return 0
+    const dx = Math.max(1, pts[1].x - pts[0].x)
+    const y0 = getHeight(x - dx)
+    const y1 = getHeight(x + dx)
+    return (y1 - y0) / (2 * dx)
+  }, [getHeight])
+
+  /* ------------------------------------------------------------------
+   *  Draw a frame (canvas)
+   * ------------------------------------------------------------------ */
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const w = CANVAS_W, h = CANVAS_H
+    ctx.clearRect(0, 0, w, h)
+
+    const carX = carXRef.current
+    const carY = getHeight(carX)
+    const cameraX = carX - w / (2 * PIXEL_SCALE)
+    const cameraY = carY - h / (2 * PIXEL_SCALE)
+
+    // sky gradient
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, h)
+    skyGrad.addColorStop(0, '#1E3A8A')
+    skyGrad.addColorStop(0.5, '#60A5FA')
+    skyGrad.addColorStop(1, '#93C5FD')
+    ctx.fillStyle = skyGrad
+    ctx.fillRect(0, 0, w, h)
+
+    // terrain
+    const pts = terrainRef.current
+    if (pts.length > 0) {
+      ctx.beginPath()
+      let first = true
+      for (const p of pts) {
+        const sx = (p.x - cameraX) * PIXEL_SCALE
+        const sy = h / 2 + (cameraY - p.y) * PIXEL_SCALE
+        if (first) { ctx.moveTo(sx, sy); first = false }
+        else ctx.lineTo(sx, sy)
+      }
+      // close to bottom
+      const lastX = (pts[pts.length - 1].x - cameraX) * PIXEL_SCALE
+      ctx.lineTo(lastX, h)
+      const firstX = (pts[0].x - cameraX) * PIXEL_SCALE
+      ctx.lineTo(firstX, h)
+      ctx.closePath()
+      const groundGrad = ctx.createLinearGradient(0, h / 2, 0, h)
+      groundGrad.addColorStop(0, '#4ADE80')
+      groundGrad.addColorStop(1, '#166534')
+      ctx.fillStyle = groundGrad
+      ctx.fill()
+      ctx.strokeStyle = '#064E3B'
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+
+    // draw car
+    const carScreenX = (carX - cameraX) * PIXEL_SCALE
+    const carScreenY = h / 2 + (cameraY - carY) * PIXEL_SCALE
+    const slope = getSlope(carX)
+    const angle = Math.atan(slope)
+
+    ctx.save()
+    ctx.translate(carScreenX, carScreenY)
+    ctx.rotate(angle)
+    ctx.fillStyle = '#EF4444'
+    ctx.fillRect(-20, -10, 40, 20)
+    ctx.fillStyle = '#B91C1C'
+    ctx.fillRect(-12, -22, 24, 14)
+    ctx.fillStyle = '#60A5FA'
+    ctx.fillRect(-8, -20, 16, 10)
+    ctx.fillStyle = '#1F2937'
+    ctx.fillRect(-24, -12, 8, 24)
+    ctx.fillRect(16, -12, 8, 24)
+    ctx.restore()
+
+    // HUD
+    ctx.fillStyle = 'white'
+    ctx.font = 'bold 14px monospace'
+    ctx.fillText(`Vitesse : ${carSpeedRef.current.toFixed(1)} m/s`, 12, 24)
+    ctx.fillText(`Distance : ${carDistanceRef.current.toFixed(0)} m`, 12, 44)
+  }, [getHeight, getSlope])
+
+  /* ------------------------------------------------------------------
+   *  Game loop
+   * ------------------------------------------------------------------ */
+  const gameLoop = useCallback((timestamp: number) => {
+    if (!isRaceActiveRef.current) return
+    if (!lastTimeRef.current) lastTimeRef.current = timestamp
+    const dt = Math.min((timestamp - lastTimeRef.current) / 1000, 0.05)
+    lastTimeRef.current = timestamp
+
+    const car = currentCarRef.current
+    const track = currentTrackRef.current
+    if (!car || !track) return
+
+    const slope = getSlope(carXRef.current)
+    const sinTheta = slope / Math.sqrt(1 + slope * slope)
+
+    // Physics
+    const engineForce = gasPressedRef.current ? car.acceleration * ENGINE_FACTOR : 0
+    const maxSpeed = car.speed * 4          // m/s
+    let netAcceleration = (engineForce - FRICTION_COEFF * carSpeedRef.current - GRAVITY * sinTheta) / 1000
+
+    if (brakePressedRef.current) {
+      if (carSpeedRef.current > 0) {
+        netAcceleration -= BRAKE_DECEL
+      } else {
+        netAcceleration = -BRAKE_DECEL // allow reverse braking
+      }
+    }
+
+    carSpeedRef.current += netAcceleration * dt
+    // clamping
+    if (carSpeedRef.current < 0) carSpeedRef.current = 0
+    if (carSpeedRef.current > maxSpeed) carSpeedRef.current = maxSpeed
+
+    carXRef.current += carSpeedRef.current * dt
+    if (carXRef.current < 0) { carXRef.current = 0; carSpeedRef.current = 0 }
+    if (carXRef.current > track.length) { carXRef.current = track.length; carSpeedRef.current = 0 }
+
+    if (carSpeedRef.current > 0) carDistanceRef.current += carSpeedRef.current * dt
+
+    setCurrentSpeed(carSpeedRef.current)
+    setCurrentDistance(carDistanceRef.current)
+
+    draw()
+    animationIdRef.current = requestAnimationFrame(gameLoop)
+  }, [draw, getSlope])
+
+  /* ------------------------------------------------------------------
+   *  Start / End race
+   * ------------------------------------------------------------------ */
   const startRace = () => {
-    if (!currentCar || !currentTrack) return
+    const track = currentTrackRef.current
+    if (!track) return
+    carXRef.current = 0
+    carSpeedRef.current = 0
+    carDistanceRef.current = 0
+    lastTimeRef.current = 0
+    setGasPressed(false)
+    setBrakePressed(false)
+    gasPressedRef.current = false
+    brakePressedRef.current = false
+    setCurrentSpeed(0)
+    setCurrentDistance(0)
     setIsRaceActive(true)
-    setRaceStartTime(Date.now())
-    setRaceElapsedTime(0)
-    animationFrameId.current = requestAnimationFrame(gameLoop)
+    isRaceActiveRef.current = true
+    animationIdRef.current = requestAnimationFrame(gameLoop)
   }
 
   const endRace = useCallback(async () => {
-    if (!isRaceActive) return
-
+    if (!isRaceActiveRef.current) return
+    isRaceActiveRef.current = false
     setIsRaceActive(false)
-    if (animationFrameId.current) {
-      cancelAnimationFrame(animationFrameId.current)
-      animationFrameId.current = null
+    setGasPressed(false)
+    setBrakePressed(false)
+    gasPressedRef.current = false
+    brakePressedRef.current = false
+    if (animationIdRef.current) {
+      cancelAnimationFrame(animationIdRef.current)
+      animationIdRef.current = null
     }
+    lastTimeRef.current = 0
 
-    const finalTime = raceElapsedTime / 1000
-    const trackId = selectedTrackId
-    const currentBest = bestTimes[trackId] || Infinity
-    let coinsEarned = 0
-    let newBestTime = false
+    const distance = carDistanceRef.current
+    const track = currentTrackRef.current
+    if (!track) return
 
-    if (finalTime < currentBest) {
-      coinsEarned = Math.max(50, Math.round(currentTrack!.difficulty * 1000 / finalTime))
-      setCoins(prev => prev + coinsEarned)
-      setBestTimes(prev => ({ ...prev, [trackId]: finalTime }))
-      newBestTime = true
-    } else {
-      coinsEarned = Math.round(currentTrack!.difficulty * 50)
-      setCoins(prev => prev + coinsEarned)
-    }
-
-    setRaceResult({ time: finalTime, position: 1, coinsEarned })
+    const coinsEarned = Math.max(10, Math.round(distance / 50 * track.difficulty))
+    setCoins(prev => prev + coinsEarned)
+    setRaceResult({ distance, coinsEarned })
     setShowRaceResult(true)
 
     try {
@@ -132,56 +387,36 @@ export default function VroomModule(_props: SharedModuleProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          progress: 100,
+          progress: Math.round(distance),
           coins: coins + coinsEarned,
           selectedCar: selectedCarId,
-          selectedTrack: trackId,
-          bestTime: newBestTime ? finalTime : undefined
-        })
+          selectedTrack: selectedTrackId,
+          bestTime: null,
+        }),
       })
-    } catch (error) {
-      console.error('Erreur de sauvegarde:', error)
+    } catch (e) {
+      console.error('Erreur de sauvegarde:', e)
     }
-  }, [isRaceActive, raceElapsedTime, selectedTrackId, currentTrack, coins, bestTimes, selectedCarId])
+  }, [coins, selectedCarId, selectedTrackId])
 
-  const gameLoop = useCallback(() => {
-    if (!canvasRef.current || !isRaceActive) return
-
-    const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')!
-
-    // Simple game loop for demonstration
-    setRaceElapsedTime(Date.now() - raceStartTime)
-
-    // Draw a simple race track
-    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
-    ctx.fillStyle = '#4CAF50'
-    ctx.fillRect(0, CANVAS_HEIGHT / 2 - 20, CANVAS_WIDTH, 40)
-
-    // Draw car
-    ctx.fillStyle = 'red'
-    ctx.fillRect(CANVAS_WIDTH / 4, CANVAS_HEIGHT / 2 - 10, 40, 20)
-
-    animationFrameId.current = requestAnimationFrame(gameLoop)
-  }, [isRaceActive, raceStartTime])
-
-  const handleBuyCar = async (carId: string) => {
-    try {
-      await fetch(`${API}/buy-car`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ car_id: carId })
-      })
-      // Refresh player progress
-      const progressRes = await fetch(`${API}/player-progress`)
-      const progressData: PlayerProgress = await progressRes.json()
-      setCoins(progressData.coins)
-      alert(`Vous avez acheté la voiture !`)
-    } catch (error: any) {
-      alert(`Erreur: ${error.message || 'Impossible d\'acheter la voiture.'}`)
+  /* ------------------------------------------------------------------
+   *  Buy a car (local logic)
+   * ------------------------------------------------------------------ */
+  const handleBuyCar = useCallback((carId: string) => {
+    const car = cars.find(c => c.id === carId)
+    if (!car) return
+    if (ownedCars.includes(carId)) return
+    if (coins < car.base_price) {
+      alert('Pas assez de pièces !')
+      return
     }
-  }
+    setCoins(prev => prev - car.base_price)
+    setOwnedCars(prev => [...prev, carId])
+  }, [cars, ownedCars, coins, setCoins, setOwnedCars])
 
+  /* ------------------------------------------------------------------
+   *  Loading / Error states
+   * ------------------------------------------------------------------ */
   if (loading) {
     return (
       <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 gap-4">
@@ -195,7 +430,7 @@ export default function VroomModule(_props: SharedModuleProps) {
   if (error) {
     return (
       <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 gap-4">
-        <div className="flex justify-center items-center h-full">
+        <div className="flex justify-center items-center h-full flex-col gap-2">
           <p className="text-destructive">{error}</p>
           <Button onClick={() => window.location.reload()}>Réessayer</Button>
         </div>
@@ -203,11 +438,15 @@ export default function VroomModule(_props: SharedModuleProps) {
     )
   }
 
+  /* ------------------------------------------------------------------
+   *  Render
+   * ------------------------------------------------------------------ */
   return (
     <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 gap-4">
+      {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-xl font-semibold text-primary flex items-center gap-2">
-          <Car size={18} className="text-accent" /> Vroom - Course 2D
+          <Car size={18} className="text-accent" /> Vroom – Hillclimber
         </h1>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => setShowSettings(true)}>
@@ -227,47 +466,75 @@ export default function VroomModule(_props: SharedModuleProps) {
           { key: 'play', label: 'Jouer', icon: <Gamepad2 size={16} /> },
           { key: 'garage', label: 'Garage', icon: <Car size={16} /> },
           { key: 'tracks', label: 'Pistes', icon: <Target size={16} /> },
-          { key: 'shop', label: 'Boutique', icon: <Coins size={16} /> }
+          { key: 'shop', label: 'Boutique', icon: <Coins size={16} /> },
         ]}
       />
 
+      {/* PLAY TAB */}
       {activeTab === 'play' && (
         <Card className="p-4">
           <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Véhicule</label>
-              <Select
-                value={selectedCarId}
-                onValueChange={setSelectedCarId}
-                options={cars.map(car => ({ value: car.id, label: `${car.name} (${car.base_price} 💰)` }))}
-                disabled={isRaceActive}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Piste</label>
-              <Select
-                value={selectedTrackId}
-                onValueChange={setSelectedTrackId}
-                options={tracks.map(track => ({ value: track.id, label: `${track.name} (Diff: ${track.difficulty})` }))}
-                disabled={isRaceActive}
-              />
-            </div>
             {!isRaceActive ? (
-              <Button onClick={startRace} className="w-full">
-                Démarrer la course
-              </Button>
+              <>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Véhicule</label>
+                  <Select
+                    value={selectedCarId}
+                    onValueChange={setSelectedCarId}
+                    options={cars
+                      .filter(c => ownedCars.includes(c.id))
+                      .map(c => ({ value: c.id, label: `${c.name} (${c.base_price} 💰)` }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Piste</label>
+                  <Select
+                    value={selectedTrackId}
+                    onValueChange={setSelectedTrackId}
+                    options={tracks.map(t => ({ value: t.id, label: `${t.name} (Difficulté ${t.difficulty})` }))}
+                  />
+                </div>
+                <Button onClick={startRace} className="w-full" disabled={ownedCars.length === 0}>
+                  Démarrer la course
+                </Button>
+              </>
             ) : (
               <div className="flex flex-col gap-2">
                 <canvas
                   ref={canvasRef}
-                  width={CANVAS_WIDTH}
-                  height={CANVAS_HEIGHT}
+                  width={CANVAS_W}
+                  height={CANVAS_H}
                   className="border border-line rounded-md"
                 />
-                <ProgressBar percent={Math.min(100, (raceElapsedTime / 1000) / 60 * 100)} />
-                <p className="text-sm text-secondary">Temps: {(raceElapsedTime / 1000).toFixed(2)}s</p>
+                <div className="flex justify-between items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    onMouseDown={() => { setGasPressed(true); gasPressedRef.current = true }}
+                    onMouseUp={() => { setGasPressed(false); gasPressedRef.current = false }}
+                    onTouchStart={() => { setGasPressed(true); gasPressedRef.current = true }}
+                    onTouchEnd={() => { setGasPressed(false); gasPressedRef.current = false }}
+                    className="flex-1"
+                  >
+                    Accélérer (⬆)
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onMouseDown={() => { setBrakePressed(true); brakePressedRef.current = true }}
+                    onMouseUp={() => { setBrakePressed(false); brakePressedRef.current = false }}
+                    onTouchStart={() => { setBrakePressed(true); brakePressedRef.current = true }}
+                    onTouchEnd={() => { setBrakePressed(false); brakePressedRef.current = false }}
+                    className="flex-1"
+                  >
+                    Freiner (⬇)
+                  </Button>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span>Vitesse : {currentSpeed.toFixed(1)} m/s</span>
+                  <span>Distance : {currentDistance.toFixed(0)} m</span>
+                </div>
                 <Button onClick={endRace} variant="destructive" className="w-full">
-                  Abandonner la course
+                  Arrêter la course
                 </Button>
               </div>
             )}
@@ -275,6 +542,7 @@ export default function VroomModule(_props: SharedModuleProps) {
         </Card>
       )}
 
+      {/* GARAGE TAB */}
       {activeTab === 'garage' && (
         <Card className="p-4">
           <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
@@ -289,7 +557,10 @@ export default function VroomModule(_props: SharedModuleProps) {
               <Select
                 value={selectedCarId}
                 onValueChange={setSelectedCarId}
-                options={cars.map(car => ({ value: car.id, label: car.name }))}
+                options={cars
+                  .filter(c => ownedCars.includes(c.id))
+                  .map(c => ({ value: c.id, label: c.name }))
+                }
               />
             </div>
             {currentCar && (
@@ -312,6 +583,7 @@ export default function VroomModule(_props: SharedModuleProps) {
         </Card>
       )}
 
+      {/* TRACKS TAB */}
       {activeTab === 'tracks' && (
         <Card className="p-4">
           <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
@@ -323,7 +595,7 @@ export default function VroomModule(_props: SharedModuleProps) {
               <Select
                 value={selectedTrackId}
                 onValueChange={setSelectedTrackId}
-                options={tracks.map(track => ({ value: track.id, label: track.name }))}
+                options={tracks.map(t => ({ value: t.id, label: t.name }))}
               />
             </div>
             {currentTrack && (
@@ -334,12 +606,12 @@ export default function VroomModule(_props: SharedModuleProps) {
                 </div>
                 <div className="bg-elevated p-2 rounded-md text-center">
                   <p className="text-xs text-secondary">Longueur</p>
-                  <p className="font-medium">{currentTrack.length}m</p>
+                  <p className="font-medium">{currentTrack.length} m</p>
                 </div>
                 {bestTimes[currentTrack.id] && (
                   <div className="col-span-2 bg-elevated p-2 rounded-md text-center">
                     <p className="text-xs text-secondary">Meilleur temps</p>
-                    <p className="font-medium">{bestTimes[currentTrack.id].toFixed(2)}s</p>
+                    <p className="font-medium">{bestTimes[currentTrack.id].toFixed(2)} s</p>
                   </div>
                 )}
               </div>
@@ -348,6 +620,7 @@ export default function VroomModule(_props: SharedModuleProps) {
         </Card>
       )}
 
+      {/* SHOP TAB */}
       {activeTab === 'shop' && (
         <Card className="p-4">
           <h2 className="text-lg font-medium mb-4 flex items-center gap-2">
@@ -366,11 +639,11 @@ export default function VroomModule(_props: SharedModuleProps) {
                     <p className="font-medium">{car.speed}</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-xs text-secondary">Accélération</p>
+                    <p className="text-xs text-secondary">Accél.</p>
                     <p className="font-medium">{car.acceleration}</p>
                   </div>
                   <div className="text-center">
-                    <p className="text-xs text-secondary">Direction</p>
+                    <p className="text-xs text-secondary">Dir.</p>
                     <p className="font-medium">{car.handling}</p>
                   </div>
                 </div>
@@ -378,13 +651,17 @@ export default function VroomModule(_props: SharedModuleProps) {
                   <span className="text-sm font-bold flex items-center gap-1">
                     <Coins size={12} className="text-yellow-500" /> {car.base_price}
                   </span>
-                  <Button
-                    size="sm"
-                    onClick={() => handleBuyCar(car.id)}
-                    disabled={coins < car.base_price || selectedCarId === car.id}
-                  >
-                    {selectedCarId === car.id ? 'Déjà possédé' : 'Acheter'}
-                  </Button>
+                  {ownedCars.includes(car.id) ? (
+                    <Button size="sm" disabled>Possédé</Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => handleBuyCar(car.id)}
+                      disabled={coins < car.base_price}
+                    >
+                      Acheter
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}
@@ -392,21 +669,18 @@ export default function VroomModule(_props: SharedModuleProps) {
         </Card>
       )}
 
+      {/* Race Result Modal */}
       <Modal open={showRaceResult} onClose={() => setShowRaceResult(false)}>
         <div className="p-6">
           <h3 className="text-lg font-medium mb-4">Résultat de la course</h3>
           {raceResult && (
             <div className="space-y-3">
               <div className="flex justify-between">
-                <span>Temps:</span>
-                <span className="font-medium">{raceResult.time.toFixed(2)}s</span>
+                <span>Distance parcourue :</span>
+                <span className="font-medium">{raceResult.distance.toFixed(0)} m</span>
               </div>
               <div className="flex justify-between">
-                <span>Position:</span>
-                <span className="font-medium">{raceResult.position}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Pièces gagnées:</span>
+                <span>Pièces gagnées :</span>
                 <span className="font-medium flex items-center gap-1">
                   <Coins size={14} className="text-yellow-500" /> {raceResult.coinsEarned}
                 </span>
@@ -416,6 +690,7 @@ export default function VroomModule(_props: SharedModuleProps) {
         </div>
       </Modal>
 
+      {/* Settings Modal */}
       <Modal open={showSettings} onClose={() => setShowSettings(false)}>
         <div className="p-6">
           <h3 className="text-lg font-medium mb-4">Paramètres</h3>
