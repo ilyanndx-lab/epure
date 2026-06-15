@@ -22,6 +22,7 @@ export interface InstanceConfig {
   fiches: { racine: string; watch_folders: string[] }
   atelier: {
     claude_path: string
+    aider_path: string
     gateway: { base_url: string; model: string; api_key: string }
     moteur_defaut: string
     mode_defaut: string
@@ -38,6 +39,7 @@ export interface InstanceConfigPatch {
   fiches?: Partial<InstanceConfig['fiches']>
   atelier?: {
     claude_path?: string
+    aider_path?: string
     gateway?: Partial<InstanceConfig['atelier']['gateway']>
     moteur_defaut?: string
     mode_defaut?: string
@@ -54,6 +56,7 @@ const DEFAULT_CONFIG: InstanceConfig = {
   fiches: { racine: '', watch_folders: [] },
   atelier: {
     claude_path: 'claude',
+    aider_path: 'aider',
     gateway: { base_url: 'http://localhost:4000', model: '', api_key: '' },
     moteur_defaut: 'ollama',
     mode_defaut: 'headless',
