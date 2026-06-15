@@ -421,9 +421,6 @@ class ModelsRegistry:
     def _fetch_nvidia(self) -> Optional[list[str]]:
         return self._fetch_models("NVIDIA", "https://integrate.api.nvidia.com/v1/models", "NVIDIA_API_KEY")
 
-    def _fetch_deepseek(self) -> Optional[list[str]]:
-        return self._fetch_models("DeepSeek", "https://api.deepseek.com/v1/models", "DEEPSEEK_API_KEY")
-
     # ── Async orchestration ──────────────────────────────────────────────────
 
     async def _guarded(self, func) -> Optional[list]:
@@ -438,12 +435,11 @@ class ModelsRegistry:
             return None
 
     async def _build(self) -> dict:
-        groq_ids, cerebras_ids, mistral_ids, nvidia_ids, deepseek_ids = await asyncio.gather(
+        groq_ids, cerebras_ids, mistral_ids, nvidia_ids = await asyncio.gather(
             self._guarded(self._fetch_groq),
             self._guarded(self._fetch_cerebras),
             self._guarded(self._fetch_mistral),
             self._guarded(self._fetch_nvidia),
-            self._guarded(self._fetch_deepseek),
         )
 
         rapide: list[dict] = []
@@ -469,10 +465,13 @@ class ModelsRegistry:
         # Groq/Cerebras: the live list is the surface; static fallback on failure
         _add("groq", groq_ids if groq_ids else _GROQ_STATIC, groq_ids)
         _add("cerebras", cerebras_ids if cerebras_ids else _CEREBRAS_STATIC, cerebras_ids)
-        # NVIDIA/Mistral/DeepSeek: curated surface, live list only validates availability
+        # NVIDIA/Mistral: curated surface, live list only validates availability
         _add("nvidia", _NVIDIA_STATIC, nvidia_ids)
         _add("mistral", _MISTRAL_STATIC, mistral_ids)
-        _add("deepseek", _DEEPSEEK_STATIC, deepseek_ids)
+        # DeepSeek : le /v1/models live ne liste PAS les noms curatés (v4-pro/flash),
+        # donc la validation live les marquerait à tort indisponibles. Comme Gemini :
+        # disponibilité = présence de la clé (live=None).
+        _add("deepseek", _DEEPSEEK_STATIC, None)
         # Gemini: pas de /v1/models OpenAI-compatible — availability = key presence
         _add("gemini", _GEMINI_STATIC, None)
 
