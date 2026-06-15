@@ -174,6 +174,7 @@ async def list_models():
         "cerebras": bool(os.environ.get("CEREBRAS_API_KEY", "").strip()),
         "mistral":  bool(os.environ.get("MISTRAL_API_KEY", "").strip()),
         "nvidia":   bool(os.environ.get("NVIDIA_API_KEY", "").strip()),
+        "deepseek": bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()),
     }
 
     def _cloud_dispo(m: dict) -> bool:
