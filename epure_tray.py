@@ -106,8 +106,24 @@ def _start_processes():
     time.sleep(4)
 
     _log("Lancement uvicorn")
+    uvicorn_cmd = [
+        sys.executable, "-m", "uvicorn", "main:app",
+        "--host", "0.0.0.0", "--port", "8000",
+    ]
+    # Rechargement auto en dev (EPURE_RELOAD=0 pour désactiver). uvicorn ne
+    # surveille que les *.py, donc les écritures de données (memory/*.json,
+    # chroma_db, *.log) ne déclenchent PAS de reload. On exclut quand même le
+    # bac à sable de l'atelier : modules/_staging/**/*.py est écrit PENDANT une
+    # génération — un reload couperait le WebSocket en cours. Idem _backups.
+    if os.environ.get("EPURE_RELOAD", "1").strip().lower() not in ("0", "false", "no", ""):
+        uvicorn_cmd += [
+            "--reload",
+            "--reload-exclude", "*_staging*",
+            "--reload-exclude", "*_backups*",
+        ]
+        _log("uvicorn : rechargement auto activé (EPURE_RELOAD=0 pour désactiver)")
     p_uvicorn = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+        uvicorn_cmd,
         cwd=str(BACKEND_DIR),
         stdout=fh,
         stderr=fh,
