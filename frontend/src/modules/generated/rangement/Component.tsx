@@ -20,11 +20,23 @@ const Component: React.FC = () => {
   const [fileList, setFileList] = useState<FileInfo[]>([]);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const [loading, setLoading] = useState(false);
-
   const [models, setModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [streaming, setStreaming] = useState(false);
   const [liveLog, setLiveLog] = useState<string[]>([]);
+  const [folderPath, setFolderPath] = useState<string>("");
+  const [history, setHistory] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<"analysis" | "history">("analysis");
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch("/history");
+      const data = await res.json();
+      setHistory(data.history ?? []);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     fetch("/models")
@@ -32,6 +44,16 @@ const Component: React.FC = () => {
       .then((data) => setModels(data.models ?? []))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchHistory();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "history") {
+      fetchHistory();
+    }
+  }, [activeTab]);
 
   async function readFolder(
     dirHandle: FileSystemDirectoryHandle,
@@ -59,6 +81,7 @@ const Component: React.FC = () => {
   const handleSelectFolder = async () => {
     try {
       const dirHandle = await (window as any).showDirectoryPicker();
+      setFolderPath(dirHandle.name || "");
       const collected: FileInfo[] = [];
       await readFolder(dirHandle, "", collected);
       setFileList(collected);
@@ -82,7 +105,12 @@ const Component: React.FC = () => {
         const response = await fetch("/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files: fileList, theme, model: selectedModel }),
+          body: JSON.stringify({
+            files: fileList,
+            theme,
+            model: selectedModel,
+            folderPath,
+          }),
         });
         if (!response.ok) throw new Error(await response.text());
 
@@ -107,6 +135,7 @@ const Component: React.FC = () => {
                 } else if (event.type === "result") {
                   const res: AnalyzeResponse = event.result;
                   setResult(res);
+                  fetchHistory(); // actualisation immédiate
                 } else if (event.type === "error") {
                   alert(event.message);
                 }
@@ -131,10 +160,15 @@ const Component: React.FC = () => {
       const response = await fetch("/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: fileList, theme }),
+        body: JSON.stringify({
+          files: fileList,
+          theme,
+          folderPath,
+        }),
       });
       const data: AnalyzeResponse = await response.json();
       setResult(data);
+      fetchHistory(); // actualisation immédiate
     } catch (error) {
       console.error(error);
       setResult(null);
@@ -158,108 +192,144 @@ const Component: React.FC = () => {
     <div style={{ padding: "1rem", fontFamily: "sans-serif" }}>
       <h2>🗂️ Rangement intelligent (via LLM sur NPU)</h2>
 
-      <div style={{ marginBottom: "1rem" }}>
-        <button onClick={handleSelectFolder}>📁 Choisir un dossier</button>
-        {fileList.length > 0 && (
-          <span style={{ marginLeft: "1rem" }}>{fileList.length} fichier(s) trouvé(s)</span>
-        )}
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <label htmlFor="model-select">Modèle LLM NPU : </label>
-        <select
-          id="model-select"
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-        >
-          <option value="">(Aucun, utiliser l'heuristique)</option>
-          {models.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <label htmlFor="theme">Thème souhaité : </label>
-        <input
-          id="theme"
-          type="text"
-          placeholder="ex: photos, documents, code..."
-          value={theme}
-          onChange={(e) => setTheme(e.target.value)}
-          style={{ marginLeft: "0.5rem", width: "200px" }}
-        />
+      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
         <button
-          onClick={handleAnalyze}
-          disabled={loading || streaming || fileList.length === 0}
-          style={{ marginLeft: "1rem" }}
+          onClick={() => setActiveTab("analysis")}
+          disabled={activeTab === "analysis"}
         >
-          {streaming ? "Analyse en direct…" : loading ? "Analyse en cours…" : "🔍 Analyser"}
+          🔍 Analyse
+        </button>
+        <button
+          onClick={() => setActiveTab("history")}
+          disabled={activeTab === "history"}
+        >
+          📋 Historique
         </button>
       </div>
 
-      {(streaming || liveLog.length > 0) && (
-        <div
-          style={{
-            background: "#eee",
-            padding: "0.5em",
-            maxHeight: "150px",
-            overflow: "auto",
-            marginTop: "1rem",
-            border: "1px solid #ccc",
-          }}
-        >
-          {liveLog.map((msg, i) => (
-            <div key={i}>{msg}</div>
-          ))}
-        </div>
-      )}
+      {activeTab === "analysis" && (
+        <>
+          <div style={{ marginBottom: "1rem" }}>
+            <button onClick={handleSelectFolder}>📁 Choisir un dossier</button>
+            {fileList.length > 0 && (
+              <span style={{ marginLeft: "1rem" }}>{fileList.length} fichier(s) trouvé(s)</span>
+            )}
+          </div>
 
-      {result && (
-        <div style={{ marginTop: "1.5rem" }}>
-          <h3>Plan de rangement</h3>
-          <ul>
-            {Object.entries(result.plan).map(([folder, files]) => (
-              <li key={folder}>
-                <strong>{folder}</strong> ({files.length}) → {files.join(", ")}
-              </li>
-            ))}
-          </ul>
+          <div style={{ marginBottom: "1rem" }}>
+            <label htmlFor="model-select">Modèle LLM NPU : </label>
+            <select
+              id="model-select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              <option value="">(Aucun, utiliser l'heuristique)</option>
+              {models.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </div>
 
-          <h3>Résumés (quelques mots)</h3>
-          <ul>
-            {Object.entries(result.summary).map(([rel, summ]) => (
-              <li key={rel}>{rel} → {summ}</li>
-            ))}
-          </ul>
+          <div style={{ marginBottom: "1rem" }}>
+            <label htmlFor="theme">Thème souhaité : </label>
+            <input
+              id="theme"
+              type="text"
+              placeholder="ex: photos, documents, code..."
+              value={theme}
+              onChange={(e) => setTheme(e.target.value)}
+              style={{ marginLeft: "0.5rem", width: "200px" }}
+            />
+            <button
+              onClick={handleAnalyze}
+              disabled={loading || streaming || fileList.length === 0}
+              style={{ marginLeft: "1rem" }}
+            >
+              {streaming ? "Analyse en direct…" : loading ? "Analyse en cours…" : "🔍 Analyser"}
+            </button>
+          </div>
 
-          {Object.keys(result.duplicates).length > 0 && (
-            <>
-              <h3>Doublons détectés</h3>
+          {(streaming || liveLog.length > 0) && (
+            <div
+              style={{
+                background: "#eee",
+                padding: "0.5em",
+                maxHeight: "150px",
+                overflow: "auto",
+                marginTop: "1rem",
+                border: "1px solid #ccc",
+              }}
+            >
+              {liveLog.map((msg, i) => (
+                <div key={i}>{msg}</div>
+              ))}
+            </div>
+          )}
+
+          {result && (
+            <div style={{ marginTop: "1.5rem" }}>
+              <h3>Plan de rangement</h3>
               <ul>
-                {Object.entries(result.duplicates).map(([keep, dups]) => (
-                  <li key={keep}>
-                    Conserver <strong>{keep}</strong>, supprimer {dups.join(", ")}
+                {Object.entries(result.plan).map(([folder, files]) => (
+                  <li key={folder}>
+                    <strong>{folder}</strong> ({files.length}) → {files.join(", ")}
                   </li>
                 ))}
               </ul>
-            </>
-          )}
 
-          <h3>Script PowerShell</h3>
-          <pre
-            style={{
-              background: "#f5f5f5",
-              padding: "0.5rem",
-              maxHeight: "300px",
-              overflow: "auto",
-            }}
-          >
-            {result.powershellScript}
-          </pre>
-          <button onClick={downloadScript} style={{ marginTop: "0.5rem" }}>
-            ⬇️ Télécharger le script
-          </button>
+              <h3>Résumés (quelques mots)</h3>
+              <ul>
+                {Object.entries(result.summary).map(([rel, summ]) => (
+                  <li key={rel}>{rel} → {summ}</li>
+                ))}
+              </ul>
+
+              {Object.keys(result.duplicates).length > 0 && (
+                <>
+                  <h3>Doublons détectés</h3>
+                  <ul>
+                    {Object.entries(result.duplicates).map(([keep, dups]) => (
+                      <li key={keep}>
+                        Conserver <strong>{keep}</strong>, supprimer {dups.join(", ")}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+
+              <h3>Script PowerShell</h3>
+              <pre
+                style={{
+                  background: "#f5f5f5",
+                  padding: "0.5rem",
+                  maxHeight: "300px",
+                  overflow: "auto",
+                }}
+              >
+                {result.powershellScript}
+              </pre>
+              <button onClick={downloadScript} style={{ marginTop: "0.5rem" }}>
+                ⬇️ Télécharger le script
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === "history" && (
+        <div>
+          <h2>Historique des analyses</h2>
+          {history.length === 0 ? (
+            <p>Aucune analyse enregistrée pour le moment.</p>
+          ) : (
+            <ul>
+              {history.map((entry, idx) => (
+                <li key={idx}>
+                  {new Date(entry.timestamp).toLocaleString()} — {entry.files_count} fichier(s) — modèle : {entry.model_used}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </div>
