@@ -5,7 +5,6 @@ import {
 } from 'lucide-react'
 import { Badge, Button, Card, Input, Select, Textarea } from './ui'
 import { useInstanceConfig } from '../instance'
-import { fetchModules } from '../modules'
 import { usePersistentState } from '../usePersistentState'
 
 const API = 'http://localhost:8000'
@@ -201,17 +200,23 @@ export default function Workshop() {
         setError(typeof data.detail === 'object' ? JSON.stringify(data.detail) : (data.detail ?? 'Activation refusée'))
         return
       }
+      const sid = staging.id
       setApproveResult(
-        `Module activé.${data.backup ? ` Sauvegarde : ${data.backup}.` : ''}` +
-        (data.restart_required ? ' Redémarrage du backend requis pour appliquer les changements de routes.' : ' Routes montées à chaud.') +
-        ` Composant copié dans src/modules/generated/${staging.id}/ — en dev Vite le charge à chaud ; en build, reconstruisez le frontend.`
+        `Module « ${sid} » activé${data.backup ? ` (backup créé)` : ''}.`
+        + (data.restart_required ? ' ⚠️ routes non montées à chaud — un redémarrage backend peut être nécessaire.' : '')
+        + ' Rechargement de l\'interface…'
       )
       wsRef.current?.close()
+      // IMPORTANT : on vide l'état de revue PERSISTÉ avant de recharger, sinon la
+      // revue (sur un staging maintenant supprimé) réapparaîtrait après le reload.
       setPhase('idle'); setStaging(null); setReport(null); setLog(''); setFeedbackText('')
-      // Rafraîchit le cache partagé (Sidebar/App) → le module apparaît sans reload,
-      // + la liste locale de l'atelier (avec infos staging).
-      void fetchModules()
-      fetch(`${API}/workshop/modules`).then(r => r.json()).then((d: { modules: ModuleRow[] }) => setModules(d.modules)).catch(() => {})
+      // Recharge l'interface pour garantir l'affichage du composant à jour.
+      // Le backend a déjà monté les routes à chaud (aucun redémarrage backend).
+      // Côté frontend, Vite ne propage PAS fiablement le HMR d'un composant généré
+      // (lazy + import.meta.glob) déjà monté lors d'une MODIFICATION (le set de
+      // fichiers ne change pas) → on force un rechargement qui ré-importe le
+      // composant à jour. L'état du formulaire (description, moteur…) est persisté.
+      setTimeout(() => window.location.reload(), 1000)
     } catch { setError('Activation échouée (réseau).') }
   }, [staging])
 
