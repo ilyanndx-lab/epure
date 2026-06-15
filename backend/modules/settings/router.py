@@ -13,6 +13,8 @@ import logging
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -90,6 +92,41 @@ async def quota_reset(provider: str):
     if not ok:
         raise HTTPException(status_code=404, detail=f"Provider inconnu : {provider}")
     return {"ok": True}
+
+
+@router.get("/quota/deepseek-balance")
+def deepseek_balance():
+    """Crédit DeepSeek en temps réel via l'API officielle (GET /user/balance).
+
+    DeepSeek est une API payante : on suit le solde restant (pas des tokens/req).
+    Réponse : {ok, is_available, balances:[{currency,total_balance,...}], raison?}.
+    """
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        return {"ok": False, "raison": "DEEPSEEK_API_KEY non configurée dans les Réglages."}
+    try:
+        req = urllib.request.Request(
+            "https://api.deepseek.com/user/balance",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) epure/1.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return {
+            "ok": True,
+            "is_available": bool(data.get("is_available", False)),
+            "balances": data.get("balance_infos", []),
+        }
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return {"ok": False, "raison": f"Clé DeepSeek refusée (HTTP {exc.code})."}
+        return {"ok": False, "raison": f"Erreur DeepSeek (HTTP {exc.code})."}
+    except Exception as exc:
+        logger.warning("DeepSeek balance: %s", exc)
+        return {"ok": False, "raison": f"Solde DeepSeek indisponible : {exc}"}
 
 
 # ── Settings — API keys ──────────────────────────────────────────────────────

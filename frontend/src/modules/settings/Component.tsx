@@ -59,6 +59,19 @@ interface QuotaEntry {
   pourcentage: number | null
 }
 
+interface DeepSeekBalanceItem {
+  currency: string
+  total_balance: string
+  granted_balance?: string
+  topped_up_balance?: string
+}
+interface DeepSeekBalance {
+  ok: boolean
+  is_available?: boolean
+  balances?: DeepSeekBalanceItem[]
+  raison?: string
+}
+
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini', groq: 'Groq', cerebras: 'Cerebras',
   nvidia: 'NVIDIA NIM', mistral: 'Mistral', deepseek: 'DeepSeek',
@@ -182,6 +195,7 @@ export default function Settings() {
   // Quota usage state
   const [quotas, setQuotas] = useState<Record<string, QuotaEntry>>({})
   const [quotasLoading, setQuotasLoading] = useState(false)
+  const [deepseekBalance, setDeepseekBalance] = useState<DeepSeekBalance | null>(null)
 
   // API keys state
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({
@@ -320,6 +334,11 @@ export default function Settings() {
       .then((d: Record<string, QuotaEntry>) => setQuotas(d))
       .catch(err => console.error('GET /quota/usage:', err))
       .finally(() => setQuotasLoading(false))
+    // Crédit DeepSeek en temps réel (API payante → solde, pas des tokens).
+    fetch(`${API}/quota/deepseek-balance`)
+      .then(r => r.json())
+      .then((d: DeepSeekBalance) => setDeepseekBalance(d))
+      .catch(() => setDeepseekBalance({ ok: false, raison: 'Réseau indisponible' }))
   }
 
   const resetQuota = useCallback(async (provider: string) => {
@@ -949,6 +968,25 @@ export default function Settings() {
             Actualiser
           </Button>
         </div>
+
+        {deepseekBalance && (
+          <div className="space-y-0.5 pb-3 border-b border-line">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-secondary font-medium">DeepSeek · crédit</span>
+              {deepseekBalance.ok && deepseekBalance.balances?.length ? (
+                <span className="text-muted font-mono">
+                  {deepseekBalance.balances.map(b => `${b.total_balance} ${b.currency}`).join(' · ')}
+                  {deepseekBalance.is_available === false && ' · épuisé'}
+                </span>
+              ) : (
+                <span className="text-muted font-mono truncate max-w-[16rem]" title={deepseekBalance.raison}>
+                  {deepseekBalance.raison ?? '—'}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted/70">Solde restant en temps réel (API DeepSeek)</p>
+          </div>
+        )}
 
         {Object.keys(quotas).length === 0 ? (
           <p className="text-xs text-muted">Aucune donnée d'usage.</p>
