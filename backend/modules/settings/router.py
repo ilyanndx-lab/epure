@@ -436,6 +436,14 @@ def test_gateway():
     return {"ok": ok, "url": url, "raison": "" if ok else f"Passerelle injoignable : {url}"}
 
 
+@router.post("/settings/gateway/start")
+def gateway_start():
+    """Démarre la passerelle via atelier.gateway.start_command (process détaché)."""
+    from core.module_workshop import start_gateway
+
+    return start_gateway()
+
+
 # Providers cloud → clé API qui les active (réutilise les listes statiques de
 # core.models comme source des modèles, plutôt que de les redéfinir).
 _PROVIDER_KEY = {

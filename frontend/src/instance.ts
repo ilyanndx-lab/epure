@@ -23,7 +23,7 @@ export interface InstanceConfig {
   atelier: {
     claude_path: string
     aider_path: string
-    gateway: { base_url: string; model: string; api_key: string }
+    gateway: { base_url: string; model: string; api_key: string; start_command: string }
     moteur_defaut: string
     mode_defaut: string
   }
@@ -57,7 +57,7 @@ const DEFAULT_CONFIG: InstanceConfig = {
   atelier: {
     claude_path: 'claude',
     aider_path: 'aider',
-    gateway: { base_url: 'http://localhost:4000', model: '', api_key: '' },
+    gateway: { base_url: 'http://localhost:4000', model: '', api_key: '', start_command: '' },
     moteur_defaut: 'ollama',
     mode_defaut: 'headless',
   },
