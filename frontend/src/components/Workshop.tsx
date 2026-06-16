@@ -62,17 +62,20 @@ export default function Workshop() {
   const [autoMax, setAutoMax] = usePersistentState<number>('epure.workshop.autoMax', 0)
   const autoLeft = useRef(0)
 
-  // Conversation aider (Plan/Construire) : fil de bulles + saisie + mode + accès lecture.
+  // Conversation aider : fil de bulles + saisie + accès lecture + plan capté.
   const [turns, setTurns] = useState<{ role: 'user' | 'aider', text: string }[]>([])
   const [chatInput, setChatInput] = useState('')
-  const [aiderMode, setAiderMode] = useState<'plan' | 'build'>('plan')
+  const [startMode, setStartMode] = useState<'plan' | 'build'>('build')  // « Démarrer en »
   const [grantPath, setGrantPath] = useState('')
   const [grantMsg, setGrantMsg] = useState<string | null>(null)
+  const [planText, setPlanText] = useState('')  // dernière réponse plan d'aider (handoff verbatim)
 
   const wsRef = useRef<WebSocket | null>(null)
   // true pendant une conversation aider → les tokens vont dans `turns` (bulles),
   // pas dans `log` (flux one-shot ollama/claude).
   const chatRef = useRef(false)
+  const turnModeRef = useRef<'plan' | 'build'>('plan')  // mode du tour aider en cours
+  const curAiderRef = useRef('')                          // texte accumulé de la bulle aider en cours
   // Ref vers resumeGeneration : permet à bindSocket de la rappeler (auto-reprise)
   // sans dépendance circulaire entre les deux useCallback.
   const resumeRef = useRef<() => void>(() => {})
@@ -131,18 +134,24 @@ export default function Workshop() {
       const data = JSON.parse(ev.data)
       if (data.type === 'token') {
         if (chatRef.current) {
-          // Conversation : on accumule dans la dernière bulle aider.
+          // Conversation : on accumule le texte du tour dans une bulle aider.
+          curAiderRef.current += (data.content ?? '')
+          const txt = curAiderRef.current
           setTurns(prev => {
             const last = prev[prev.length - 1]
-            if (last?.role === 'aider') return [...prev.slice(0, -1), { ...last, text: last.text + (data.content ?? '') }]
-            return [...prev, { role: 'aider', text: data.content ?? '' }]
+            if (last?.role === 'aider') return [...prev.slice(0, -1), { ...last, text: txt }]
+            return [...prev, { role: 'aider', text: txt }]
           })
+          // Tour en mode plan → on mémorise le plan pour le handoff « Construire ».
+          if (turnModeRef.current === 'plan') setPlanText(txt)
         } else {
           setLog(prev => prev + (data.content ?? ''))
         }
       } else if (data.type === 'engine') {
         if (chatRef.current) {
-          // Nouveau tour → nouvelle bulle aider (mode/architect en méta visuelle).
+          // Nouveau tour → nouvelle bulle aider ; on retient le mode du tour.
+          turnModeRef.current = data.mode === 'build' ? 'build' : 'plan'
+          curAiderRef.current = ''
           setPhase('chatting')
           setTurns(prev => [...prev, { role: 'aider', text: '' }])
         } else {
@@ -231,17 +240,11 @@ export default function Workshop() {
   }, [currentId, bindSocket])
   resumeRef.current = resumeGeneration
 
-  // Envoie un tour de conversation aider (workshop_chat). Réutilise la socket si
-  // ouverte, sinon la rouvre (cas reload). Pousse la bulle utilisateur.
-  const sendChat = useCallback((message: string, chatMode: 'plan' | 'build') => {
+  // Envoi bas-niveau d'un tour workshop_chat (socket réutilisée ou rouverte).
+  const sendWorkshopChat = useCallback((message: string, chatMode: 'plan' | 'build', fresh: boolean) => {
     const id = currentId
-    if (!id || !message.trim()) return
-    chatRef.current = true
-    setError(null)
-    setTurns(prev => [...prev, { role: 'user', text: message }])
-    setChatInput('')
-    setPhase('chatting')
-    const payload = JSON.stringify({ type: 'workshop_chat', id, message, mode: chatMode, kind, model: model || null, architect: aiderArchitect })
+    if (!id) return
+    const payload = JSON.stringify({ type: 'workshop_chat', id, message, mode: chatMode, kind, model: model || null, architect: aiderArchitect, fresh })
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(payload)
@@ -253,13 +256,26 @@ export default function Workshop() {
     }
   }, [currentId, kind, model, aiderArchitect, bindSocket])
 
-  // « Générer » en mode aider : prépare le staging (new/edit) puis lance le 1er
-  // tour en mode Plan avec la description comme message.
+  // Tour de conversation depuis le panneau : bulle utilisateur (display optionnel)
+  // + envoi. display permet d'afficher un libellé court tout en envoyant un long message.
+  const sendChat = useCallback((message: string, chatMode: 'plan' | 'build', display?: string) => {
+    if (!message.trim()) return
+    chatRef.current = true
+    setError(null)
+    setTurns(prev => [...prev, { role: 'user', text: display ?? message }])
+    setChatInput('')
+    setPhase('chatting')
+    sendWorkshopChat(message, chatMode, false)
+  }, [sendWorkshopChat])
+
+  // « Générer » (aider) : le sélecteur « Démarrer en » gouverne la 1re action.
+  //  - build (défaut) → one-shot : crée les 3 fichiers, validation directe (log).
+  //  - plan → conversation : demande d'abord un plan, sans créer de fichier (bulles).
   const startAiderChat = useCallback(async () => {
     const id = currentId
     if (!id) { setError('Indiquez un identifiant de module.'); return }
     if (!description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
-    setError(null); setApproveResult(null); setStaging(null); setReport(null); setTurns([]); setLog('')
+    setError(null); setApproveResult(null); setStaging(null); setReport(null); setTurns([]); setLog(''); setPlanText('')
     try {
       const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
       const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
@@ -271,8 +287,21 @@ export default function Workshop() {
     } catch { setError('Backend injoignable.'); return }
     // Socket fraîche liée au bon id (évite une closure d'id obsolète).
     wsRef.current?.close(); wsRef.current = null
-    sendChat(description, 'plan')
-  }, [currentId, description, kind, engine, mode, sendChat])
+    if (startMode === 'build') {
+      // One-shot comme avant : flux dans le log, validation directe.
+      chatRef.current = false
+      setPhase('generating')
+      const buildMsg = `${description}\n\nCrée maintenant le module : les 3 fichiers manifest.json, router.py et Component.tsx, en respectant STRICTEMENT les conventions Épure fournies en lecture (--read). LLM via core.runtime.llm, routes préfixées /${id}/. Ne pose pas de question, produis directement le code.`
+      sendWorkshopChat(buildMsg, 'build', true)
+    } else {
+      // Conversation : on demande d'abord un plan, sans créer de fichier.
+      chatRef.current = true
+      setTurns([{ role: 'user', text: description }])
+      setPhase('chatting')
+      const planMsg = `${description}\n\nProduis un PLAN détaillé (fichiers, routes /${id}/, modèle LLM via core.runtime.llm, questions, accès nécessaires). Ne crée AUCUN fichier.`
+      sendWorkshopChat(planMsg, 'plan', true)
+    }
+  }, [currentId, description, kind, engine, mode, startMode, sendWorkshopChat])
 
   // Autorise un dossier/fichier en lecture pour les prochains tours.
   const grantRead = useCallback(() => {
@@ -468,6 +497,15 @@ export default function Workshop() {
             </div>
           )}
           {engine === 'aider' && (
+            <div>
+              <label className="text-xs text-muted uppercase tracking-wide block mb-1">Démarrer en</label>
+              <Select value={startMode} onChange={e => setStartMode(e.target.value as 'plan' | 'build')}>
+                <option value="build">Construire directement</option>
+                <option value="plan">Planifier (discuter d'abord)</option>
+              </Select>
+            </div>
+          )}
+          {engine === 'aider' && (
             <label className="flex items-center gap-2 text-xs text-secondary">
               <input type="checkbox" checked={aiderArchitect}
                 onChange={e => setAiderArchitect(e.target.checked)}
@@ -489,7 +527,7 @@ export default function Workshop() {
             disabled={phase === 'generating' || phase === 'validating' || phase === 'chatting' || engineUnavailable || !currentId || !description.trim()}>
             {phase === 'generating' ? 'Génération…' : phase === 'validating' ? 'Validation…'
               : phase === 'chatting' ? 'Conversation…'
-              : engine === 'aider' ? 'Démarrer (Plan)' : 'Générer'}
+              : engine === 'aider' ? (startMode === 'build' ? 'Générer' : 'Planifier') : 'Générer'}
           </Button>
         </div>
 
@@ -552,23 +590,24 @@ export default function Workshop() {
             ))}
           </div>
 
-          {/* Mode + saisie */}
-          <div className="flex items-center gap-2">
-            <Select value={aiderMode} onChange={e => setAiderMode(e.target.value as 'plan' | 'build')}>
-              <option value="plan">Plan (discuter)</option>
-              <option value="build">Construire</option>
-            </Select>
-            <Button variant="secondary" size="sm" icon={<Play size={13} />}
-              onClick={() => sendChat('Construis maintenant les 3 fichiers selon le plan validé.', 'build')}>
-              Construire maintenant
-            </Button>
-          </div>
+          {/* Saisie (continue la discussion en mode plan) */}
           <div className="flex gap-2 items-end">
             <Textarea value={chatInput} onChange={e => setChatInput(e.target.value)} rows={2}
               placeholder="Votre message à aider (questions, précisions, corrections)…" className="flex-1" />
-            <Button variant="primary" size="sm" onClick={() => sendChat(chatInput, aiderMode)}
+            <Button variant="primary" size="sm" onClick={() => sendChat(chatInput, 'plan')}
               disabled={!chatInput.trim()}>Envoyer</Button>
           </div>
+
+          {/* Handoff : construit en passant le PLAN VERBATIM (build déterministe) */}
+          <Button variant="secondary" size="sm" icon={<Play size={13} />}
+            disabled={!planText.trim()}
+            onClick={() => sendChat(
+              'PLAN VALIDÉ (exécute-le EXACTEMENT, n\'invente aucun historique ni module non mentionné) :\n\n'
+              + planText
+              + `\n\nConstruis maintenant manifest.json, router.py et Component.tsx selon ce plan. LLM via core.runtime.llm, routes /${currentId}/.`,
+              'build', '▶ Construire — plan validé')}>
+            Construire maintenant
+          </Button>
 
           {/* Accès lecture */}
           <div className="flex gap-2 items-center">
