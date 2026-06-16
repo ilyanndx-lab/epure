@@ -110,18 +110,15 @@ def _start_processes():
         sys.executable, "-m", "uvicorn", "main:app",
         "--host", "0.0.0.0", "--port", "8000",
     ]
-    # Rechargement auto en dev (EPURE_RELOAD=0 pour désactiver). uvicorn ne
-    # surveille que les *.py, donc les écritures de données (memory/*.json,
-    # chroma_db, *.log) ne déclenchent PAS de reload. On exclut quand même le
-    # bac à sable de l'atelier : modules/_staging/**/*.py est écrit PENDANT une
-    # génération — un reload couperait le WebSocket en cours. Idem _backups.
+    # Rechargement auto en dev (EPURE_RELOAD=0 pour désactiver). On surveille
+    # UNIQUEMENT backend/core/ : surveiller modules/ serait néfaste — chaque
+    # approbation de l'atelier y écrit un router.py, ce qui relancerait le backend
+    # (alors qu'il monte déjà les routes à chaud) et le rendrait « injoignable »
+    # quelques secondes, et le watcher verrouillerait modules/_staging sous Windows.
+    # (Une modif de main.py nécessite un redémarrage manuel du tray — rare.)
     if os.environ.get("EPURE_RELOAD", "1").strip().lower() not in ("0", "false", "no", ""):
-        uvicorn_cmd += [
-            "--reload",
-            "--reload-exclude", "*_staging*",
-            "--reload-exclude", "*_backups*",
-        ]
-        _log("uvicorn : rechargement auto activé (EPURE_RELOAD=0 pour désactiver)")
+        uvicorn_cmd += ["--reload", "--reload-dir", "core"]
+        _log("uvicorn : rechargement auto activé sur core/ (EPURE_RELOAD=0 pour désactiver)")
     p_uvicorn = subprocess.Popen(
         uvicorn_cmd,
         cwd=str(BACKEND_DIR),
