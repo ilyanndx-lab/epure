@@ -1,0 +1,17 @@
+{
+  "id": "minecraft",
+  "version": "1.0.0",
+  "nom": "Minecraft",
+  "icon": "BrickWall",
+  "description": "Mini-jeu 2D inspiré de Minecraft avec génération procédurale et aide crafting par IA",
+  "frontend": {
+    "component": "Component"
+  },
+  "backend": {
+    "prefix": "/minecraft"
+  },
+  "core_module": false,
+  "origin": "workshop",
+  "status": "active",
+  "removable": true
+}
