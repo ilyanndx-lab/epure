@@ -1,6 +1,6 @@
 {
   "id": "pong",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "nom": "Pong",
   "icon": "Circle",
   "description": "Module de jeu Pong",
