@@ -86,17 +86,19 @@ def _read_is_safe(path: Path) -> bool:
     s = str(path).replace("\\", "/").lower()
     return not any(re.search(d, s) for d in _READ_DENY)
 
-def _atelier_read_files(extra: Optional[list[str]] = None) -> list[str]:
-    """Chemins --read (lecture seule) : conventions + index + exemple hello + extras autorisés."""
+def _atelier_read_files(extra: Optional[list[str]] = None, minimal: bool = False) -> list[str]:
+    """Chemins --read (lecture seule) : conventions + index + exemple hello + extras autorisés.
+    minimal=True (modèle local, contexte limité) : CONVENTIONS seul (pas d'index ni d'exemple)."""
     out: list[str] = []
     conv = _ATELIER_DIR / "CONVENTIONS.md"
     if conv.is_file():
         out.append(str(conv))
-    out.append(str(_write_module_index()))
-    for name in ("manifest.json", "router.py"):
-        f = MODULES_DIR / "hello" / name
-        if f.is_file():
-            out.append(str(f))
+    if not minimal:                                  # local minimal : CONVENTIONS seul
+        out.append(str(_write_module_index()))
+        for name in ("manifest.json", "router.py"):
+            f = MODULES_DIR / "hello" / name
+            if f.is_file():
+                out.append(str(f))
     for e in (extra or []):
         p = Path(e).expanduser()
         if not p.is_absolute():
@@ -954,7 +956,7 @@ def _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore,
     for rf in (read_files or []):
         cmd += ["--read", rf]
     cmd += ["--message", message, "--yes-always", "--no-auto-commits", "--no-check-update",
-            "--no-show-model-warnings", "--no-detect-urls", "--chat-language", "French",
+            "--no-show-model-warnings", "--no-detect-urls", "--no-pretty", "--chat-language", "French",
             "--map-tokens", "0", "manifest.json", "router.py", "Component.tsx"]
     return cmd
 
@@ -1004,12 +1006,16 @@ def _run_aider_proc(module_id, sdir, cmd, env) -> Generator:
 
 
 def aider_converse(module_id: str, message: str, mode: str = "plan", restore: bool = False,
-                   model: Optional[str] = None, architect: bool = False, kind: str = "new",
-                   extra_reads: Optional[list[str]] = None) -> Generator:
+                   fresh: bool = False, model: Optional[str] = None, architect: bool = False,
+                   kind: str = "new", extra_reads: Optional[list[str]] = None) -> Generator:
     """Un tour de conversation aider (Plan ou Construire), multi-tours via l'historique.
 
     mode="plan" → --chat-mode ask (discute, n'édite pas) ; mode="build" → édite.
     extra_reads cumulés dans meta.aider pour rester disponibles aux tours suivants.
+    fresh=True (1er tour d'un « Générer ») → repart de zéro : supprime l'historique
+    de chat et force restore=False (sinon aider rejouerait/hallucinerait un passé).
+    reads adaptatifs : minimal (CONVENTIONS seul) pour un modèle local (contexte
+    limité), complet (index + exemple) pour le cloud.
     """
     aider_bin = _aider_bin()
     if not aider_bin:
@@ -1022,16 +1028,22 @@ def aider_converse(module_id: str, message: str, mode: str = "plan", restore: bo
     except ValueError as e:
         yield {"type": "error", "content": str(e)}
         return
+    hist = sdir / ".aider.chat.history.md"
+    if fresh and hist.exists():
+        hist.unlink()
+        restore = False                              # session propre : pas de confabulation
     meta = _read_meta(module_id) or {}
     prev = meta.get("aider") or {}
     reads = list({*(prev.get("extra_reads") or []), *(extra_reads or [])})
     meta["aider"] = {"model": model, "architect": bool(architect), "kind": kind, "extra_reads": reads}
     _write_meta(module_id, meta)
-    edit_fmt = "whole" if kind == "new" and not any((sdir / n).is_file() and (sdir / n).stat().st_size > 2 for n in _FILES) else "diff"
+    is_local = aider_model.startswith("ollama_chat/")
+    edit_fmt = "whole" if (kind == "new" and not any((sdir / n).is_file() and (sdir / n).stat().st_size > 2 for n in _FILES)) else "diff"
     chat_mode = "ask" if mode == "plan" else None
     cmd = _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore,
-                     chat_mode=chat_mode, read_files=_atelier_read_files(reads))
-    yield {"type": "engine", "engine": "aider", "model": aider_model, "mode": mode, "architect": bool(architect)}
+                     chat_mode=chat_mode, read_files=_atelier_read_files(reads, minimal=is_local))
+    yield {"type": "engine", "engine": "aider", "model": aider_model, "mode": mode,
+           "architect": bool(architect), "local": is_local}
     yield from _run_aider_proc(module_id, sdir, cmd, _local_agent_env(extra_env))
 
 
@@ -1046,7 +1058,7 @@ def generate_aider_headless(module_id: str, spec: str, kind: str, model: Optiona
                    "via core.runtime.llm) et la LISTE de tes questions et des accès dont tu as besoin. "
                    "Ne crée AUCUN fichier pour l'instant.")
     yield from aider_converse(module_id, message, mode=mode, restore=False, model=model,
-                              architect=architect, kind=kind)
+                              architect=architect, kind=kind, fresh=True)
 
 
 def resume_aider_headless(module_id: str) -> Generator:

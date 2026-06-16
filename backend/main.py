@@ -490,19 +490,23 @@ async def ws_workshop(websocket: WebSocket):
                         bg_mid = mid
                 elif mtype == "workshop_chat":
                     mid = msg.get("id", "")
+                    mode = msg.get("mode", "plan")
+                    fresh = bool(msg.get("fresh", False))
                     sdir = module_workshop._staging_dir(mid)
-                    restore = (sdir / ".aider.chat.history.md").is_file()
+                    hist_exists = (sdir / ".aider.chat.history.md").is_file()
+                    # build : toujours déterministe (jamais de restore) ; plan : reprend
+                    # l'historique de la conversation en cours (sauf 1er tour fresh).
+                    restore = (mode == "plan") and hist_exists and not fresh
                     gen = module_workshop.aider_converse(
                         mid, msg.get("message", ""),
-                        mode=msg.get("mode", "plan"),
-                        restore=restore,
+                        mode=mode, restore=restore, fresh=fresh,
                         model=msg.get("model") or None,
                         architect=bool(msg.get("architect", False)),
                         kind=msg.get("kind", "new"),
                         extra_reads=msg.get("extra_reads") or None,
                     )
                     st = await _stream_generator(gen)
-                    if msg.get("mode") == "build" and not st["paused"]:
+                    if mode == "build" and not st["paused"]:
                         await _validate_and_report(mid)
                         bg_mid = mid
                 elif mtype == "grant_read":
