@@ -30,6 +30,7 @@ import subprocess
 import sys
 import sysconfig
 import time
+import urllib.error
 import urllib.request
 from difflib import unified_diff
 from pathlib import Path
@@ -445,11 +446,17 @@ def _local_agent_env(extra: Optional[dict] = None) -> dict:
 def gateway_reachable(url: Optional[str] = None) -> bool:
     url = url or _gateway_cfg()["base_url"]
     for path in ("/health", "/v1/models", "/"):
+        full = url.rstrip("/") + path
         try:
-            req = urllib.request.Request(url.rstrip("/") + path, method="GET")
-            with urllib.request.urlopen(req, timeout=1.5) as resp:
+            req = urllib.request.Request(full, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status < 500:
                     return True
+        except urllib.error.HTTPError as e:
+            # Le serveur a RÉPONDU (401/403/404…) → joignable, même si un simple
+            # GET sans auth est refusé (cas des endpoints Anthropic comme DeepSeek).
+            if e.code < 500:
+                return True
         except Exception:
             continue
     return False
@@ -755,6 +762,14 @@ def _claude_env(engine: str) -> dict:
         env["ANTHROPIC_BASE_URL"] = gw["base_url"]
         if gw["model"]:
             env["ANTHROPIC_MODEL"] = gw["model"]
+            # Claude Code appelle des sous-modèles selon la tâche (haiku = tâches de fond,
+            # sonnet/opus = principal). Sans ces alias, il enverrait un nom de modèle
+            # Claude que l'endpoint tiers (DeepSeek) ne connaît pas → tâches en échec.
+            fast = gw["model"].replace("v4-pro", "v4-flash") or gw["model"]
+            env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = gw["model"]
+            env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = gw["model"]
+            env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = fast
+            env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         if gw["api_key"]:
             env["ANTHROPIC_AUTH_TOKEN"] = gw["api_key"]
             env["ANTHROPIC_API_KEY"] = gw["api_key"]
