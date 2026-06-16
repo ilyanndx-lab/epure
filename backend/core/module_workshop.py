@@ -281,7 +281,18 @@ def prepare(module_id: str, kind: str, engine: str, mode: str) -> dict:
 
     sdir = _staging_dir(module_id)
     if sdir.exists():
-        shutil.rmtree(sdir)
+        try:
+            shutil.rmtree(sdir)
+        except Exception:
+            # Windows : un fichier/dossier encore verrouillé (process aider en cours
+            # dont le cwd = staging, ou watcher) fait échouer rmtree → ne PAS 500.
+            # On retire ce qu'on peut et on écrase les fichiers connus.
+            shutil.rmtree(sdir, ignore_errors=True)
+            for f in (*_FILES, ".aider.chat.history.md", ".workshop.json"):
+                try:
+                    (sdir / f).unlink()
+                except Exception:
+                    pass
     sdir.mkdir(parents=True, exist_ok=True)
 
     if kind == "edit":
