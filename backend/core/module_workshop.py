@@ -182,6 +182,52 @@ def _staging_dir(module_id: str) -> Path:
     return _modules_safe_path(f"_staging/{module_id}")
 
 
+def _staging_locked(sdir: Path) -> bool:
+    """True si une SESSION tient encore le dossier de staging (terminal dont le cwd
+    est le staging, ou process aider en cours).
+
+    Test NON destructif par renommage atomique : sous Windows, renommer un dossier
+    dont un process a fait son cwd lève une OSError ; si le renommage réussit,
+    personne ne le tient (on le restaure aussitôt). Sert à distinguer « session en
+    cours » (refuser, sinon on détruirait des modifications en cours) d'un simple
+    résidu à nettoyer. Sans état persistant : impossible de rester « bloqué » sur
+    un drapeau périmé après un crash de la session.
+    """
+    if not sdir.exists():
+        return False
+    probe = sdir.with_name(sdir.name + ".__lockprobe__")
+    try:
+        if probe.exists():
+            shutil.rmtree(probe, ignore_errors=True)
+        sdir.rename(probe)
+    except OSError:
+        return True  # verrouillé : session vivante
+    try:
+        probe.rename(sdir)
+    except OSError:
+        logger.warning("Sonde de verrou : %s déplacé mais non restauré", sdir)
+    return False
+
+
+def cleanup_orphan_staging() -> list[str]:
+    """Supprime les dossiers de staging orphelins : sans .workshop.json ET non
+    verrouillés. Ce sont les restes d'un rmtree partiel (approve/reject pendant
+    qu'un terminal tenait encore le dossier sous Windows → fichiers retirés mais
+    dossier vide laissé). Renvoie la liste des ids nettoyés."""
+    removed: list[str] = []
+    if not STAGING_DIR.is_dir():
+        return removed
+    for sub in STAGING_DIR.iterdir():
+        if not sub.is_dir() or (sub / ".workshop.json").is_file():
+            continue                      # staging réel : on garde
+        if _staging_locked(sub):
+            continue                      # session vivante : on ne touche pas
+        shutil.rmtree(sub, ignore_errors=True)
+        if not sub.exists():
+            removed.append(sub.name)
+    return removed
+
+
 def _meta_path(module_id: str) -> Path:
     return _staging_dir(module_id) / ".workshop.json"
 
@@ -281,12 +327,24 @@ def prepare(module_id: str, kind: str, engine: str, mode: str) -> dict:
 
     sdir = _staging_dir(module_id)
     if sdir.exists():
+        # GARDE-FOU FENÊTRES MULTIPLES : si une session est déjà ouverte sur ce
+        # module (terminal dont le cwd = staging), on REFUSE au lieu de wiper en
+        # silence. L'ancien code faisait rmtree(ignore_errors) → il détruisait les
+        # modifications en cours d'une autre fenêtre (et laissait des dossiers vides).
+        # Le test de verrou est non destructif : il n'efface rien avant d'avoir
+        # confirmé que le dossier est libre.
+        if _staging_locked(sdir):
+            raise ValueError(
+                f"Une session est déjà ouverte sur le module « {module_id} » "
+                "(fenêtre terminal active). Ferme cette fenêtre — ou clique "
+                "« Terminé » — avant d'en rouvrir une, sinon tes modifications "
+                "en cours seraient perdues."
+            )
         try:
             shutil.rmtree(sdir)
-        except Exception:
-            # Windows : un fichier/dossier encore verrouillé (process aider en cours
-            # dont le cwd = staging, ou watcher) fait échouer rmtree → ne PAS 500.
-            # On retire ce qu'on peut et on écrase les fichiers connus.
+        except OSError:
+            # Pas verrouillé mais rmtree échoue (résidu partiel, antivirus, handle
+            # bref) : nettoyage best-effort — aucune session vivante à protéger ici.
             shutil.rmtree(sdir, ignore_errors=True)
             for f in (*_FILES, ".aider.chat.history.md", ".workshop.json"):
                 try:
@@ -645,15 +703,18 @@ def _ollama_prompt(module_id: str, spec: str, kind: str, current: dict,
         "frontend.component=\"Component\", origin=\"workshop\".\n"
         "- router.py : `from fastapi import APIRouter` puis `router = APIRouter()`. "
         "INTERDIT : import subprocess/socket/importlib, os.system, eval/exec, "
-        "accès aux clés API. Préfixe les routes par le nom du module (ex. /"
-        f"{module_id}/...).\n"
+        f"accès aux clés API. backend.prefix vaut \"\" : le router est monté À LA "
+        f"RACINE, donc préfixe TOI-MÊME chaque route par /{module_id} pour éviter "
+        f"les collisions entre modules (ex. `@router.post(\"/{module_id}/action\")`).\n"
         "- Component.tsx : composant React par défaut. Imports : "
         "`../../../components/ui` pour l'UI, `../../registry` pour SharedModuleProps. "
         f"Depuis components/ui, tu ne peux importer QUE ces composants (aucun autre "
         f"n'existe — pas de Label, CardHeader, etc.) : {', '.join(ui_component_exports()) or 'Button, Card, Badge, Input, Textarea, Toggle, Select, Tooltip, Tabs, ProgressBar, Modal, ThemeToggle'}. "
         "Pour tout le reste (label, titre…), utilise des balises HTML standard. "
-        "INTERDIT : dangerouslySetInnerHTML, eval. Appelle le backend via "
-        "fetch('http://localhost:8000/...').\n"
+        "INTERDIT : dangerouslySetInnerHTML, eval. Appelle le backend sur EXACTEMENT "
+        f"les mêmes chemins que le router (préfixe /{module_id} INCLUS) : "
+        f"fetch('http://localhost:8000/{module_id}/...'). Les chemins frontend et "
+        "router DOIVENT être identiques, sinon 404.\n"
         "- PERSISTANCE : pour tout état qui doit survivre à un rechargement de page "
         "(texte saisi, contenu généré, sélections, onglet courant), utilise "
         "`usePersistentState` au lieu de `useState` — même signature, premier "
@@ -828,7 +889,10 @@ def _claude_prompt(module_id: str, spec: str, kind: str) -> str:
         "exec, aucun accès aux clés API ; manifest.json avec "
         f"id=\"{module_id}\", backend.prefix=\"\", frontend.component=\"Component\", "
         "origin=\"workshop\" ; Component.tsx = composant React par défaut, sans "
-        "dangerouslySetInnerHTML ni eval. N'écris QUE dans le dossier courant.\n\n"
+        "dangerouslySetInnerHTML ni eval. backend.prefix vaut \"\" (router monté à la "
+        f"racine) : préfixe CHAQUE route par /{module_id} dans router.py ET appelle "
+        f"ces mêmes chemins /{module_id}/... depuis le frontend (identiques, sinon "
+        "404). N'écris QUE dans le dossier courant.\n\n"
         f"Demande : {spec}"
     )
 
@@ -1116,21 +1180,41 @@ def terminal_launch_spec(module_id: str, spec: str, kind: str, engine: str) -> d
 
 
 def open_terminal(module_id: str, spec: str, kind: str, engine: str) -> dict:
-    """Ouvre une vraie fenêtre terminal positionnée sur le staging (best-effort)."""
+    """Ouvre une vraie fenêtre terminal : cd staging + claude interactif, avec l'env
+    du moteur (ANTHROPIC_* pour claude_gateway/DeepSeek). La clé n'est PAS écrite sur
+    disque — elle est héritée via l'environnement du process lancé."""
     info = terminal_launch_spec(module_id, spec, kind, engine)
     sdir = info["cwd"]
+    env = info["env"]
+    claude_cmdline = subprocess.list2cmdline(info["cmd"])
     try:
         if os.name == "nt":
-            # Nouvelle fenêtre cmd dans le dossier confiné.
-            subprocess.Popen(f'start "Atelier {module_id}" cmd /K cd /d "{sdir}"', shell=True)
+            # .bat = cd + claude (pas de clé dedans). La fenêtre `start` hérite de `env`.
+            bat = Path(sdir) / "_launch.bat"
+            bat.write_text(
+                "@echo off\r\n"
+                f'cd /d "{sdir}"\r\n'
+                f"call {claude_cmdline}\r\n",
+                encoding="utf-8",
+            )
+            subprocess.Popen(
+                f'start "Atelier {module_id}" cmd /K "{bat}"',
+                shell=True, env=env,
+            )
         elif shutil.which("tmux"):
-            subprocess.Popen(["tmux", "new-window", "-c", sdir])
+            subprocess.Popen(
+                ["tmux", "new-window", "-c", sdir, claude_cmdline], env=env,
+            )
         else:
-            subprocess.Popen(["x-terminal-emulator"], cwd=sdir)
-        return {"opened": True, "cwd": sdir, "cmd": info["cmd"]}
+            subprocess.Popen(
+                ["x-terminal-emulator", "-e",
+                 f'bash -c \'cd "{sdir}"; {claude_cmdline}; exec bash\''],
+                env=env,
+            )
+        return {"opened": True, "cwd": sdir, "cmd": info["cmd"], "prompt": info["prompt"]}
     except Exception as exc:
         logger.exception("Ouverture terminal échouée")
-        return {"opened": False, "error": str(exc), "cwd": sdir, "cmd": info["cmd"]}
+        return {"opened": False, "error": str(exc), "cwd": sdir, "cmd": info["cmd"], "prompt": info["prompt"]}
 
 
 # ── Lecture staging + diff ───────────────────────────────────────────────────
@@ -1353,7 +1437,9 @@ def reject(module_id: str) -> dict:
 
 
 def list_staging() -> list[dict]:
-    """Modules actuellement en atelier (staging)."""
+    """Modules actuellement en atelier (staging). Balaie d'abord les dossiers
+    orphelins (restes de rmtree partiel) pour qu'ils ne traînent pas."""
+    cleanup_orphan_staging()
     out = []
     if STAGING_DIR.is_dir():
         for sub in sorted(STAGING_DIR.iterdir()):

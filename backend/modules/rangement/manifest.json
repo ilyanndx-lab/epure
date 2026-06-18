@@ -1,9 +1,9 @@
 {
   "id": "rangement",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "nom": "Rangement",
   "icon": "Box",
-  "description": "",
+  "description": "Analyse intelligente de dossiers : classification, résumés, détection de doublons et script PowerShell. Supporte les modèles locaux (Ollama + NPU/FLM) avec streaming en temps réel. Fallback heuristique si le LLM est indisponible.",
   "frontend": {
     "component": "Component"
   },

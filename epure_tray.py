@@ -78,6 +78,9 @@ def _start_processes():
 
     env_ollama = os.environ.copy()
     env_ollama["OLLAMA_GPU_LAYERS"] = "-1"
+    # Garde le modèle chargé en VRAM (pas de re-chargement à chaque requête après
+    # 5 min d'inactivité) — comme start.ps1.
+    env_ollama["OLLAMA_KEEP_ALIVE"] = "-1"
 
     _log("Lancement ollama serve")
     p_ollama = subprocess.Popen(
@@ -110,15 +113,19 @@ def _start_processes():
         sys.executable, "-m", "uvicorn", "main:app",
         "--host", "0.0.0.0", "--port", "8000",
     ]
-    # Rechargement auto en dev (EPURE_RELOAD=0 pour désactiver). On surveille
-    # UNIQUEMENT backend/core/ : surveiller modules/ serait néfaste — chaque
-    # approbation de l'atelier y écrit un router.py, ce qui relancerait le backend
-    # (alors qu'il monte déjà les routes à chaud) et le rendrait « injoignable »
-    # quelques secondes, et le watcher verrouillerait modules/_staging sous Windows.
-    # (Une modif de main.py nécessite un redémarrage manuel du tray — rare.)
-    if os.environ.get("EPURE_RELOAD", "1").strip().lower() not in ("0", "false", "no", ""):
+    # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
+    # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
+    # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur
+    # non valide » → backend qui crashe/devient « injoignable ». C'est ce qui
+    # rendait le lancement par le raccourci lent/cassé alors que start.ps1 (sans
+    # --reload) démarre vite. Quand activé, on surveille UNIQUEMENT core/ (écrire
+    # un router.py dans modules/ lors d'une approbation atelier ne doit pas
+    # relancer le backend, qui monte déjà les routes à chaud).
+    if os.environ.get("EPURE_RELOAD", "0").strip().lower() in ("1", "true", "yes"):
         uvicorn_cmd += ["--reload", "--reload-dir", "core"]
-        _log("uvicorn : rechargement auto activé sur core/ (EPURE_RELOAD=0 pour désactiver)")
+        _log("uvicorn : rechargement auto activé sur core/ (instable sous Windows ; EPURE_RELOAD=0 pour désactiver)")
+    else:
+        _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
     p_uvicorn = subprocess.Popen(
         uvicorn_cmd,
         cwd=str(BACKEND_DIR),

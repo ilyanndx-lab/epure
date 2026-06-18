@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, Suspense } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Loader2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import ModuleErrorBoundary from './components/ModuleErrorBoundary'
 import { useInstanceConfig } from './instance'
@@ -22,6 +22,14 @@ export default function App() {
   const [mountedIds, setMountedIds] = useState<string[]>([activeModule])
   const [ttsEnabled, setTtsEnabled] = useState(false)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
+  // Zoom par module : la prop CSS `zoom` reflue le layout (Chromium/Electron) →
+  // le contenu agrandi devient scrollable au lieu d'être coupé. Persisté et borné.
+  const [zoomByModule, setZoomByModule] = usePersistentState<Record<string, number>>('epure.moduleZoom', {})
+  const zoom = zoomByModule[activeModule] ?? 1
+  const setZoom = useCallback((next: number) => {
+    const z = Math.min(2, Math.max(0.5, Math.round(next * 10) / 10))
+    setZoomByModule(prev => ({ ...prev, [activeModule]: z }))
+  }, [activeModule, setZoomByModule])
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -110,10 +118,22 @@ export default function App() {
 
   const activeHasInterface = !!getModuleDef(activeModule)
 
+  // Zoom au clavier : Ctrl/Cmd + / − / 0 (réinitialiser).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); setZoom(zoom + 0.1) }
+      else if (e.key === '-' || e.key === '_') { e.preventDefault(); setZoom(zoom - 0.1) }
+      else if (e.key === '0') { e.preventDefault(); setZoom(1) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [zoom, setZoom])
+
   return (
     <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
       <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
-      <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="relative flex flex-col flex-1 overflow-hidden">
         {/* Tous les modules visités restent montés ; seul l'actif est affiché.
             Leurs tâches (WebSocket, streaming) ne sont donc pas interrompues. */}
         {mountedIds.map(id => {
@@ -121,6 +141,7 @@ export default function App() {
           if (!def) return null
           const C = def.component
           const isActive = id === activeModule
+          const z = zoomByModule[id] ?? 1
           return (
             <div
               key={id}
@@ -135,7 +156,14 @@ export default function App() {
                     </div>
                   }
                 >
-                  <C {...sharedProps} />
+                  {/* Conteneur de zoom : `overflow-auto` pour scroller quand le
+                      contenu agrandi dépasse ; zoom omis à 1 pour ne rien changer. */}
+                  <div
+                    className="flex flex-col flex-1 min-h-0 overflow-auto"
+                    style={z !== 1 ? { zoom: z } : undefined}
+                  >
+                    <C {...sharedProps} />
+                  </div>
                 </Suspense>
               </ModuleErrorBoundary>
             </div>
@@ -144,6 +172,44 @@ export default function App() {
         {!activeHasInterface && (
           <div className="flex flex-1 items-center justify-center text-sm text-muted">
             Module « {activeModule} » sans interface frontend
+          </div>
+        )}
+        {activeHasInterface && (
+          <div className="absolute bottom-3 right-3 z-20 flex items-center gap-0.5 rounded-lg border border-base bg-base/90 px-1 py-0.5 shadow-lg opacity-40 hover:opacity-100 transition-opacity backdrop-blur-sm">
+            <button
+              type="button"
+              onClick={() => setZoom(zoom - 0.1)}
+              disabled={zoom <= 0.5}
+              title="Dézoomer (Ctrl -)"
+              className="p-1 rounded text-muted hover:text-primary hover:bg-white/5 disabled:opacity-30 disabled:hover:text-muted"
+            >
+              <ZoomOut size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              title="Réinitialiser (Ctrl 0)"
+              className="px-1 w-11 text-center text-xs tabular-nums text-muted hover:text-primary"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(zoom + 0.1)}
+              disabled={zoom >= 2}
+              title="Zoomer (Ctrl +)"
+              className="p-1 rounded text-muted hover:text-primary hover:bg-white/5 disabled:opacity-30 disabled:hover:text-muted"
+            >
+              <ZoomIn size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1)}
+              title="Réinitialiser le zoom"
+              className="p-1 rounded text-muted hover:text-primary hover:bg-white/5"
+            >
+              <RotateCcw size={13} />
+            </button>
           </div>
         )}
       </div>
