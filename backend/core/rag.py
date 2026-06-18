@@ -99,12 +99,19 @@ class RAGEngine:
             chunks.append(full_text[start: start + chunk_chars])
             start += step
 
+        # mtime stocké pour la re-indexation incrémentale au démarrage (cf. watch) :
+        # on saute le ré-embedding des fichiers inchangés.
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = 0.0
+
         base_id = str(path).replace("\\", "/")
         ids = [f"{base_id}::{i}" for i in range(len(chunks))]
         self._col.upsert(
             documents=chunks,
             ids=ids,
-            metadatas=[{"source": str(path), "chunk": i} for i in range(len(chunks))],
+            metadatas=[{"source": str(path), "chunk": i, "mtime": mtime} for i in range(len(chunks))],
         )
 
         # Invalidate query caches since the index has changed
@@ -169,23 +176,68 @@ class RAGEngine:
         """Backward-compat alias for read_file_text."""
         return RAGEngine._extract_text_from_path(path)
 
+    def _indexed_mtimes(self) -> dict:
+        """source → mtime déjà indexé (pour sauter les fichiers inchangés)."""
+        try:
+            result = self._col.get(include=["metadatas"])
+        except Exception:
+            logger.exception("Erreur lecture index pour scan incrémental")
+            return {}
+        out: dict[str, float] = {}
+        for m in result.get("metadatas", []) or []:
+            if m and "source" in m and "mtime" in m:
+                out[m["source"]] = m["mtime"]
+        return out
+
+    def _initial_scan(self, folder: str) -> None:
+        """Scan initial d'un dossier surveillé : (ré)indexe les fichiers nouveaux
+        ou modifiés depuis la dernière fois. Tourne en tâche de fond (cf. watch).
+        """
+        indexed = self._indexed_mtimes()
+        scanned = reindexed = 0
+        for ext in SUPPORTED_EXTENSIONS:
+            for file_path in Path(folder).rglob(f"*{ext}"):
+                scanned += 1
+                sp = str(file_path)
+                try:
+                    mtime = os.path.getmtime(sp)
+                except OSError:
+                    continue
+                # Inchangé depuis la dernière indexation → pas de ré-embedding.
+                if abs(indexed.get(sp, -1.0) - mtime) < 1e-6:
+                    continue
+                try:
+                    self.index_file(sp)
+                    reindexed += 1
+                except Exception:
+                    logger.exception("Erreur lors de l'indexation de %s", file_path)
+        if reindexed:
+            logger.info(
+                "RAG scan initial %s : %d/%d fichier(s) (ré)indexé(s)",
+                folder, reindexed, scanned,
+            )
+
     def watch(self, folder: str) -> None:
         folder = str(folder)
         if not os.path.isdir(folder):
             return
 
-        for ext in SUPPORTED_EXTENSIONS:
-            for file_path in Path(folder).rglob(f"*{ext}"):
-                try:
-                    self.index_file(str(file_path))
-                except Exception:
-                    logger.exception("Erreur lors de l'indexation de %s", file_path)
-
+        # L'observer démarre tout de suite (léger) : modifs/créations captées sans
+        # attendre le scan initial.
         handler = _FileHandler(self)
         observer = Observer()
         observer.schedule(handler, folder, recursive=True)
         observer.daemon = True
         observer.start()
+
+        # Scan initial en tâche de fond : il pouvait ré-embedder des dizaines de
+        # fichiers (plusieurs minutes). Synchrone ici, il bloquait l'import de
+        # core.runtime → uvicorn ne répondait pas et l'app restait figée sur
+        # « Chargement… » au démarrage.
+        threading.Thread(
+            target=self._initial_scan, args=(folder,), daemon=True,
+            name=f"rag-scan-{Path(folder).name}",
+        ).start()
 
 
 class _FileHandler(FileSystemEventHandler):

@@ -47,7 +47,7 @@ export default function Workshop() {
   // Revue persistée : le code généré + le rapport survivent à un rechargement.
   const [phase, setPhase] = usePersistentState<Phase>('epure.workshop.phase', 'idle')
   const [log, setLog] = usePersistentState<string>('epure.workshop.log', '')
-  const [terminalInfo, setTerminalInfo] = useState<{ cwd?: string; cmd?: string[] } | null>(null)
+  const [terminalInfo, setTerminalInfo] = useState<{ cwd?: string; cmd?: string[]; prompt?: string } | null>(null)
   const [staging, setStaging] = usePersistentState<Staging | null>('epure.workshop.staging', null)
   const [report, setReport] = usePersistentState<Report | null>('epure.workshop.report', null)
   const [activeTab, setActiveTab] = usePersistentState<string>('epure.workshop.activeTab', 'router.py')
@@ -83,12 +83,39 @@ export default function Workshop() {
   // Après un rechargement, la socket est fermée : une phase « en cours » devient
   // obsolète. On bascule sur la revue si du code généré subsiste, sinon idle.
   useEffect(() => {
-    if (phase === 'generating' || phase === 'validating' || phase === 'terminal') {
-      setPhase(staging ? 'review' : 'idle')
-    }
+    if (phase !== 'generating' && phase !== 'validating' && phase !== 'terminal') return
+    if (staging) { setPhase('review'); return }
+    // Phase « en cours » mais aucun staging chargé (ex. session pilotée dont le
+    // pending n'a jamais été produit, ou socket fermée avant la revue). Un
+    // brouillon peut subsister sur disque : on tente de le récupérer + valider
+    // avant de retomber sur idle, pour ne jamais perdre le travail généré.
+    void (async () => {
+      try {
+        const res = await fetch(`${API}/workshop/staging/${currentId}`)
+        if (res.ok) {
+          setStaging(await res.json())
+          const vr = await fetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
+          const vd = await vr.json().catch(() => null)
+          if (vr.ok && vd?.report) setReport(vd.report)
+          setPhase('review')
+          return
+        }
+      } catch { /* ignore */ }
+      setPhase('idle')
+    })()
     // au montage uniquement
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Une conversation aider ne survit pas à un changement de moteur ni à un
+  // rechargement (bulles/socket perdues) : on quitte proprement l'état 'chatting'
+  // (sinon le bouton resterait « Conversation… » et le panneau s'afficherait même
+  // avec un autre moteur). S'exécute au montage (récupère un état bloqué persisté)
+  // et à chaque changement de moteur.
+  useEffect(() => {
+    if (phase === 'chatting') { setPhase('idle'); setTurns([]) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine])
 
   // Pré-remplit le champ de correction avec les dernières erreurs de validation
   // (l'utilisateur peut ensuite l'éditer / y coller une erreur d'exécution).
@@ -160,7 +187,7 @@ export default function Workshop() {
       } else if (data.type === 'read_granted') {
         setGrantMsg(data.ok ? `Accès accordé en lecture : ${data.path}` : `Refusé (introuvable ou non autorisé) : ${data.path}`)
       } else if (data.type === 'terminal_opened') {
-        setTerminalInfo({ cwd: data.cwd, cmd: data.cmd })
+        setTerminalInfo({ cwd: data.cwd, cmd: data.cmd, prompt: data.prompt })
         setPhase('terminal')
       } else if (data.type === 'file_written') {
         setLog(prev => prev + `\n✓ ${data.path}\n`)
@@ -329,13 +356,30 @@ export default function Workshop() {
     void startGeneration(fb)
   }, [feedbackText, error, startGeneration])
 
-  const finishTerminal = useCallback(() => {
-    const ws = wsRef.current
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      setPhase('generating')
-      ws.send(JSON.stringify({ type: 'terminal_done', id: currentId }))
+  // Récupère le travail de la session pilotée. INDÉPENDANT du WebSocket : on
+  // re-scanne le staging + valide via REST. Ainsi « Terminé » fonctionne même si
+  // la socket s'est fermée pendant la session (sinon le travail reste coincé en
+  // staging, sans pending, impossible à faire ressortir).
+  const finishTerminal = useCallback(async () => {
+    setPhase('validating')
+    setError(null)
+    try {
+      const res = await fetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
+      const data = await res.json()
+      if (res.ok && data.report) {
+        setReport(data.report)
+        await refreshStaging(currentId)
+        setPhase('review')
+      } else {
+        setError(typeof data.detail === 'string' ? data.detail
+          : "Aucun fichier en staging à récupérer — la session pilotée n'a rien produit.")
+        setPhase('terminal')
+      }
+    } catch {
+      setError('Récupération du staging échouée (réseau).')
+      setPhase('terminal')
     }
-  }, [currentId])
+  }, [currentId, refreshStaging])
 
   const approve = useCallback(async (force = false) => {
     if (!staging) return
@@ -524,9 +568,8 @@ export default function Workshop() {
           )}
           <Button variant="primary" icon={<Play size={14} />}
             onClick={() => engine === 'aider' ? startAiderChat() : startGeneration()}
-            disabled={phase === 'generating' || phase === 'validating' || phase === 'chatting' || engineUnavailable || !currentId || !description.trim()}>
+            disabled={phase === 'generating' || phase === 'validating' || engineUnavailable || !currentId || !description.trim()}>
             {phase === 'generating' ? 'Génération…' : phase === 'validating' ? 'Validation…'
-              : phase === 'chatting' ? 'Conversation…'
               : engine === 'aider' ? (startMode === 'build' ? 'Générer' : 'Planifier') : 'Générer'}
           </Button>
         </div>
@@ -550,6 +593,20 @@ export default function Workshop() {
               {terminalInfo.cmd.join(' ')}
             </pre>
           )}
+          {terminalInfo?.prompt && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-muted uppercase tracking-wide">Prompt à coller dans claude</span>
+                <Button variant="ghost" size="sm"
+                  onClick={() => void navigator.clipboard.writeText(terminalInfo.prompt ?? '')}>
+                  Copier le prompt
+                </Button>
+              </div>
+              <pre className="text-xs font-mono text-secondary bg-elevated border border-line rounded-sm p-2 max-h-48 overflow-auto whitespace-pre-wrap">
+                {terminalInfo.prompt}
+              </pre>
+            </div>
+          )}
           <p className="text-xs text-muted">
             Pilotez la session dans le dossier confiné, puis cliquez ci-dessous : l'atelier
             re-scanne le staging et relance la validation.
@@ -572,7 +629,7 @@ export default function Workshop() {
       )}
 
       {/* ── Conversation aider (Plan / Construire) ── */}
-      {phase === 'chatting' && (
+      {phase === 'chatting' && engine === 'aider' && (
         <Card className="max-w-2xl space-y-3">
           <p className="text-sm text-secondary flex items-center gap-2">
             <Bug size={15} className="text-accent2" /> Conversation aider — {currentId}

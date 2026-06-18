@@ -13,11 +13,48 @@ identiques à l'ancien bloc d'init de ``main.py``.
 
 import logging
 import os
+import threading
 from datetime import date as _date
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+# ── Démarrage hors-ligne quand les modèles HF sont déjà en cache ──────────────
+# RAGEngine (embedding SentenceTransformer) et WhisperEngine (faster-whisper)
+# valident leur cache auprès de huggingface.co À CHAQUE démarrage. Si HF est
+# injoignable (getaddrinfo failed → 5 retries avec backoff PAR fichier), l'import
+# de ce module se bloque plusieurs minutes et uvicorn ne répond à rien (écran
+# « Chargement… » figé). Les poids étant déjà téléchargés, on bascule en mode
+# hors-ligne : chargement direct depuis le cache, zéro réseau. Sur une machine
+# vierge (cache absent) on reste en ligne pour le 1er téléchargement.
+# IMPORTANT : doit être posé AVANT le 1er import de huggingface_hub (les imports
+# core.* ci-dessous le tirent), car la constante HF_HUB_OFFLINE est figée à
+# l'import. Surchargeable : EPURE_HF_OFFLINE=0 force le comportement en ligne.
+def _hf_offline_if_cached() -> None:
+    if os.environ.get("EPURE_HF_OFFLINE", "").strip() in ("0", "false", "no"):
+        return
+    hub = (os.environ.get("HF_HUB_CACHE")
+           or (os.path.join(os.environ["HF_HOME"], "hub") if os.environ.get("HF_HOME")
+               else os.path.join(Path.home(), ".cache", "huggingface", "hub")))
+    try:
+        _voice = (yaml.safe_load(open(Path(__file__).parent.parent / "config.yaml")) or {}).get("voice", {})
+    except Exception:
+        _voice = {}
+    whisper_size = _voice.get("whisper_model", "small")
+    needed = (
+        "models--sentence-transformers--all-MiniLM-L6-v2",
+        f"models--Systran--faster-whisper-{whisper_size}",
+    )
+    if all(os.path.isdir(os.path.join(hub, n)) for n in needed):
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        logging.getLogger(__name__).info(
+            "Modèles HF déjà en cache → démarrage hors-ligne (HF_HUB_OFFLINE=1, "
+            "EPURE_HF_OFFLINE=0 pour revenir en ligne)."
+        )
+
+_hf_offline_if_cached()
 
 from core.admin import AdminEngine
 from core.codeagent import CodeAgent, WORKSPACE as _CODE_WORKSPACE
@@ -40,28 +77,80 @@ logger = logging.getLogger(__name__)
 with open(Path(__file__).parent.parent / "config.yaml") as _f:
     cfg = yaml.safe_load(_f)
 
+class _LazyEngine:
+    """Proxy de chargement paresseux : l'engine réel (et son modèle, lourd à
+    charger en RAM) n'est construit qu'au PREMIER accès à une de ses méthodes.
+    Évite de bloquer le démarrage sur des moteurs coûteux (RAG → torch +
+    sentence-transformers ≈ 30 s à chaud, 2 min à froid ; voix optionnelle).
+    Thread-safe : construit une fois. Un thread de préchauffage (cf. plus bas)
+    les résout en tâche de fond pour que la 1re requête ne paie pas le coût.
+    """
+
+    def __init__(self, factory, label):
+        self._factory = factory
+        self._label = label
+        self._engine = None
+        self._lock = threading.Lock()
+
+    def _resolve(self):
+        if self._engine is None:
+            with self._lock:
+                if self._engine is None:
+                    logger.info("Chargement paresseux : %s", self._label)
+                    self._engine = self._factory()
+        return self._engine
+
+    def __getattr__(self, name):
+        # Appelé uniquement quand l'attribut n'existe pas sur le proxy (donc pour
+        # transcribe/query/… et les attributs internes _client/_ef/_model) →
+        # construit l'engine réel et délègue.
+        return getattr(self._resolve(), name)
+
+
 # ── Moteurs partagés (ordre significatif : dépendances entre moteurs) ────────
+# Légers (construction quasi instantanée) : créés tout de suite.
 llm = LLMEngine()
-rag = RAGEngine()
 memory = MemoryEngine(llm=llm)  # resets context_session on startup
-docanalysis = DocAnalysisEngine(chroma_client=rag._client, embedding_function=rag._ef, llm=llm)
 code_agent = CodeAgent(llm=llm)
 _CODE_WORKSPACE.mkdir(parents=True, exist_ok=True)
-
 flashcards_engine = FlashcardsEngine()
-admin_engine = AdminEngine(llm, rag)
 models_registry = ModelsRegistry()
-history_engine = HistoryEngine(llm, rag._client, rag._ef)
-consolidation_engine = ConsolidationEngine(llm, memory, history_engine)
 orchestrator = OrchestratorEngine(llm)
 
-_voice_cfg = cfg.get("voice", {})
-whisper = WhisperEngine(
-    model_size=_voice_cfg.get("whisper_model", "small"),
-    language=_voice_cfg.get("language", "fr"),
+# RAG = seul moteur lourd au démarrage : sa construction importe torch +
+# sentence-transformers et charge le modèle d'embedding (≈ 30 s à chaud, 2 min à
+# froid). Le faire à l'import de ce module bloquait uvicorn (il ne répondait à
+# RIEN, /health compris) tant que ce n'était pas fini → l'app restait figée sur
+# « Chargement… ». On le rend paresseux ; un thread de préchauffage le construit
+# en tâche de fond pendant qu'uvicorn sert déjà.
+rag = _LazyEngine(RAGEngine, "RAG (embeddings, torch + sentence-transformers)")
+# docanalysis/history accèdent à rag._client / rag._ef → eux aussi paresseux
+# (sinon ils forceraient la construction de RAG à l'import).
+docanalysis = _LazyEngine(
+    lambda: DocAnalysisEngine(chroma_client=rag._client, embedding_function=rag._ef, llm=llm),
+    "Analyse de documents",
 )
-piper = PiperEngine(
-    voice=_voice_cfg.get("piper_voice", "fr_FR-upmc-medium"),
+admin_engine = AdminEngine(llm, rag)  # ne stocke que la référence (proxy)
+history_engine = _LazyEngine(
+    lambda: HistoryEngine(llm, rag._client, rag._ef),
+    "Historique des conversations",
+)
+consolidation_engine = ConsolidationEngine(llm, memory, history_engine)
+
+_voice_cfg = cfg.get("voice", {})
+# Voix chargée à la 1re utilisation (transcribe/synthesize), pas au démarrage :
+# faster-whisper + Piper coûtent plusieurs secondes de chargement modèle sinon
+# payées à chaque boot alors que la voix est optionnelle.
+whisper = _LazyEngine(
+    lambda: WhisperEngine(
+        model_size=_voice_cfg.get("whisper_model", "small"),
+        language=_voice_cfg.get("language", "fr"),
+    ),
+    "Whisper (transcription vocale)",
+)
+piper = _LazyEngine(
+    lambda: PiperEngine(voice=_voice_cfg.get("piper_voice", "fr_FR-upmc-medium")),
+    "Piper (synthèse vocale)",
 )
 
 
@@ -146,7 +235,20 @@ def apply_fiches_watch() -> None:
             logger.exception("Erreur surveillance dossier fiches %s", _sp)
 
 
-apply_fiches_watch()
+def _warmup() -> None:
+    """Préchauffage en tâche de fond : construit le RAG (torch + embeddings) puis
+    met les dossiers de fiches sous surveillance. Lancé dès l'import mais SANS
+    bloquer : uvicorn peut binder et répondre (/health, etc.) pendant ce temps.
+    La 1re requête RAG ne paie alors pas le coût de chargement si le warmup a fini.
+    """
+    try:
+        rag._resolve()
+    except Exception:
+        logger.exception("Préchauffage RAG échoué")
+    apply_fiches_watch()
+
+
+threading.Thread(target=_warmup, daemon=True, name="epure-warmup").start()
 
 
 # ── Utilitaires partagés ─────────────────────────────────────────────────────

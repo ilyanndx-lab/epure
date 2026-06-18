@@ -61,7 +61,9 @@ async def voice_transcribe(audio: UploadFile = File(...)):
     audio_bytes = await audio.read()
     loop = asyncio.get_running_loop()
     try:
-        text = await loop.run_in_executor(None, whisper.transcribe, audio_bytes)
+        # lambda : le 1er appel construit le modèle (lazy) DANS l'executor, sans
+        # bloquer la boucle d'événements.
+        text = await loop.run_in_executor(None, lambda: whisper.transcribe(audio_bytes))
     except Exception:
         logger.exception("Erreur transcription /voice/transcribe")
         raise HTTPException(status_code=500, detail="Erreur transcription")
