@@ -48,6 +48,17 @@ from core import module_registry
 
 logger = logging.getLogger(__name__)
 
+
+class SessionLockedError(ValueError):
+    """Le staging est tenu par une session terminale VIVANTE (fenêtre ouverte).
+
+    Sous-classe de ValueError (rien ne casse si un appelant fait `except
+    ValueError`), mais l'API la distingue pour répondre 409 plutôt que 400 :
+    le front propose alors « Reprendre la session » (re-scan NON destructif du
+    staging existant) au lieu d'afficher un cul-de-sac qui force à fermer la
+    fenêtre — ou à passer par un humain — pour repartir."""
+
+
 # Évite l'ouverture de fenêtres console visibles (qui volent le focus) quand on
 # lance claude/.cmd en subprocess sous Windows. 0 sur les autres OS.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -334,11 +345,12 @@ def prepare(module_id: str, kind: str, engine: str, mode: str) -> dict:
         # Le test de verrou est non destructif : il n'efface rien avant d'avoir
         # confirmé que le dossier est libre.
         if _staging_locked(sdir):
-            raise ValueError(
+            raise SessionLockedError(
                 f"Une session est déjà ouverte sur le module « {module_id} » "
-                "(fenêtre terminal active). Ferme cette fenêtre — ou clique "
-                "« Terminé » — avant d'en rouvrir une, sinon tes modifications "
-                "en cours seraient perdues."
+                "(fenêtre terminal active). Inutile de la fermer : clique "
+                "« Reprendre la session » pour re-scanner le travail en cours "
+                "et passer à la revue — rien n'est perdu. (Repartir de zéro "
+                "exige de fermer d'abord la fenêtre.)"
             )
         try:
             shutil.rmtree(sdir)

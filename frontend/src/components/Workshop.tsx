@@ -52,6 +52,9 @@ export default function Workshop() {
   const [report, setReport] = usePersistentState<Report | null>('epure.workshop.report', null)
   const [activeTab, setActiveTab] = usePersistentState<string>('epure.workshop.activeTab', 'router.py')
   const [error, setError] = useState<string | null>(null)
+  // Session terminale déjà ouverte (HTTP 409 sur prepare) : récupérable sans
+  // fermer la fenêtre ni passer par un humain — bouton « Reprendre la session ».
+  const [sessionLocked, setSessionLocked] = useState<string | null>(null)
   const [approveResult, setApproveResult] = useState<string | null>(null)
   // Champ éditable d'erreur/consigne envoyé à « Corriger l'erreur » (persistant :
   // survit au F5 comme le reste de la revue).
@@ -211,7 +214,7 @@ export default function Workshop() {
   }, [refreshStaging])
 
   const startGeneration = useCallback(async (feedback?: string) => {
-    setError(null); setApproveResult(null); setLog('')
+    setError(null); setSessionLocked(null); setApproveResult(null); setLog('')
     chatRef.current = false  // flux one-shot ollama/claude → tokens dans le log
     if (!feedback) { setStaging(null); setReport(null) }
     const id = currentId
@@ -232,7 +235,10 @@ export default function Workshop() {
         })
         if (!res.ok) {
           const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
-          setError(typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)); return
+          const msg = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)
+          // 409 = session terminale vivante : récupérable (re-scan), pas un échec.
+          if (res.status === 409) { setSessionLocked(msg); return }
+          setError(msg); return
         }
       } catch { setError('Backend injoignable.'); return }
     }
@@ -302,14 +308,16 @@ export default function Workshop() {
     const id = currentId
     if (!id) { setError('Indiquez un identifiant de module.'); return }
     if (!description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
-    setError(null); setApproveResult(null); setStaging(null); setReport(null); setTurns([]); setLog(''); setPlanText('')
+    setError(null); setSessionLocked(null); setApproveResult(null); setStaging(null); setReport(null); setTurns([]); setLog(''); setPlanText('')
     try {
       const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
       const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
       const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       if (!res.ok) {
         const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
-        setError(typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)); return
+        const msg = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)
+        if (res.status === 409) { setSessionLocked(msg); return }
+        setError(msg); return
       }
     } catch { setError('Backend injoignable.'); return }
     // Socket fraîche liée au bon id (évite une closure d'id obsolète).
@@ -362,7 +370,7 @@ export default function Workshop() {
   // staging, sans pending, impossible à faire ressortir).
   const finishTerminal = useCallback(async () => {
     setPhase('validating')
-    setError(null)
+    setError(null); setSessionLocked(null)
     try {
       const res = await fetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
       const data = await res.json()
@@ -580,6 +588,30 @@ export default function Workshop() {
         {error && <p className="text-xs text-error whitespace-pre-wrap">{error}</p>}
         {approveResult && <p className="text-xs text-success">{approveResult}</p>}
       </Card>
+
+      {/* ── Session déjà ouverte (409) : récupération sans fermer la fenêtre ── */}
+      {sessionLocked && (
+        <Card className="max-w-2xl space-y-3 border-warning/50 bg-warning/5">
+          <p className="text-sm text-secondary flex items-start gap-2">
+            <AlertTriangle size={15} className="text-warning shrink-0 mt-0.5" />
+            <span className="whitespace-pre-wrap">{sessionLocked}</span>
+          </p>
+          <div className="flex items-center gap-2">
+            <Button variant="primary" size="sm" icon={<RefreshCw size={13} />}
+              onClick={() => { setSessionLocked(null); void finishTerminal() }}>
+              Reprendre la session — re-scanner
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSessionLocked(null)}>
+              Annuler
+            </Button>
+          </div>
+          <p className="text-xs text-muted">
+            Le re-scan lit le travail en cours dans le dossier confiné et relance la
+            validation — la fenêtre peut rester ouverte. Pour repartir de zéro, ferme
+            d'abord la fenêtre puis relance.
+          </p>
+        </Card>
+      )}
 
       {/* ── Terminal mode ── */}
       {phase === 'terminal' && (
