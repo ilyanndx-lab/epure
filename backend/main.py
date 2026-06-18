@@ -310,6 +310,10 @@ async def workshop_generate(req: WorkshopGenerateRequest):
         meta = await asyncio.get_running_loop().run_in_executor(
             None, module_workshop.prepare, req.id, "new", req.engine, req.mode
         )
+    except module_workshop.SessionLockedError as exc:
+        # 409 : session terminale vivante. Récupérable côté front (re-scan), pas
+        # un échec de validation — on ne l'écrase donc PAS via le 400 générique.
+        raise HTTPException(status_code=409, detail=str(exc))
     except (ValueError, module_workshop.SecurityError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return meta
@@ -322,6 +326,8 @@ async def workshop_edit(module_id: str, req: WorkshopEditRequest):
         meta = await asyncio.get_running_loop().run_in_executor(
             None, module_workshop.prepare, module_id, "edit", req.engine, req.mode
         )
+    except module_workshop.SessionLockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except (ValueError, module_workshop.SecurityError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return meta
