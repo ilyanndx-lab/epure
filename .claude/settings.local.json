@@ -91,7 +91,10 @@
       "Bash(python -m py_compile modules/rangement/router.py)",
       "Read(//c/Users/Ilyan/**)",
       "Bash(python -m py_compile core/rag.py)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('backend/core/module_workshop.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('backend/main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('py-syntax OK'\\)\")",
+      "Bash(git commit *)",
+      "PowerShell(Get-Process *)"
     ]
   }
 }
