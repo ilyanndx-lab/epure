@@ -27,7 +27,11 @@ les routes core (ex. `/models`, `/analyze` existent déjà au niveau racine).
 
 ## Interdits (validateur AST — sinon module rejeté)
 import subprocess/socket/importlib/ctypes/multiprocessing ; os.system/os.popen/
-os.exec* ; eval/exec/compile/__import__ ; accès aux variables KEY/TOKEN/SECRET.
+os.exec* (même via alias `import os as o` ou `getattr(os, "system")`) ;
+eval/exec/compile/__import__ ; accès aux variables KEY/TOKEN/SECRET ; accès à
+os.environ par clé non littérale (concaténation, variable). RÉSEAU : pas
+d'import urllib/http.client/requests/httpx/aiohttp — tout accès réseau/LLM passe
+par core.runtime. Chaque route DOIT être préfixée par /<id> (prefix="" au mount).
 
 ## Frontend Component.tsx
 Composant React par défaut. Imports : `../../../components/ui` (UI partagée),

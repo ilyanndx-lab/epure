@@ -1273,6 +1273,7 @@ def validate_staging(module_id: str, run_tsc: bool = True) -> dict:
     manifest_raw = (sdir / "manifest.json").read_text(encoding="utf-8", errors="replace") if (sdir / "manifest.json").is_file() else ""
 
     # manifeste
+    data: dict = {}
     try:
         data = json.loads(manifest_raw) if manifest_raw else {}
         data.setdefault("id", module_id)
@@ -1283,7 +1284,12 @@ def validate_staging(module_id: str, run_tsc: bool = True) -> dict:
     if not router_src:
         errors.append("router.py manquant.")
     else:
-        rr = validate_router_py(router_src)
+        # backend.prefix vide → routes forcément préfixées par /<id> (anti-collision).
+        # is_core → tolère les motifs réseau/env des modules core ré-édités.
+        mprefix = (data.get("backend") or {}).get("prefix", "")
+        rr = validate_router_py(
+            router_src, module_id=module_id, backend_prefix=mprefix, is_core=is_core(module_id)
+        )
         errors += rr.errors
         warnings += rr.warnings
 
