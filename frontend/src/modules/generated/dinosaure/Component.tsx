@@ -1,5 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
 
+import { API, apiFetch } from "../../../api";
+
 const GRAVITY = 0.6;
 const JUMP_FORCE = -12;
 const GROUND_Y = 150;
@@ -42,7 +44,7 @@ const Component: React.FC = () => {
 
   const fetchGame = async () => {
     try {
-      const res = await fetch("/dinosaure/game");
+      const res = await apiFetch(`${API}/dinosaure/game`);
       const data = await res.json();
       setBackendMsg(data.message);
     } catch {
@@ -59,7 +61,7 @@ const Component: React.FC = () => {
     setLevel(1);
     setGameOver(false);
     setStarted(true);
-    fetch("/dinosaure/reset").catch(() => {});
+    apiFetch(`${API}/dinosaure/reset`).catch(() => {});
   }, []);
 
   const jump = useCallback(() => {

@@ -2,8 +2,7 @@ import { useState } from 'react'
 import { Sparkles } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { usePersistentState } from '../../../usePersistentState'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../../api'
 
 /**
  * Composant du module de démonstration « hello ».
@@ -24,7 +23,7 @@ export default function HelloModule(_props: SharedModuleProps) {
   const ping = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API}/hello/ping`)
+      const res = await apiFetch(`${API}/hello/ping`)
       setResult(JSON.stringify(await res.json()))
     } catch {
       setResult('erreur réseau')

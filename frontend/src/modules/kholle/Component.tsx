@@ -4,9 +4,7 @@ import { GraduationCap, Play, Square, Send, ArrowRight, Loader2, CheckCircle2, X
 import { Button, Card, ProgressBar, Textarea } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
-
-const API = 'http://localhost:8000'
-const WS_KHOLLE = 'ws://localhost:8000/ws/kholle'
+import { API, apiFetch, wsUrl } from '../../api'
 
 type Phase = 'config' | 'session' | 'summary'
 type Mode = 'generate' | 'list'
@@ -59,7 +57,7 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speaki
   const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
 
   useEffect(() => {
-    fetch(`${API}/rag/files`)
+    apiFetch(`${API}/rag/files`)
       .then(r => r.json())
       .then((data: { files: string[] }) => setIndexedFiles(data.files))
       .catch(err => console.error('Erreur GET /rag/files:', err))
@@ -71,7 +69,7 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speaki
 
   const openWS = useCallback((questions: string[]) => {
     console.log('openWS appelé avec', questions.length, 'questions')
-    const ws = new WebSocket(WS_KHOLLE)
+    const ws = new WebSocket(wsUrl('/ws/kholle'))
 
     ws.onopen = () => {
       console.log('WS Kholle ouvert, envoi start')
@@ -160,7 +158,7 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speaki
             }
 
       console.log('POST /kholle/start body:', body)
-      const res = await fetch(`${API}/kholle/start`, {
+      const res = await apiFetch(`${API}/kholle/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

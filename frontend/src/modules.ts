@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react'
 import * as Icons from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
+import { API, apiFetch } from './api'
+
 /**
  * Catalogue des modules (GET /modules), partagé entre Sidebar et Réglages.
  * Les icônes sont résolues dynamiquement par nom lucide-react.
  */
-
-const API = 'http://localhost:8000'
 
 export interface ModuleManifest {
   id: string
@@ -34,7 +34,7 @@ const listeners = new Set<() => void>()
 
 export async function fetchModules(): Promise<ModuleManifest[]> {
   try {
-    const res = await fetch(`${API}/modules`)
+    const res = await apiFetch(`${API}/modules`)
     if (!res.ok) return cache ?? []
     const data = await res.json() as { modules: ModuleManifest[] }
     cache = data.modules

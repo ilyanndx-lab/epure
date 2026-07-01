@@ -71,6 +71,27 @@ for _noisy in ("httpx", "watchdog", "sentence_transformers", "urllib3"):
 
 app = FastAPI(title="Épure", version="1.0.0")
 
+# ── Auth locale : token d'instance exigé partout sauf /health et /pair ───────
+# Enregistré AVANT CORSMiddleware (donc couche plus interne) : les préflights
+# OPTIONS sont servis par CORS sans token, et les 401 gardent les en-têtes CORS.
+from core.auth import get_api_token, is_local_client, token_ok, ws_require_token
+
+_AUTH_EXEMPT_PATHS = {"/health", "/pair"}
+
+
+@app.middleware("http")
+async def _require_api_token(request: Request, call_next):
+    if request.url.path in _AUTH_EXEMPT_PATHS or request.method == "OPTIONS":
+        return await call_next(request)
+    header = request.headers.get("authorization", "")
+    candidate = header[7:].strip() if header.startswith("Bearer ") else ""
+    if not token_ok(candidate):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Token d'API requis — appairage via /pair sur la machine hôte"},
+        )
+    return await call_next(request)
+
 # ── CORS explicite : origines via EPURE_CORS_ORIGINS, jamais "*" ──────────────
 _DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 _cors_origins = [
@@ -385,6 +406,8 @@ async def workshop_reject(module_id: str):
 @app.websocket("/ws/workshop")
 async def ws_workshop(websocket: WebSocket):
     """Stream de génération (ollama / claude headless) + pilotage mode terminal."""
+    if not await ws_require_token(websocket):
+        return
     await websocket.accept()
     loop = asyncio.get_running_loop()
 
@@ -539,6 +562,24 @@ async def ws_workshop(websocket: WebSocket):
 # ---------------------------------------------------------------------------
 # RAG
 # ---------------------------------------------------------------------------
+
+@app.get("/pair")
+async def pair(request: Request):
+    """Appairage local : renvoie le token d'API, uniquement à la machine hôte.
+
+    Le frontend appelle cette route au premier chargement ; servie depuis
+    127.0.0.1 (cas nominal), l'appairage est automatique et invisible. Depuis
+    une autre machine → 403 : l'utilisateur colle le code affiché par
+    http://localhost:8000/pair ouvert sur le poste qui héberge Épure.
+    """
+    host = request.client.host if request.client else ""
+    if not is_local_client(host):
+        raise HTTPException(
+            status_code=403,
+            detail="Appairage réservé à la machine hôte (ouvrez /pair sur celle-ci)",
+        )
+    return {"token": get_api_token()}
+
 
 @app.get("/health")
 async def health():

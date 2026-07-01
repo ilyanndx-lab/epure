@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from core.auth import ws_require_token
 from core.rag import RAGEngine
 from core.runtime import (
     SSE_HEADERS,
@@ -332,6 +333,8 @@ async def skills_résumé():
 
 @router.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
+    if not await ws_require_token(websocket):
+        return
     await websocket.accept()
     history: list[dict] = []
     loop = asyncio.get_running_loop()

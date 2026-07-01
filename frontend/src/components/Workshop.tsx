@@ -4,11 +4,9 @@ import {
   ShieldCheck, FilePlus2, FilePen, Bug, Cpu,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, Select, Textarea } from './ui'
+import { API, apiFetch, wsUrl } from '../api'
 import { useInstanceConfig } from '../instance'
 import { usePersistentState } from '../usePersistentState'
-
-const API = 'http://localhost:8000'
-const WS_URL = 'ws://localhost:8000/ws/workshop'
 
 type Engine = 'ollama' | 'claude_sub' | 'claude_gateway' | 'aider'
 type Mode = 'headless' | 'terminal'
@@ -94,10 +92,10 @@ export default function Workshop() {
     // avant de retomber sur idle, pour ne jamais perdre le travail généré.
     void (async () => {
       try {
-        const res = await fetch(`${API}/workshop/staging/${currentId}`)
+        const res = await apiFetch(`${API}/workshop/staging/${currentId}`)
         if (res.ok) {
           setStaging(await res.json())
-          const vr = await fetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
+          const vr = await apiFetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
           const vd = await vr.json().catch(() => null)
           if (vr.ok && vd?.report) setReport(vd.report)
           setPhase('review')
@@ -129,11 +127,11 @@ export default function Workshop() {
   }, [report])
 
   useEffect(() => {
-    fetch(`${API}/workshop/engines`).then(r => r.json()).then(setEngines).catch(() => {})
-    fetch(`${API}/workshop/modules`).then(r => r.json())
+    apiFetch(`${API}/workshop/engines`).then(r => r.json()).then(setEngines).catch(() => {})
+    apiFetch(`${API}/workshop/modules`).then(r => r.json())
       .then((d: { modules: ModuleRow[] }) => setModules(d.modules)).catch(() => {})
     // Modèles disponibles → sélecteur local (sans passer par les Réglages).
-    fetch(`${API}/models`).then(r => r.json()).then((d) => {
+    apiFetch(`${API}/models`).then(r => r.json()).then((d) => {
       const all = [
         ...(d.local ?? []),
         ...(d.local_npu ?? []),
@@ -152,7 +150,7 @@ export default function Workshop() {
 
   const refreshStaging = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`${API}/workshop/staging/${id}`)
+      const res = await apiFetch(`${API}/workshop/staging/${id}`)
       if (res.ok) setStaging(await res.json())
     } catch { /* ignore */ }
   }, [])
@@ -230,7 +228,7 @@ export default function Workshop() {
       try {
         const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
         const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
-        const res = await fetch(url, {
+        const res = await apiFetch(url, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         })
         if (!res.ok) {
@@ -246,7 +244,7 @@ export default function Workshop() {
     // 2) Stream la génération via WebSocket.
     setPhase('generating')
     wsRef.current?.close()  // ferme une éventuelle session précédente
-    const ws = new WebSocket(WS_URL)
+    const ws = new WebSocket(wsUrl('/ws/workshop'))
     wsRef.current = ws
     ws.onopen = () => {
       autoLeft.current = autoMax  // budget d'auto-reprises pour CETTE génération
@@ -265,7 +263,7 @@ export default function Workshop() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'resume', id }))
     } else {
-      const nws = new WebSocket(WS_URL)
+      const nws = new WebSocket(wsUrl('/ws/workshop'))
       wsRef.current = nws
       nws.onopen = () => nws.send(JSON.stringify({ type: 'resume', id }))
       bindSocket(nws, id)
@@ -282,7 +280,7 @@ export default function Workshop() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(payload)
     } else {
-      const nws = new WebSocket(WS_URL)
+      const nws = new WebSocket(wsUrl('/ws/workshop'))
       wsRef.current = nws
       nws.onopen = () => nws.send(payload)
       bindSocket(nws, id)
@@ -312,7 +310,7 @@ export default function Workshop() {
     try {
       const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
       const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       if (!res.ok) {
         const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
         const msg = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)
@@ -348,7 +346,7 @@ export default function Workshop() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(payload)
     } else {
-      const nws = new WebSocket(WS_URL)
+      const nws = new WebSocket(wsUrl('/ws/workshop'))
       wsRef.current = nws
       nws.onopen = () => nws.send(payload)
       bindSocket(nws, id)
@@ -372,7 +370,7 @@ export default function Workshop() {
     setPhase('validating')
     setError(null); setSessionLocked(null)
     try {
-      const res = await fetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
+      const res = await apiFetch(`${API}/workshop/${currentId}/validate`, { method: 'POST' })
       const data = await res.json()
       if (res.ok && data.report) {
         setReport(data.report)
@@ -397,7 +395,7 @@ export default function Workshop() {
       + "Un backup de l'existant est créé. Continuer ?"
     )) return
     try {
-      const res = await fetch(`${API}/workshop/${staging.id}/approve${force ? '?force=true' : ''}`, { method: 'POST' })
+      const res = await apiFetch(`${API}/workshop/${staging.id}/approve${force ? '?force=true' : ''}`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) {
         setError(typeof data.detail === 'object' ? JSON.stringify(data.detail) : (data.detail ?? 'Activation refusée'))
@@ -425,7 +423,7 @@ export default function Workshop() {
 
   const reject = useCallback(async () => {
     if (!staging) return
-    await fetch(`${API}/workshop/${staging.id}/reject`, { method: 'POST' }).catch(() => {})
+    await apiFetch(`${API}/workshop/${staging.id}/reject`, { method: 'POST' }).catch(() => {})
     wsRef.current?.close()
     setPhase('idle'); setStaging(null); setReport(null); setLog(''); setFeedbackText('')
   }, [staging])
@@ -437,7 +435,7 @@ export default function Workshop() {
     if (!staging) return
     setRevalidating(true)
     try {
-      const res = await fetch(`${API}/workshop/${staging.id}/validate`, { method: 'POST' })
+      const res = await apiFetch(`${API}/workshop/${staging.id}/validate`, { method: 'POST' })
       const data = await res.json()
       if (res.ok && data.report) {
         setReport(data.report)

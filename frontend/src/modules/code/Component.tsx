@@ -9,8 +9,7 @@ import { Badge, Button, Input, Select, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
 import { usePersistentState } from '../../usePersistentState'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch, wsUrl } from '../../api'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -542,7 +541,7 @@ function StatsBar({ usage }: { usage: UsageStats | null }) {
         </span>
       )}
       <button
-        onClick={() => fetch(`${API}/code/usage/reset`, { method: 'POST' })}
+        onClick={() => apiFetch(`${API}/code/usage/reset`, { method: 'POST' })}
         className="text-xs font-mono text-muted hover:text-secondary transition-colors duration-150"
       >reset</button>
     </div>
@@ -634,7 +633,7 @@ export default function Code() {
 
   const fetchTree = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/code/files`)
+      const res = await apiFetch(`${API}/code/files`)
       const data = await res.json()
       setTree(data.tree ?? [])
     } catch { /* ignore */ }
@@ -642,7 +641,7 @@ export default function Code() {
 
   const fetchAvailableModels = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/models`)
+      const res = await apiFetch(`${API}/models`)
       const data = await res.json()
       const all = [
         ...(data.local ?? []),
@@ -687,7 +686,7 @@ export default function Code() {
   // Poll usage stats every 3s
   useEffect(() => {
     const poll = () =>
-      fetch(`${API}/code/usage`).then(r => r.json()).then(setUsage).catch(() => {})
+      apiFetch(`${API}/code/usage`).then(r => r.json()).then(setUsage).catch(() => {})
     poll()
     const id = setInterval(poll, 3000)
     return () => clearInterval(id)
@@ -696,7 +695,7 @@ export default function Code() {
   // ── WebSocket ────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const ws = new WebSocket('ws://localhost:8000/ws/code')
+    const ws = new WebSocket(wsUrl('/ws/code'))
     wsRef.current = ws
 
     ws.onmessage = evt => {
@@ -899,7 +898,7 @@ export default function Code() {
     const already = openFiles.find(f => f.path === path)
     if (already) { setActiveFile(path); return }
     try {
-      const res = await fetch(`${API}/code/file?path=${encodeURIComponent(path)}`)
+      const res = await apiFetch(`${API}/code/file?path=${encodeURIComponent(path)}`)
       const data = await res.json()
       setOpenFiles(prev => [...prev, { path, content: data.content, dirty: false }])
       setActiveFile(path)
@@ -908,7 +907,7 @@ export default function Code() {
 
   const saveFile = useCallback(async (path: string, content: string) => {
     try {
-      await fetch(`${API}/code/file`, {
+      await apiFetch(`${API}/code/file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, content }),
@@ -921,7 +920,7 @@ export default function Code() {
     const isOpen = openFiles.some(f => f.path === path)
     if (!isOpen) return
     try {
-      const res = await fetch(`${API}/code/file?path=${encodeURIComponent(path)}`)
+      const res = await apiFetch(`${API}/code/file?path=${encodeURIComponent(path)}`)
       const data = await res.json()
       setOpenFiles(prev => prev.map(f =>
         f.path === path ? { ...f, content: data.content, dirty: false } : f
@@ -949,7 +948,7 @@ export default function Code() {
 
   const handleDeleteFile = useCallback(async (path: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    await fetch(`${API}/code/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+    await apiFetch(`${API}/code/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
     setOpenFiles(prev => prev.filter(f => f.path !== path))
     if (activeFile === path) setActiveFile(null)
     fetchTree()
@@ -965,7 +964,7 @@ export default function Code() {
     // Si l'utilisateur ne met pas de slash, on garde le même dossier parent.
     const newPath = newName.includes('/') ? newName : parent + newName
     try {
-      const res = await fetch(`${API}/code/rename`, {
+      const res = await apiFetch(`${API}/code/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ old: node.path, new: newPath }),
@@ -990,13 +989,13 @@ export default function Code() {
   const handleCreateItem = useCallback(async () => {
     if (!newItemName.trim()) return
     if (newItemType === 'file') {
-      await fetch(`${API}/code/file`, {
+      await apiFetch(`${API}/code/file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: newItemName.trim(), content: '' }),
       })
     } else {
-      await fetch(`${API}/code/folder`, {
+      await apiFetch(`${API}/code/folder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: newItemName.trim() }),
@@ -1017,7 +1016,7 @@ export default function Code() {
     setShowPkgInstall(true)
     setPkgName(name)
     try {
-      const res = await fetch(`${API}/code/install`, {
+      const res = await apiFetch(`${API}/code/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ package: name }),

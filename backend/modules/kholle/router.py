@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from core.auth import ws_require_token
 from core.rag import RAGEngine
 from core.runtime import (
     consolidation_engine,
@@ -124,6 +125,8 @@ async def kholle_start(req: KholleStartRequest):
 
 @router.websocket("/ws/kholle")
 async def ws_kholle(websocket: WebSocket):
+    if not await ws_require_token(websocket):
+        return
     await websocket.accept()
     loop = asyncio.get_running_loop()
 

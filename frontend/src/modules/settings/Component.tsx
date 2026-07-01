@@ -9,8 +9,7 @@ import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from '../../c
 import { useTheme } from '../../theme'
 import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon } from '../../modules'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../api'
 
 interface ModelOption { id: string; nom: string; disponible: boolean }
 
@@ -210,37 +209,37 @@ export default function Settings() {
   const [providerModels, setProviderModels] = useState<Record<string, string[]>>({})
 
   useEffect(() => {
-    fetch(`${API}/memory/profile`)
+    apiFetch(`${API}/memory/profile`)
       .then(r => r.json())
       .then((raw: Record<string, unknown>) => setProfile(mergeProfile(raw)))
       .catch(err => console.error('GET /memory/profile:', err))
 
-    fetch(`${API}/memory/sessions`)
+    apiFetch(`${API}/memory/sessions`)
       .then(r => r.json())
       .then((d: { sessions: Session[] }) => setSessions(d.sessions))
       .catch(err => console.error('GET /memory/sessions:', err))
 
-    fetch(`${API}/settings/api-keys`)
+    apiFetch(`${API}/settings/api-keys`)
       .then(r => r.json())
       .then((d: Record<string, boolean>) => setKeyStatus(d))
       .catch(err => console.error('GET /settings/api-keys:', err))
 
-    fetch(`${API}/settings/provider-models`)
+    apiFetch(`${API}/settings/provider-models`)
       .then(r => r.json())
       .then((d: { providers: Record<string, string[]> }) => setProviderModels(d.providers ?? {}))
       .catch(err => console.error('GET /settings/provider-models:', err))
 
-    fetch(`${API}/context`)
+    apiFetch(`${API}/context`)
       .then(r => r.json())
       .then((d: Record<string, unknown>) => setConsolidCloud(Boolean(d['consolidation_cloud'])))
       .catch(() => {})
 
-    fetch(`${API}/memory/consolidation-log`)
+    apiFetch(`${API}/memory/consolidation-log`)
       .then(r => r.json())
       .then((d: { log: Record<string, unknown>[] }) => setConsolidLog(d.log?.slice(0, 10) ?? []))
       .catch(() => {})
 
-    fetch(`${API}/models`)
+    apiFetch(`${API}/models`)
       .then(r => r.json())
       .then((d: ModelsResponse) => {
         const flat = [
@@ -261,7 +260,7 @@ export default function Settings() {
   const loadEngines = (force = false) => {
     // Au montage : on lit le cache backend (rapide). « Re-tester » / après édition
     // d'un chemin : force=true relance les checks (claude/aider --version, etc.).
-    fetch(`${API}/workshop/engines${force ? '?force=true' : ''}`)
+    apiFetch(`${API}/workshop/engines${force ? '?force=true' : ''}`)
       .then(r => r.json())
       .then((d: Record<string, EngineStatus>) => setEngines(d))
       .catch(() => setEngines(null))
@@ -271,7 +270,7 @@ export default function Settings() {
     setTesting(p => ({ ...p, [key]: true }))
     setTestResult(p => ({ ...p, [key]: null }))
     try {
-      const r = await fetch(`${API}/${endpoint}`, { method: 'POST' })
+      const r = await apiFetch(`${API}/${endpoint}`, { method: 'POST' })
       const d = await r.json()
       setTestResult(p => ({ ...p, [key]: { ok: d.ok, msg: d.version || d.url || d.raison || '' } }))
     } catch { setTestResult(p => ({ ...p, [key]: { ok: false, msg: 'Réseau indisponible' } })) }
@@ -282,7 +281,7 @@ export default function Settings() {
     setStartingGateway(true)
     setGatewayStartMsg(null)
     try {
-      const r = await fetch(`${API}/settings/gateway/start`, { method: 'POST' })
+      const r = await apiFetch(`${API}/settings/gateway/start`, { method: 'POST' })
       const d = await r.json()
       setGatewayStartMsg({ ok: d.ok, msg: d.raison || (d.ok ? 'Lancée' : 'Échec') })
       setTimeout(() => loadEngines(true), 2000)  // laisse la passerelle démarrer avant de re-tester
@@ -331,13 +330,13 @@ export default function Settings() {
 
   const loadQuotas = () => {
     setQuotasLoading(true)
-    fetch(`${API}/quota/usage`)
+    apiFetch(`${API}/quota/usage`)
       .then(r => r.json())
       .then((d: Record<string, QuotaEntry>) => setQuotas(d))
       .catch(err => console.error('GET /quota/usage:', err))
       .finally(() => setQuotasLoading(false))
     // Crédit DeepSeek en temps réel (API payante → solde, pas des tokens).
-    fetch(`${API}/quota/deepseek-balance`)
+    apiFetch(`${API}/quota/deepseek-balance`)
       .then(r => r.json())
       .then((d: DeepSeekBalance) => setDeepseekBalance(d))
       .catch(() => setDeepseekBalance({ ok: false, raison: 'Réseau indisponible' }))
@@ -345,7 +344,7 @@ export default function Settings() {
 
   const resetQuota = useCallback(async (provider: string) => {
     try {
-      await fetch(`${API}/quota/reset/${provider}`, { method: 'POST' })
+      await apiFetch(`${API}/quota/reset/${provider}`, { method: 'POST' })
       loadQuotas()
     } catch (err) {
       console.error(`POST /quota/reset/${provider}:`, err)
@@ -357,7 +356,7 @@ export default function Settings() {
     setSaving(true)
     setSaveMsg(null)
     try {
-      const res = await fetch(`${API}/memory/profile`, {
+      const res = await apiFetch(`${API}/memory/profile`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(profile),
@@ -376,7 +375,7 @@ export default function Settings() {
   const toggleConsolidCloud = useCallback(async () => {
     const next = !consolidCloud
     setConsolidCloud(next)
-    await fetch(`${API}/context/settings`, {
+    await apiFetch(`${API}/context/settings`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ consolidation_cloud: next }),
@@ -387,7 +386,7 @@ export default function Settings() {
     setConsolidating(true)
     setConsolidResult(null)
     try {
-      const res = await fetch(`${API}/memory/consolidate`, {
+      const res = await apiFetch(`${API}/memory/consolidate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ use_cloud: consolidCloud }),
@@ -399,7 +398,7 @@ export default function Settings() {
       if ((ch.forces_ajoutées as string[])?.length) parts.push(`+${(ch.forces_ajoutées as string[]).length} force(s)`)
       if (ch.style_màj) parts.push('style mis à jour')
       setConsolidResult(parts.length ? parts.join(' · ') : 'Aucun changement')
-      const logRes = await fetch(`${API}/memory/consolidation-log`)
+      const logRes = await apiFetch(`${API}/memory/consolidation-log`)
       const logData: { log: Record<string, unknown>[] } = await logRes.json()
       setConsolidLog(logData.log?.slice(0, 10) ?? [])
     } catch {
@@ -415,13 +414,13 @@ export default function Settings() {
     try {
       const body: Record<string, string> = {}
       Object.entries(apiKeys).forEach(([k, v]) => { if (v.trim()) body[k] = v.trim() })
-      const res = await fetch(`${API}/settings/api-keys`, {
+      const res = await apiFetch(`${API}/settings/api-keys`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const status: Record<string, boolean> = await fetch(`${API}/settings/api-keys`).then(r => r.json())
+      const status: Record<string, boolean> = await apiFetch(`${API}/settings/api-keys`).then(r => r.json())
       setKeyStatus(status)
       setApiKeys({ GEMINI_API_KEY: '', GROQ_API_KEY: '', CEREBRAS_API_KEY: '', MISTRAL_API_KEY: '', NVIDIA_API_KEY: '', DEEPSEEK_API_KEY: '' })
       setKeysMsg({ ok: true, text: 'Clés sauvegardées' })
@@ -437,7 +436,7 @@ export default function Settings() {
   const archiveSelected = useCallback(async () => {
     if (selectedDates.length === 0) return
     try {
-      await fetch(`${API}/memory/sessions/archive`, {
+      await apiFetch(`${API}/memory/sessions/archive`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dates: selectedDates }),

@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Star, Swords, Gem, Shield, Hammer, FlaskConical, Armchair, Cable, Cpu, Skull, Users, CloudRain, Network, HardDrive, Monitor, Gauge, Puzzle, Music, Eye, Scale, BookOpen, ChevronRight, ChevronDown, Loader2 } from 'lucide-react';
-
-const API = 'http://localhost:8000';
+import { API, apiFetch } from '../../../api'
 
 /* ================================================================
    Module Astral — Encyclopedie du Game Design d'Astral Earth
@@ -551,7 +550,7 @@ export default function Component() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch(`${API}${section.endpoint}`)
+    apiFetch(`${API}${section.endpoint}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
       .catch(e => { if (!cancelled) { setError(e.message); setLoading(false); } });

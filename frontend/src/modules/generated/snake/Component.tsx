@@ -11,8 +11,7 @@ import {
 } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { Button } from '../../../components/ui'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../../api'
 
 // ── Paramètres du plateau ────────────────────────────────────────────────────
 const GRID = 20 // nombre de cellules par côté
@@ -123,7 +122,7 @@ export default function SnakeModule(_props: SharedModuleProps) {
 
   // ── Soumission du meilleur score (best-effort, ne bloque jamais le jeu) ──────
   const submitScore = useCallback((value: number) => {
-    fetch(`${API}/snake/score`, {
+    apiFetch(`${API}/snake/score`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ score: value }),
@@ -270,7 +269,7 @@ export default function SnakeModule(_props: SharedModuleProps) {
     } catch {
       /* ignore */
     }
-    fetch(`${API}/snake/highscore`)
+    apiFetch(`${API}/snake/highscore`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && typeof data.best === 'number') {

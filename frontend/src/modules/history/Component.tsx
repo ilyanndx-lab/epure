@@ -3,8 +3,7 @@ import { usePersistentState } from '../../usePersistentState'
 import { ArrowLeft, Clock, Search, Trash2, X } from 'lucide-react'
 import { Badge, Button, Card, Input } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../api'
 
 interface ConvSummary {
   id: string
@@ -42,7 +41,7 @@ export default function History() {
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    fetch(`${API}/history`)
+    apiFetch(`${API}/history`)
       .then(r => r.json())
       .then(setConversations)
       .catch(err => console.error('GET /history:', err))
@@ -53,7 +52,7 @@ export default function History() {
     if (!q) { setSearchResults(null); return }
     setSearching(true)
     try {
-      const res = await fetch(`${API}/history/search`, {
+      const res = await apiFetch(`${API}/history/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: q }),
@@ -70,7 +69,7 @@ export default function History() {
   const openConversation = async (id: string) => {
     setLoading(true)
     try {
-      const res = await fetch(`${API}/history/${id}`)
+      const res = await apiFetch(`${API}/history/${id}`)
       setSelected(await res.json())
     } catch (err) {
       console.error('GET /history/{id}:', err)
@@ -82,7 +81,7 @@ export default function History() {
   const deleteConversation = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
     try {
-      await fetch(`${API}/history/${id}`, { method: 'DELETE' })
+      await apiFetch(`${API}/history/${id}`, { method: 'DELETE' })
       setConversations(prev => prev.filter(c => c.id !== id))
       if (searchResults) setSearchResults(prev => prev?.filter(c => c.id !== id) ?? null)
       if (selected?.id === id) setSelected(null)

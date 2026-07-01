@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { usePersistentState } from '../../usePersistentState'
 import { ArrowLeft, Check, Layers, Plus, Sparkles, Trash2, X } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Select } from '../../components/ui'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../api'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -116,7 +115,7 @@ export default function Flashcards() {
   const fetchDecks = useCallback(async () => {
     setLoadingDecks(true)
     try {
-      const res = await fetch(`${API}/flashcards/decks`)
+      const res = await apiFetch(`${API}/flashcards/decks`)
       const d: { decks: Deck[] } = await res.json()
       setDecks(d.decks)
     } catch (err) {
@@ -128,7 +127,7 @@ export default function Flashcards() {
 
   useEffect(() => {
     fetchDecks()
-    fetch(`${API}/rag/files`)
+    apiFetch(`${API}/rag/files`)
       .then(r => r.json())
       .then((d: { files: string[] }) => setAvailableFiles(d.files))
       .catch(err => console.error('GET /rag/files:', err))
@@ -144,7 +143,7 @@ export default function Flashcards() {
     genTextRef.current = ''
 
     try {
-      const res = await fetch(`${API}/flashcards/generate`, {
+      const res = await apiFetch(`${API}/flashcards/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -195,7 +194,7 @@ export default function Flashcards() {
 
   const startReview = useCallback(async (deckId: string, dueOnly: boolean) => {
     try {
-      const res = await fetch(`${API}/flashcards/decks/${deckId}`)
+      const res = await apiFetch(`${API}/flashcards/decks/${deckId}`)
       const deck: DeckFull = await res.json()
       const today = new Date().toISOString().slice(0, 10)
       const cards = dueOnly
@@ -222,7 +221,7 @@ export default function Flashcards() {
     if (!card || submitting) return
     setSubmitting(true)
     try {
-      await fetch(
+      await apiFetch(
         `${API}/flashcards/decks/${reviewDeckId}/cartes/${card.id}/review`,
         {
           method: 'POST',
@@ -240,7 +239,7 @@ export default function Flashcards() {
         const su = resultat === 'su' ? sessionSu + 1 : sessionSu
         const pas = resultat === 'pas_su' ? sessionPasSu + 1 : sessionPasSu
         const deck = decks.find(d => d.id === reviewDeckId)
-        fetch(`${API}/memory/sessions`, {
+        apiFetch(`${API}/memory/sessions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -266,7 +265,7 @@ export default function Flashcards() {
 
   const deleteDeck = useCallback(async (id: string) => {
     try {
-      await fetch(`${API}/flashcards/decks/${id}`, { method: 'DELETE' })
+      await apiFetch(`${API}/flashcards/decks/${id}`, { method: 'DELETE' })
       setDecks(prev => prev.filter(d => d.id !== id))
     } catch (err) {
       console.error('DELETE /flashcards/decks/:id:', err)

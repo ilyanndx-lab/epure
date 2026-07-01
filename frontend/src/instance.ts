@@ -1,5 +1,7 @@
 import { useSyncExternalStore, useCallback } from 'react'
 
+import { API, apiFetch } from './api'
+
 /**
  * Store de configuration d'instance, calqué sur theme.ts (useSyncExternalStore).
  *
@@ -9,7 +11,6 @@ import { useSyncExternalStore, useCallback } from 'react'
  * Le thème est désormais géré ici (theme.ts ne fait plus que ré-exporter).
  */
 
-const API = 'http://localhost:8000'
 const CACHE_KEY = 'epure-instance'
 
 export type Theme = 'dark' | 'light'
@@ -115,7 +116,7 @@ export function initInstance() {
 /** Recharge la config depuis le serveur (silencieux si hors-ligne). */
 export async function refreshInstance(): Promise<void> {
   try {
-    const res = await fetch(`${API}/instance/config`)
+    const res = await apiFetch(`${API}/instance/config`)
     if (!res.ok) return
     const server = await res.json() as Partial<InstanceConfig>
     setConfig({ ...DEFAULT_CONFIG, ...server } as InstanceConfig)
@@ -138,7 +139,7 @@ export async function updateInstance(partial: InstanceConfigPatch): Promise<void
     },
   })
   try {
-    const res = await fetch(`${API}/instance/config`, {
+    const res = await apiFetch(`${API}/instance/config`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(partial),
