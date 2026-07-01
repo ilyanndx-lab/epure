@@ -6,15 +6,21 @@ import { useInstanceConfig } from './instance'
 import { useModules } from './modules'
 import { getModuleDef, type SharedModuleProps } from './modules/registry'
 import { usePersistentState } from './usePersistentState'
+import { API, apiFetch, ensureToken, setToken } from './api'
 
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
 
-const API = 'http://localhost:8000'
-
 export default function App() {
   const config = useInstanceConfig()
   const modules = useModules()
+  // Appairage : auto via /pair (localhost). 'forbidden' = accès distant →
+  // écran de saisie du code ; 'unreachable' traité comme ok (l'UX « backend
+  // injoignable » existante s'applique, apiFetch ré-appairera au retour).
+  const [pairing, setPairing] = useState<'pending' | 'ok' | 'forbidden'>('pending')
+  useEffect(() => {
+    ensureToken().then(r => setPairing(r === 'forbidden' ? 'forbidden' : 'ok'))
+  }, [])
   const [activeModule, setActiveModule] = usePersistentState<string>('epure.activeModule', 'chat')
   // Modules déjà visités : on les garde MONTÉS (cachés) pour que leurs tâches
   // (streaming chat, génération…) continuent en arrière-plan quand on change de
@@ -49,7 +55,7 @@ export default function App() {
     }
     setSpeakingText(text)
     try {
-      const res = await fetch(`${API}/voice/synthesize`, {
+      const res = await apiFetch(`${API}/voice/synthesize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
@@ -129,6 +135,15 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [zoom, setZoom])
+
+  // Appairage : rien tant qu'on ne sait pas (évite un flash), écran de saisie
+  // du code si l'accès est distant. Placé après tous les hooks (règle React).
+  if (pairing === 'pending') {
+    return <div className="h-screen w-full bg-base" />
+  }
+  if (pairing === 'forbidden') {
+    return <PairingGate onSubmit={code => { setToken(code); setPairing('ok') }} />
+  }
 
   return (
     <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
@@ -212,6 +227,39 @@ export default function App() {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+/** Écran d'appairage (accès depuis un autre poste que la machine hôte). */
+function PairingGate({ onSubmit }: { onSubmit: (code: string) => void }) {
+  const [code, setCode] = useState('')
+  return (
+    <div className="flex h-screen w-full items-center justify-center bg-base text-primary">
+      <div className="w-[26rem] max-w-[90vw] space-y-4 rounded-xl border border-base p-6">
+        <h1 className="text-lg font-semibold">Appairage requis</h1>
+        <p className="text-sm text-muted">
+          Épure tourne sur un autre ordinateur. Sur celui-ci, ouvre{' '}
+          <code className="text-primary">http://localhost:8000/pair</code> dans un
+          navigateur, puis colle ici le code affiché (champ « token »).
+        </p>
+        <input
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && code.trim()) onSubmit(code) }}
+          placeholder="Code d'appairage"
+          className="w-full rounded-lg border border-base bg-transparent px-3 py-2 text-sm outline-none focus:border-white/30"
+          autoFocus
+        />
+        <button
+          type="button"
+          disabled={!code.trim()}
+          onClick={() => onSubmit(code)}
+          className="w-full rounded-lg bg-white/10 px-3 py-2 text-sm hover:bg-white/15 disabled:opacity-40"
+        >
+          Se connecter
+        </button>
       </div>
     </div>
   )

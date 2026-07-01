@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { Check, Copy, FolderCog, RefreshCw, Scan, Square, Undo2, X } from 'lucide-react'
 import { Badge, Button, Card, Modal, ProgressBar } from '../../components/ui'
+import { API, apiFetch } from '../../api'
 
-const API = 'http://localhost:8000'
 const FICHES_ROOT = 'C:\\Users\\Ilyan\\Fiches\\'
 
 interface ScanResult {
@@ -92,7 +92,7 @@ export default function Admin() {
     scanAbortRef.current = ctrl
 
     try {
-      const res = await fetch(`${API}/admin/scan`, { method: 'POST', signal: ctrl.signal })
+      const res = await apiFetch(`${API}/admin/scan`, { method: 'POST', signal: ctrl.signal })
       const reader = res.body!.getReader()
       const dec = new TextDecoder()
       let buf = ''
@@ -167,7 +167,7 @@ export default function Admin() {
     setExecuting(true)
     setShowModal(false)
     try {
-      const res = await fetch(`${API}/admin/execute`, {
+      const res = await apiFetch(`${API}/admin/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actions: actions.map(({ type, source, destination }) => ({ type, source, destination })) }),
@@ -187,7 +187,7 @@ export default function Admin() {
   async function loadDuplicates() {
     setLoadingDups(true)
     try {
-      const res = await fetch(`${API}/admin/duplicates`)
+      const res = await apiFetch(`${API}/admin/duplicates`)
       const data = await res.json()
       setDuplicates(data.groupes)
     } catch (err) {
@@ -199,7 +199,7 @@ export default function Admin() {
 
   async function openFile(path: string) {
     try {
-      await fetch(`${API}/admin/open?path=${encodeURIComponent(path)}`)
+      await apiFetch(`${API}/admin/open?path=${encodeURIComponent(path)}`)
     } catch (err) {
       console.error('Erreur ouverture:', err)
     }
@@ -207,7 +207,7 @@ export default function Admin() {
 
   async function loadLog() {
     try {
-      const res = await fetch(`${API}/admin/log`)
+      const res = await apiFetch(`${API}/admin/log`)
       const data = await res.json()
       setLog([...data.log].reverse())
     } catch (err) {
@@ -217,7 +217,7 @@ export default function Admin() {
 
   async function undoAction(id: string) {
     try {
-      const res = await fetch(`${API}/admin/undo`, {
+      const res = await apiFetch(`${API}/admin/undo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action_id: id }),

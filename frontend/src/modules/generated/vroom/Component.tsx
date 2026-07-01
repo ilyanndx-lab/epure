@@ -3,6 +3,7 @@ import { Car, Gamepad2, Settings, Coins, Target } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { usePersistentState } from '../../../usePersistentState'
 import { Button, Card, Select, Tabs, Modal } from '../../../components/ui'
+import { API, apiFetch } from '../../../api'
 
 /* ------------------------------------------------------------------ */
 /*  Interfaces                                                        */
@@ -26,7 +27,6 @@ interface Track {
 /* ------------------------------------------------------------------ */
 /*  Constants                                                         */
 /* ------------------------------------------------------------------ */
-const API = 'http://localhost:8000'
 const CANVAS_W = 800
 const CANVAS_H = 400
 const PIXEL_SCALE = 5           // px per meter
@@ -117,8 +117,8 @@ export default function VroomModule(_props: SharedModuleProps) {
       try {
         setLoading(true)
         const [carsRes, tracksRes] = await Promise.all([
-          fetch(`${API}/cars`),
-          fetch(`${API}/tracks`),
+          apiFetch(`${API}/cars`),
+          apiFetch(`${API}/tracks`),
         ])
         if (!carsRes.ok || !tracksRes.ok) throw new Error('Erreur lors du chargement des données')
         const carsData: Car[] = (await carsRes.json()).cars
@@ -383,7 +383,7 @@ export default function VroomModule(_props: SharedModuleProps) {
     setShowRaceResult(true)
 
     try {
-      await fetch(`${API}/save-progress`, {
+      await apiFetch(`${API}/save-progress`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

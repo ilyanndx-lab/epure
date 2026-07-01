@@ -6,8 +6,7 @@ import {
 } from 'lucide-react'
 import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../api'
 
 // Curated model recommendations per module (IDs morts retirés —
 // la disponibilité live /models grise automatiquement le reste)
@@ -235,13 +234,13 @@ export default function ModuleBar({
 
   useEffect(() => {
     if (showFile) {
-      fetch(`${API}/rag/files`)
+      apiFetch(`${API}/rag/files`)
         .then(r => r.json())
         .then((d: { files: string[] }) => setAvailableFiles(d.files))
         .catch(() => {})
     }
 
-    fetch(`${API}/context`)
+    apiFetch(`${API}/context`)
       .then(r => r.json())
       .then((d: Record<string, unknown>) => {
         if (showFile) {
@@ -258,7 +257,7 @@ export default function ModuleBar({
       .catch(() => {})
 
     if (showModel) {
-      fetch(`${API}/models`)
+      apiFetch(`${API}/models`)
         .then(r => r.json())
         .then((d: { local: ModelInfo[]; local_npu?: ModelInfo[]; cloud: CloudCategories }) => {
           setLocalModels(d.local ?? [])
@@ -269,7 +268,7 @@ export default function ModuleBar({
     }
 
     if (showEffort) {
-      fetch(`${API}/orchestrator/presets`)
+      apiFetch(`${API}/orchestrator/presets`)
         .then(r => r.json())
         .then((d: { presets: Preset[] }) => setPresets(d.presets ?? []))
         .catch(() => {})
@@ -279,7 +278,7 @@ export default function ModuleBar({
   // ── Settings sync ─────────────────────────────────────────────────────────
 
   const pushSettings = useCallback((patch: Record<string, unknown>) => {
-    fetch(`${API}/context/settings`, {
+    apiFetch(`${API}/context/settings`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -318,7 +317,7 @@ export default function ModuleBar({
   const savePreset = useCallback(async () => {
     if (!newPresetName.trim()) return
     try {
-      const res = await fetch(`${API}/orchestrator/presets`, {
+      const res = await apiFetch(`${API}/orchestrator/presets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nom: newPresetName.trim(), effort, steps: pipelineSteps }),
@@ -364,7 +363,7 @@ export default function ModuleBar({
     if (selectedFiles.length === 0) return
     setLoadingFiles(true)
     try {
-      const res = await fetch(`${API}/files/load`, {
+      const res = await apiFetch(`${API}/files/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paths: selectedFiles }),
@@ -376,7 +375,7 @@ export default function ModuleBar({
   }, [selectedFiles, consumeLoadStream])
 
   const clearActiveFiles = useCallback(async () => {
-    await fetch(`${API}/files/active`, { method: 'DELETE' })
+    await apiFetch(`${API}/files/active`, { method: 'DELETE' })
     setActiveFiles([]); setSelectedFiles([]); setSummary(null); setSummaryText('')
   }, [])
 
@@ -390,12 +389,12 @@ export default function ModuleBar({
     try {
       const form = new FormData()
       supported.forEach(f => form.append('files', f, f.name))
-      const res = await fetch(`${API}/files/upload`, { method: 'POST', body: form })
+      const res = await apiFetch(`${API}/files/upload`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res)
       const [filesData, ctxData] = await Promise.all([
-        fetch(`${API}/rag/files`).then(r => r.json()) as Promise<{ files: string[] }>,
-        fetch(`${API}/context`).then(r => r.json()) as Promise<Record<string, unknown>>,
+        apiFetch(`${API}/rag/files`).then(r => r.json()) as Promise<{ files: string[] }>,
+        apiFetch(`${API}/context`).then(r => r.json()) as Promise<Record<string, unknown>>,
       ])
       setAvailableFiles(filesData.files)
       const active = (ctxData['fichiers_actifs'] as string[]) ?? []
@@ -429,7 +428,7 @@ export default function ModuleBar({
           const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' })
           const form = new FormData()
           form.append('audio', blob, 'recording.webm')
-          const res = await fetch(`${API}/voice/transcribe`, { method: 'POST', body: form })
+          const res = await apiFetch(`${API}/voice/transcribe`, { method: 'POST', body: form })
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const data: { text: string } = await res.json()
           if (data.text) onTranscribed?.(data.text)

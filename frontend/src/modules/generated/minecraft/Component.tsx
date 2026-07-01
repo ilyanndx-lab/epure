@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { API, apiFetch } from '../../../api'
 
 /* ============================================================
    Module Minecraft — Composant React (moteur 2D type Terraria)
@@ -10,7 +11,6 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
    ============================================================ */
 
 // ---------- constantes ----------
-const API = 'http://localhost:8000';
 const BLOCK_SIZE = 22;
 const VIEW_W = 26;
 const VIEW_H = 17;
@@ -146,7 +146,7 @@ export default function Component() {
   // ---------- réseau ----------
   const post = useCallback(async (path: string, body: object = {}) => {
     try {
-      const res = await fetch(`${API}${path}`, {
+      const res = await apiFetch(`${API}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -156,7 +156,7 @@ export default function Component() {
   }, []);
 
   const getJson = useCallback(async (path: string) => {
-    try { return await (await fetch(`${API}${path}`)).json(); } catch { return null; }
+    try { return await (await apiFetch(`${API}${path}`)).json(); } catch { return null; }
   }, []);
 
   // ---------- application de l'état serveur ----------

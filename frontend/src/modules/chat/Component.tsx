@@ -5,9 +5,7 @@ import { Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
 import type { EffortLevel, StepConfig } from '../../App'
-
-const API = 'http://localhost:8000'
-const WS_URL = 'ws://localhost:8000/ws/chat'
+import { API, apiFetch, wsUrl } from '../../api'
 
 interface MsgStats {
   tps: number
@@ -196,7 +194,7 @@ export default function Chat({
 
   useEffect(() => {
     const connect = () => {
-      const ws = new WebSocket(WS_URL)
+      const ws = new WebSocket(wsUrl('/ws/chat'))
       ws.onopen = () => setConnected(true)
       ws.onclose = () => { setConnected(false); setTimeout(connect, 2000) }
       ws.onmessage = (event) => {
@@ -432,7 +430,7 @@ export default function Chat({
     pushMsg('user', userText)
     setStreaming(true)
     try {
-      const res = await fetch(`${API}/skills/résumé`, { method: 'POST' })
+      const res = await apiFetch(`${API}/skills/résumé`, { method: 'POST' })
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
         pushMsg('assistant', `[erreur: ${(err as { detail?: string }).detail ?? res.status}]`)
@@ -475,7 +473,7 @@ export default function Chat({
   const handleMémoire = useCallback(async (userText: string) => {
     pushMsg('user', userText)
     try {
-      const res = await fetch(`${API}/memory/context`)
+      const res = await apiFetch(`${API}/memory/context`)
       const data = await res.json() as { context: string }
       pushMsg('assistant', data.context)
     } catch {
@@ -486,7 +484,7 @@ export default function Chat({
   const handleModèle = useCallback(async (userText: string, nom: string) => {
     pushMsg('user', userText)
     try {
-      await fetch(`${API}/context/settings`, {
+      await apiFetch(`${API}/context/settings`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 'modèle_actif': nom }),
@@ -500,7 +498,7 @@ export default function Chat({
   const handleLacunes = useCallback(async (userText: string) => {
     pushMsg('user', userText)
     try {
-      const res = await fetch(`${API}/memory/lacunes`)
+      const res = await apiFetch(`${API}/memory/lacunes`)
       const data = await res.json() as {
         lacunes: string[]
         erreurs_recentes: { date: string; erreur: string }[]

@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.auth import ws_require_token
 from core.codeagent import (
     execute_code as _code_exec,
     create_file as _code_create,
@@ -180,6 +181,8 @@ async def code_execute_direct(req: CodeFileRequest):
 
 @router.websocket("/ws/code")
 async def ws_code(websocket: WebSocket):
+    if not await ws_require_token(websocket):
+        return
     await websocket.accept()
     loop = asyncio.get_running_loop()
 

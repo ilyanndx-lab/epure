@@ -18,6 +18,7 @@ techniques : whisper, chunk_size...).
 import json
 import logging
 import os
+import secrets
 import uuid
 from pathlib import Path
 from threading import RLock
@@ -154,8 +155,8 @@ class InstanceConfig:
         """Merge partiel en place. Sous-dictionnaires fusionnés en profondeur
         (providers, fiches, atelier.gateway)."""
         for k, v in partial.items():
-            if k == "instance_id":
-                continue  # immuable
+            if k in ("instance_id", "auth"):
+                continue  # immuables via l'API publique
             if isinstance(v, dict) and isinstance(cfg.get(k), dict):
                 merged = InstanceConfig._deep_merge(cfg[k], v)
                 merged.pop("clés_présentes", None)  # dérivé : jamais persisté
@@ -166,9 +167,14 @@ class InstanceConfig:
     # ── API publique ─────────────────────────────────────────────────────────
 
     def get(self) -> dict:
-        """Retourne la config courante (clés_présentes recalculées à la volée)."""
+        """Retourne la config courante (clés_présentes recalculées à la volée).
+
+        Le bloc ``auth`` (token d'API) n'est JAMAIS exposé ici : il ne sort que
+        par la route d'appairage locale ``/pair`` (cf. core.auth).
+        """
         with self._lock:
             cfg = json.loads(json.dumps(self._cache or self._load()))  # copie profonde
+        cfg.pop("auth", None)
         cfg.setdefault("providers", {})["clés_présentes"] = _key_status()
         return cfg
 
@@ -187,6 +193,23 @@ class InstanceConfig:
         with self._lock:
             cfg = self._cache or self._load()
         return list(cfg.get("modules_activés", _CORE_MODULES))
+
+    def auth_token(self) -> str:
+        """Token d'API de l'instance — généré au premier appel puis persistant.
+
+        Stocké sous ``auth.token`` dans instance_config.json ; jamais renvoyé
+        par :meth:`get` ni modifiable par :meth:`update` (cf. _apply_partial).
+        """
+        with self._lock:
+            cfg = self._merge_defaults(self._cache or self._load())
+            token = (cfg.get("auth") or {}).get("token") or ""
+            if not token:
+                token = secrets.token_urlsafe(32)
+                cfg.setdefault("auth", {})["token"] = token
+                self._save(cfg)
+                self._cache = cfg
+                logger.info("Token d'API généré (premier démarrage)")
+            return token
 
 
 # Singleton applicatif (créé une fois au démarrage).

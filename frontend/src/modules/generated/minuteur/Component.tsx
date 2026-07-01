@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Timer, Coffee, Play, Pause, RotateCcw } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../../api'
 
 interface PomodoroSettings {
   work_duration: number
@@ -61,7 +60,7 @@ export default function MinuteurModule(_props: SharedModuleProps) {
 
   const fetchPomodoroSettings = async () => {
     try {
-      const res = await fetch(`${API}/minuteur/pomodoro-settings`)
+      const res = await apiFetch(`${API}/minuteur/pomodoro-settings`)
       const data = await res.json()
       setPomodoroSettings(data)
     } catch (error) {

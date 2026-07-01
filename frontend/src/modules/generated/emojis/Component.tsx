@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { Smile } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { Card } from '../../../components/ui'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../../api'
 
 /**
  * Composant du module d'affichage d'emojis.
@@ -18,7 +17,7 @@ export default function EmojisModule(_props: SharedModuleProps) {
     const fetchEmojis = async () => {
       setLoading(true)
       try {
-        const res = await fetch(`${API}/emojis/`)
+        const res = await apiFetch(`${API}/emojis/`)
         setEmojis(await res.json())
       } catch {
         console.error('Erreur réseau')

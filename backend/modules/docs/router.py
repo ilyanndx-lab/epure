@@ -15,6 +15,7 @@ from fastapi import APIRouter, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.auth import ws_require_token
 from core.runtime import SSE_HEADERS, docanalysis, llm, memory
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,8 @@ async def docanalysis_summarize(req: DocSummarizeRequest):
 
 @router.websocket("/ws/docchat")
 async def ws_docchat(websocket: WebSocket):
+    if not await ws_require_token(websocket):
+        return
     await websocket.accept()
     loop = asyncio.get_running_loop()
     history: list[dict] = []

@@ -3,8 +3,7 @@ import { FolderOpen, Search, Download, Trash2, Zap, Cpu } from "lucide-react";
 import type { SharedModuleProps } from "../../registry";
 import { usePersistentState } from "../../../usePersistentState";
 import { Button, Card, Badge, Input, Tabs, Select } from "../../../components/ui";
-
-const API = "http://localhost:8000";
+import { API, apiFetch } from '../../../api'
 
 // ── Types (identiques à ceux du backend) ──────────────────────────────────────
 
@@ -79,7 +78,7 @@ export default function RangementModule(_props: SharedModuleProps) {
 
   const fetchModels = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/rangement/models`);
+      const res = await apiFetch(`${API}/rangement/models`);
       if (res.ok) {
         const data = await res.json();
         setModels(data.models ?? []);
@@ -97,7 +96,7 @@ export default function RangementModule(_props: SharedModuleProps) {
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/rangement/history`);
+      const res = await apiFetch(`${API}/rangement/history`);
       if (res.ok) {
         const data = await res.json();
         setHistory(data.history ?? []);
@@ -174,7 +173,7 @@ export default function RangementModule(_props: SharedModuleProps) {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API}/rangement/analyze`, {
+      const res = await apiFetch(`${API}/rangement/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -223,7 +222,7 @@ export default function RangementModule(_props: SharedModuleProps) {
     abortRef.current = abort;
 
     try {
-      const res = await fetch(`${API}/rangement/analyze-stream`, {
+      const res = await apiFetch(`${API}/rangement/analyze-stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

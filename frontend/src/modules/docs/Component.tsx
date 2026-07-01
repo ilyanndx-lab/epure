@@ -4,8 +4,7 @@ import { FileSearch, Loader2, Plus, Send, Trash2 } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch, wsUrl } from '../../api'
 
 interface DocInfo {
   id: string
@@ -85,7 +84,7 @@ export default function Docs() {
 
   const fetchDocs = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/docanalysis/docs`)
+      const res = await apiFetch(`${API}/docanalysis/docs`)
       const data = await res.json()
       setDocs(data.docs ?? [])
     } catch {
@@ -111,7 +110,7 @@ export default function Docs() {
 
   useEffect(() => {
     if (tab !== 'chat' || !selected) return
-    const ws = new WebSocket('ws://localhost:8000/ws/docchat')
+    const ws = new WebSocket(wsUrl('/ws/docchat'))
     wsRef.current = ws
     ws.onmessage = evt => {
       const msg = JSON.parse(evt.data)
@@ -158,7 +157,7 @@ export default function Docs() {
     const form = new FormData()
     form.append('file', file)
     try {
-      const res = await fetch(`${API}/docanalysis/upload`, { method: 'POST', body: form })
+      const res = await apiFetch(`${API}/docanalysis/upload`, { method: 'POST', body: form })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       for await (const ev of readSSE(res)) {
         if (ev.type === 'progress') {
@@ -180,7 +179,7 @@ export default function Docs() {
 
   const handleUnload = useCallback(async (docId: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    await fetch(`${API}/docanalysis/docs/${docId}`, { method: 'DELETE' })
+    await apiFetch(`${API}/docanalysis/docs/${docId}`, { method: 'DELETE' })
     setDocs(prev => prev.filter(d => d.id !== docId))
     if (selected?.id === docId) setSelected(null)
   }, [selected])
@@ -194,7 +193,7 @@ export default function Docs() {
     setSynthesis('')
     setSynthStreaming(false)
     try {
-      const res = await fetch(`${API}/docanalysis/search`, {
+      const res = await apiFetch(`${API}/docanalysis/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ doc_id: selected.id, query }),
@@ -223,7 +222,7 @@ export default function Docs() {
     setDeepStreaming(prev => ({ ...prev, [chunkIndex]: true }))
     setDeepContent(prev => ({ ...prev, [chunkIndex]: '' }))
     try {
-      const res = await fetch(`${API}/docanalysis/deepen`, {
+      const res = await apiFetch(`${API}/docanalysis/deepen`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chunks: [chunk] }),
@@ -247,7 +246,7 @@ export default function Docs() {
     setSummaryContent('')
     setSummaryStreaming(true)
     try {
-      const res = await fetch(`${API}/docanalysis/summarize`, {
+      const res = await apiFetch(`${API}/docanalysis/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ doc_id: selected.id, level, use_cloud: useCloud }),

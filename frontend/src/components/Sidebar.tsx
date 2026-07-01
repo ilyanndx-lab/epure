@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Settings as SettingsIcon, Hammer } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { ThemeToggle } from './ui'
+import { API, apiFetch } from '../api'
 import { useInstanceConfig } from '../instance'
 import { useModules, resolveIcon } from '../modules'
 
@@ -9,8 +10,6 @@ interface SidebarProps {
   activeModule: string
   onModuleChange: (m: string) => void
 }
-
-const API = 'http://localhost:8000'
 
 function NavItem({
   active, label, icon: Icon, onClick,
@@ -47,7 +46,7 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
 
   useEffect(() => {
     const check = () => {
-      fetch(`${API}/health`)
+      apiFetch(`${API}/health`)
         .then(r => r.json())
         .then((d: { ollama: boolean; model: string; flm?: boolean }) => {
           setOllamaOk(d.ollama)

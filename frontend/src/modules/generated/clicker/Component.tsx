@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { MousePointer } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { Button } from '../../../components/ui'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../../../api'
 
 /**
  * Composant du module de clicker.
@@ -15,7 +14,7 @@ export default function Component(_props: SharedModuleProps) {
   useEffect(() => {
     const fetchCounter = async () => {
       try {
-        const res = await fetch(`${API}/clicker/counter`)
+        const res = await apiFetch(`${API}/clicker/counter`)
         const data = await res.json()
         setCounter(data.counter)
       } catch (error) {
@@ -28,7 +27,7 @@ export default function Component(_props: SharedModuleProps) {
   const handleClick = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API}/clicker/increment`, { method: 'POST' })
+      const res = await apiFetch(`${API}/clicker/increment`, { method: 'POST' })
       const data = await res.json()
       setCounter(counter + 1)
     } catch (error) {

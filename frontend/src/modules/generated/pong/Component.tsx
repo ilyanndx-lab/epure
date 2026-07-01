@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '../../../components/ui'
+import { API, apiFetch } from '../../../api'
 
-const BASE_URL = 'http://localhost:8000/pong'
+const BASE_URL = `${API}/pong`
 
 interface Ball {
   x: number
@@ -60,7 +61,7 @@ export default function PongModule() {
   const tick = useCallback(async () => {
     if (gameOverRef.current) return
     try {
-      const res = await fetch(`${BASE_URL}/update`, {
+      const res = await apiFetch(`${BASE_URL}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paddleLeftY: paddleYRef.current, speedFactor: speedFactorRef.current }),
@@ -89,7 +90,7 @@ export default function PongModule() {
     stopLoop()
     setError(null)
     try {
-      const res = await fetch(`${BASE_URL}/new-game`, {
+      const res = await apiFetch(`${BASE_URL}/new-game`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ speedFactor: speedFactorRef.current }),
