@@ -25,8 +25,15 @@ backend/chroma_db/
 
 # Données utilisateur (fiches PDF) — défaut portable de EPURE_FICHES_DIR
 /data/
+backend/doc_uploads/
+
+# Historique des conversations (runtime, propre à chaque utilisateur)
+backend/history/
 
 # Config et état par instance (générés au runtime, propres à chaque utilisateur)
+# Tout backend/memory/*.json est runtime ; on conserve les règles explicites
+# historiques ci-dessous à titre de documentation (couvertes par le glob).
+backend/memory/*.json
 backend/memory/instance_config.json
 backend/memory/modules_state.json
 
