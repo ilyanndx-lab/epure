@@ -38,6 +38,7 @@ frontend/src/modules/_workshop_check/
 
 # Logs
 *.log
+*.err
 epure_tray.log
 
 # Node
