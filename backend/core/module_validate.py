@@ -33,13 +33,21 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 _FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend"
 
-# Modules dont l'import seul est refusé dans un router généré.
-_FORBIDDEN_IMPORTS = {"subprocess", "socket", "importlib", "ctypes", "multiprocessing"}
+# Modules dont l'import seul est TOUJOURS refusé (exécution de process, etc.).
+_ALWAYS_FORBIDDEN_IMPORTS = {"subprocess", "socket", "importlib", "ctypes", "multiprocessing"}
+# Modules réseau : refusés dans un module généré (doit passer par core.runtime),
+# tolérés en ré-édition d'un module core (chat/settings utilisent urllib).
+_NETWORK_IMPORTS = {"urllib", "http", "requests", "httpx", "aiohttp"}
+# Racines de modules « système » : cibles d'un getattr dynamique = suspect.
+_SYSTEM_MODULE_ROOTS = _ALWAYS_FORBIDDEN_IMPORTS | _NETWORK_IMPORTS | {"os"}
 # Appels de fonctions interdits (par nom simple).
 _FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__", "globals", "vars"}
 # Attributs os.* interdits (exécution de process / shell).
 _FORBIDDEN_OS_ATTRS = {"system", "popen", "spawn", "spawnl", "spawnv", "exec", "execv",
                        "execvp", "execve", "execl", "fork", "posix_spawn"}
+# Méthodes de décoration de route sur `router`.
+_ROUTE_METHODS = {"get", "post", "put", "delete", "patch", "head", "options",
+                  "websocket", "api_route", "route"}
 
 _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -69,61 +77,198 @@ def _is_sensitive_name(name: str) -> bool:
     return _ENV_KEY_RE.match(name) is not None and any(s in upper for s in _SENSITIVE)
 
 
-class _RouterChecker(ast.NodeVisitor):
-    def __init__(self, report: ValidationReport):
-        self.r = report
-        self.has_router = False
+def _const_str(node: Optional[ast.AST]) -> Optional[str]:
+    """Valeur d'une chaîne littérale, ou None si l'expression n'est pas une
+    constante str (variable, concaténation, appel… = non prouvable sûr)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
-    # imports interdits
+
+class _RouterChecker(ast.NodeVisitor):
+    """Gate d'exécution d'un router généré. Résout les alias d'import (``import
+    os as o``, ``from os import environ``) pour que les contournements par
+    renommage ne passent pas."""
+
+    def __init__(self, report: ValidationReport, module_id: str = "",
+                 backend_prefix: Optional[str] = None, is_core: bool = False):
+        self.r = report
+        self.module_id = module_id
+        self.backend_prefix = backend_prefix
+        self.is_core = is_core
+        self.has_router = False
+        # alias de module → racine réelle : {"o": "os", "sp": "subprocess"}
+        self.module_aliases: dict[str, str] = {}
+        # noms liés à os.environ / os.getenv via `from os import ...`
+        self.env_names: set[str] = set()
+        self.getenv_names: set[str] = set()
+
+    # ── Pré-passe : cartographie des alias avant l'analyse des usages ────────
+    def collect_aliases(self, tree: ast.AST) -> None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    bound = alias.asname or root
+                    self.module_aliases[bound] = root
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "os":
+                for alias in node.names:
+                    if alias.name == "environ":
+                        self.env_names.add(alias.asname or "environ")
+                    elif alias.name == "getenv":
+                        self.getenv_names.add(alias.asname or "getenv")
+
+    def _resolve(self, name: str) -> str:
+        """Racine réelle d'un nom (via alias), ou le nom lui-même."""
+        return self.module_aliases.get(name, name)
+
+    def _network_blocked(self) -> bool:
+        return not self.is_core
+
+    # ── Imports ──────────────────────────────────────────────────────────────
+    def _check_import_root(self, root: str, node: ast.AST, label: str) -> None:
+        if root in _ALWAYS_FORBIDDEN_IMPORTS:
+            self.r.fail(f"Import interdit : `{label}` (ligne {node.lineno})")
+        elif root in _NETWORK_IMPORTS and self._network_blocked():
+            self.r.fail(
+                f"Import réseau interdit : `{label}` (ligne {node.lineno}) — "
+                f"tout accès réseau/LLM doit passer par core.runtime."
+            )
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            root = alias.name.split(".")[0]
-            if root in _FORBIDDEN_IMPORTS:
-                self.r.fail(f"Import interdit : `import {alias.name}` (ligne {node.lineno})")
+            self._check_import_root(alias.name.split(".")[0], node, f"import {alias.name}")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         root = (node.module or "").split(".")[0]
-        if root in _FORBIDDEN_IMPORTS:
-            self.r.fail(f"Import interdit : `from {node.module} import ...` (ligne {node.lineno})")
+        self._check_import_root(root, node, f"from {node.module} import ...")
+        # `from os import system/popen/...` : importer la fonction dangereuse
+        # elle-même (avec ou sans alias) est refusé.
+        if root == "os":
+            for alias in node.names:
+                if alias.name in _FORBIDDEN_OS_ATTRS:
+                    self.r.fail(
+                        f"Import interdit : `from os import {alias.name}` (ligne {node.lineno})"
+                    )
         self.generic_visit(node)
 
-    # appels interdits + détection router = APIRouter()
+    # ── Accès à l'environnement (secrets) ────────────────────────────────────
+    def _is_environ_target(self, node: ast.AST) -> bool:
+        """`node` désigne-t-il os.environ (via os.environ ou un from-import) ?"""
+        if isinstance(node, ast.Attribute) and node.attr == "environ":
+            return isinstance(node.value, ast.Name) and self._resolve(node.value.id) == "os"
+        return isinstance(node, ast.Name) and node.id in self.env_names
+
+    def _check_env_key(self, key: Optional[ast.AST], node: ast.AST) -> None:
+        """La clé d'accès à l'environnement doit être une constante (sinon on ne
+        peut pas prouver qu'elle ne vise pas un secret par concaténation)."""
+        if self.is_core:
+            return  # ré-édition core : clés dynamiques légitimes tolérées
+        if _const_str(key) is None:
+            self.r.fail(
+                f"Accès à l'environnement par clé non constante interdit "
+                f"(ligne {node.lineno}) — risque d'accès à un secret par calcul."
+            )
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if self._is_environ_target(node.value):
+            self._check_env_key(node.slice, node)
+        self.generic_visit(node)
+
+    # ── Appels ────────────────────────────────────────────────────────────────
     def visit_Call(self, node: ast.Call) -> None:
         fn = node.func
         if isinstance(fn, ast.Name):
             if fn.id in _FORBIDDEN_CALLS:
                 self.r.fail(f"Appel interdit : `{fn.id}(...)` (ligne {node.lineno})")
-            if fn.id == "APIRouter":
+            elif fn.id == "getattr" and node.args:
+                arg0 = node.args[0]
+                if isinstance(arg0, ast.Name) and self._resolve(arg0.id) in _SYSTEM_MODULE_ROOTS:
+                    self.r.fail(
+                        f"`getattr` sur un module système ({self._resolve(arg0.id)}) interdit "
+                        f"(ligne {node.lineno}) — résolution dynamique d'attribut."
+                    )
+            elif fn.id in self.getenv_names and node.args:
+                self._check_env_key(node.args[0], node)
+            elif fn.id == "APIRouter":
                 self.has_router = True
         elif isinstance(fn, ast.Attribute):
-            # os.system / os.popen / os.exec*  ou  subprocess.* / importlib.*
             if isinstance(fn.value, ast.Name):
-                base = fn.value.id
-                if base == "os" and fn.attr in _FORBIDDEN_OS_ATTRS:
+                real = self._resolve(fn.value.id)
+                if real == "os" and fn.attr in _FORBIDDEN_OS_ATTRS:
                     self.r.fail(f"Appel interdit : `os.{fn.attr}(...)` (ligne {node.lineno})")
-                if base in _FORBIDDEN_IMPORTS:
-                    self.r.fail(f"Appel interdit : `{base}.{fn.attr}(...)` (ligne {node.lineno})")
+                elif real in _ALWAYS_FORBIDDEN_IMPORTS:
+                    self.r.fail(f"Appel interdit : `{real}.{fn.attr}(...)` (ligne {node.lineno})")
+                elif real in _NETWORK_IMPORTS and self._network_blocked():
+                    self.r.fail(f"Appel réseau interdit : `{real}.{fn.attr}(...)` (ligne {node.lineno})")
+                elif real == "os" and fn.attr == "getenv" and node.args:
+                    self._check_env_key(node.args[0], node)
+            # os.environ.get(<clé>) / environ.get(<clé>)
+            if fn.attr == "get" and self._is_environ_target(fn.value) and node.args:
+                self._check_env_key(node.args[0], node)
             if fn.attr == "APIRouter":
                 self.has_router = True
         self.generic_visit(node)
 
-    # accès aux variables sensibles (chaînes de type *_API_KEY)
+    # ── Variables sensibles littérales (*_API_KEY, TOKEN, SECRET…) ────────────
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, str) and _is_sensitive_name(node.value):
             self.r.fail(f"Accès à une variable sensible interdit : {node.value!r} (ligne {node.lineno})")
         self.generic_visit(node)
 
-    # router = APIRouter()  (assignation top-level/quelconque)
     def visit_Assign(self, node: ast.Assign) -> None:
         for t in node.targets:
             if isinstance(t, ast.Name) and t.id == "router":
                 self.has_router = True
         self.generic_visit(node)
 
+    # ── Préfixe des routes ─────────────────────────────────────────────────────
+    def _check_route_prefix(self, fnode) -> None:
+        """Quand backend.prefix est vide, chaque route doit commencer par
+        /<module_id> (sinon un module généré peut masquer une route core)."""
+        if self.backend_prefix != "" or not self.module_id:
+            return  # prefix non vide (mount préfixe déjà) ou id inconnu
+        expected = f"/{self.module_id}"
+        for dec in fnode.decorator_list:
+            if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)):
+                continue
+            if not (isinstance(dec.func.value, ast.Name)
+                    and dec.func.value.id == "router"
+                    and dec.func.attr in _ROUTE_METHODS):
+                continue
+            path = _const_str(dec.args[0]) if dec.args else None
+            if path is None:
+                self.r.fail(
+                    f"Chemin de route non littéral (ligne {dec.lineno}) — impossible "
+                    f"de vérifier le préfixe /{self.module_id}."
+                )
+            elif not (path == expected or path.startswith(expected + "/")):
+                self.r.fail(
+                    f"Route `{path}` (ligne {dec.lineno}) non préfixée par "
+                    f"`{expected}` — collision possible avec une route core."
+                )
 
-def validate_router_py(source: str) -> ValidationReport:
-    """Valide le router.py d'un module (gate d'exécution)."""
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._check_route_prefix(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._check_route_prefix(node)
+        self.generic_visit(node)
+
+
+def validate_router_py(source: str, module_id: str = "",
+                       backend_prefix: Optional[str] = None,
+                       is_core: bool = False) -> ValidationReport:
+    """Valide le router.py d'un module (gate d'exécution).
+
+    - ``module_id`` / ``backend_prefix`` : si le prefix de montage est vide (""),
+      chaque route doit être préfixée par ``/<module_id>``.
+    - ``is_core`` : ré-édition d'un module core (chat/settings) → tolère les
+      imports réseau et les clés d'environnement dynamiques (les modules générés,
+      eux, doivent passer par core.runtime).
+    """
     report = ValidationReport()
     try:
         tree = ast.parse(source)
@@ -131,7 +276,8 @@ def validate_router_py(source: str) -> ValidationReport:
         report.fail(f"Erreur de syntaxe Python : {exc}")
         return report
 
-    checker = _RouterChecker(report)
+    checker = _RouterChecker(report, module_id, backend_prefix, is_core)
+    checker.collect_aliases(tree)
     checker.visit(tree)
 
     if not checker.has_router:
