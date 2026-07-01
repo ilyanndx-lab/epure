@@ -38,5 +38,17 @@ def resolve_under_fiches(folder: str) -> Path:
     return p if p.is_absolute() else (FICHES_DIR / folder)
 
 
+def resolve_workspace() -> Path:
+    """Répertoire de travail du codeagent (portable, configurable).
+
+    Priorité : ``$EPURE_WORKSPACE`` (``~`` accepté) puis défaut
+    ``<racine_du_repo>/workspace``. Toujours renvoyé résolu (``.resolve()``)
+    pour servir de base sûre au confinement des chemins (cf. codeagent._safe_path).
+    """
+    env = os.environ.get("EPURE_WORKSPACE", "").strip()
+    base = Path(env).expanduser() if env else (_REPO_ROOT / "workspace")
+    return base.resolve()
+
+
 #: Dossier racine des fiches, résolu une fois au chargement du module.
 FICHES_DIR = resolve_fiches_dir()

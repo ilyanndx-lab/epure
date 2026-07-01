@@ -10,9 +10,13 @@ import time
 from pathlib import Path
 from typing import Generator, Optional
 
+from core.paths import resolve_workspace
+
 logger = logging.getLogger(__name__)
 
-WORKSPACE = Path("C:/Users/Ilyan/epure/workspace").resolve()
+# Racine de travail : <repo>/workspace par défaut, surchargeable via
+# $EPURE_WORKSPACE (cf. core.paths.resolve_workspace / .env.example).
+WORKSPACE = resolve_workspace()
 
 # Libs qui ouvrent une fenêtre : on les lance en process externe (sinon un
 # plt.show()/mainloop bloque jusqu'au timeout). matplotlib.pyplot compris.
@@ -126,9 +130,14 @@ class SecurityError(Exception):
 
 
 def _safe_path(relative: str) -> Path:
-    """Resolve path and abort if it escapes the workspace."""
+    """Resolve path and abort if it escapes the workspace.
+
+    Compare des chemins résolus via ``is_relative_to`` (et non un
+    ``startswith`` de chaînes, contournable par un dossier frère du type
+    ``workspace-autre/`` ou une traversée ``..``/symlink).
+    """
     target = (WORKSPACE / relative).resolve()
-    if not str(target).startswith(str(WORKSPACE)):
+    if not target.is_relative_to(WORKSPACE):
         logger.warning("SECURITY: accès refusé hors workspace — %s", target)
         raise SecurityError(f"Accès refusé hors workspace : {target}")
     return target
