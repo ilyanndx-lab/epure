@@ -143,10 +143,13 @@ def grant_read(module_id: str, path: str) -> bool:
 def _modules_safe_path(relative: str) -> Path:
     """Résout un chemin et refuse toute sortie de backend/modules/.
 
-    Même garde-fou que codeagent._safe_path, mais raciné sur modules/.
+    Même garde-fou que codeagent._safe_path, mais raciné sur modules/ :
+    comparaison de chemins résolus via ``is_relative_to`` (et non un
+    ``startswith`` de chaînes, contournable par un dossier frère du type
+    ``modules-autre/`` ou une traversée ``..``/symlink).
     """
     target = (MODULES_DIR / relative).resolve()
-    if not str(target).startswith(str(MODULES_DIR)):
+    if not target.is_relative_to(MODULES_DIR):
         logger.warning("SECURITY: écriture refusée hors modules/ — %s", target)
         raise SecurityError(f"Écriture refusée hors de modules/ : {target}")
     return target
