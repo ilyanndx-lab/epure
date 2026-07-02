@@ -61,3 +61,6 @@ Thumbs.db
 .vscode/
 *.swp
 .aider*
+
+# Sorties du code-agent (données perso de runtime, recréé au démarrage)
+workspace/

@@ -10,6 +10,8 @@ personnelles de runtime, avant partage du dépôt :
 - `backend/memory/` (profil élève, sessions, flashcards, quotas…)
 - `backend/doc_uploads/` (documents uploadés)
 - `backend/chroma_db/` (index vectoriel des fiches)
+- `workspace/` (sorties du code-agent — oublié par la première passe,
+  purgé par une seconde réécriture le même jour)
 
 Ces chemins n'étaient plus suivis depuis `b8575c1` (ils sont recréés
 automatiquement au démarrage — un clone frais fonctionne sans eux) ; cette
