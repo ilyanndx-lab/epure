@@ -1,0 +1,86 @@
+# CI rapide (< 3 min), sans secret ni gros modèle ML.
+#
+# - backend  : deps minimales (fastapi/pydantic/pyyaml/python-dotenv suffisent —
+#              vérifié : les tests ci-dessous n'importent ni torch, ni chromadb,
+#              ni ollama) + tests du validateur AST et du confinement de chemin.
+# - frontend : npm ci + tsc --noEmit (bloquant) + eslint (non bloquant : ~94
+#              erreurs préexistantes de règles react-hooks strictes sur tout le
+#              codebase ; à re-rendre bloquant après résorption de la dette).
+# - integration : test_modules_mount.py charge core.runtime (torch, chromadb…)
+#              → trop lourd pour chaque push, déclenchement MANUEL uniquement
+#              (workflow_dispatch).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — tests rapides
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dépendances minimales (pas de deps ML)
+        run: pip install fastapi pydantic pyyaml python-dotenv
+      - name: Gate de sécurité des routers (test_module_validate.py)
+        working-directory: backend
+        run: python test_module_validate.py
+      - name: Confinement de chemin (test_safe_path.py)
+        working-directory: backend
+        run: python test_safe_path.py
+
+  frontend:
+    name: Frontend — tsc + eslint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Installation (npm ci)
+        run: npm ci
+      - name: Type-check (bloquant)
+        run: npx tsc --noEmit
+      - name: eslint (non bloquant — dette préexistante, voir en-tête)
+        run: npm run lint
+        continue-on-error: true
+
+  integration:
+    name: Intégration — montage de tous les modules (manuel)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Dépendances complètes (torch, chromadb…)
+        run: pip install -r backend/requirements.txt
+      - name: Montage de tous les modules (test_modules_mount.py)
+        working-directory: backend
+        # Le test force HF_HUB_OFFLINE=1 lui-même : aucun téléchargement de
+        # modèle HF, les moteurs lourds restent paresseux (_LazyEngine).
+        run: python test_modules_mount.py
