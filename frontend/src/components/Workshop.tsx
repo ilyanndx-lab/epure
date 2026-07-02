@@ -16,11 +16,22 @@ type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review' | 'pau
 interface EngineInfo { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 interface ModuleRow { id: string; nom: string; core_module?: boolean; status?: string }
 interface Report { ok: boolean; errors: string[]; warnings: string[] }
+// Résultat du smoke test d'exécution (sous-processus isolé, tâche de fond).
+interface SmokeInfo {
+  phase: 'running' | 'repairing' | 'done'
+  status?: 'ok' | 'repaired' | 'failed'
+  attempt?: number      // passe de réparation en cours (phase 'repairing')
+  attempts?: number     // passes de réparation consommées (phase 'done')
+  tested?: string[]
+  failures?: { route: string; status?: number | null; error: string }[]
+  skipped?: string[]
+  error?: string | null
+}
 interface Staging {
   id: string
   files: Record<string, string>
   diff: Record<string, string>
-  meta: { kind?: Kind; engine?: Engine; status?: string }
+  meta: { kind?: Kind; engine?: Engine; status?: string; smoke?: Omit<SmokeInfo, 'phase'> }
   is_core: boolean
 }
 
@@ -48,6 +59,7 @@ export default function Workshop() {
   const [terminalInfo, setTerminalInfo] = useState<{ cwd?: string; cmd?: string[]; prompt?: string } | null>(null)
   const [staging, setStaging] = usePersistentState<Staging | null>('epure.workshop.staging', null)
   const [report, setReport] = usePersistentState<Report | null>('epure.workshop.report', null)
+  const [smoke, setSmoke] = usePersistentState<SmokeInfo | null>('epure.workshop.smoke', null)
   const [activeTab, setActiveTab] = usePersistentState<string>('epure.workshop.activeTab', 'router.py')
   const [error, setError] = useState<string | null>(null)
   // Session terminale déjà ouverte (HTTP 409 sur prepare) : récupérable sans
@@ -108,6 +120,18 @@ export default function Workshop() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Un smoke test « en cours » persisté ne survit pas à un rechargement : la
+  // tâche de fond émet sur une socket morte. On retombe sur le dernier verdict
+  // persisté côté backend (meta.smoke du staging), sinon on efface.
+  useEffect(() => {
+    if (smoke && smoke.phase !== 'done') {
+      const saved = staging?.meta?.smoke
+      setSmoke(saved ? { phase: 'done', ...saved } : null)
+    }
+    // au montage uniquement
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Une conversation aider ne survit pas à un changement de moteur ni à un
   // rechargement (bulles/socket perdues) : on quitte proprement l'état 'chatting'
   // (sinon le bouton resterait « Conversation… » et le panneau s'afficherait même
@@ -151,9 +175,15 @@ export default function Workshop() {
   const refreshStaging = useCallback(async (id: string) => {
     try {
       const res = await apiFetch(`${API}/workshop/staging/${id}`)
-      if (res.ok) setStaging(await res.json())
+      if (res.ok) {
+        const data: Staging = await res.json()
+        setStaging(data)
+        // Verdict smoke persisté en meta (brouillon repris après F5) : adopté
+        // seulement si aucun smoke vivant n'est en cours sur la socket.
+        if (data.meta?.smoke) setSmoke(prev => prev ?? { phase: 'done', ...data.meta.smoke! })
+      }
     } catch { /* ignore */ }
-  }, [])
+  }, [setSmoke])
 
   // Handlers WS partagés par la génération ET la reprise, pour réagir aux mêmes
   // events (dont 'paused'). Sur 'paused', auto-reprise tant que autoLeft > 0.
@@ -205,6 +235,14 @@ export default function Workshop() {
       } else if (data.type === 'typecheck') {
         const warns: string[] = data.report?.warnings ?? []
         if (warns.length) setReport(prev => (prev ? { ...prev, warnings: [...prev.warnings, ...warns] } : prev))
+      } else if (data.type === 'smoke') {
+        // Tâche de fond : running → (repairing → validated)* → done.
+        if (data.phase === 'done') {
+          const { type: _t, phase: _p, ...rest } = data
+          setSmoke({ phase: 'done', ...rest })
+        } else {
+          setSmoke({ phase: data.phase, attempt: data.attempt })
+        }
       }
       // Pas de ws.close() sur "done" : socket gardée pour le {type:"typecheck"} de fond.
     }
@@ -212,7 +250,7 @@ export default function Workshop() {
   }, [refreshStaging])
 
   const startGeneration = useCallback(async (feedback?: string) => {
-    setError(null); setSessionLocked(null); setApproveResult(null); setLog('')
+    setError(null); setSessionLocked(null); setApproveResult(null); setLog(''); setSmoke(null)
     chatRef.current = false  // flux one-shot ollama/claude → tokens dans le log
     if (!feedback) { setStaging(null); setReport(null) }
     const id = currentId
@@ -306,7 +344,7 @@ export default function Workshop() {
     const id = currentId
     if (!id) { setError('Indiquez un identifiant de module.'); return }
     if (!description.trim()) { setError('Décrivez ce que le module doit faire.'); return }
-    setError(null); setSessionLocked(null); setApproveResult(null); setStaging(null); setReport(null); setTurns([]); setLog(''); setPlanText('')
+    setError(null); setSessionLocked(null); setApproveResult(null); setStaging(null); setReport(null); setSmoke(null); setTurns([]); setLog(''); setPlanText('')
     try {
       const url = kind === 'new' ? `${API}/workshop/generate` : `${API}/workshop/${id}/edit`
       const body = kind === 'new' ? { id, engine, mode } : { engine, mode }
@@ -410,7 +448,7 @@ export default function Workshop() {
       wsRef.current?.close()
       // IMPORTANT : on vide l'état de revue PERSISTÉ avant de recharger, sinon la
       // revue (sur un staging maintenant supprimé) réapparaîtrait après le reload.
-      setPhase('idle'); setStaging(null); setReport(null); setLog(''); setFeedbackText('')
+      setPhase('idle'); setStaging(null); setReport(null); setSmoke(null); setLog(''); setFeedbackText('')
       // Recharge l'interface pour garantir l'affichage du composant à jour.
       // Le backend a déjà monté les routes à chaud (aucun redémarrage backend).
       // Côté frontend, Vite ne propage PAS fiablement le HMR d'un composant généré
@@ -425,7 +463,7 @@ export default function Workshop() {
     if (!staging) return
     await apiFetch(`${API}/workshop/${staging.id}/reject`, { method: 'POST' }).catch(() => {})
     wsRef.current?.close()
-    setPhase('idle'); setStaging(null); setReport(null); setLog(''); setFeedbackText('')
+    setPhase('idle'); setStaging(null); setReport(null); setSmoke(null); setLog(''); setFeedbackText('')
   }, [staging])
 
   // Re-valide le brouillon actuel SANS régénérer : recalcule le rapport (donc
@@ -757,6 +795,53 @@ export default function Workshop() {
                 <p key={`w${i}`} className="text-xs text-warning flex items-start gap-1.5">
                   <AlertTriangle size={12} className="shrink-0 mt-0.5" />{w}</p>
               ))}
+            </div>
+          )}
+
+          {/* Smoke test d'exécution (sous-processus isolé) — best-effort comme tsc,
+              ne bloque jamais l'approbation. */}
+          {smoke && (
+            <div className="space-y-1">
+              {smoke.phase === 'running' && (
+                <p className="text-xs text-muted flex items-center gap-1.5">
+                  <Loader2 size={12} className="animate-spin shrink-0" />
+                  Test d'exécution du router en cours (sous-processus isolé)…
+                </p>
+              )}
+              {smoke.phase === 'repairing' && (
+                <p className="text-xs text-warning flex items-center gap-1.5">
+                  <Loader2 size={12} className="animate-spin shrink-0" />
+                  Test d'exécution échoué — réparation automatique en cours (tentative {smoke.attempt}/2)…
+                </p>
+              )}
+              {smoke.phase === 'done' && smoke.status === 'ok' && (
+                <p className="text-xs text-success flex items-start gap-1.5">
+                  <Check size={12} className="shrink-0 mt-0.5" />
+                  Test d'exécution réussi{(smoke.tested?.length ?? 0) > 0 ? ` — ${smoke.tested!.length} route(s) GET testée(s)` : ''}.
+                </p>
+              )}
+              {smoke.phase === 'done' && smoke.status === 'repaired' && (
+                <p className="text-xs text-success flex items-start gap-1.5">
+                  <Check size={12} className="shrink-0 mt-0.5" />
+                  Test d'exécution réussi après réparation automatique ({smoke.attempts} passe{(smoke.attempts ?? 0) > 1 ? 's' : ''} de correction — relisez le diff).
+                </p>
+              )}
+              {smoke.phase === 'done' && smoke.status === 'failed' && (
+                <>
+                  <p className="text-xs text-error flex items-start gap-1.5">
+                    <X size={12} className="shrink-0 mt-0.5" />
+                    Test d'exécution en échec persistant{(smoke.attempts ?? 0) > 0 ? ` (après ${smoke.attempts} réparation(s) automatique(s))` : ''} :
+                  </p>
+                  <pre className="text-xs font-mono text-error/90 bg-elevated border border-line rounded-sm p-2 max-h-40 overflow-auto whitespace-pre-wrap">
+                    {smoke.error
+                      ?? smoke.failures?.map(f => `${f.route}${f.status ? ` (HTTP ${f.status})` : ''}\n${f.error}`).join('\n\n')
+                      ?? 'Échec sans détail.'}
+                  </pre>
+                </>
+              )}
+              {smoke.phase === 'done' && (smoke.skipped?.length ?? 0) > 0 && (
+                <p className="text-xs text-muted">Routes non testées : {smoke.skipped!.join(' · ')}</p>
+              )}
             </div>
           )}
 

@@ -1319,6 +1319,92 @@ def typecheck_staging(module_id: str) -> dict:
     return {"warnings": rep.warnings + rep.errors}
 
 
+# ── Smoke test (sous-processus isolé) ────────────────────────────────────────
+
+_SMOKE_TIMEOUT = 90  # s — import du router + requêtes TestClient (aucun moteur lourd)
+
+
+def smoke_test_staging(module_id: str) -> dict:
+    """Smoke test du router stagé dans un SOUS-PROCESSUS jetable — jamais dans
+    le process FastAPI : importer du code généré non revu ici exécuterait ses
+    effets de bord dans l'app en cours. Le runner (core/smoke_runner.py) stubbe
+    core.runtime avant tout import (ni torch ni modèles), monte le router sur
+    une app minimale et appelle chaque GET sans paramètre de chemin ; échec =
+    import raté ou au moins un 5xx non imputable au stub.
+
+    Best-effort, comme typecheck_staging : ne modifie JAMAIS le verdict du
+    gate AST (report.ok). Retourne {"ok","tested","failures","skipped","error"}.
+    """
+    empty = {"ok": False, "tested": [], "failures": [], "skipped": []}
+    sdir = _staging_dir(module_id)
+    if not (sdir / "router.py").is_file():
+        return {**empty, "error": "router.py absent du staging."}
+    runner = Path(__file__).parent / "smoke_runner.py"
+    try:
+        r = subprocess.run(
+            [sys.executable, str(runner), str(sdir), module_id],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_SMOKE_TIMEOUT, cwd=str(MODULES_DIR.parent),
+            env=_make_exec_env(), stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        return {**empty, "error": f"Timeout du smoke test ({_SMOKE_TIMEOUT}s) — "
+                "le router bloque à l'import ou sur une route (boucle/attente infinie)."}
+    except Exception as exc:
+        logger.exception("Lancement du smoke test %s échoué", module_id)
+        return {**empty, "error": f"Lancement du smoke test échoué : {exc}"}
+    # Le runner imprime son résultat en DERNIÈRE ligne JSON (des libs peuvent
+    # polluer stdout avant, ex. warnings à l'import).
+    for line in reversed((r.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except Exception:
+                break
+    tail = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()[-2000:]
+    return {**empty, "error": f"Sortie du smoke test illisible (code {r.returncode}) :\n{tail}"}
+
+
+def smoke_feedback(smoke: dict) -> str:
+    """Formate un smoke test échoué en consigne de correction pour le moteur de
+    génération actif — même canal que les erreurs du validateur AST."""
+    parts = ["Le smoke test d'exécution du router a échoué (import de router.py "
+             "puis appel des routes GET sur une app FastAPI minimale, core.runtime stubé)."]
+    if smoke.get("error"):
+        parts.append(str(smoke["error"])[:3000])
+    for f in (smoke.get("failures") or [])[:5]:
+        st = f" (HTTP {f['status']})" if f.get("status") else ""
+        # Queue du traceback : l'exception réelle est à la FIN, pas au début.
+        parts.append(f"- {f.get('route', '?')}{st} :\n{str(f.get('error') or '')[-1500:]}")
+    parts.append("Corrige router.py pour que l'import réussisse et qu'aucune route GET "
+                 "ne renvoie de 5xx. Ne change rien d'autre au comportement du module.")
+    return "\n\n".join(parts)
+
+
+def record_smoke(module_id: str, result: dict) -> None:
+    """Persiste le résultat smoke dans la meta du staging (read_staging le
+    renvoie → l'écran de revue le retrouve après un F5). No-op si le staging
+    a disparu entre-temps (approuvé/rejeté pendant la tâche de fond)."""
+    meta = _read_meta(module_id)
+    if meta is None:
+        return
+    meta["smoke"] = result
+    _write_meta(module_id, meta)
+
+
+def remember_spec(module_id: str, spec: str) -> None:
+    """Mémorise la description de génération dans la meta : les passes de
+    réparation (smoke) et les reprises en ont besoin après coup."""
+    if not (spec or "").strip():
+        return
+    meta = _read_meta(module_id)
+    if meta is None or meta.get("spec") == spec:
+        return
+    meta["spec"] = spec
+    _write_meta(module_id, meta)
+
+
 # ── Approbation / rejet ──────────────────────────────────────────────────────
 
 def _backup_existing(module_id: str) -> Optional[str]:
