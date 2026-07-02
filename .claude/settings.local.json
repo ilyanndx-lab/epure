@@ -94,7 +94,32 @@
       "Bash(git rm *)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('backend/core/module_workshop.py',encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('backend/main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('py-syntax OK'\\)\")",
       "Bash(git commit *)",
-      "PowerShell(Get-Process *)"
+      "PowerShell(Get-Process *)",
+      "Bash(git check-ignore *)",
+      "Bash(python -c \"import chromadb; print\\('chromadb', chromadb.__version__\\)\")",
+      "Bash(python -c \"import chromadb, torch; print\\('deps OK', chromadb.__version__\\)\")",
+      "Bash(python /c/Users/Ilyan/AppData/Local/Temp/claude/C--Users-Ilyan-epure/1dd9c2d2-0eab-47f5-b113-ceb1b275ab4f/scratchpad/fresh_clone_test.py /c/Users/Ilyan/AppData/Local/Temp/claude/C--Users-Ilyan-epure/1dd9c2d2-0eab-47f5-b113-ceb1b275ab4f/scratchpad/freshclone/backend)",
+      "Bash(python -m py_compile core/auth.py core/instance.py main.py modules/chat/router.py modules/kholle/router.py modules/code/router.py modules/docs/router.py)",
+      "Bash(echo \"TSC exit: $?\")",
+      "Bash(python -m py_compile main.py core/module_workshop.py core/smoke_runner.py)",
+      "Bash(python core/smoke_runner.py modules/hello hello)",
+      "Bash(mkdir -p modules/_staging/smoketest)",
+      "Bash(cp \"C:/Users/Ilyan/AppData/Local/Temp/claude/C--Users-Ilyan-epure/2edff57e-11f1-4dc2-a826-abc12d465c9e/scratchpad/smoketest/router.py\" modules/_staging/smoketest/)",
+      "Bash(rm -rf modules/_staging/smoketest)",
+      "Bash(python -m pytest test_module_validate.py test_safe_path.py -q)",
+      "Bash(python test_module_validate.py)",
+      "Bash(python test_safe_path.py)",
+      "Bash(python -m py_compile modules/reviseur/router.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python core/smoke_runner.py modules/reviseur reviseur)",
+      "Bash(PYTHONIOENCODING=utf-8 python \"C:/Users/Ilyan/AppData/Local/Temp/claude/C--Users-Ilyan-epure/2edff57e-11f1-4dc2-a826-abc12d465c9e/scratchpad/test_reviseur.py\")",
+      "Bash(PYTHONIOENCODING=utf-8 python test_modules_mount.py)",
+      "Bash(python -m pip install git-filter-repo)",
+      "Bash(git filter-repo *)",
+      "Bash(python -m git_filter_repo --version)",
+      "Bash(git fetch *)",
+      "Bash(git clone *)",
+      "Bash(cp .claude/settings.local.json \"C:/Users/Ilyan/AppData/Local/Temp/claude/C--Users-Ilyan-epure/2edff57e-11f1-4dc2-a826-abc12d465c9e/scratchpad/settings.local.json.bak\")",
+      "Bash(grep -vc '^$')"
     ]
   }
 }
