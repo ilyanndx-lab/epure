@@ -65,7 +65,8 @@ class RAGEngine:
                 return Path(path).read_text(encoding='utf-8', errors='ignore')
         elif ext == '.json':
             try:
-                data = json.loads(Path(path).read_text(encoding='utf-8'))
+                # utf-8-sig : les JSON fournis par l'utilisateur portent souvent un BOM
+                data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
                 return json.dumps(data, ensure_ascii=False, indent=2)[:50000]
             except Exception:
                 return Path(path).read_text(encoding='utf-8', errors='ignore')

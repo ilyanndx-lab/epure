@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from core.jsonstore import read_json, write_json
+
 logger = logging.getLogger(__name__)
 
 _MEMORY_DIR = Path(__file__).parent.parent / "memory"
@@ -68,21 +70,11 @@ class MemoryEngine:
     # ── I/O helpers ────────────────────────────────────────────────────────
 
     def _read(self, path: Path) -> dict:
-        try:
-            # utf-8-sig : tolère un BOM (fichier écrit/édité par un outil Windows).
-            # En utf-8 strict, un BOM faisait échouer json.loads → {} silencieux :
-            # sessions invisibles (consolidation, promote_lacunes, réviseur) et
-            # ÉCRASEMENT de l'historique au prochain add_session.
-            return json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            logger.exception("Erreur lecture %s", path)
-            return {}
+        return read_json(path, {})
 
     def _write(self, path: Path, data: dict) -> None:
         try:
-            path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            write_json(path, data)
         except Exception:
             logger.exception("Erreur écriture %s", path)
 

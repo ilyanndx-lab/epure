@@ -9,6 +9,7 @@ from pathlib import Path
 import ollama
 import pypdf
 
+from core.jsonstore import read_json, write_json
 from core.paths import FICHES_DIR as _FICHES_DIR
 
 logger = logging.getLogger(__name__)
@@ -36,20 +37,11 @@ class AdminEngine:
         return None
 
     def _load_cache(self) -> dict:
-        if not _CACHE_PATH.exists():
-            return {}
-        try:
-            with open(_CACHE_PATH, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            logger.exception("Erreur lecture admin_cache.json")
-            return {}
+        return read_json(_CACHE_PATH, {})
 
     def _save_cache(self) -> None:
-        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with open(_CACHE_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._cache, f, ensure_ascii=False, indent=2)
+            write_json(_CACHE_PATH, self._cache)
         except Exception:
             logger.exception("Erreur sauvegarde admin_cache.json")
 
@@ -237,19 +229,10 @@ class AdminEngine:
         return results
 
     def _load_log(self) -> list:
-        if not _LOG_PATH.exists():
-            return []
-        try:
-            with open(_LOG_PATH, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            logger.exception("Erreur lecture admin_log.json")
-            return []
+        return read_json(_LOG_PATH, [])
 
     def _save_log(self, log: list) -> None:
-        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_LOG_PATH, "w", encoding="utf-8") as f:
-            json.dump(log, f, ensure_ascii=False, indent=2)
+        write_json(_LOG_PATH, log)
 
     def _append_log(self, action_type: str, source: str, destination: str) -> None:
         log = self._load_log()

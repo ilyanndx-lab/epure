@@ -97,7 +97,7 @@ def main() -> dict:
 
     prefix = ""
     try:
-        manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads((staging / "manifest.json").read_text(encoding="utf-8-sig"))
         prefix = (manifest.get("backend") or {}).get("prefix") or ""
     except Exception:
         pass

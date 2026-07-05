@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import time
@@ -7,6 +6,8 @@ import uuid
 from pathlib import Path
 from threading import Thread
 from typing import Optional
+
+from core.jsonstore import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -159,21 +160,14 @@ _DEFAULT_PRESETS = [
 
 
 def _load_presets() -> list:
-    if _PRESETS_FILE.exists():
-        try:
-            data = json.loads(_PRESETS_FILE.read_text(encoding="utf-8"))
-            return data.get("presets", [])
-        except Exception:
-            logger.exception("Erreur lecture presets")
+    data = read_json(_PRESETS_FILE, None)
+    if isinstance(data, dict):
+        return data.get("presets", [])
     return list(_DEFAULT_PRESETS)
 
 
 def _save_presets(presets: list) -> None:
-    _PRESETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PRESETS_FILE.write_text(
-        json.dumps({"presets": presets}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json(_PRESETS_FILE, {"presets": presets})
 
 
 def _ensure_presets_file() -> None:
