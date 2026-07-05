@@ -86,7 +86,7 @@ _HISTORY_FILE = _backend_root() / "memory" / "rangement_history.json"
 def _load_history() -> list:
     try:
         if _HISTORY_FILE.is_file():
-            return json.loads(_HISTORY_FILE.read_text(encoding="utf-8"))
+            return json.loads(_HISTORY_FILE.read_text(encoding="utf-8-sig"))
     except Exception:
         pass
     return []

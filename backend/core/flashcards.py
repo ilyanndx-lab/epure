@@ -1,9 +1,10 @@
-import json
 import logging
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+from core.jsonstore import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -23,17 +24,11 @@ class FlashcardsEngine:
     # ── I/O ──────────────────────────────────────────────────────────────────
 
     def _read(self) -> dict:
-        try:
-            return json.loads(_FLASHCARDS_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            logger.exception("Erreur lecture flashcards.json")
-            return {"decks": []}
+        return read_json(_FLASHCARDS_PATH, {"decks": []})
 
     def _write(self, data: dict) -> None:
         try:
-            _FLASHCARDS_PATH.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            write_json(_FLASHCARDS_PATH, data)
         except Exception:
             logger.exception("Erreur écriture flashcards.json")
 

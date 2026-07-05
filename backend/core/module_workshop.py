@@ -251,7 +251,7 @@ def _read_meta(module_id: str) -> Optional[dict]:
     if not p.is_file():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         logger.exception("Meta workshop illisible : %s", p)
         return None
@@ -1492,7 +1492,7 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
     # quoi qu'ait produit le LLM.
     dest_manifest = dest / "manifest.json"
     try:
-        raw = json.loads(dest_manifest.read_text(encoding="utf-8")) if dest_manifest.is_file() else {}
+        raw = json.loads(dest_manifest.read_text(encoding="utf-8-sig")) if dest_manifest.is_file() else {}
         if not isinstance(raw, dict):
             raw = {}
     except Exception:

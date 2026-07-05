@@ -24,6 +24,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Optional
 
+from core.jsonstore import read_json, write_json
 from core.paths import FICHES_DIR
 
 logger = logging.getLogger(__name__)
@@ -103,17 +104,13 @@ class InstanceConfig:
     # ── Persistance (unique point de bascule vers une vraie DB) ──────────────
 
     def _load(self) -> dict:
-        try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
-            logger.exception("Erreur lecture instance_config, retour aux défauts")
-            return _default_config()
+        data = read_json(self._path, None)
+        if isinstance(data, dict):
+            return data
+        return _default_config()
 
     def _save(self, cfg: dict) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        write_json(self._path, cfg)
 
     def _ensure(self) -> None:
         with self._lock:

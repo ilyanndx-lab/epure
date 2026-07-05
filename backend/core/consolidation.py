@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from core.jsonstore import read_json, write_json
+
 logger = logging.getLogger(__name__)
 
 _LOG_PATH = Path(__file__).parent.parent / "memory" / "consolidation_log.json"
@@ -21,21 +23,12 @@ class ConsolidationEngine:
     # ── Log ──────────────────────────────────────────────────────────────────
 
     def _load_log(self) -> list:
-        if not _LOG_PATH.exists():
-            return []
-        try:
-            with open(_LOG_PATH, encoding="utf-8") as f:
-                return json.load(f).get("log", [])
-        except Exception:
-            logger.exception("Erreur lecture consolidation_log.json")
-            return []
+        return read_json(_LOG_PATH, {}).get("log", [])
 
     def _append_log(self, entry: dict) -> None:
         log = self._load_log()
         log.insert(0, entry)
-        _LOG_PATH.parent.mkdir(exist_ok=True)
-        with open(_LOG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"log": log[:50]}, f, ensure_ascii=False, indent=2)
+        write_json(_LOG_PATH, {"log": log[:50]})
 
     def get_log(self, n: int = 20) -> list:
         return self._load_log()[:n]

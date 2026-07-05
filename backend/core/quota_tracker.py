@@ -13,6 +13,8 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+from core.jsonstore import read_json
+
 logger = logging.getLogger(__name__)
 
 _USAGE_FILE = Path(__file__).parent.parent / "memory" / "quota_usage.json"
@@ -42,14 +44,8 @@ class QuotaTracker:
         threading.Thread(target=self._writer_loop, daemon=True).start()
 
     def _load(self) -> dict:
-        try:
-            if self._path.exists():
-                data = json.loads(self._path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            logger.exception("Erreur lecture %s", self._path)
-        return {}
+        data = read_json(self._path, {})
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def _period_key(provider: str) -> str:

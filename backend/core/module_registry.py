@@ -17,6 +17,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Optional
 
+from core.jsonstore import read_json, write_json
+
 logger = logging.getLogger(__name__)
 
 _MODULES_DIR = Path(__file__).parent.parent / "modules"
@@ -36,7 +38,7 @@ def discover_manifests() -> list[dict]:
         if not mf.is_file():
             continue
         try:
-            data = json.loads(mf.read_text(encoding="utf-8"))
+            data = json.loads(mf.read_text(encoding="utf-8-sig"))
             data.setdefault("id", sub.name)
             manifests.append(data)
         except Exception:
@@ -45,19 +47,11 @@ def discover_manifests() -> list[dict]:
 
 
 def _load_state() -> dict:
-    if _STATE_FILE.exists():
-        try:
-            return json.loads(_STATE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            logger.exception("Erreur lecture modules_state")
-    return {}
+    return read_json(_STATE_FILE, {})
 
 
 def _save_state(state: dict) -> None:
-    _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _STATE_FILE.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_json(_STATE_FILE, state)
 
 
 def list_modules() -> list[dict]:

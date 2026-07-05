@@ -1,8 +1,9 @@
-import json
 import logging
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from core.jsonstore import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +22,10 @@ class HistoryEngine:
     # ── Index helpers ─────────────────────────────────────────────────────────
 
     def _load_index(self) -> list:
-        if not _INDEX_FILE.exists():
-            return []
-        try:
-            with open(_INDEX_FILE, encoding="utf-8") as f:
-                return json.load(f).get("conversations", [])
-        except Exception:
-            logger.exception("Erreur lecture conversations.json")
-            return []
+        return read_json(_INDEX_FILE, {}).get("conversations", [])
 
     def _save_index(self, conversations: list) -> None:
-        with open(_INDEX_FILE, "w", encoding="utf-8") as f:
-            json.dump({"conversations": conversations}, f, ensure_ascii=False, indent=2)
+        write_json(_INDEX_FILE, {"conversations": conversations})
 
     # ── LLM title ────────────────────────────────────────────────────────────
 
@@ -81,8 +74,7 @@ class HistoryEngine:
             "messages": messages,
         }
         try:
-            with open(conv_path, "w", encoding="utf-8") as f:
-                json.dump(conv_data, f, ensure_ascii=False, indent=2)
+            write_json(conv_path, conv_data)
         except Exception:
             logger.exception("Erreur sauvegarde conversation %s", conv_id)
             return conv_id
@@ -150,14 +142,7 @@ class HistoryEngine:
 
     def get_conversation(self, conv_id: str) -> dict | None:
         conv_path = _HISTORY_DIR / f"{conv_id}.json"
-        if not conv_path.exists():
-            return None
-        try:
-            with open(conv_path, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            logger.exception("Erreur lecture conversation %s", conv_id)
-            return None
+        return read_json(conv_path, None)
 
     def list_conversations(self, days: int = 30) -> list[dict]:
         conversations = self._load_index()
