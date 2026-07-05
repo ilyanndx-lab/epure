@@ -819,6 +819,11 @@ def _write_blocks_from_text(module_id: str, text: str) -> list[str]:
         if name not in _FILES:
             continue
         body = m.group("body").strip("\n")
+        # Certains modèles recopient les balises placeholder du prompt
+        # (`<python>`, `<json>`, `<tsx>`) en tête/queue de bloc → fichier
+        # syntaxiquement invalide alors que le contenu est bon. On les retire.
+        body = re.sub(r"^<(?:python|json|tsx)>\s*\n?", "", body)
+        body = re.sub(r"\n?\s*</(?:python|json|tsx)>\s*$", "", body)
         # Écriture confinée (lève SecurityError si hors modules/).
         target = _modules_safe_path(f"_staging/{module_id}/{name}")
         target.parent.mkdir(parents=True, exist_ok=True)
