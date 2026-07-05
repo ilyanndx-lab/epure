@@ -69,7 +69,11 @@ class MemoryEngine:
 
     def _read(self, path: Path) -> dict:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            # utf-8-sig : tolère un BOM (fichier écrit/édité par un outil Windows).
+            # En utf-8 strict, un BOM faisait échouer json.loads → {} silencieux :
+            # sessions invisibles (consolidation, promote_lacunes, réviseur) et
+            # ÉCRASEMENT de l'historique au prochain add_session.
+            return json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             logger.exception("Erreur lecture %s", path)
             return {}
