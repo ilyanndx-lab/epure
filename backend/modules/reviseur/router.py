@@ -134,7 +134,9 @@ def _parse_blocs(raw: str, fiches_connues: list[str]) -> list[dict]:
     m = re.search(r"\{[\s\S]*\}", cleaned)
     if not m:
         raise ValueError("aucun objet JSON dans la réponse")
-    data = json.loads(m.group())
+    # strict=False : tolère les retours à la ligne littéraux dans les chaînes
+    # (les petits modèles locaux en produisent souvent dans "consigne").
+    data = json.loads(m.group(), strict=False)
     blocs_bruts = data.get("blocs")
     if not isinstance(blocs_bruts, list) or not blocs_bruts:
         raise ValueError("clé 'blocs' absente ou vide")
