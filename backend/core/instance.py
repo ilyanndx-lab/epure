@@ -148,6 +148,28 @@ class InstanceConfig:
         return merged
 
     @staticmethod
+    def _clean_gateway_patch(atelier_patch: dict) -> dict:
+        """Nettoie le sous-bloc ``gateway`` d'un patch client.
+
+        Deux champs y sont ignorés :
+
+        - ``api_key_présente`` : dérivé, jamais persisté (comme
+          ``providers.clés_présentes``) ;
+        - ``api_key`` **vide** : depuis que :meth:`get` n'expose plus la clé, le
+          champ du formulaire des Réglages part vide quand l'utilisateur n'y a
+          pas touché. La prendre au mot effacerait la clé enregistrée à chaque
+          passage dans le formulaire. Conséquence assumée : on remplace une clé
+          en en saisissant une nouvelle, on ne la vide pas depuis l'UI.
+        """
+        gw = atelier_patch.get("gateway")
+        if not isinstance(gw, dict):
+            return atelier_patch
+        gw = {k: v for k, v in gw.items() if k != "api_key_présente"}
+        if not str(gw.get("api_key") or "").strip():
+            gw.pop("api_key", None)
+        return {**atelier_patch, "gateway": gw}
+
+    @staticmethod
     def _apply_partial(cfg: dict, partial: dict) -> None:
         """Merge partiel en place. Sous-dictionnaires fusionnés en profondeur
         (providers, fiches, atelier.gateway)."""
@@ -155,6 +177,8 @@ class InstanceConfig:
             if k in ("instance_id", "auth"):
                 continue  # immuables via l'API publique
             if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                if k == "atelier":
+                    v = InstanceConfig._clean_gateway_patch(v)
                 merged = InstanceConfig._deep_merge(cfg[k], v)
                 merged.pop("clés_présentes", None)  # dérivé : jamais persisté
                 cfg[k] = merged
@@ -163,16 +187,37 @@ class InstanceConfig:
 
     # ── API publique ─────────────────────────────────────────────────────────
 
-    def get(self) -> dict:
-        """Retourne la config courante (clés_présentes recalculées à la volée).
+    def raw(self) -> dict:
+        """Config complète, secrets INCLUS — usage serveur uniquement.
 
-        Le bloc ``auth`` (token d'API) n'est JAMAIS exposé ici : il ne sort que
-        par la route d'appairage locale ``/pair`` (cf. core.auth).
+        Ne jamais renvoyer ce dictionnaire dans une réponse HTTP : c'est le rôle
+        de :meth:`get`, qui en expurge les secrets. Seuls les appelants qui ont
+        besoin de la vraie valeur d'un secret (démarrage de la passerelle,
+        moteur claude_gateway) passent par ici.
         """
         with self._lock:
-            cfg = json.loads(json.dumps(self._cache or self._load()))  # copie profonde
+            return json.loads(json.dumps(self._cache or self._load()))  # copie profonde
+
+    def get(self) -> dict:
+        """Retourne la config courante, expurgée de ses secrets.
+
+        Deux valeurs ne sortent JAMAIS par ``GET /instance/config`` :
+
+        - le bloc ``auth`` (token d'API) — il ne sort que par la route
+          d'appairage locale ``/pair`` (cf. core.auth) ;
+        - ``atelier.gateway.api_key`` — la clé du fournisseur cloud placé
+          derrière la passerelle. Elle était renvoyée en clair : toute page
+          ayant obtenu le token (cf. DNS rebinding, CLAUDE.md §6) la lisait
+          d'une seule requête. Elle est remplacée par le booléen dérivé
+          ``api_key_présente``, sur le modèle de ``providers.clés_présentes``.
+          Le code serveur qui a besoin de la vraie valeur passe par :meth:`raw`.
+        """
+        cfg = self.raw()
         cfg.pop("auth", None)
         cfg.setdefault("providers", {})["clés_présentes"] = _key_status()
+        gw = (cfg.get("atelier") or {}).get("gateway")
+        if isinstance(gw, dict):
+            gw["api_key_présente"] = bool(str(gw.pop("api_key", "") or "").strip())
         return cfg
 
     def update(self, partial: dict) -> dict:

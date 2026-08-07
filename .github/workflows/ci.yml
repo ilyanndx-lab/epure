@@ -1,8 +1,12 @@
 # CI rapide (< 3 min), sans secret ni gros modèle ML.
 #
-# - backend  : deps minimales (fastapi/pydantic/pyyaml/python-dotenv suffisent —
-#              vérifié : les tests ci-dessous n'importent ni torch, ni chromadb,
-#              ni ollama) + tests du validateur AST et du confinement de chemin.
+# - backend  : validateur AST, confinement de chemin, surface d'auth HTTP.
+#              test_auth_surface.py monte la vraie app (TestClient), donc il
+#              importe main.py : d'où chromadb/ollama/pypdf/watchdog/
+#              python-multipart en plus des deps minimales — c'est exactement
+#              l'ensemble des imports de niveau module de main.py, mesuré, et
+#              il n'inclut PAS torch/sentence-transformers (le préchauffage RAG
+#              de core.runtime tourne dans un thread et échoue proprement).
 # - frontend : npm ci + tsc --noEmit (bloquant) + eslint (non bloquant : ~94
 #              erreurs préexistantes de règles react-hooks strictes sur tout le
 #              codebase ; à re-rendre bloquant après résorption de la dette).
@@ -34,14 +38,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Dépendances minimales (pas de deps ML)
-        run: pip install fastapi pydantic pyyaml python-dotenv
+      - name: Dépendances (pas de deps ML — voir en-tête)
+        run: >
+          pip install fastapi pydantic pyyaml python-dotenv
+          httpx python-multipart chromadb ollama pypdf watchdog
       - name: Gate de sécurité des routers (test_module_validate.py)
         working-directory: backend
         run: python test_module_validate.py
       - name: Confinement de chemin (test_safe_path.py)
         working-directory: backend
         run: python test_safe_path.py
+      - name: Surface d'authentification HTTP (test_auth_surface.py)
+        working-directory: backend
+        # Le test force HF_HUB_OFFLINE=1 et neutralise les sondes Ollama/FLM :
+        # aucun accès réseau, aucun téléchargement de modèle.
+        run: python test_auth_surface.py
 
   frontend:
     name: Frontend — tsc + eslint

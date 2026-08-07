@@ -20,6 +20,7 @@ import yaml
 from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -107,6 +108,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Contrôle de l'en-tête Host : garde-fou anti DNS rebinding ────────────────
+# Menace réelle (cf. CLAUDE.md §6) : une page web visitée par l'utilisateur, dont
+# le domaine résout vers 127.0.0.1, devient *same-origin* avec l'API. CORS ne
+# s'applique alors pas, et `request.client.host` vaut bel et bien « 127.0.0.1 »
+# — la garde IP de /pair (exempt d'auth) laisse donc passer, et le token part.
+# Le seul élément qui distingue encore cette page du frontend légitime est
+# l'en-tête Host, que le navigateur remplit avec le domaine de l'attaquant.
+#
+# ORDRE — IMPÉRATIF : Starlette empile `user_middleware` dans l'ordre INVERSE de
+# l'ajout (`add_middleware` fait `insert(0, ...)`). Ajouté EN DERNIER dans ce
+# fichier, ce middleware est donc la couche la PLUS EXTERNE : il filtre avant
+# CORS et avant le contrôle de token, y compris sur les chemins exemptés
+# (/health, /pair). Le remonter au-dessus du bloc CORS l'enfouirait sous celui-ci
+# et rouvrirait la faille. Vérifié par test_auth_surface.MiddlewareOrderTest.
+_ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get("EPURE_ALLOWED_HOSTS", "localhost,127.0.0.1,::1").split(",")
+    if h.strip()
+]
+logger.info("Hôtes autorisés (en-tête Host) : %s", _ALLOWED_HOSTS)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_ALLOWED_HOSTS)
 
 
 # ── Gestion d'erreurs : JSON propre pour toute exception non gérée ────────────
