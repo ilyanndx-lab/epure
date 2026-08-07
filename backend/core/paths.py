@@ -7,6 +7,7 @@ auto-suffisant (il charge ``.env`` lui-même) afin d'être indépendant de l'ord
 d'import des autres modules du package.
 """
 
+import ntpath
 import os
 from pathlib import Path
 
@@ -52,3 +53,84 @@ def resolve_workspace() -> Path:
 
 #: Dossier racine des fiches, résolu une fois au chargement du module.
 FICHES_DIR = resolve_fiches_dir()
+
+#: Dépôt des PDF envoyés au module Docs (analyse documentaire).
+DOC_UPLOADS_DIR = _BACKEND_DIR / "doc_uploads"
+
+
+class PathOutsideDataError(ValueError):
+    """Un chemin venant du client désigne une cible hors des dossiers de données."""
+
+
+def user_data_roots() -> list[Path]:
+    """Dossiers qu'une requête du client a le droit de désigner.
+
+    Une seule définition, partagée par tous les endpoints qui acceptent un
+    chemin (``/admin/open``, ``/files/load``, ``/docanalysis/load``) : sans ça
+    chacun se construit sa propre liste et elles divergent — c'est exactement
+    comme ça que les dossiers surveillés (``fiches.watch_folders``, souvent hors
+    de la racine des fiches) se retrouvent refusés dans un endpoint et acceptés
+    dans un autre.
+
+    Volontairement absents : ``backend/`` (``.env``, ``memory/`` — donc le token
+    d'API) et le dépôt lui-même.
+    """
+    # Import local : core.instance importe core.paths pour FICHES_DIR, un import
+    # en tête de fichier créerait un cycle.
+    from core.instance import fiches_root, fiches_watch_paths
+
+    roots = [fiches_root(), *fiches_watch_paths(), resolve_workspace(), DOC_UPLOADS_DIR]
+    out: list[Path] = []
+    for r in roots:
+        try:
+            resolved = Path(r).expanduser().resolve()
+        except OSError:          # racine mal configurée : on l'ignore
+            continue
+        if resolved not in out:
+            out.append(resolved)
+    return out
+
+
+def safe_upload_name(filename: str, default: str) -> str:
+    """Nom de fichier d'un upload, réduit à un segment sûr — ou refus explicite.
+
+    ``dossier / filename`` n'est pas une composition anodine quand ``filename``
+    vient du client : ``Path("/a") / "/etc/passwd"`` vaut ``/etc/passwd`` (un nom
+    absolu remplace la base) et ``../../x`` sort du dossier.
+
+    Le découpage passe par ``ntpath`` **sur les deux plateformes**, et c'est
+    volontaire : ``PurePosixPath("..\\..\\evil.json").name`` renvoie la chaîne
+    entière sous Linux, où l'antislash n'est pas un séparateur. Un nom refusé
+    sous Windows passerait donc en CI Linux, et le fichier créé serait un piège
+    pour une exécution ultérieure sous Windows. ``ntpath`` connaît aussi les
+    préfixes de lecteur (``C:evil.json``).
+
+    Refus (et non simple nettoyage) dès que le nom n'était pas déjà un segment
+    nu : le navigateur envoie ``f.name``, jamais un chemin — une tentative doit
+    donc rester visible plutôt que d'être acceptée sous un autre nom.
+    """
+    raw = (filename or "").strip()
+    if not raw:
+        return default
+    name = ntpath.basename(ntpath.normpath(raw))
+    if name != raw or name in (".", ".."):
+        raise PathOutsideDataError(f"Nom de fichier invalide : {filename!r}")
+    return name
+
+
+def resolve_user_path(path: str) -> Path:
+    """Résout un chemin venant du client, ou lève :class:`PathOutsideDataError`.
+
+    Confinement par ``resolve()`` puis ``is_relative_to()``, jamais par
+    ``startswith`` de chaînes (contournable par un dossier frère du type
+    ``data/fiches-autre/``). Le chemin résolu est renvoyé : les appelants doivent
+    utiliser CETTE valeur et pas la chaîne d'origine, sinon la vérification ne
+    porte pas sur ce qui est réellement ouvert.
+    """
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError as exc:
+        raise PathOutsideDataError(f"Chemin invalide : {path!r}") from exc
+    if not any(target.is_relative_to(root) for root in user_data_roots()):
+        raise PathOutsideDataError("Chemin hors des dossiers de données d'Épure")
+    return target

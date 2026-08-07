@@ -227,16 +227,17 @@ class AdminOpenTest(unittest.TestCase):
 
 
 class OpenableRootsTest(unittest.TestCase):
-    """Les vraies racines autorisées (hors patch, contrairement à AdminOpenTest)."""
+    """Les vraies racines autorisées (hors patch, contrairement à AdminOpenTest).
 
-    def test_les_trois_racines_attendues(self):
-        from core.instance import fiches_root
-        from core.paths import resolve_workspace
+    Le détail des racines est vérifié dans test_upload_paths.py, avec le reste de
+    `core.paths.user_data_roots()` — ici on vérifie seulement que /admin/open
+    utilise bien cette liste partagée, et pas une copie locale.
+    """
 
-        roots = [p.resolve() for p in admin_router._openable_roots()]
-        self.assertIn(fiches_root().resolve(), roots)
-        self.assertIn(resolve_workspace().resolve(), roots)
-        self.assertIn(admin_router._DOC_UPLOADS.resolve(), roots)
+    def test_delegue_aux_racines_partagees(self):
+        from core.paths import user_data_roots
+
+        self.assertEqual(admin_router._openable_roots(), user_data_roots())
 
     def test_racine_systeme_non_couverte(self):
         """Un exécutable système ne doit être sous aucune racine autorisée."""

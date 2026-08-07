@@ -193,26 +193,42 @@ class ModuleManifest(BaseModel):
 
 # ── État de staging (.workshop.json) ─────────────────────────────────────────
 
+def _is_valid_module_id(module_id: str) -> bool:
+    """Variante non levante de :func:`_check_module_id`, pour filtrer des noms de
+    dossiers lus sur le disque (où un résidu inattendu n'est pas une attaque)."""
+    return bool(_ID_RE.match((module_id or "").strip()))
+
+
 def _check_module_id(module_id: str) -> str:
     """Valide un identifiant de module venant du client, ou lève SecurityError.
 
-    ``_modules_safe_path`` ne suffit pas : ``_staging/../chat`` reste sous
-    ``modules/``, donc le confinement ne voit rien passer. Contraindre l'id à
-    ``[a-z][a-z0-9_]{1,30}`` est ce qui rend sûres les constructions de chemin
-    ET la ligne de commande du terminal Atelier (le dossier de staging finit
-    dans un .bat).
+    ``_modules_safe_path`` ne suffit pas, et c'est contre-intuitif :
+    ``(MODULES_DIR / "_staging/../chat").resolve()`` vaut ``modules/chat``, dont
+    ``is_relative_to(MODULES_DIR)`` est **vrai**. Le garde-fou ne voit rien
+    passer parce que la cible ne sort jamais de ``modules/`` — elle change juste
+    de module. D'où deux dégâts concrets : ``{"type":"generate","id":"../chat"}``
+    faisait écrire le LLM directement dans un module core sans revue ni
+    approbation, et ``reject("../hello")`` faisait un ``rmtree`` du module.
 
-    Posé ici en attendant le lot 3, qui le déplacera dans ``_staging_dir`` pour
-    couvrir d'un coup tous les appelants (reject, read_staging, grant_read…).
+    Contraindre l'id à ``[a-z][a-z0-9_]{1,30}`` est donc ce qui rend sûres toutes
+    les constructions ``<dossier> / module_id`` du module (staging, modules/,
+    _backups/, frontend generated/) ET la ligne de commande du terminal Atelier
+    (le dossier de staging finit dans un .bat).
     """
     mid = (module_id or "").strip()
     if not _ID_RE.match(mid):
+        logger.warning("SECURITY: identifiant de module refusé — %r", module_id)
         raise SecurityError(f"Identifiant de module invalide : {module_id!r}")
     return mid
 
 
 def _staging_dir(module_id: str) -> Path:
-    return _modules_safe_path(f"_staging/{module_id}")
+    """Dossier de staging d'un module. Point de passage obligé : la validation de
+    l'id est posée ici pour couvrir d'un coup tous les appelants (reject,
+    read_staging, validate_staging, grant_read, aider_converse, open_terminal,
+    _write_blocks_from_text…), dont plusieurs reçoivent l'id brut de
+    ``/ws/workshop`` (``msg.get("id", "")``)."""
+    return _modules_safe_path(f"_staging/{_check_module_id(module_id)}")
 
 
 def _staging_locked(sdir: Path) -> bool:
@@ -283,7 +299,7 @@ def _write_meta(module_id: str, meta: dict) -> None:
 
 
 def module_exists(module_id: str) -> bool:
-    return (MODULES_DIR / module_id / "manifest.json").is_file()
+    return (MODULES_DIR / _check_module_id(module_id) / "manifest.json").is_file()
 
 
 def is_core(module_id: str) -> bool:
@@ -296,7 +312,7 @@ def is_core(module_id: str) -> bool:
 def _active_files(module_id: str) -> dict:
     """Contenu actuel des 3 fichiers d'un module en place (chaînes, '' si absent)."""
     out = {"manifest.json": "", "router.py": "", "Component.tsx": ""}
-    base = MODULES_DIR / module_id
+    base = MODULES_DIR / _check_module_id(module_id)
     for name in ("manifest.json", "router.py"):
         f = base / name
         if f.is_file():
@@ -309,7 +325,7 @@ def _active_files(module_id: str) -> dict:
 
 def _staging_files(module_id: str) -> dict:
     """Contenu des 3 fichiers en staging (dict vide si le staging n'existe pas)."""
-    sdir = STAGING_DIR / module_id
+    sdir = _staging_dir(module_id)
     if not sdir.is_dir():
         return {}
     out = {}
@@ -332,7 +348,12 @@ def _frontend_component_path(module_id: str, must_exist: bool = False) -> Option
 
     Cherche d'abord src/modules/<id>/Component.tsx (modules core migrés), puis
     src/modules/generated/<id>/Component.tsx. Pour un module neuf : generated/.
+
+    Validation de l'id ici aussi : c'est la seule construction de chemin du
+    module qui sorte de ``backend/`` — approve() y écrit le Component.tsx, donc
+    un id non contraint donnerait une écriture arbitraire dans ``frontend/``.
     """
+    module_id = _check_module_id(module_id)
     core_path = _FRONTEND_MODULES / module_id / "Component.tsx"
     gen_path = _FRONTEND_GENERATED / module_id / "Component.tsx"
     if core_path.is_file():
@@ -1499,6 +1520,7 @@ def remember_spec(module_id: str, spec: str) -> None:
 
 def _backup_existing(module_id: str) -> Optional[str]:
     """Sauvegarde horodatée du module existant (backend + composant). Retourne le chemin."""
+    module_id = _check_module_id(module_id)
     if not module_exists(module_id):
         return None
     ts = time.strftime("%Y%m%d-%H%M%S")
@@ -1547,6 +1569,7 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
     force=True (activation manuelle explicite par l'utilisateur, malgré des
     erreurs de validation — code potentiellement cassé/non sûr, à ses risques).
     """
+    module_id = _check_module_id(module_id)
     meta = _read_meta(module_id)
     if not meta:
         raise ValueError("Aucun staging à approuver.")
@@ -1640,7 +1663,12 @@ def list_staging() -> list[dict]:
     out = []
     if STAGING_DIR.is_dir():
         for sub in sorted(STAGING_DIR.iterdir()):
-            if sub.is_dir():
+            # Nom de dossier filtré, pas validé : _staging_dir lève SecurityError
+            # sur un id invalide, et un résidu de sonde de verrou
+            # (`hello.__lockprobe__`, cf. _staging_locked) ferait alors planter
+            # GET /workshop/modules en 500. Ici un nom inattendu n'est pas une
+            # attaque — c'est du ménage à ignorer.
+            if sub.is_dir() and _is_valid_module_id(sub.name):
                 meta = _read_meta(sub.name)
                 if meta:
                     out.append(meta)

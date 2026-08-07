@@ -16,25 +16,27 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.instance import fiches_root
-from core.paths import resolve_workspace
+from core.paths import user_data_roots
 from core.runtime import SSE_HEADERS, admin_engine
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-#: Dossier des PDF déposés par le module Docs (cf. modules/docs/router.py).
-_DOC_UPLOADS = Path(__file__).parent.parent.parent / "doc_uploads"
-
 
 def _openable_roots() -> list[Path]:
     """Dossiers dont on accepte d'ouvrir un fichier dans l'explorateur.
 
+    Délègue à ``core.paths.user_data_roots()`` : une seule définition des
+    dossiers qu'un client peut désigner, partagée avec /files/load et
+    /docanalysis/load. La liste locale d'origine oubliait les dossiers
+    surveillés (``fiches.watch_folders``), souvent hors de la racine des fiches —
+    une fiche parfaitement légitime y renvoyait un 403.
+
     Recalculés à chaque appel : la racine des fiches vient de la config
     d'instance et peut changer sans redémarrage.
     """
-    return [fiches_root(), resolve_workspace(), _DOC_UPLOADS]
+    return user_data_roots()
 
 
 class ExecuteActionsRequest(BaseModel):
