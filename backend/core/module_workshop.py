@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -191,6 +192,24 @@ class ModuleManifest(BaseModel):
 
 
 # ── État de staging (.workshop.json) ─────────────────────────────────────────
+
+def _check_module_id(module_id: str) -> str:
+    """Valide un identifiant de module venant du client, ou lève SecurityError.
+
+    ``_modules_safe_path`` ne suffit pas : ``_staging/../chat`` reste sous
+    ``modules/``, donc le confinement ne voit rien passer. Contraindre l'id à
+    ``[a-z][a-z0-9_]{1,30}`` est ce qui rend sûres les constructions de chemin
+    ET la ligne de commande du terminal Atelier (le dossier de staging finit
+    dans un .bat).
+
+    Posé ici en attendant le lot 3, qui le déplacera dans ``_staging_dir`` pour
+    couvrir d'un coup tous les appelants (reject, read_staging, grant_read…).
+    """
+    mid = (module_id or "").strip()
+    if not _ID_RE.match(mid):
+        raise SecurityError(f"Identifiant de module invalide : {module_id!r}")
+    return mid
+
 
 def _staging_dir(module_id: str) -> Path:
     return _modules_safe_path(f"_staging/{module_id}")
@@ -404,12 +423,44 @@ def _gateway_cfg() -> dict:
     }
 
 
+#: Binaires acceptés en tête de `atelier.gateway.start_command`.
+#: Garde-fou anti-accident, PAS une frontière de sécurité : `python`/`npx`/`uvx`
+#: permettent par construction d'exécuter du code arbitraire. Ce qui est
+#: réellement fermé ici, c'est l'injection par métacaractères de shell.
+_GATEWAY_ALLOWED_BINS = {"litellm", "python", "python3", "py", "npx", "uv", "uvx"}
+
+
+def _split_command(cmd: str) -> list[str]:
+    """Découpe une ligne de commande utilisateur en argv, sans shell.
+
+    Sous Windows on ne peut pas utiliser le mode POSIX de shlex : il traite
+    l'antislash comme un échappement et transformerait ``C:\\Users\\x`` en
+    ``C:Usersx``. En mode non-POSIX, shlex conserve en revanche les guillemets
+    *dans* les jetons (``'"C:\\Mes Configs\\cfg.yaml"'``) — on les retire donc,
+    sinon le chemin arriverait au programme avec ses guillemets littéraux.
+    """
+    argv = shlex.split(cmd, posix=(os.name != "nt"))
+    if os.name == "nt":
+        argv = [
+            a[1:-1] if len(a) >= 2 and a[0] == a[-1] == '"' else a
+            for a in argv
+        ]
+    return argv
+
+
 def start_gateway() -> dict:
     """Lance la passerelle via atelier.gateway.start_command (process détaché).
 
-    Commande fournie par l'utilisateur (ex. `litellm --config cfg.yaml`) : lancée
-    via le shell, détachée du backend, sans fenêtre console. Ne bloque pas — le
-    front re-teste la joignabilité après quelques secondes.
+    Commande fournie par l'utilisateur (ex. `litellm --config cfg.yaml`),
+    détachée du backend, sans fenêtre console. Ne bloque pas — le front re-teste
+    la joignabilité après quelques secondes.
+
+    Elle était passée telle quelle à ``shell=True``. Or ``start_command`` est une
+    chaîne libre écrite par ``PUT /instance/config`` (core.instance ne protège
+    que ``instance_id`` et ``auth``) : deux requêtes suffisaient à poser une
+    commande puis à la faire exécuter. Elle est maintenant découpée en argv et
+    lancée sans shell, et son binaire de tête doit figurer dans
+    :data:`_GATEWAY_ALLOWED_BINS`.
     """
     cfg = _gateway_cfg()
     cmd = cfg["start_command"]
@@ -418,14 +469,29 @@ def start_gateway() -> dict:
     if gateway_reachable(cfg["base_url"]):
         return {"ok": True, "raison": "Passerelle déjà joignable."}
     try:
+        argv = _split_command(cmd)
+    except ValueError as exc:  # guillemet non fermé
+        return {"ok": False, "raison": f"Commande de démarrage illisible : {exc}"}
+    if not argv:
+        return {"ok": False, "raison": "Commande de démarrage vide."}
+    head = Path(argv[0]).stem.lower()
+    if head not in _GATEWAY_ALLOWED_BINS:
+        return {
+            "ok": False,
+            "raison": f"Binaire non autorisé : {argv[0]}. "
+                      f"Autorisés : {', '.join(sorted(_GATEWAY_ALLOWED_BINS))}.",
+        }
+    try:
         flags = _NO_WINDOW
         if os.name == "nt":
             flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
         subprocess.Popen(
-            cmd, shell=True, cwd=str(Path.home()),
+            argv, shell=False, cwd=str(Path.home()),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, creationflags=flags,
         )
+    except FileNotFoundError:
+        return {"ok": False, "raison": f"Binaire introuvable : {argv[0]}"}
     except Exception as exc:
         logger.exception("Lancement passerelle échoué")
         return {"ok": False, "raison": f"Échec du lancement : {exc}"}
@@ -1205,35 +1271,51 @@ def terminal_launch_spec(module_id: str, spec: str, kind: str, engine: str) -> d
 def open_terminal(module_id: str, spec: str, kind: str, engine: str) -> dict:
     """Ouvre une vraie fenêtre terminal : cd staging + claude interactif, avec l'env
     du moteur (ANTHROPIC_* pour claude_gateway/DeepSeek). La clé n'est PAS écrite sur
-    disque — elle est héritée via l'environnement du process lancé."""
+    disque — elle est héritée via l'environnement du process lancé.
+
+    ``module_id`` arrive de ``/ws/workshop`` sans validation (``msg.get("id")``)
+    et se retrouvait interpolé dans une ligne de commande passée au shell : sous
+    POSIX un nom de dossier contenant ``"; id; "`` est parfaitement légal. D'où
+    la validation en entrée, et plus aucun shell des deux côtés.
+    """
+    module_id = _check_module_id(module_id)
     info = terminal_launch_spec(module_id, spec, kind, engine)
     sdir = info["cwd"]
     env = info["env"]
-    claude_cmdline = subprocess.list2cmdline(info["cmd"])
     try:
         if os.name == "nt":
-            # .bat = cd + claude (pas de clé dedans). La fenêtre `start` hérite de `env`.
+            # .bat = titre + cd + claude (pas de clé dedans). list2cmdline est la
+            # bonne mise en forme ici : c'est cmd.exe qui relira cette ligne.
             bat = Path(sdir) / "_launch.bat"
             bat.write_text(
                 "@echo off\r\n"
+                f"title Atelier {module_id}\r\n"
                 f'cd /d "{sdir}"\r\n'
-                f"call {claude_cmdline}\r\n",
+                f"call {subprocess.list2cmdline(info['cmd'])}\r\n",
                 encoding="utf-8",
             )
+            # CREATE_NEW_CONSOLE remplace `start` : c'est ce que `start` faisait
+            # de toute façon, mais sans passer par cmd pour l'obtenir — donc
+            # sans ligne de commande à assembler, et sans shell.
             subprocess.Popen(
-                f'start "Atelier {module_id}" cmd /K "{bat}"',
-                shell=True, env=env,
-            )
-        elif shutil.which("tmux"):
-            subprocess.Popen(
-                ["tmux", "new-window", "-c", sdir, claude_cmdline], env=env,
+                ["cmd", "/K", str(bat)],
+                env=env,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
             )
         else:
-            subprocess.Popen(
-                ["x-terminal-emulator", "-e",
-                 f'bash -c \'cd "{sdir}"; {claude_cmdline}; exec bash\''],
-                env=env,
-            )
+            # shlex.join et non list2cmdline : ces deux branches passent par un
+            # sh POSIX, dont les règles de citation ne sont pas celles de cmd.
+            posix_cmdline = shlex.join(info["cmd"])
+            if shutil.which("tmux"):
+                subprocess.Popen(
+                    ["tmux", "new-window", "-c", sdir, posix_cmdline], env=env,
+                )
+            else:
+                subprocess.Popen(
+                    ["x-terminal-emulator", "-e",
+                     f"bash -c 'cd {shlex.quote(sdir)}; {posix_cmdline}; exec bash'"],
+                    env=env,
+                )
         return {"opened": True, "cwd": sdir, "cmd": info["cmd"], "prompt": info["prompt"]}
     except Exception as exc:
         logger.exception("Ouverture terminal échouée")
