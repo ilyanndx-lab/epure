@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from core.jsonstore import read_json, write_json
+from core.jsonstore import read_json, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +26,10 @@ class ConsolidationEngine:
         return read_json(_LOG_PATH, {}).get("log", [])
 
     def _append_log(self, entry: dict) -> None:
-        log = self._load_log()
-        log.insert(0, entry)
-        write_json(_LOG_PATH, {"log": log[:50]})
+        with transaction(_LOG_PATH, {"log": []}) as doc:
+            log = doc.setdefault("log", [])
+            log.insert(0, entry)
+            del log[50:]   # en place : `log = log[:50]` ne persisterait rien
 
     def get_log(self, n: int = 20) -> list:
         return self._load_log()[:n]
@@ -73,41 +74,41 @@ class ConsolidationEngine:
     ) -> dict:
         if not observations:
             return {}
-        try:
-            profile = self._memory.load_profile()
-        except Exception:
-            logger.exception("Erreur lecture profil pour consolidation")
-            return {}
 
         changes: dict = {"lacunes_ajoutées": [], "forces_ajoutées": [], "style_màj": ""}
 
-        lacunes = profile.get("lacunes_confirmées", [])
-        lacunes, added = self._dedup_add(lacunes, observations.get("lacunes_confirmées", []))
-        profile["lacunes_confirmées"] = lacunes
-        changes["lacunes_ajoutées"] = added
-
-        forces = profile.get("forces", [])
-        new_forces = (
-            observations.get("forces_détectées", [])
-            or observations.get("points_forts", [])
-        )
-        forces, added_f = self._dedup_add(forces, new_forces)
-        profile["forces"] = forces
-        changes["forces_ajoutées"] = added_f
-
-        style = (observations.get("style_préféré") or "").strip()
-        if style:
-            prefs = profile.get("préférences_interaction", {})
-            if prefs.get("style", "").lower() != style.lower():
-                prefs["style"] = style
-                profile["préférences_interaction"] = prefs
-                changes["style_màj"] = style
-
+        # Lecture ET écriture du profil sous le même verrou : ce couple
+        # load/modifie/save tourne dans des Thread lancés par kholle et chat, donc
+        # deux consolidations concurrentes partaient du même profil et la seconde
+        # écrasait les lacunes ajoutées par la première.
         try:
-            self._memory.save_profile(profile)
+            with self._memory.profile_transaction() as profile:
+                lacunes = profile.get("lacunes_confirmées", [])
+                lacunes, added = self._dedup_add(
+                    lacunes, observations.get("lacunes_confirmées", [])
+                )
+                profile["lacunes_confirmées"] = lacunes
+                changes["lacunes_ajoutées"] = added
+
+                forces = profile.get("forces", [])
+                new_forces = (
+                    observations.get("forces_détectées", [])
+                    or observations.get("points_forts", [])
+                )
+                forces, added_f = self._dedup_add(forces, new_forces)
+                profile["forces"] = forces
+                changes["forces_ajoutées"] = added_f
+
+                style = (observations.get("style_préféré") or "").strip()
+                if style:
+                    prefs = profile.get("préférences_interaction", {})
+                    if prefs.get("style", "").lower() != style.lower():
+                        prefs["style"] = style
+                        profile["préférences_interaction"] = prefs
+                        changes["style_màj"] = style
         except Exception:
-            logger.exception("Erreur sauvegarde profil après consolidation")
-            return changes
+            logger.exception("Erreur mise à jour du profil pour consolidation")
+            return {}
 
         if any(v for v in changes.values()):
             try:

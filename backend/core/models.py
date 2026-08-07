@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from core.llm import ollama_host as _ollama_host
+
 logger = logging.getLogger(__name__)
 
 # ── Qualitative metadata ─────────────────────────────────────────────────────
@@ -292,14 +294,21 @@ def get_flm_installed() -> set[str]:
 
 
 def get_ollama_installed() -> Optional[list[str]]:
-    """Installed Ollama model names via direct HTTP on localhost.
+    """Modèles Ollama installés, par HTTP direct. None si le serveur ne répond pas.
 
-    Bypasses the ollama python client, which honors OLLAMA_HOST=0.0.0.0
-    (server listen address) and fails to connect on Windows.
-    Returns None if the server is unreachable.
+    Host repris de ``core.llm.ollama_host`` (donc normalisé : OLLAMA_HOST=0.0.0.0
+    est une adresse d'écoute, pas une adresse de connexion, et faisait échouer
+    l'appel sous Windows) — mais on garde volontairement urllib avec son
+    ``timeout=3`` au lieu de ``ollama_client`` :
+
+    c'est la SONDE de /health. Elle doit répondre en quelques secondes même quand
+    Ollama est figé, alors que le client partagé attend `model.timeout_s` (~5 min)
+    entre deux paquets pour ne pas avorter le chargement à froid d'un gros modèle.
+    Passer cette fonction sur le client partagé rendrait /health muet aussi
+    longtemps — soit exactement ce que le healthcheck doit détecter.
     """
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
+        req = urllib.request.Request(f"{_ollama_host}/api/tags")
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return [
@@ -308,7 +317,7 @@ def get_ollama_installed() -> Optional[list[str]]:
             if m.get("model") or m.get("name")
         ]
     except Exception:
-        logger.warning("Ollama non joignable sur localhost:11434")
+        logger.warning("Ollama non joignable sur %s", _ollama_host)
         return None
 
 

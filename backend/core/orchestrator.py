@@ -3,11 +3,12 @@ import os
 import time
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Thread
 from typing import Optional
 
-from core.jsonstore import read_json, write_json
+from core.jsonstore import read_json, transaction, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,26 @@ def _load_presets() -> list:
 
 def _save_presets(presets: list) -> None:
     write_json(_PRESETS_FILE, {"presets": presets})
+
+
+@contextmanager
+def _presets_transaction():
+    """RMW verrouillé des presets, cédant la LISTE.
+
+    Le défaut reproduit `_load_presets` : fichier absent → on repart des presets
+    livrés, jamais d'une liste vide, sinon une création concurrente juste après une
+    suppression du fichier les effacerait.
+    """
+    with transaction(_PRESETS_FILE, {"presets": list(_DEFAULT_PRESETS)}) as doc:
+        # Fichier hand-édité en liste nue (`_load_presets` tolère ce cas en
+        # lecture) : impossible de le normaliser en place, donc on refuse la
+        # mutation — rien n'est réécrit — plutôt que de persister une forme
+        # inattendue.
+        if not isinstance(doc, dict):
+            raise TypeError(
+                f"{_PRESETS_FILE.name} : document {type(doc).__name__}, attendu un objet"
+            )
+        yield doc.setdefault("presets", list(_DEFAULT_PRESETS))
 
 
 def _ensure_presets_file() -> None:
@@ -406,7 +427,6 @@ class OrchestratorEngine:
         return _load_presets()
 
     def create_preset(self, nom: str, effort: str, steps: list[dict]) -> dict:
-        presets = _load_presets()
         preset = {
             "id": str(uuid.uuid4()),
             "nom": nom,
@@ -414,17 +434,14 @@ class OrchestratorEngine:
             "steps": steps,
             "défaut": False,
         }
-        presets.append(preset)
-        _save_presets(presets)
+        with _presets_transaction() as presets:
+            presets.append(preset)
         return preset
 
     def delete_preset(self, preset_id: str) -> bool:
-        presets = _load_presets()
-        target = next((p for p in presets if p["id"] == preset_id), None)
-        if target is None:
-            return False
-        if target.get("défaut"):
-            return False
-        presets = [p for p in presets if p["id"] != preset_id]
-        _save_presets(presets)
-        return True
+        with _presets_transaction() as presets:
+            target = next((p for p in presets if p["id"] == preset_id), None)
+            if target is None or target.get("défaut"):
+                return False
+            presets[:] = [p for p in presets if p["id"] != preset_id]
+            return True
