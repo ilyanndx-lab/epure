@@ -59,6 +59,15 @@ jobs:
         # propres à Windows (argv d'explorer, citation des chemins) sont
         # skippés sur ce runner Linux — à vérifier à la main sous Windows.
         run: python test_command_exec.py
+      - name: Identifiants de module de l'Atelier (test_workshop_paths.py)
+        working-directory: backend
+        run: python test_workshop_paths.py
+      - name: Confinement des uploads (test_upload_paths.py)
+        working-directory: backend
+        # Les dossiers de destination sont redirigés vers un dossier temporaire :
+        # aucune écriture dans le dépôt, et surtout aucun risque sur
+        # backend/memory/instance_config.json si le code testé régresse.
+        run: python test_upload_paths.py
 
   frontend:
     name: Frontend — tsc + eslint

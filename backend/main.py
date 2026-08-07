@@ -384,6 +384,9 @@ async def workshop_staging_get(module_id: str):
         return await asyncio.get_running_loop().run_in_executor(
             None, module_workshop.read_staging, module_id
         )
+    except module_workshop.SecurityError as exc:
+        # 400 et pas 404 : l'id est malformé, ce n'est pas « pas encore là ».
+        raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -399,6 +402,10 @@ async def workshop_validate(module_id: str):
         return await asyncio.get_running_loop().run_in_executor(
             None, module_workshop.validate_staging, module_id, False
         )
+    except module_workshop.SecurityError as exc:
+        # Avant le `except Exception` générique, sinon un id invalide ressort en
+        # 404 « staging introuvable » — message trompeur pour un refus de sécurité.
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -412,7 +419,7 @@ async def workshop_approve(module_id: str, force: bool = False):
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, module_workshop.approve, module_id, app, force)
-    except ValueError as exc:
+    except (ValueError, module_workshop.SecurityError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not result.get("ok"):
         raise HTTPException(status_code=422, detail=result)
@@ -421,9 +428,14 @@ async def workshop_approve(module_id: str, force: bool = False):
 
 @app.post("/workshop/{module_id}/reject")
 async def workshop_reject(module_id: str):
-    return await asyncio.get_running_loop().run_in_executor(
-        None, module_workshop.reject, module_id
-    )
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None, module_workshop.reject, module_id
+        )
+    except module_workshop.SecurityError as exc:
+        # reject fait un rmtree : c'est la route où un id non validé coûtait le
+        # plus cher (`../hello` supprimait le module en place).
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.websocket("/ws/workshop")
@@ -436,6 +448,17 @@ async def ws_workshop(websocket: WebSocket):
 
     async def _emit(ev: dict):
         await websocket.send_text(json.dumps(ev, ensure_ascii=False))
+
+    async def _emit_error(exc: Exception):
+        """Erreur typée : le front lit `content`, mais `code` permet de distinguer
+        un refus de sécurité (id de module malformé) d'un échec de génération.
+
+        Sans ça un `{"type":"generate","id":"../chat"}` ressortait dans la même
+        bannière rouge qu'un timeout Ollama — impossible de voir que la requête
+        elle-même avait été refusée.
+        """
+        code = "invalid_id" if isinstance(exc, module_workshop.SecurityError) else "error"
+        await _emit({"type": "error", "code": code, "content": str(exc)})
 
     async def _stream_generator(gen):
         """Draine un générateur synchrone (engine) vers le WebSocket.
@@ -565,7 +588,7 @@ async def ws_workshop(websocket: WebSocket):
                     await _emit({"type": "terminal_opened", **info})
                 except Exception as exc:
                     logger.exception("Ouverture terminal atelier")
-                    await _emit({"type": "error", "content": str(exc)})
+                    await _emit_error(exc)
                     await _emit({"type": "done"})
                 continue
 
@@ -636,7 +659,7 @@ async def ws_workshop(websocket: WebSocket):
                     bg_mid = mid
             except Exception as exc:
                 logger.exception("Atelier ws : traitement du message %s", mtype)
-                await _emit({"type": "error", "content": str(exc)})
+                await _emit_error(exc)
             finally:
                 await _emit({"type": "done"})
 
