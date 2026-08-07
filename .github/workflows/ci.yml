@@ -68,6 +68,11 @@ jobs:
         # aucune écriture dans le dépôt, et surtout aucun risque sur
         # backend/memory/instance_config.json si le code testé régresse.
         run: python test_upload_paths.py
+      - name: Écritures JSON concurrentes (test_jsonstore_concurrency.py)
+        working-directory: backend
+        # ~3 s : threads réels, aucun sleep d'attente, une seule fenêtre d'1 s
+        # pour le test lecteurs/écrivains.
+        run: python test_jsonstore_concurrency.py
 
   frontend:
     name: Frontend — tsc + eslint

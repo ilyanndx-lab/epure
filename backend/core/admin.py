@@ -6,10 +6,10 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import ollama
 import pypdf
 
-from core.jsonstore import read_json, write_json
+from core.jsonstore import read_json, transaction, write_json
+from core.llm import ollama_client
 from core.paths import FICHES_DIR as _FICHES_DIR
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,10 @@ class AdminEngine:
 
     def _pick_classify_model(self) -> str | None:
         try:
-            models = [m.model for m in ollama.list().models]
+            # ollama_client et non le module `ollama` : host normalisé
+            # (OLLAMA_HOST=0.0.0.0 faisait échouer l'appel sous Windows) et
+            # timeout — sans lui, un Ollama figé bloquait ce thread pour toujours.
+            models = [m.model for m in ollama_client.list().models]
             for m in models:
                 if m.startswith("phi4-mini"):
                     return m
@@ -86,7 +89,7 @@ class AdminEngine:
         model = self._classify_model or self._llm._model
         result = {"matière": "Inconnu", "nom_suggéré": filename, "confiance": 0.0}
         try:
-            response = ollama.chat(
+            response = ollama_client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 stream=False,
@@ -231,20 +234,19 @@ class AdminEngine:
     def _load_log(self) -> list:
         return read_json(_LOG_PATH, [])
 
-    def _save_log(self, log: list) -> None:
-        write_json(_LOG_PATH, log)
-
     def _append_log(self, action_type: str, source: str, destination: str) -> None:
-        log = self._load_log()
-        log.append({
-            "id": f"{len(log)}_{int(time.time())}",
-            "date": datetime.now().isoformat(),
-            "type": action_type,
-            "source": source,
-            "destination": destination,
-            "annulé": False,
-        })
-        self._save_log(log)
+        # Sous verrou, `len(log)` est enfin fiable : deux rangements simultanés
+        # produisaient sinon deux entrées de même id (même index, même seconde),
+        # et undo_action n'en retrouvait qu'une.
+        with transaction(_LOG_PATH, []) as log:
+            log.append({
+                "id": f"{len(log)}_{int(time.time())}",
+                "date": datetime.now().isoformat(),
+                "type": action_type,
+                "source": source,
+                "destination": destination,
+                "annulé": False,
+            })
 
     def get_log(self) -> list:
         return self._load_log()
@@ -277,10 +279,13 @@ class AdminEngine:
                 self._rag.index_pdf(str(dst))
             except Exception:
                 logger.exception("Erreur màj ChromaDB lors annulation")
-            for a in log:
-                if a["id"] == action_id:
-                    a["annulé"] = True
-            self._save_log(log)
+            # Transaction courte, et seulement maintenant : tenir le verrou du
+            # log pendant le shutil.move et la réindexation ChromaDB (plusieurs
+            # secondes) bloquerait tous les autres écrivains du log.
+            with transaction(_LOG_PATH, []) as fresh_log:
+                for a in fresh_log:
+                    if a["id"] == action_id:
+                        a["annulé"] = True
             return {"succès": True, "erreur": None}
         except Exception as exc:
             logger.exception("Erreur annulation %s", action_id)
