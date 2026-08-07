@@ -6,17 +6,35 @@ admin_engine injecté depuis core.runtime.
 import asyncio
 import json
 import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
 from threading import Thread
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.instance import fiches_root
+from core.paths import resolve_workspace
 from core.runtime import SSE_HEADERS, admin_engine
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+#: Dossier des PDF déposés par le module Docs (cf. modules/docs/router.py).
+_DOC_UPLOADS = Path(__file__).parent.parent.parent / "doc_uploads"
+
+
+def _openable_roots() -> list[Path]:
+    """Dossiers dont on accepte d'ouvrir un fichier dans l'explorateur.
+
+    Recalculés à chaque appel : la racine des fiches vient de la config
+    d'instance et peut changer sans redémarrage.
+    """
+    return [fiches_root(), resolve_workspace(), _DOC_UPLOADS]
 
 
 class ExecuteActionsRequest(BaseModel):
@@ -91,12 +109,41 @@ async def admin_execute(req: ExecuteActionsRequest):
 
 @router.get("/open")
 async def admin_open(path: str):
+    """Révèle un fichier dans l'explorateur de fichiers du système.
+
+    Écrivait auparavant ``explorer /select,"{path}"`` dans un shell : le chemin
+    venant du client, ``?path=x" & calc.exe & "`` fermait la chaîne et
+    enchaînait une commande arbitraire. Plus de shell, et le chemin doit
+    désigner un fichier réel sous l'un des dossiers de travail d'Épure —
+    l'endpoint sert à ouvrir une fiche, pas n'importe quoi sur le disque.
+    """
+    target = Path(path).expanduser()
     try:
-        import subprocess
-        subprocess.Popen(f'explorer /select,"{path}"', shell=True)
+        target = target.resolve()
+    except OSError:
+        raise HTTPException(status_code=400, detail="Chemin invalide")
+
+    # Confinement AVANT le test d'existence : sinon la réponse permet de sonder
+    # la présence de fichiers hors périmètre. resolve() + is_relative_to() et
+    # jamais un startswith de chaînes (cf. codeagent._safe_path, CLAUDE.md §3.5).
+    if not any(target.is_relative_to(r.resolve()) for r in _openable_roots()):
+        raise HTTPException(status_code=403, detail="Chemin hors des dossiers autorisés")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Fichier introuvable")
+
+    try:
+        if os.name == "nt":
+            # ATTENTION : explorer exige « /select,<chemin> » en UN SEUL
+            # argument — le découper en ["explorer", "/select,", chemin] ouvre
+            # le dossier Documents au lieu de sélectionner le fichier.
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target.parent)])
         return {"ok": True}
     except Exception:
-        logger.exception("Erreur ouverture %s", path)
+        logger.exception("Erreur ouverture %s", target)
         raise HTTPException(status_code=500, detail="Erreur ouverture fichier")
 
 

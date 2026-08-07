@@ -53,6 +53,12 @@ jobs:
         # Le test force HF_HUB_OFFLINE=1 et neutralise les sondes Ollama/FLM :
         # aucun accès réseau, aucun téléchargement de modèle.
         run: python test_auth_surface.py
+      - name: Lancements de process (test_command_exec.py)
+        working-directory: backend
+        # subprocess.Popen est mocké : rien n'est réellement lancé. Les cas
+        # propres à Windows (argv d'explorer, citation des chemins) sont
+        # skippés sur ce runner Linux — à vérifier à la main sous Windows.
+        run: python test_command_exec.py
 
   frontend:
     name: Frontend — tsc + eslint
