@@ -392,7 +392,10 @@ def prepare(module_id: str, kind: str, engine: str, mode: str) -> dict:
 # ── Passerelle / disponibilité des moteurs ───────────────────────────────────
 
 def _gateway_cfg() -> dict:
-    gw = ((instance_config.get().get("atelier") or {}).get("gateway") or {})
+    # `raw()` et non `get()` : depuis le durcissement v1, `get()` expurge
+    # `api_key` (elle sortait en clair par GET /instance/config). Le moteur
+    # claude_gateway, lui, a besoin de la vraie valeur.
+    gw = ((instance_config.raw().get("atelier") or {}).get("gateway") or {})
     return {
         "base_url": gw.get("base_url", "http://localhost:4000"),
         "model": (gw.get("model") or "").strip(),

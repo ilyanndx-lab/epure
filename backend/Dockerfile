@@ -29,7 +29,13 @@ EXPOSE 8000
 
 # Les modèles ML (sentence-transformers, Whisper, Piper) se téléchargent au
 # premier démarrage : laisser une période de démarrage généreuse au healthcheck.
+#
+# /health et non /openapi.json : seuls /health et /pair sont exempts du token
+# d'API (cf. _AUTH_EXEMPT_PATHS dans main.py). /openapi.json répondait donc 401,
+# `curl -f` échouait, et le conteneur restait « unhealthy » en permanence — un
+# `depends_on: condition: service_healthy` ne se déclenchait jamais.
+# `curl` envoie `Host: localhost`, accepté par défaut par TrustedHostMiddleware.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=5 \
-    CMD curl -fsS http://localhost:8000/openapi.json > /dev/null || exit 1
+    CMD curl -fsS http://localhost:8000/health > /dev/null || exit 1
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
