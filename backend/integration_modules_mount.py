@@ -8,8 +8,14 @@ signale en prime les collisions de chemins entre modules montés à la racine
 
 Charge core.runtime (moteurs partagés) — lent au premier import.
 
+Nommé `integration_` et NON `test_` volontairement : le job backend de la CI
+tourne en `unittest discover -p 'test_*.py'`, et ce fichier tire torch +
+chromadb + sentence-transformers. Le renommer suffit à l'exclure de la
+découverte, sans `skipUnless` ni variable d'environnement à se rappeler. Il est
+lancé par le job `integration` (manuel, workflow_dispatch).
+
 Usage :
-    python test_modules_mount.py
+    python integration_modules_mount.py
 """
 
 import os
