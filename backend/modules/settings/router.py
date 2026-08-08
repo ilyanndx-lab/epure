@@ -26,6 +26,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.instance import fiches_root, instance_config
+from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
 from core.rag import RAGEngine
 from core.runtime import (
     API_KEY_NAMES,
@@ -350,22 +351,50 @@ class LoadFilesRequest(BaseModel):
 
 @router.post("/files/load")
 async def files_load(req: LoadFilesRequest):
+    """Indexe des fichiers déjà sur le disque, par chemin.
+
+    Second point d'entrée du même motif que /files/upload, en lecture : les
+    chemins viennent du client et `.json` est un type supporté, donc
+    ``paths=["…/backend/memory/instance_config.json"]`` faisait entrer le token
+    d'API dans le RAG *et* dans le résumé renvoyé en SSE. Confinement AVANT
+    d'ouvrir le flux — le refus doit être un code HTTP, pas un événement perdu
+    au milieu d'un stream déjà commencé.
+    """
+    try:
+        paths = [str(resolve_user_path(p)) for p in req.paths]
+    except PathOutsideDataError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     return StreamingResponse(
-        _stream_load_sse(req.paths), media_type="text/event-stream", headers=SSE_HEADERS
+        _stream_load_sse(paths), media_type="text/event-stream", headers=SSE_HEADERS
     )
 
 
 @router.post("/files/upload")
 async def files_upload(files: list[UploadFile] = File(...)):
+    """Dépose des fiches dans la racine des fiches, puis les indexe.
+
+    ``upload.filename`` vient du client. ``_fiches_dir / filename`` acceptait
+    donc une traversée, et comme ``.json`` est un type supporté (légitimement,
+    pour les fiches), un envoi nommé ``../../backend/memory/instance_config.json``
+    réécrivait la configuration d'instance — **donc le token d'API**, avec une
+    valeur choisie par l'attaquant. D'où ``safe_upload_name`` puis la
+    re-vérification du chemin résolu.
+    """
     _fiches_dir = fiches_root()
     _fiches_dir.mkdir(parents=True, exist_ok=True)
+    racine = _fiches_dir.resolve()
     saved_paths: list[str] = []
     for upload in files:
-        filename = upload.filename or "upload.bin"
+        try:
+            filename = safe_upload_name(upload.filename, "upload.bin")
+        except PathOutsideDataError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         ext = Path(filename).suffix.lower()
         if ext not in _SUPPORTED_EXT:
             continue
-        dest = _fiches_dir / filename
+        dest = (_fiches_dir / filename).resolve()
+        if not dest.is_relative_to(racine):
+            raise HTTPException(status_code=400, detail="Nom de fichier invalide")
         content = await upload.read()
         dest.write_bytes(content)
         saved_paths.append(str(dest))

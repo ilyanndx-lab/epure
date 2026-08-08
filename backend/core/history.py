@@ -1,9 +1,10 @@
 import logging
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from core.jsonstore import read_json, write_json
+from core.jsonstore import read_json, transaction, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,16 @@ class HistoryEngine:
     def _load_index(self) -> list:
         return read_json(_INDEX_FILE, {}).get("conversations", [])
 
-    def _save_index(self, conversations: list) -> None:
-        write_json(_INDEX_FILE, {"conversations": conversations})
+    @contextmanager
+    def _index_transaction(self):
+        """RMW verrouillé de l'index, cédant la LISTE des conversations.
+
+        Le document sur disque est ``{"conversations": [...]}`` ; on cède la liste
+        pour que les appelants gardent leur code, mais c'est bien le document
+        entier qui est réécrit.
+        """
+        with transaction(_INDEX_FILE, {"conversations": []}) as doc:
+            yield doc.setdefault("conversations", [])
 
     # ── LLM title ────────────────────────────────────────────────────────────
 
@@ -90,9 +99,8 @@ class HistoryEngine:
             "modules": modules,
         }
         try:
-            conversations = self._load_index()
-            conversations.insert(0, entry)
-            self._save_index(conversations)
+            with self._index_transaction() as conversations:
+                conversations.insert(0, entry)
         except Exception:
             logger.exception("Erreur màj index conversations")
 
@@ -160,8 +168,9 @@ class HistoryEngine:
                 logger.exception("Erreur suppression fichier %s", conv_id)
 
         try:
-            conversations = self._load_index()
-            self._save_index([c for c in conversations if c.get("id") != conv_id])
+            with self._index_transaction() as conversations:
+                # En place : c'est l'objet cédé qui est réécrit (cf. transaction).
+                conversations[:] = [c for c in conversations if c.get("id") != conv_id]
         except Exception:
             logger.exception("Erreur màj index après suppression %s", conv_id)
 

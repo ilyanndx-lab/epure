@@ -1,5 +1,14 @@
 fastapi==0.136.3
 uvicorn==0.48.0
+# Requis par les endpoints à UploadFile/File(...) : FastAPI lève à l'import du
+# router si le paquet manque. Il était présent par hasard sur le poste de dev,
+# jamais déclaré — `pip install -r requirements.txt` seul (Docker) produisait
+# une image qui ne démarrait pas.
+python-multipart==0.0.29
+# Requis par fastapi.testclient.TestClient (test_auth_surface.py). Arrivait
+# jusqu'ici en transitif (chromadb, ollama, openai) : à déclarer puisqu'on en
+# dépend directement.
+httpx==0.28.1
 ollama==0.6.2
 pyyaml==6.0.3
 chromadb==1.5.9

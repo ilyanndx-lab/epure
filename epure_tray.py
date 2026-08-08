@@ -18,6 +18,30 @@ URL = "http://localhost:5173"
 _processes: list[subprocess.Popen] = []
 _log_handle = None
 
+def _bind_host() -> str:
+    """Interface d'écoute d'uvicorn : $EPURE_BIND, sinon backend/.env, sinon loopback.
+
+    Le backend charge .env tout seul (core.paths), mais le tray choisit l'hôte
+    AVANT de le lancer : sans cette lecture, un EPURE_BIND posé dans
+    backend/.env — là où .env.example le documente — serait ignoré en silence.
+
+    On lit le fichier SANS le charger dans os.environ : le tray transmet son
+    environnement à `ollama serve` (cf. env_ollama), et y injecter le contenu de
+    .env y ferait entrer OLLAMA_HOST, que le serveur Ollama interprète comme son
+    adresse d'écoute — piège connu (CLAUDE.md §8). Si python-dotenv manque,
+    seules les vraies variables d'environnement comptent : le tray ne doit pas
+    refuser de démarrer pour ça.
+    """
+    val = os.environ.get("EPURE_BIND", "").strip()
+    if not val:
+        try:
+            from dotenv import dotenv_values
+
+            val = (dotenv_values(BACKEND_DIR / ".env").get("EPURE_BIND") or "").strip()
+        except ImportError:  # pragma: no cover - dépend de l'environnement
+            val = ""
+    return val or "127.0.0.1"
+
 
 def _open_log():
     global _log_handle
@@ -109,10 +133,24 @@ def _start_processes():
     time.sleep(4)
 
     _log("Lancement uvicorn")
+    # Interface d'écoute : LOOPBACK par défaut. Écouter sur 0.0.0.0 rendait le
+    # port 8000 visible de tout le réseau (wifi de la prépa) alors que l'API
+    # n'est protégée que par un token et expose l'exécution de commandes.
+    # EPURE_BIND=0.0.0.0 rouvre au LAN — penser alors à compléter
+    # EPURE_ALLOWED_HOSTS, sinon le middleware Host rejettera les requêtes.
+    _bind = _bind_host()
     uvicorn_cmd = [
         sys.executable, "-m", "uvicorn", "main:app",
-        "--host", "0.0.0.0", "--port", "8000",
+        "--host", _bind, "--port", "8000",
+        # Le token WebSocket voyage en query param (les navigateurs interdisent
+        # les en-têtes sur `new WebSocket()`), donc l'access-log recopierait
+        # « ?token=… » en clair dans epure_tray.log, non chiffré et conservé.
+        # Le tray a déjà son propre journal applicatif ; l'access-log uvicorn
+        # n'apporte rien de plus ici.
+        "--no-access-log",
     ]
+    if _bind != "127.0.0.1":
+        _log(f"uvicorn : ATTENTION, écoute sur {_bind} — API exposée au-delà de la machine locale")
     # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
     # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
     # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur

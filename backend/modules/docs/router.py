@@ -7,22 +7,27 @@ Moteurs partagés (docanalysis, llm, memory) injectés via core.runtime.
 import asyncio
 import json
 import logging
-from pathlib import Path
 from threading import Thread
 from typing import Optional
 
-from fastapi import APIRouter, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.auth import ws_require_token
+from core.paths import (
+    DOC_UPLOADS_DIR,
+    PathOutsideDataError,
+    resolve_user_path,
+    safe_upload_name,
+)
 from core.runtime import SSE_HEADERS, docanalysis, llm, memory
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_DOC_UPLOADS = Path(__file__).parent.parent.parent / "doc_uploads"
+_DOC_UPLOADS = DOC_UPLOADS_DIR
 
 
 class DocLoadPathRequest(BaseModel):
@@ -74,15 +79,37 @@ async def _stream_docload(path: str):
 
 @router.post("/docanalysis/load")
 async def docanalysis_load(req: DocLoadPathRequest):
+    """Charge un document déjà présent sur le disque, par chemin.
+
+    Le chemin vient du client : sans confinement, l'endpoint lit n'importe quel
+    fichier du disque et en renvoie le contenu analysé (et un résumé LLM).
+    """
+    try:
+        target = resolve_user_path(req.path)
+    except PathOutsideDataError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     return StreamingResponse(
-        _stream_docload(req.path), media_type="text/event-stream", headers=SSE_HEADERS
+        _stream_docload(str(target)), media_type="text/event-stream", headers=SSE_HEADERS
     )
 
 
 @router.post("/docanalysis/upload")
 async def docanalysis_upload(file: UploadFile = File(...)):
+    """Dépose un document puis l'analyse.
+
+    ``file.filename`` est choisi par le client et n'est PAS un nom de fichier
+    tant qu'on ne l'a pas réduit à son dernier segment (cf.
+    ``core.paths.safe_upload_name``). Le chemin résolu est re-vérifié ensuite :
+    ceinture ET bretelles, parce que c'est une écriture.
+    """
+    try:
+        name = safe_upload_name(file.filename, "upload.pdf")
+    except PathOutsideDataError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     _DOC_UPLOADS.mkdir(parents=True, exist_ok=True)
-    dest = _DOC_UPLOADS / (file.filename or "upload.pdf")
+    dest = (_DOC_UPLOADS / name).resolve()
+    if not dest.is_relative_to(_DOC_UPLOADS.resolve()):
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide")
     content = await file.read()
     dest.write_bytes(content)
     return StreamingResponse(

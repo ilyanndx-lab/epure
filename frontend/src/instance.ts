@@ -24,7 +24,16 @@ export interface InstanceConfig {
   atelier: {
     claude_path: string
     aider_path: string
-    gateway: { base_url: string; model: string; api_key: string; start_command: string }
+    // api_key est absente des réponses du serveur : GET /instance/config
+    // l'expurge (cf. core/instance.py::get) et ne renvoie que le booléen
+    // dérivé api_key_présente. On ne peut l'envoyer que dans un PUT.
+    gateway: {
+      base_url: string
+      model: string
+      api_key?: string
+      api_key_présente?: boolean
+      start_command: string
+    }
     moteur_defaut: string
     mode_defaut: string
   }

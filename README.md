@@ -128,12 +128,30 @@ dans `backend/.env` (voir `backend/.env.example`) :
 
 Toutes optionnelles ; définies dans `backend/.env` (local) ou via Compose.
 
-| Variable             | Défaut                                            | Rôle                                                        |
-| -------------------- | ------------------------------------------------- | ----------------------------------------------------------- |
-| `EPURE_FICHES_DIR`   | `<repo>/data/fiches`                              | Dossier racine des fiches PDF (RAG).                        |
-| `EPURE_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173`     | Origines autorisées (séparées par des virgules).            |
-| `EPURE_LOG_LEVEL`    | `INFO`                                            | Niveau de log (`DEBUG`/`INFO`/`WARNING`/`ERROR`).           |
-| `OLLAMA_HOST`        | `http://localhost:11434`                          | URL du serveur Ollama (URL complète, jamais `0.0.0.0`).     |
+| Variable               | Défaut                                        | Rôle                                                          |
+| ---------------------- | --------------------------------------------- | ------------------------------------------------------------- |
+| `EPURE_FICHES_DIR`     | `<repo>/data/fiches`                          | Dossier racine des fiches PDF (RAG).                          |
+| `EPURE_BIND`           | `127.0.0.1`                                   | Interface d'écoute du backend lancé par `epure_tray.py`.      |
+| `EPURE_ALLOWED_HOSTS`  | `localhost,127.0.0.1,::1`                     | En-têtes `Host` acceptés (anti DNS rebinding).                |
+| `EPURE_CORS_ORIGINS`   | `http://localhost:5173,http://127.0.0.1:5173` | Origines autorisées (séparées par des virgules).              |
+| `EPURE_LOG_LEVEL`      | `INFO`                                        | Niveau de log (`DEBUG`/`INFO`/`WARNING`/`ERROR`).             |
+| `OLLAMA_HOST`          | `http://localhost:11434`                      | URL du serveur Ollama (URL complète, jamais `0.0.0.0`).       |
+
+### Ouvrir l'API à d'autres appareils — à lire avant
+
+Par défaut le backend n'écoute que sur la boucle locale : il est injoignable
+depuis le réseau. `EPURE_BIND=0.0.0.0` lève cette restriction (accès depuis un
+téléphone, un autre poste…), mais **l'API n'est alors protégée que par un seul
+token**, et elle expose l'agent de code et l'Atelier — c'est-à-dire l'exécution
+de commandes sur la machine. Sur un réseau partagé (wifi d'établissement), c'est
+une exposition réelle, pas théorique.
+
+Si vous ouvrez malgré tout, ajoutez le nom d'hôte ou l'IP utilisés pour joindre
+Épure à `EPURE_ALLOWED_HOSTS` (ex. `localhost,127.0.0.1,::1,192.168.1.20`) :
+sinon toutes les requêtes reçoivent un `400 Invalid host header`. Ce filtre
+existe parce que la seule vérification de l'IP source ne suffit pas — une page
+web dont le domaine résout vers `127.0.0.1` se présente comme un client local
+et pourrait récupérer le token via `/pair`.
 
 Les paramètres de modèle, génération, RAG et voix sont dans
 `backend/config.yaml`. Les `watch_folders` y sont des chemins relatifs,

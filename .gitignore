@@ -1,3 +1,4 @@
+.claude/settings.local.json
 # Python
 __pycache__/
 *.py[cod]
@@ -42,6 +43,43 @@ backend/modules/_staging/
 backend/modules/_backups/
 frontend/src/modules/generated/_workshop_check_*/
 frontend/src/modules/_workshop_check/
+
+# Modules générés par l'Atelier : personnels, hors dépôt.
+# Allowlist plutôt que split de dossiers, pour ne pas refactorer deux fois les
+# mêmes chemins (MODULES_DIR de module_workshop.py sera touché par l'isolation).
+#
+# RÈGLE : tout dossier suivi par git doit figurer ici. Un dossier suivi mais
+# ignoré est un piège silencieux — les fichiers déjà suivis continuent de l'être
+# (un ignore ne s'applique qu'au non-suivi), donc rien ne casse et rien ne
+# prévient, mais tout NOUVEAU fichier qu'on y ajoute disparaît sans un mot. Sept
+# dossiers étaient dans ce cas ; contrôle :
+#     git check-ignore -q <dossier>/__probe__   # exit 0 = ignoré
+#
+# ÉTAPE C — les six modules installables ci-dessous (code, docs, flashcards,
+# kholle, rangement, reviseur) partent dans modules-catalogue/, et leur composant
+# quitte generated/. Leurs lignes d'exception devront alors être retirées.
+# IMPÉRATIF : réduire cette liste DANS LE MÊME COMMIT que le déplacement. La
+# faire dans un commit ultérieur rouvre exactement le piège décrit ci-dessus ;
+# l'oublier laisse une allowlist qui ment sur ce que contient le dépôt.
+backend/modules/*/
+!backend/modules/_atelier/
+!backend/modules/admin/
+!backend/modules/chat/
+!backend/modules/hello/
+!backend/modules/history/
+!backend/modules/settings/
+# Installables — à retirer à l'étape C (cf. ci-dessus).
+!backend/modules/code/
+!backend/modules/docs/
+!backend/modules/flashcards/
+!backend/modules/kholle/
+!backend/modules/rangement/
+!backend/modules/reviseur/
+
+frontend/src/modules/generated/*/
+!frontend/src/modules/generated/hello/
+# Installable — à retirer à l'étape C (cf. ci-dessus).
+!frontend/src/modules/generated/rangement/
 
 # Logs
 *.log

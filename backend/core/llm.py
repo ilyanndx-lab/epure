@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import Generator, Optional
 
+import httpx
 import ollama
 import yaml
 from dotenv import load_dotenv
@@ -13,14 +14,49 @@ load_dotenv(_ENV_FILE)
 
 logger = logging.getLogger(__name__)
 
+_CONFIG_FILE = Path(__file__).parent.parent / "config.yaml"
+
 # OLLAMA_HOST=0.0.0.0 is a server *listen* address — the client can't connect
 # to it on Windows. Normalize to localhost for all client calls.
-_ollama_host = os.environ.get("OLLAMA_HOST", "").strip() or "http://localhost:11434"
-if "0.0.0.0" in _ollama_host:
-    _ollama_host = _ollama_host.replace("0.0.0.0", "localhost")
-if not _ollama_host.startswith("http"):
-    _ollama_host = f"http://{_ollama_host}:11434"
-_ollama_client = ollama.Client(host=_ollama_host)
+ollama_host = os.environ.get("OLLAMA_HOST", "").strip() or "http://localhost:11434"
+if "0.0.0.0" in ollama_host:
+    ollama_host = ollama_host.replace("0.0.0.0", "localhost")
+if not ollama_host.startswith("http"):
+    ollama_host = f"http://{ollama_host}:11434"
+
+
+def _ollama_timeout_s() -> float:
+    """``model.timeout_s`` de config.yaml (défaut 60 s).
+
+    Lu au niveau module et pas dans ``LLMEngine.__init__`` : le client est un
+    singleton partagé (admin l'utilise aussi) construit avant qu'un moteur
+    existe. Chemin absolu — LLMEngine reçoit ``"config.yaml"`` en relatif, ce qui
+    dépend du répertoire courant.
+    """
+    try:
+        with open(_CONFIG_FILE, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return float((cfg.get("model") or {}).get("timeout_s") or 60)
+    except Exception:
+        logger.warning("model.timeout_s illisible dans config.yaml — défaut 60 s")
+        return 60.0
+
+
+#: Client Ollama UNIQUE du backend (host normalisé + timeout). Tout appel au
+#: client python Ollama passe par lui : `core/admin.py` construisait ses requêtes
+#: avec le module `ollama` brut, donc sans normalisation du host (OLLAMA_HOST=0.0.0.0
+#: le faisait échouer) et sans timeout.
+#:
+#: Le timeout est éclaté volontairement : `connect` court, parce qu'un Ollama
+#: arrêté doit être détecté tout de suite ; `read` long, parce que c'est le délai
+#: d'attente ENTRE deux paquets — un modèle de 7B qui se charge à froid ne renvoie
+#: rien pendant des dizaines de secondes (incident connu : la webview coupait le
+#: flux SSE muet pendant le cold-load), et un read trop court avorterait un
+#: démarrage parfaitement normal.
+ollama_client = ollama.Client(
+    host=ollama_host,
+    timeout=httpx.Timeout(_ollama_timeout_s(), connect=5.0),
+)
 
 # OpenAI-compatible providers: name → (base_url, env_key | None)
 # env_key=None means no API key required (local server)
@@ -144,7 +180,7 @@ class LLMEngine:
     # ── Ollama ───────────────────────────────────────────────────────────────
 
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None) -> Generator:
-        for chunk in _ollama_client.chat(
+        for chunk in ollama_client.chat(
             model=model, messages=messages, stream=True,
             options={
                 "temperature": self._gen["temperature"],
@@ -169,7 +205,7 @@ class LLMEngine:
                 pass
 
     def _generate_ollama(self, messages: list[dict], model: str) -> str:
-        response = _ollama_client.chat(
+        response = ollama_client.chat(
             model=model, messages=messages, stream=False,
             options={
                 "temperature": self._gen["temperature"],
