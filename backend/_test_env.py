@@ -64,13 +64,32 @@ REAL_DIRS = (REAL_DATA_DIR, REAL_MODULES_DIR, REAL_FRONTEND_MODULES)
 _IGNORES = shutil.ignore_patterns("_backups", "_staging", "__pycache__", "*.pyc")
 
 
+def _derive(chemin: Path) -> bool:
+    """Artefact dérivé, pas une donnée : exclu de l'empreinte.
+
+    Les ``__pycache__`` sont écrits par l'interpréteur lui-même dès qu'un module
+    est importé — ``register_routers`` fait ``import modules.admin.router``, et
+    le bytecode atterrit à côté de la source, dans le VRAI ``backend/modules/``.
+    Rien ne l'empêche : ``EPURE_MODULES_DIR`` détourne la lecture des manifestes,
+    pas la résolution du package ``modules`` par ``sys.path``.
+
+    Les compter comme une écriture rendrait le garde-fou ingérable — il
+    échouerait sur tout clone frais au premier import, ce qui est exactement ce
+    qui s'est produit : l'arbre de travail avait déjà ses ``.pyc``, donc le
+    problème ne s'y voyait pas. Un ``.pyc`` est régénérable, gitignoré, et ne
+    porte aucune donnée utilisateur ; ce que le garde-fou surveille, ce sont les
+    sources et les données.
+    """
+    return "__pycache__" in chemin.parts or chemin.suffix in (".pyc", ".pyo")
+
+
 def _instantaner(dossier: Path) -> dict[str, tuple[int, float]]:
     """Empreinte (taille, mtime) par fichier — sert de témoin d'écriture."""
     if not dossier.is_dir():
         return {}
     out: dict[str, tuple[int, float]] = {}
     for p in sorted(dossier.rglob("*")):
-        if p.is_file():
+        if p.is_file() and not _derive(p.relative_to(dossier)):
             try:
                 st = p.stat()
             except OSError:
