@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -178,6 +179,52 @@ class SuppressionOrdreTest(BaseCatalogue):
         catalogue.uninstall(self.ID)
         self.assertNotIn(self.ID, module_registry.active_ids())
 
+    def test_hello_ne_repond_plus_apres_suppression(self):
+        """Une API fantôme est pire qu'une panne : elle sert en silence.
+
+        Mesuré avant d'écrire ce test : sans `_drop_module_routes`, la route
+        continue de répondre **200 avec sa réponse normale** après effacement du
+        module. Le handler est un objet en mémoire ; supprimer le fichier ne le
+        touche pas. Le module disparaît de `GET /modules` et son API reste
+        servie — incohérence silencieuse, pas erreur visible.
+
+        Le retrait repose sur `_drop_module_routes`, qui filtre
+        `app.router.routes` : ce n'est PAS une API publique de Starlette (aucune
+        méthode de démontage n'existe). Ce test convertit cette dépendance
+        implicite en invariant tenu : le jour où Starlette change ses internes,
+        il échouera bruyamment ici plutôt que de laisser une API fantôme.
+        Même geste que `test_ce_module_est_bien_le_dernier_decouvert`.
+        """
+        client = _client()
+        headers = {"Authorization": f"Bearer {get_api_token()}"}
+
+        avant = client.get("/hello/ping", headers=headers)
+        self.assertEqual(avant.status_code, 200, "prérequis : hello répond avant suppression")
+
+        catalogue.uninstall("hello", app=main.app)
+        self.addCleanup(self._reinstaller_hello)
+
+        apres = client.get("/hello/ping", headers=headers)
+        self.assertEqual(
+            apres.status_code, 404,
+            "la route de hello répond encore après suppression du module — "
+            "API fantôme. `_drop_module_routes` ne filtre plus app.router.routes "
+            "(internes Starlette changés ?).",
+        )
+
+    def _reinstaller_hello(self):
+        """Remet hello dans l'arbre temporaire, pour les tests suivants."""
+        import importlib
+        src = _test_env.REAL_MODULES_DIR / "hello"
+        dest = self.modules / "hello"
+        if src.is_dir() and not dest.exists():
+            shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"))
+        importlib.invalidate_caches()
+        try:
+            module_registry.set_status("hello", "active")
+        except Exception:
+            pass
+
     def test_module_supprime_n_est_plus_importable(self):
         """Vaut grâce au rebranchement de modules.__path__ par _test_env.
 
@@ -237,6 +284,74 @@ class InstallationTest(BaseCatalogue):
         self.addCleanup(shutil.rmtree, self.generated / "flashcards", True)
         res = client.get("/flashcards/decks", headers=headers)
         self.assertNotEqual(res.status_code, 404, "le routeur n'a pas été monté")
+
+
+class CycleReinstallationTest(BaseCatalogue):
+    """DELETE puis INSTALL du même id : qui sert, le disque ou le cache ?
+
+    Le piège que ce test doit éviter : si les deux versions du router renvoient
+    la même chose, il passe sans rien prouver. La source du catalogue est donc
+    MODIFIÉE entre la suppression et la réinstallation, pour que la différence
+    soit observable.
+
+    `catalogue_dir()` est détourné vers un catalogue temporaire — le vrai
+    `modules-catalogue/` est du code versionné, aucun test ne doit y écrire.
+    """
+
+    ID = "zz_cycle"
+
+    def setUp(self):
+        super().setUp()
+        self.faux_catalogue = Path(tempfile.mkdtemp(prefix="epure-cat-cycle-"))
+        self.addCleanup(shutil.rmtree, self.faux_catalogue, True)
+        vrai = catalogue.catalogue_dir
+        catalogue.catalogue_dir = lambda: self.faux_catalogue
+        self.addCleanup(setattr, catalogue, "catalogue_dir", vrai)
+        self.client = _client()
+        self.headers = {"Authorization": f"Bearer {get_api_token()}"}
+
+    def _ecrire_source(self, version: str):
+        d = self.faux_catalogue / self.ID
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "manifest.json").write_text(
+            json.dumps(_manifeste(self.ID), ensure_ascii=False), encoding="utf-8")
+        (d / "router.py").write_text(
+            "from fastapi import APIRouter\n\nrouter = APIRouter()\n\n\n"
+            f"@router.get('/{self.ID}/ping')\n"
+            f"async def ping():\n    return {{'version': '{version}'}}\n",
+            encoding="utf-8")
+        (d / "Component.tsx").write_text("export default function C(){return null}\n", encoding="utf-8")
+
+    def test_apres_reinstallation_c_est_la_nouvelle_version_qui_sert(self):
+        self._ecrire_source("A")
+        catalogue.install(self.ID, app=main.app)
+        r = self.client.get(f"/{self.ID}/ping", headers=self.headers)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["version"], "A", "prérequis : la version A sert")
+
+        catalogue.uninstall(self.ID, app=main.app)
+        self.assertEqual(self.client.get(f"/{self.ID}/ping", headers=self.headers).status_code, 404)
+
+        # La SOURCE change entre les deux : sans ça, A et B seraient
+        # indistinguables et ce test passerait sans rien vérifier.
+        self._ecrire_source("B")
+        catalogue.install(self.ID, app=main.app)
+
+        r = self.client.get(f"/{self.ID}/ping", headers=self.headers)
+        self.assertEqual(r.status_code, 200, "le routeur n'a pas été remonté")
+        self.assertEqual(
+            r.json()["version"], "B",
+            "c'est l'ancien objet de sys.modules qui sert, pas le fichier "
+            "fraîchement copié — `_remount` ne fait plus son importlib.reload().",
+        )
+
+    def test_la_suppression_ne_laisse_rien_dans_sys_modules(self):
+        self._ecrire_source("A")
+        catalogue.install(self.ID, app=main.app)
+        self.assertIn(f"modules.{self.ID}.router", sys.modules)
+        catalogue.uninstall(self.ID, app=main.app)
+        restants = [n for n in sys.modules if n.startswith(f"modules.{self.ID}")]
+        self.assertEqual(restants, [], f"entrées fantômes dans sys.modules : {restants}")
 
 
 class HttpTest(BaseCatalogue):

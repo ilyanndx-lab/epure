@@ -56,7 +56,13 @@ _REPO = _BACKEND.parent
 REAL_DATA_DIR = _BACKEND / "memory"
 REAL_MODULES_DIR = _BACKEND / "modules"
 REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
-REAL_DIRS = (REAL_DATA_DIR, REAL_MODULES_DIR, REAL_FRONTEND_MODULES)
+#: Le catalogue est du code VERSIONNÉ, source des modules installables. Aucune
+#: variable ne le détourne — `core.catalogue.catalogue_dir()` est ancré sur
+#: REPO_ROOT — et c'est voulu : personne ne doit y écrire. Un test qui a besoin
+#: d'un catalogue variable détourne `catalogue_dir` lui-même (cf.
+#: CycleReinstallationTest). Surveillé pour que l'oublier se voie.
+REAL_CATALOGUE_DIR = _REPO / "modules-catalogue"
+REAL_DIRS = (REAL_DATA_DIR, REAL_MODULES_DIR, REAL_FRONTEND_MODULES, REAL_CATALOGUE_DIR)
 
 #: Non copiés dans l'arbre temporaire : `_backups` pèse 1,2 Mo des 1,6 Mo de
 #: modules/ et n'est qu'un historique de runtime ; `_staging` et les caches sont
