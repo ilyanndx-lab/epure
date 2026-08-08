@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from core.jsonstore import read_json, write_json
+from core.jsonstore import read_json, transaction, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,19 @@ class MemoryEngine:
     def save_profile(self, data: dict) -> None:
         self._write(self._profile_path, data)
 
+    def profile_transaction(self):
+        """RMW verrouillé du profil, pour les appelants qui chargent, modifient
+        et réécrivent.
+
+        Nécessaire parce que ce couple load/save est effectué DEPUIS L'EXTÉRIEUR
+        (ConsolidationEngine.apply_consolidation), lancé dans des Thread explicites
+        par les modules kholle et chat : deux consolidations simultanées
+        chargeaient le même profil et la seconde écrasait les lacunes ajoutées par
+        la première. Un verrou dans `save_profile` n'y changerait rien — la course
+        est entre le load et le save.
+        """
+        return transaction(self._profile_path, {})
+
     # ── Sessions ───────────────────────────────────────────────────────────
 
     def get_all_sessions(self) -> list:
@@ -108,32 +121,29 @@ class MemoryEngine:
         réussies: int,
         ratées: int,
     ) -> None:
-        data = self._read(self._sessions_path)
-        data.setdefault("sessions", []).append({
-            "date": datetime.now().date().isoformat(),
-            "matière": matière,
-            "fichier": fichier,
-            "erreurs": erreurs,
-            "réussies": réussies,
-            "ratées": ratées,
-            "archivée": False,
-        })
-        self._write(self._sessions_path, data)
+        with transaction(self._sessions_path, {"sessions": []}) as data:
+            data.setdefault("sessions", []).append({
+                "date": datetime.now().date().isoformat(),
+                "matière": matière,
+                "fichier": fichier,
+                "erreurs": erreurs,
+                "réussies": réussies,
+                "ratées": ratées,
+                "archivée": False,
+            })
 
     def archive_sessions(self, dates: list) -> None:
-        data = self._read(self._sessions_path)
-        for s in data.get("sessions", []):
-            if s.get("date") in dates:
-                s["archivée"] = True
-        self._write(self._sessions_path, data)
+        with transaction(self._sessions_path, {"sessions": []}) as data:
+            for s in data.get("sessions", []):
+                if s.get("date") in dates:
+                    s["archivée"] = True
 
     def archive_old_sessions(self, days: int = 30) -> None:
         cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
-        data = self._read(self._sessions_path)
-        for s in data.get("sessions", []):
-            if s.get("date", "") < cutoff:
-                s["archivée"] = True
-        self._write(self._sessions_path, data)
+        with transaction(self._sessions_path, {"sessions": []}) as data:
+            for s in data.get("sessions", []):
+                if s.get("date", "") < cutoff:
+                    s["archivée"] = True
 
     def promote_lacunes(self) -> None:
         recent = self.get_sessions(days=30)
@@ -142,16 +152,15 @@ class MemoryEngine:
             for err in s.get("erreurs", []):
                 counts[err] = counts.get(err, 0) + 1
 
-        profile = self.load_profile()
-        lacunes = set(profile.get("lacunes_confirmées", []))
-        changed = False
-        for err, n in counts.items():
-            if n >= 3 and err not in lacunes:
-                lacunes.add(err)
-                changed = True
-        if changed:
-            profile["lacunes_confirmées"] = sorted(lacunes)
-            self.save_profile(profile)
+        with self.profile_transaction() as profile:
+            lacunes = set(profile.get("lacunes_confirmées", []))
+            changed = False
+            for err, n in counts.items():
+                if n >= 3 and err not in lacunes:
+                    lacunes.add(err)
+                    changed = True
+            if changed:
+                profile["lacunes_confirmées"] = sorted(lacunes)
 
     # ── Context session ────────────────────────────────────────────────────
 
@@ -159,9 +168,10 @@ class MemoryEngine:
         return self._read(self._context_path)
 
     def update_context(self, **kwargs) -> None:
-        data = self._read(self._context_path)
-        data.update(kwargs)
-        self._write(self._context_path, data)
+        # Le site le plus chaud du dépôt : appelé à chaque message (modèle actif,
+        # fichiers actifs, résumé de contexte) depuis le pool de threads.
+        with transaction(self._context_path, {}) as data:
+            data.update(kwargs)
 
     # ── Selective memory retrieval ─────────────────────────────────────────
 

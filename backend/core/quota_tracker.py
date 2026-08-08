@@ -5,7 +5,7 @@ Counters live in backend/memory/quota_usage.json, auto-reset when the
 provider's period (day/month) rolls over, and are saved from a background
 thread so tracking never blocks a streaming response.
 """
-import json
+import copy
 import logging
 import threading
 import time
@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from core.jsonstore import read_json
+from core.jsonstore import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +74,16 @@ class QuotaTracker:
             self._dirty.wait()
             time.sleep(0.1)  # debounce: coalesce rapid successive tracks
             self._dirty.clear()
+            # Copie sous verrou, sérialisation dehors : write_json parcourt la
+            # structure, et le faire sur self._data laisserait un track()
+            # concurrent muter un dict en cours d'itération.
             with self._lock:
-                snapshot = json.dumps(self._data, ensure_ascii=False, indent=2)
+                snapshot = copy.deepcopy(self._data)
             try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(".json.tmp")
-                tmp.write_text(snapshot, encoding="utf-8")
-                tmp.replace(self._path)
+                # Le tmp+replace local a été retiré : write_json est désormais
+                # atomique (jsonstore), donc un seul chemin d'écriture pour tous
+                # les JSON de runtime.
+                write_json(self._path, snapshot)
             except Exception:
                 logger.exception("Erreur sauvegarde %s", self._path)
 

@@ -782,10 +782,14 @@ export default function Settings() {
             onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.model) void updateInstance({ atelier: { gateway: { model: v } } }) }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
             className="w-full text-xs py-1.5" placeholder="Modèle (ex : routé par la passerelle)" />
-          <Input mono type="password" key={`gk-${config.atelier.gateway.api_key}`} defaultValue={config.atelier.gateway.api_key}
-            onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.api_key) void updateInstance({ atelier: { gateway: { api_key: v } } }) }}
+          {/* Le serveur ne renvoie plus la clé, seulement api_key_présente : le
+              champ part donc toujours vide. On n'envoie que ce qui est saisi —
+              un blur sur champ vide ne doit pas effacer la clé enregistrée. */}
+          <Input mono type="password" key={`gk-${config.atelier.gateway.api_key_présente}`} defaultValue=""
+            onBlur={e => { const v = e.target.value.trim(); if (v) void updateInstance({ atelier: { gateway: { api_key: v } } }) }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-            className="w-full text-xs py-1.5" placeholder="Clé (optionnelle)" />
+            className="w-full text-xs py-1.5"
+            placeholder={config.atelier.gateway.api_key_présente ? 'Clé enregistrée — saisir pour remplacer' : 'Clé (optionnelle)'} />
           <Input mono key={`gs-${config.atelier.gateway.start_command}`} defaultValue={config.atelier.gateway.start_command}
             onBlur={e => { const v = e.target.value.trim(); if (v !== config.atelier.gateway.start_command) void updateInstance({ atelier: { gateway: { start_command: v } } }) }}
             onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}

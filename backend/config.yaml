@@ -1,6 +1,13 @@
 model:
   name: qwen2.5:7b
   n_ctx: 4096
+  # Timeout des appels au client Ollama, en secondes (défaut du code : 60).
+  # C'est le délai d'attente ENTRE DEUX PAQUETS, pas la durée totale : il doit
+  # couvrir le chargement à froid d'un modèle (plusieurs minutes pour un 7B sur
+  # disque lent), sinon le premier message après le démarrage échoue. La panne
+  # « Ollama figé » reste détectée par le timeout de connexion (5 s, non
+  # configurable) et par la sonde de /health.
+  timeout_s: 300
 
 generation:
   temperature: 0.7
