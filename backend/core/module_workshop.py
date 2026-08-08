@@ -1611,7 +1611,11 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
     dest_manifest.write_text(
         json.dumps(norm.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    # Override de status persistant (modules_state.json) — ceinture+bretelles.
+    # Activation : un seul chemin. set_status ajoute l'id à modules_activés
+    # (unique source de vérité depuis la bascule à deux états) et refuse les cas
+    # interdits. Il y avait ici un doublon — set_status écrivait modules_state.json
+    # et le bloc plus bas ajoutait à modules_activés : deux écritures pour une
+    # notion, c'est exactement ce qui avait divergé.
     module_registry.set_status(module_id, "active")
 
     # Frontend : Component.tsx → emplacement existant, sinon generated/<id>/
@@ -1621,13 +1625,7 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
         comp_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(comp_src, comp_dest)
 
-    # Activation : ajout à modules_activés + (re)montage du router.
-    cfg = instance_config.get()
-    enabled = list(cfg.get("modules_activés", []))
-    if module_id not in enabled:
-        enabled.append(module_id)
-        instance_config.update({"modules_activés": enabled})
-
+    # (l'ajout à modules_activés est fait par set_status ci-dessus)
     remounted = False
     remount_error = None
     if app is not None:
