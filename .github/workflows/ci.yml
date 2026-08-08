@@ -49,7 +49,7 @@ jobs:
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
           pip install fastapi pydantic pyyaml python-dotenv
-          httpx python-multipart chromadb ollama pypdf watchdog
+          httpx python-multipart chromadb ollama pypdf watchdog uvicorn
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
         # Les tests forcent HF_HUB_OFFLINE=1 et neutralisent les sondes
