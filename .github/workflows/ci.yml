@@ -1,18 +1,26 @@
 # CI rapide (< 3 min), sans secret ni gros modèle ML.
 #
-# - backend  : validateur AST, confinement de chemin, surface d'auth HTTP.
-#              test_auth_surface.py monte la vraie app (TestClient), donc il
-#              importe main.py : d'où chromadb/ollama/pypdf/watchdog/
-#              python-multipart en plus des deps minimales — c'est exactement
-#              l'ensemble des imports de niveau module de main.py, mesuré, et
-#              il n'inclut PAS torch/sentence-transformers (le préchauffage RAG
-#              de core.runtime tourne dans un thread et échoue proprement).
-# - frontend : npm ci + tsc --noEmit (bloquant) + eslint (non bloquant : ~94
-#              erreurs préexistantes de règles react-hooks strictes sur tout le
-#              codebase ; à re-rendre bloquant après résorption de la dette).
-# - integration : test_modules_mount.py charge core.runtime (torch, chromadb…)
-#              → trop lourd pour chaque push, déclenchement MANUEL uniquement
-#              (workflow_dispatch).
+# - backend  : `unittest discover` sur backend/test_*.py. DÉCOUVERTE AUTOMATIQUE
+#              et non plus une liste de `run:` nommés — la liste avait laissé 4
+#              fichiers de test sur 6 ne jamais tourner, sans que rien ne le
+#              signale. Un nouveau `backend/test_*.py` est donc pris en compte
+#              sans toucher à ce fichier.
+#              Les deps ne sont pas minimales : plusieurs tests montent la vraie
+#              app (TestClient), donc importent main.py — d'où chromadb/ollama/
+#              pypdf/watchdog/python-multipart. C'est exactement l'ensemble des
+#              imports de niveau module de main.py, mesuré, et il n'inclut PAS
+#              torch/sentence-transformers (le préchauffage RAG de core.runtime
+#              tourne dans un thread et échoue proprement).
+# - frontend : npm ci + tsc --noEmit (bloquant) + npm run build (bloquant) +
+#              eslint (non bloquant : ~94 erreurs préexistantes de règles
+#              react-hooks strictes sur tout le codebase ; à re-rendre bloquant
+#              après résorption de la dette, cf. CHANGELOG).
+#              `tsc --noEmit` est gardé EN PLUS du build : il échoue en ~15 s là
+#              où le build échoue en ~1 min, et le message est plus direct.
+# - integration : integration_modules_mount.py charge core.runtime (torch,
+#              chromadb…) → trop lourd pour chaque push, déclenchement MANUEL
+#              uniquement (workflow_dispatch). Son préfixe `integration_` est ce
+#              qui l'exclut de la découverte du job backend.
 
 name: CI
 
@@ -42,40 +50,17 @@ jobs:
         run: >
           pip install fastapi pydantic pyyaml python-dotenv
           httpx python-multipart chromadb ollama pypdf watchdog
-      - name: Gate de sécurité des routers (test_module_validate.py)
+      - name: Tests unitaires (découverte automatique)
         working-directory: backend
-        run: python test_module_validate.py
-      - name: Confinement de chemin (test_safe_path.py)
-        working-directory: backend
-        run: python test_safe_path.py
-      - name: Surface d'authentification HTTP (test_auth_surface.py)
-        working-directory: backend
-        # Le test force HF_HUB_OFFLINE=1 et neutralise les sondes Ollama/FLM :
-        # aucun accès réseau, aucun téléchargement de modèle.
-        run: python test_auth_surface.py
-      - name: Lancements de process (test_command_exec.py)
-        working-directory: backend
-        # subprocess.Popen est mocké : rien n'est réellement lancé. Les cas
-        # propres à Windows (argv d'explorer, citation des chemins) sont
-        # skippés sur ce runner Linux — à vérifier à la main sous Windows.
-        run: python test_command_exec.py
-      - name: Identifiants de module de l'Atelier (test_workshop_paths.py)
-        working-directory: backend
-        run: python test_workshop_paths.py
-      - name: Confinement des uploads (test_upload_paths.py)
-        working-directory: backend
-        # Les dossiers de destination sont redirigés vers un dossier temporaire :
-        # aucune écriture dans le dépôt, et surtout aucun risque sur
-        # backend/memory/instance_config.json si le code testé régresse.
-        run: python test_upload_paths.py
-      - name: Écritures JSON concurrentes (test_jsonstore_concurrency.py)
-        working-directory: backend
-        # ~3 s : threads réels, aucun sleep d'attente, une seule fenêtre d'1 s
-        # pour le test lecteurs/écrivains.
-        run: python test_jsonstore_concurrency.py
+        # Les tests forcent HF_HUB_OFFLINE=1 et neutralisent les sondes
+        # Ollama/FLM : aucun accès réseau, aucun téléchargement de modèle.
+        # subprocess.Popen est mocké là où il est testé. Les cas propres à
+        # Windows (argv d'explorer, citation des chemins) se skippent d'eux-mêmes
+        # sur ce runner Linux — ils restent à vérifier à la main.
+        run: python -m unittest discover -s . -p 'test_*.py' -v
 
   frontend:
-    name: Frontend — tsc + eslint
+    name: Frontend — tsc + build + eslint
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -92,6 +77,12 @@ jobs:
         run: npm ci
       - name: Type-check (bloquant)
         run: npx tsc --noEmit
+      - name: Build (bloquant)
+        # `tsc --noEmit` ne voit pas les erreurs de bundling. Or le TSX généré
+        # par l'Atelier atterrit dans frontend/src/modules/generated/, inclus
+        # dans tsconfig.app.json ("include": ["src"]) : un module généré qui ne
+        # bundle pas cassait l'image frontend sans que la CI le voie.
+        run: npm run build
       - name: eslint (non bloquant — dette préexistante, voir en-tête)
         run: npm run lint
         continue-on-error: true
@@ -110,8 +101,8 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Dépendances complètes (torch, chromadb…)
         run: pip install -r backend/requirements.txt
-      - name: Montage de tous les modules (test_modules_mount.py)
+      - name: Montage de tous les modules (integration_modules_mount.py)
         working-directory: backend
         # Le test force HF_HUB_OFFLINE=1 lui-même : aucun téléchargement de
         # modèle HF, les moteurs lourds restent paresseux (_LazyEngine).
-        run: python test_modules_mount.py
+        run: python integration_modules_mount.py
