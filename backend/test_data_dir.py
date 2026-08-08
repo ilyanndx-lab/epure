@@ -9,9 +9,11 @@ Deux garanties, et la seconde n'a de valeur que si la première tient :
    ferait échouer ces tests — c'est exactement l'état d'avant, où neuf modules
    calculaient `Path(__file__).parent.parent / "memory"` à l'import.
 
-2. **Rien n'est écrit sous le vrai `backend/memory/` pendant la suite.**
-   `_test_env` prend une empreinte du dossier avant tout import de `core.*` ;
-   on la compare ici. C'est le garde-fou qui doit exister AVANT que
+2. **Rien n'est écrit sous le vrai `backend/memory/` pendant la suite.** Ce
+   contrôle-là ne vit PAS ici mais dans `test_zz_donnees_reelles.py`, dont le
+   nom le place en dernier module découvert — il vivait dans ce fichier
+   (découvert en 3e position sur 12) et ne voyait donc pas les écritures des
+   modules suivants. C'est le garde-fou qui doit exister AVANT que
    `DELETE /settings/modules/{id}` soit écrit : un endpoint destructif qui se
    tromperait de dossier détruirait des données réelles pendant les tests.
 
@@ -123,46 +125,6 @@ class LiaisonTardiveTest(_DossierTemporaire):
         for attr in ("_profile_path", "_sessions_path", "_context_path"):
             with self.subTest(attribut=attr):
                 self.assertEqual(getattr(moteur, attr).parent, self.tmp.resolve())
-
-
-class RealDataUntouchedTest(unittest.TestCase):
-    """Garde-fou : le vrai backend/memory/ ne doit pas bouger pendant la suite.
-
-    L'empreinte témoin est prise par `_test_env` au tout premier import, donc
-    avant que le moindre `core.*` soit chargé. C'est le bon moment : les
-    écritures les plus dangereuses sont celles de l'import (`main.py` lance la
-    migration des modules au chargement), et `unittest discover` importe TOUS
-    les modules de test avant d'exécuter le premier test.
-
-    Limite honnête : ce test s'exécute à sa place dans l'ordre alphabétique, il
-    ne peut donc pas voir une écriture faite par un test trié après lui. Il
-    couvre la phase d'import — celle qui a réellement causé l'incident — et la
-    vérification complète se fait en observant `git status` après un passage.
-    """
-
-    def test_le_vrai_dossier_de_donnees_est_intact(self):
-        actuel = _test_env._instantaner(_test_env.REAL_DATA_DIR)
-        avant = _test_env.REAL_SNAPSHOT
-
-        crees = sorted(set(actuel) - set(avant))
-        supprimes = sorted(set(avant) - set(actuel))
-        modifies = sorted(f for f in set(avant) & set(actuel) if avant[f] != actuel[f])
-
-        self.assertEqual(
-            (crees, supprimes, modifies), ([], [], []),
-            f"\nLa suite a touché {_test_env.REAL_DATA_DIR} :"
-            f"\n  créés     : {crees}"
-            f"\n  supprimés : {supprimes}"
-            f"\n  modifiés  : {modifies}"
-            "\nUn test importe core.* ou main sans passer par `import _test_env` "
-            "en premier, ou un chemin de données est encore codé en dur.",
-        )
-
-    def test_la_suite_ecrit_bien_ailleurs(self):
-        """Contrôle du contrôle : EPURE_DATA_DIR est posé et pointe ailleurs."""
-        courant = resolve_data_dir()
-        self.assertNotEqual(courant, _test_env.REAL_DATA_DIR.resolve())
-        self.assertEqual(courant, _test_env.DATA_DIR.resolve())
 
 
 if __name__ == "__main__":

@@ -209,8 +209,22 @@ Aucune base de données côté application. Deux stockages :
 
 Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
 ces imports (`backend/_test_env.py` pose `EPURE_DATA_DIR` sur un temporaire
-unique pour la session). `test_data_dir.RealDataUntouchedTest` échoue si
-`backend/memory/` est touché pendant la suite.
+unique pour la session).
+
+**IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
+découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
+modules dans l'ordre alphabétique, et un garde-fou qui vérifie que personne n'a
+sali `backend/memory/` ne vaut que s'il passe après tous les autres. Le contrôle
+vivait dans `test_data_dir.py` (3e sur 12) : un fichier écrit par
+`test_workshop_paths` (12e) laissait la suite verte — 179 tests OK avec un
+intrus sur le disque, mesuré. Donc : **tout nouveau fichier de test doit trier
+avant `test_zz_`** (c'est le cas de tout nom ne commençant pas par `test_z`).
+L'invariant est lui-même testé (`test_ce_module_est_bien_le_dernier_decouvert`).
+
+Ce que le garde-fou ne couvre pas, et qu'il ne faut pas lui prêter : un
+`tearDownModule`/`tearDownClass` qui s'exécuterait après lui, les `atexit`, et
+les threads démons (`QuotaTracker` en lance un). Il prouve qu'aucun *test* n'a
+écrit, pas qu'aucune *ligne de code* n'écrira.
 
 Le confinement se fait par **`Path.resolve()` puis `is_relative_to()`**, jamais
 par `startswith` de chaînes (contournable par un dossier frère `modules-autre/`).
