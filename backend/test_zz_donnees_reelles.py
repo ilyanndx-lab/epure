@@ -95,6 +95,10 @@ class RealDataUntouchedTest(unittest.TestCase):
     def test_le_vrai_dossier_frontend_est_intact(self):
         self._comparer(_test_env.REAL_FRONTEND_MODULES)
 
+    def test_le_vrai_catalogue_est_intact(self):
+        """Le catalogue est une source versionnée : rien ne doit y écrire."""
+        self._comparer(_test_env.REAL_CATALOGUE_DIR)
+
     def test_la_suite_ecrit_bien_ailleurs(self):
         """Contrôle du contrôle : les trois variables pointent ailleurs.
 

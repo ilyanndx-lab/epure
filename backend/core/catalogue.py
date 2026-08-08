@@ -19,9 +19,11 @@ c'est exactement le mécanisme qui avait produit deux stockages d'état
 divergents (cf. CLAUDE.md §3.3).
 """
 
+import importlib
 import json
 import logging
 import shutil
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -172,6 +174,17 @@ def uninstall(module_id: str, app=None) -> dict:
     comp = _frontend_component_path(mid, must_exist=True)
     if comp and comp.is_file():
         shutil.rmtree(comp.parent, ignore_errors=True)
+
+    # Purge de sys.modules : sans elle, `modules.<id>.router` reste un objet
+    # vivant après la suppression des fichiers (mesuré). Les routes, elles, sont
+    # bien retirées — donc rien ne casse aujourd'hui, parce que `_remount` fait
+    # `import_module` PUIS `reload()` et relit le disque à la réinstallation.
+    # Mais `register_routers` fait un `import_module` NU : le jour où un module
+    # supprimé serait recréé autrement qu'en passant par ici, il servirait
+    # l'ancien objet. Une désinstallation ne doit rien laisser derrière elle.
+    for nom in [n for n in list(sys.modules) if n == f"modules.{mid}" or n.startswith(f"modules.{mid}.")]:
+        del sys.modules[nom]
+    importlib.invalidate_caches()  # le FileFinder cache le contenu des dossiers
 
     module_registry.set_status(mid, "disabled")
 
