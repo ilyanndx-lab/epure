@@ -152,6 +152,42 @@ DATA_DIR = _installer()
 #: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus.
 MODULES_DIR = _installer_arbre("EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules")
 
+def _rebrancher_package_modules(cible: Path) -> None:
+    """Fait résoudre ``import modules.<id>.…`` depuis l'arbre TEMPORAIRE.
+
+    Sans ça, deux arbres coexistent pendant les tests et le code en lit un
+    pendant qu'il en importe un autre :
+
+      * ``EPURE_MODULES_DIR`` détourne la lecture des manifestes,
+        ``_modules_safe_path`` et le ``rmtree`` de la suppression ;
+      * ``sys.path`` ne bouge pas, donc ``importlib.import_module`` continue de
+        servir le VRAI ``backend/modules/``.
+
+    Mesuré, dans les deux sens :
+
+      * après suppression d'un module du temporaire,
+        ``import_module("modules.hello.router")`` RÉUSSIT encore depuis le vrai
+        arbre — un test « ce module n'est plus montable » passerait pour la
+        mauvaise raison ;
+      * après installation d'un module dans le temporaire, l'import ÉCHOUE en
+        ``ModuleNotFoundError`` — le montage à chaud de l'installation était donc
+        purement intestable.
+
+    ``modules`` est un *namespace package* (pas d'``__init__.py``) : son
+    ``__path__`` est une liste, et lui réaffecter une liste d'un seul élément
+    supprime la portion du vrai dépôt. Un ajout à ``sys.path`` ne suffirait pas —
+    les portions d'un namespace package se cumulent, le vrai arbre resterait
+    visible et la fuite du DELETE avec.
+
+    Effet de bord bienvenu : le bytecode part maintenant dans le temporaire, et
+    plus à côté des sources réelles (cf. ``_derive``, qui reste par ceinture et
+    bretelles).
+    """
+    import modules  # noqa: PLC0415 — doit venir APRÈS le réglage de sys.path
+
+    modules.__path__ = [str(cible)]
+
+
 #: Copie de frontend/src/modules/ — EPURE_GENERATED_DIR pointe sur son
 #: sous-dossier `generated`, dont core.paths déduit le parent.
 _FRONTEND_COPIE = _installer_arbre("EPURE_GENERATED_DIR", REAL_FRONTEND_MODULES, "frontend")
@@ -163,3 +199,8 @@ if _FRONTEND_COPIE.name != "generated":
     os.environ["EPURE_GENERATED_DIR"] = str(GENERATED_DIR)
 else:
     GENERATED_DIR = _FRONTEND_COPIE
+
+# Un seul arbre de modules pour toute la suite : lu, importé, supprimé au même
+# endroit. À faire APRÈS que MODULES_DIR existe, et AVANT tout import de core.*
+# ou main — c'est-à-dire ici, à l'import de ce fichier.
+_rebrancher_package_modules(MODULES_DIR)

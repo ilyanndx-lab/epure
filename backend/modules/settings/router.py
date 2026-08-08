@@ -25,6 +25,8 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core import catalogue as _catalogue
+from core.codeagent import SecurityError
 from core.instance import fiches_root, instance_config
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
 from core.rag import RAGEngine
@@ -552,3 +554,47 @@ def provider_models():
         if os.environ.get(key_name, "").strip():
             result[provider] = [f"{provider}:{mid}" for mid in models]
     return {"providers": result}
+
+
+# ── Catalogue de modules installables ────────────────────────────────────────
+# La logique vit dans core.catalogue, qui réutilise les helpers éprouvés de
+# module_workshop (confinement d'id, sauvegarde horodatée, (dé)montage à chaud).
+# Ici : seulement le contrat HTTP et la traduction des refus en 400/404.
+#
+# `request.app` et non un import de `main` : le routeur est monté SUR l'app, il
+# ne doit pas la connaître par en haut — un import de main depuis un module
+# créerait un cycle et casserait le montage isolé visé par le chantier §7.
+
+
+@router.get("/settings/catalogue")
+async def catalogue_list():
+    """Manifestes de modules-catalogue/, chacun avec `installé: bool`. Lecture seule."""
+    return {"modules": _catalogue.list_catalogue()}
+
+
+@router.post("/settings/catalogue/{module_id}/install")
+async def catalogue_install(module_id: str, request: Request):
+    """Installe un module du catalogue : copie, activation, montage à chaud."""
+    try:
+        return _catalogue.install(module_id, app=request.app)
+    except SecurityError as exc:
+        logger.warning("SECURITY: installation refusée — %r", module_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except _catalogue.CatalogueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/settings/modules/{module_id}")
+async def module_delete(module_id: str, request: Request):
+    """Supprime un module installé. Destructif : sauvegarde AVANT effacement.
+
+    Refuse un id malformé (SecurityError → 400), un module du cœur ou non
+    supprimable, et un id inconnu.
+    """
+    try:
+        return _catalogue.uninstall(module_id, app=request.app)
+    except SecurityError as exc:
+        logger.warning("SECURITY: suppression refusée — %r", module_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except _catalogue.CatalogueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -180,12 +180,51 @@ est diagnostiquée dans **Réglages › Atelier — moteurs** (bouton « Re-test
   modèle (+ clé éventuelle) dans **Réglages › Atelier**. Le backend pointe
   `ANTHROPIC_BASE_URL` dessus pour les générations.
 
+## Catalogue de modules
+
+Épure est livrée avec un **cœur** (Chat, Admin, Historique, Réglages) et un
+**catalogue** de modules installables à la demande, dans `modules-catalogue/` :
+Code, Docs, Flashcards, Kholle, Réviseur, Rangement.
+
+L'installation se fait depuis **Réglages › Catalogue**. Elle copie les trois
+fichiers du module vers leurs emplacements d'exécution :
+
+```
+modules-catalogue/<id>/manifest.json   →  backend/modules/<id>/manifest.json
+modules-catalogue/<id>/router.py       →  backend/modules/<id>/router.py
+modules-catalogue/<id>/Component.tsx   →  frontend/src/modules/generated/<id>/Component.tsx
+```
+
+Rien n'est téléchargé : le catalogue est local, et le code d'un module non
+installé n'est simplement pas dans votre bundle.
+
+### ⚠️ Un module installé n'apparaît qu'après reconstruction du frontend
+
+L'installation écrit dans `frontend/src/modules/generated/`. Deux cas :
+
+| Contexte | Effet |
+|---|---|
+| **Serveur de développement** (`npm run dev`, ce que lance `epure_tray.py`) | Vite détecte le fichier et recharge à chaud — le module apparaît **immédiatement**. |
+| **Frontend déjà construit** (image Docker, `npm run build`) | Le bundle est figé : le module n'apparaît **qu'après un `npm run build`** et un redémarrage du conteneur. Le backend, lui, monte sa route tout de suite. |
+
+C'est une limite assumée du choix « catalogue local » plutôt que chargement de
+JavaScript distant à l'exécution : exécuter du JS tiers dans l'origine de
+l'application annulerait la frontière de sécurité (tout module chargé pourrait
+lire le token d'API dans `localStorage`). Le détail du raisonnement est dans
+`docs/catalogue-modules.md` §0.
+
+**Suppression** : Réglages › Catalogue › Supprimer. Une sauvegarde horodatée est
+écrite dans `backend/modules/_backups/<id>/<horodatage>/` **avant** tout
+effacement. Les modules du cœur ne sont pas supprimables.
+
+---
+
 ## Tests
 
 ```bash
 cd backend
-python -m unittest test_web_search          # tests offline (HTTP mocké)
-python test_web_search.py --live            # vraie recherche réseau (démo)
+python -m unittest discover -s . -p "test_*.py"   # la suite complète (celle de la CI)
+python test_web_search.py --live                  # vraie recherche réseau (démo)
 ```
 
 ---
