@@ -906,8 +906,10 @@ export default function Workshop() {
             <Button variant="primary" icon={<Check size={14} />} onClick={() => approve(false)} disabled={!report?.ok}>
               Approuver & activer
             </Button>
-            <Button variant="secondary" size="sm" icon={<Bug size={13} />} onClick={fixError}
-              disabled={phase === 'generating' || phase === 'validating'}>
+            {/* Pas de `disabled` sur les phases de travail : ce bloc n'est rendu
+                que si phase === 'review' (cf. plus haut), donc la garde était
+                morte — tsc la signalait, personne ne lisait tsc. */}
+            <Button variant="secondary" size="sm" icon={<Bug size={13} />} onClick={fixError}>
               Corriger l'erreur (reprend le code actuel)
             </Button>
             <Button variant="ghost" size="sm"
