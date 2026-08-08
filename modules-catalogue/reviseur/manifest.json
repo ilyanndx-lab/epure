@@ -4,10 +4,14 @@
   "nom": "Réviseur",
   "icon": "CalendarCheck",
   "description": "Plan de révision quotidien ciblé : lacunes du profil + fiches + flashcards dues",
-  "frontend": { "component": "Component" },
-  "backend": { "prefix": "/reviseur" },
-  "core_module": true,
-  "origin": "builtin",
+  "frontend": {
+    "component": "Component"
+  },
+  "backend": {
+    "prefix": "/reviseur"
+  },
+  "core_module": false,
+  "origin": "catalogue",
   "status": "active",
   "removable": true
 }

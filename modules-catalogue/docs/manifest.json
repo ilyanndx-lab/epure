@@ -4,10 +4,14 @@
   "nom": "Docs",
   "icon": "FileSearch",
   "description": "Analyse documentaire et chat sur vos fichiers",
-  "frontend": { "component": "Docs" },
-  "backend": { "prefix": "" },
-  "core_module": true,
-  "origin": "builtin",
+  "frontend": {
+    "component": "Docs"
+  },
+  "backend": {
+    "prefix": ""
+  },
+  "core_module": false,
+  "origin": "catalogue",
   "status": "active",
   "removable": true
 }
