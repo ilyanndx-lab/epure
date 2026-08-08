@@ -2,9 +2,9 @@ import { useState } from 'react'
 import {
   AlertTriangle, BookOpen, CalendarCheck, Check, Layers, Loader2, RefreshCw, Target,
 } from 'lucide-react'
-import { Badge, Button, Card, ProgressBar } from '../../components/ui'
-import { API, apiFetch } from '../../api'
-import { usePersistentState } from '../../usePersistentState'
+import { Badge, Button, Card, ProgressBar } from '../../../components/ui'
+import { API, apiFetch } from '../../../api'
+import { usePersistentState } from '../../../usePersistentState'
 
 // ── Types (miroir de GET /reviseur/plan) ─────────────────────────────────────
 
