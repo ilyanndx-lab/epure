@@ -79,17 +79,25 @@ jobs:
       # `tsc -b` et NON `tsc --noEmit` : frontend/tsconfig.json est un fichier
       # « solution » ("files": [] + "references"), et hors mode -b tsc ne suit
       # pas les références. `--noEmit` ne lisait donc aucun fichier et sortait 0
-      # quoi qu'il arrive — un gate vert par vacuité. Mesuré : 1 s sur le run
-      # 31261765846, contre 8,9 s pour `tsc -b` à froid en local sur le même
-      # arbre. Ce n'était pas « rapide », c'était vide.
+      # quoi qu'il arrive — un gate vert par vacuité, pas par succès. Démontré :
+      # sur un `const x: number = 'pas un nombre'` volontaire, `tsc --noEmit`
+      # sort 0 sans rien afficher là où `tsc -b` sort 2 avec le TS2322.
       #
       # Étape gardée séparée du build plutôt que supprimée : son nom distinct
       # dans l'UI GitHub dit immédiatement si c'est le typage ou le bundling qui
-      # a cassé, sans ouvrir les logs. Et elle ne coûte presque rien en double
-      # emploi : `tsc -b` écrit son .tsbuildinfo dans node_modules/.tmp, donc le
-      # `tsc -b` que relance `npm run build` juste après est incrémental — il ne
-      # refait pas le travail, l'étape Build ne paie plus que le bundling vite
-      # (~2,3 s mesurés en local).
+      # a cassé, sans ouvrir les logs. Le double emploi coûte peu : `tsc -b`
+      # écrit son .tsbuildinfo dans node_modules/.tmp, donc le `tsc -b` que
+      # relance `npm run build` juste après est incrémental et ne refait pas le
+      # travail de typage.
+      #
+      # Durées mesurées SUR LE RUNNER, par étape — ce sont des durées d'étape,
+      # démarrage npm/node compris, pas le temps propre de l'outil :
+      #   run 31261765846 (avant) : Type-check  1 s · Build 10 s
+      #   run 31262794722 (après) : Type-check 10 s · Build  8 s
+      # Le typage bascule d'une étape à l'autre ; l'étape Build ne garde que le
+      # bundling (vite rapporte ~2,3 s) plus le démarrage npm. Coût net du gate
+      # réel : +3 s sur le job (44 s → 47 s). L'ancien « ~15 s contre ~1 min »
+      # de ce commentaire était inventé — d'où le détail des runs ici.
       - name: Type-check (bloquant)
         run: npx tsc -b
       - name: Build (bloquant)
