@@ -11,12 +11,18 @@
 #              imports de niveau module de main.py, mesuré, et il n'inclut PAS
 #              torch/sentence-transformers (le préchauffage RAG de core.runtime
 #              tourne dans un thread et échoue proprement).
-# - frontend : npm ci + tsc --noEmit (bloquant) + npm run build (bloquant) +
-#              eslint (non bloquant : ~94 erreurs préexistantes de règles
-#              react-hooks strictes sur tout le codebase ; à re-rendre bloquant
-#              après résorption de la dette, cf. CHANGELOG).
+# - frontend : npm ci + tsc --noEmit + npm run build + eslint — les trois
+#              BLOQUANTS depuis le 2026-08-08. eslint tourne avec un cliquet
+#              `--max-warnings 63` (0 erreur) : le détail de ce chiffre est
+#              au-dessus de l'étape elle-même, plus bas dans ce fichier.
 #              `tsc --noEmit` est gardé EN PLUS du build : il échoue en ~15 s là
 #              où le build échoue en ~1 min, et le message est plus direct.
+#              ⚠️ Attention : `tsc --noEmit` seul ne garde rien ici —
+#              frontend/tsconfig.json est un fichier « solution » (`files: []`
+#              + `references`), et hors mode `-b` tsc ne suit pas les
+#              références : il type-checke zéro fichier et sort 0. C'est
+#              `npm run build` (qui lance `tsc -b`) qui attrape réellement les
+#              erreurs de type. Mesuré le 2026-08-08.
 # - integration : integration_modules_mount.py charge core.runtime (torch,
 #              chromadb…) → trop lourd pour chaque push, déclenchement MANUEL
 #              uniquement (workflow_dispatch). Son préfixe `integration_` est ce
@@ -42,8 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Dépendances (pas de deps ML — voir en-tête)
@@ -67,8 +73,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -83,9 +89,24 @@ jobs:
         # dans tsconfig.app.json ("include": ["src"]) : un module généré qui ne
         # bundle pas cassait l'image frontend sans que la CI le voie.
         run: npm run build
-      - name: eslint (non bloquant — dette préexistante, voir en-tête)
-        run: npm run lint
-        continue-on-error: true
+      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus 63
+      # avertissements. Le nombre ne peut que baisser — quiconque en ajoute un
+      # casse la CI, et quiconque en résorbe doit descendre le plafond dans le
+      # même commit. C'est ce qui empêche la dette de regrimper en silence, ce
+      # que `continue-on-error: true` avait laissé faire pendant des mois.
+      #
+      # Les 63 se décomposent en deux populations à ne pas confondre :
+      #   41 react-hooks/exhaustive-deps — faux positifs. eslint ne peut pas
+      #      voir à travers usePersistentState que le setter retourné est celui
+      #      de useState, donc stable ; il exige des dépendances inutiles.
+      #   22 react-hooks/{set-state-in-effect,refs,immutability} — VRAIES
+      #      violations des Rules of React, passées en « warn » dans
+      #      eslint.config.js faute de tests frontend pour rattraper une
+      #      régression. Prérequis pour les traiter : vitest +
+      #      testing-library, en commençant par usePersistentState.ts.
+      #      Voir CHANGELOG.md, « dette assumée ».
+      - name: eslint (bloquant — cliquet à 63 avertissements)
+        run: npm run lint -- --max-warnings 63
 
   integration:
     name: Intégration — montage de tous les modules (manuel)
@@ -93,8 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip

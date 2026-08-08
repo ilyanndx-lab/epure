@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-08-08 — eslint bloquant en CI (cliquet à 63 avertissements)
+
+`continue-on-error: true` neutralisait l'étape eslint : elle s'affichait verte
+quoi qu'elle trouve. Un lint qu'on ne peut pas lire comme un verdict ne sert à
+rien. Il est maintenant bloquant, avec `--max-warnings 63` — un cliquet : le
+plafond ne peut que descendre, et quiconque ajoute un avertissement casse la CI.
+
+Les 33 erreurs qui empêchaient de le rendre bloquant se répartissaient en deux
+familles très différentes, que l'annotation GitHub ne distinguait pas :
+
+- **11 étaient mécaniques** et sont corrigées. Six `no-explicit-any` dans
+  `rangement` : quatre reçoivent un type honnête (l'API File System Access
+  absente de la lib DOM, décrite par ce qu'on en consomme), trois annotations
+  `catch (err: any)` redondantes sont retirées — `strict` étant absent de
+  `tsconfig.app.json`, `catch (err)` donne déjà `any`, et le jour où `strict`
+  passera à `true` ces lignes échoueront bruyamment au lieu de compiler en
+  silence. La sixième, la charge utile SSE, garde un `any` **assumé** avec sa
+  justification : sa forme dépend de l'événement et n'est définie que côté
+  backend, sans schéma partagé — une union devinée aurait été un type faux,
+  pire qu'un `any` explicite. Les quatre `no-unused-vars` (`_props`, `_t`,
+  `_p`) sont réglées en alignant eslint sur le compilateur : `tsconfig.app.json`
+  exempte déjà les identifiants préfixés `_`, eslint fait désormais pareil.
+  Le `react-refresh/only-export-components` du chat est corrigé comme la règle
+  le demande — les constantes partent dans `src/modules/chat/commands.ts`, ce
+  qui rend le Fast Refresh au module de chat (jusqu'ici, éditer le composant
+  rechargeait la conversation en cours au lieu d'en préserver l'état).
+
+- **22 ne l'étaient pas** et sont passées en `warn` — voir ci-dessous.
+
+### Dette assumée, non traitée par ce lot
+
+- **22 vraies violations des Rules of React**, signalées par
+  `react-hooks/set-state-in-effect` (10), `react-hooks/refs` (9) et
+  `react-hooks/immutability` (3), apparues avec le preset
+  `eslint-plugin-react-hooks@7` (règles React Compiler). **Ce ne sont pas des
+  faux positifs** — contrairement aux 41 `exhaustive-deps` du même décompte, qui
+  viennent de ce qu'eslint ne peut pas voir à travers `usePersistentState` que
+  le setter retourné est celui de `useState`, donc stable. Elles sont réelles :
+  setState synchrone dans un effet, lecture/écriture de ref pendant le rendu,
+  accès à une variable avant sa déclaration.
+
+  Elles ne sont pas corrigées parce que les corriger **change le comportement**,
+  et qu'il n'existe **aucun test frontend** pour rattraper une régression
+  (`package.json` n'a que `dev`/`build`/`lint`/`preview`, zéro `*.test.*`).
+
+  **Prérequis avant d'y toucher : mettre en place `vitest` +
+  `@testing-library/react`.** Puis commencer par
+  **`src/usePersistentState.ts`** — il écrit `latest.current` et `keyRef.current`
+  pendant le rendu, et ce hook porte l'état persisté de toute l'application :
+  c'est à la fois la violation la plus structurante et celle dont la régression
+  serait la plus diffuse. Le reste (chat, Atelier, code, settings) vient après.
+
 ## 2026-08-08 — Isolation : worker et tests committés, dépendances CI complétées
 
 `backend/core/module_worker.py` et `backend/test_module_isolation.py` existaient
