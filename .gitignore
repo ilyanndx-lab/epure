@@ -43,6 +43,21 @@ backend/modules/_backups/
 frontend/src/modules/generated/_workshop_check_*/
 frontend/src/modules/_workshop_check/
 
+# Modules générés par l'Atelier : personnels, hors dépôt.
+# Allowlist plutôt que split de dossiers, pour ne pas refactorer deux fois les
+# mêmes chemins (MODULES_DIR de module_workshop.py sera touché par l'isolation).
+# Cœur + catalogue listés en exception — une ligne par nouveau module suivi.
+backend/modules/*/
+!backend/modules/_atelier/
+!backend/modules/admin/
+!backend/modules/chat/
+!backend/modules/hello/
+!backend/modules/history/
+!backend/modules/settings/
+
+frontend/src/modules/generated/*/
+!frontend/src/modules/generated/hello/
+
 # Logs
 *.log
 *.err
