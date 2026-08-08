@@ -5,10 +5,15 @@ from pathlib import Path
 from typing import Optional
 
 from core.jsonstore import read_json, transaction, write_json
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-_FLASHCARDS_PATH = Path(__file__).parent.parent / "memory" / "flashcards.json"
+
+# Fonction et non constante : cf. core.paths.resolve_data_dir.
+def _flashcards_path() -> Path:
+    return resolve_data_dir() / "flashcards.json"
+
 
 # Spaced-repetition intervals in days, indexed by level (0-5)
 _INTERVALS = [1, 3, 7, 14, 30, 60]
@@ -17,18 +22,18 @@ _MAX_LEVEL = 5
 
 class FlashcardsEngine:
     def __init__(self):
-        _FLASHCARDS_PATH.parent.mkdir(exist_ok=True)
-        if not _FLASHCARDS_PATH.exists():
+        _flashcards_path().parent.mkdir(parents=True, exist_ok=True)
+        if not _flashcards_path().exists():
             self._write({"decks": []})
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 
     def _read(self) -> dict:
-        return read_json(_FLASHCARDS_PATH, {"decks": []})
+        return read_json(_flashcards_path(), {"decks": []})
 
     def _write(self, data: dict) -> None:
         try:
-            write_json(_FLASHCARDS_PATH, data)
+            write_json(_flashcards_path(), data)
         except Exception:
             logger.exception("Erreur écriture flashcards.json")
 
@@ -39,7 +44,7 @@ class FlashcardsEngine:
         autre thread crée un deck (l'Atelier et le chat écrivent depuis des
         threads distincts) faisait perdre l'un des deux.
         """
-        return transaction(_FLASHCARDS_PATH, {"decks": []})
+        return transaction(_flashcards_path(), {"decks": []})
 
     def _today(self) -> str:
         return datetime.now().date().isoformat()

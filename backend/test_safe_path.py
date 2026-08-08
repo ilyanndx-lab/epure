@@ -26,6 +26,8 @@ from pathlib import Path
 # Permettre d'importer le package `core` depuis le dossier backend.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
+
 from core import codeagent
 from core import module_workshop
 from core.paths import resolve_workspace

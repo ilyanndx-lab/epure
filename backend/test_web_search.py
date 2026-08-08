@@ -17,6 +17,8 @@ from unittest import mock
 # S'assurer de pouvoir importer main depuis le dossier backend.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
+
 # perform_web_search a migré dans le module chat (modules/chat/router.py).
 from modules.chat import router as chat_router
 perform_web_search = chat_router.perform_web_search

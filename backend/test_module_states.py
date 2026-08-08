@@ -9,9 +9,10 @@ Pourquoi ces tests existent : les deux stockages avaient divergé en silence
 absent de la barre). Rien ne l'avait signalé parce que rien ne le vérifiait.
 
 Isolation — aucun test ne touche la vraie configuration :
+  * `_test_env` pose `EPURE_DATA_DIR` sur un temporaire avant tout import ;
   * `_MODULES_DIR` pointe un dossier temporaire de faux manifestes ;
   * `instance_config` est remplacé par une `InstanceConfig` sur un JSON temporaire ;
-  * `_LEGACY_STATE_FILE` pointe le temporaire lui aussi ;
+  * `_legacy_state_file` (fonction) renvoie le temporaire lui aussi ;
   * `register_routers` reçoit une fausse app et un faux `import_module`, pour ne
     pas dépendre du package `modules` réellement importable.
 
@@ -29,6 +30,8 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
 
 from core import module_registry  # noqa: E402
 from core.instance import InstanceConfig  # noqa: E402
@@ -84,7 +87,12 @@ class BaseEtatsModules(unittest.TestCase):
 
         patches = [
             mock.patch.object(module_registry, "_MODULES_DIR", self.modules_dir),
-            mock.patch.object(module_registry, "_LEGACY_STATE_FILE", self.legacy_file),
+            # _legacy_state_file est une FONCTION depuis la bascule EPURE_DATA_DIR
+            # (un chemin figé à l'import ignorerait la variable d'environnement) :
+            # on remplace la fonction, pas une constante.
+            mock.patch.object(
+                module_registry, "_legacy_state_file", lambda: self.legacy_file
+            ),
             mock.patch.object(module_registry, "instance_config", self.cfg),
         ]
         for p in patches:

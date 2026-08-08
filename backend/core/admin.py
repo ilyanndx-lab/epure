@@ -10,13 +10,21 @@ import pypdf
 
 from core.jsonstore import read_json, transaction, write_json
 from core.llm import ollama_client
-from core.paths import FICHES_DIR as _FICHES_DIR
+from core.paths import FICHES_DIR as _FICHES_DIR, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
 _MATIERES = ["Maths", "Physique-Chimie", "SI"]
-_LOG_PATH = Path(__file__).parent.parent / "memory" / "admin_log.json"
-_CACHE_PATH = Path(__file__).parent.parent / "memory" / "admin_cache.json"
+
+
+# Fonctions et non constantes : cf. core.paths.resolve_data_dir — un chemin figé
+# à l'import ignore toute surcharge d'environnement posée ensuite.
+def _log_path() -> Path:
+    return resolve_data_dir() / "admin_log.json"
+
+
+def _cache_path() -> Path:
+    return resolve_data_dir() / "admin_cache.json"
 
 
 class AdminEngine:
@@ -40,11 +48,11 @@ class AdminEngine:
         return None
 
     def _load_cache(self) -> dict:
-        return read_json(_CACHE_PATH, {})
+        return read_json(_cache_path(), {})
 
     def _save_cache(self) -> None:
         try:
-            write_json(_CACHE_PATH, self._cache)
+            write_json(_cache_path(), self._cache)
         except Exception:
             logger.exception("Erreur sauvegarde admin_cache.json")
 
@@ -232,13 +240,13 @@ class AdminEngine:
         return results
 
     def _load_log(self) -> list:
-        return read_json(_LOG_PATH, [])
+        return read_json(_log_path(), [])
 
     def _append_log(self, action_type: str, source: str, destination: str) -> None:
         # Sous verrou, `len(log)` est enfin fiable : deux rangements simultanés
         # produisaient sinon deux entrées de même id (même index, même seconde),
         # et undo_action n'en retrouvait qu'une.
-        with transaction(_LOG_PATH, []) as log:
+        with transaction(_log_path(), []) as log:
             log.append({
                 "id": f"{len(log)}_{int(time.time())}",
                 "date": datetime.now().isoformat(),
@@ -282,7 +290,7 @@ class AdminEngine:
             # Transaction courte, et seulement maintenant : tenir le verrou du
             # log pendant le shutil.move et la réindexation ChromaDB (plusieurs
             # secondes) bloquerait tous les autres écrivains du log.
-            with transaction(_LOG_PATH, []) as fresh_log:
+            with transaction(_log_path(), []) as fresh_log:
                 for a in fresh_log:
                     if a["id"] == action_id:
                         a["annulé"] = True

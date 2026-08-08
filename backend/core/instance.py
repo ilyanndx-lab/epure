@@ -25,11 +25,17 @@ from threading import RLock
 from typing import Any, Optional
 
 from core.jsonstore import read_json, transaction, write_json
-from core.paths import FICHES_DIR
+from core.paths import FICHES_DIR, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_FILE = Path(__file__).parent.parent / "memory" / "instance_config.json"
+def _config_file() -> Path:
+    """Chemin d'``instance_config.json``. Fonction, PAS constante.
+
+    Cf. core.paths.resolve_data_dir : le calculer à l'import figerait le dossier
+    de données avant qu'un test ait pu poser ``EPURE_DATA_DIR``.
+    """
+    return resolve_data_dir() / "instance_config.json"
 
 #: Module dont la désactivation est refusée : sans lui, plus d'écran pour
 #: réactiver quoi que ce soit. Réinjecté à l'écriture si un patch client
@@ -102,8 +108,12 @@ def _key_status() -> dict:
 class InstanceConfig:
     """Configuration d'instance persistée, thread-safe, interface DB-ready."""
 
-    def __init__(self, path: Path = _CONFIG_FILE):
-        self._path = path
+    def __init__(self, path: Optional[Path] = None):
+        # `path=_CONFIG_FILE` en défaut d'argument était le piège le plus
+        # discret des neuf : un défaut est évalué à la DÉFINITION de la
+        # fonction, donc à l'import du module. Le sentinelle None reporte la
+        # résolution à la construction de l'objet.
+        self._path = Path(path) if path is not None else _config_file()
         self._lock = RLock()
         self._cache: Optional[dict] = None
         self._ensure()

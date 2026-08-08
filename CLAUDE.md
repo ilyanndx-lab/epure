@@ -198,6 +198,19 @@ Aucune base de données côté application. Deux stockages :
 
 - `FICHES_DIR` / `resolve_fiches_dir()` — `$EPURE_FICHES_DIR`, sinon `<repo>/data/fiches`
 - `resolve_workspace()` — `$EPURE_WORKSPACE`, sinon `<repo>/workspace`, toujours `.resolve()`
+- `resolve_data_dir()` — `$EPURE_DATA_DIR`, sinon `<backend>/memory`, toujours
+  `.resolve()`. **IMPÉRATIF : l'appeler, jamais figer son résultat dans une
+  constante de module** (ni dans un défaut d'argument, `def f(p=CONST)` étant
+  évalué à l'import). Neuf modules calculaient `Path(__file__).parent.parent /
+  "memory" / …` au chargement : la suite de tests écrivait donc dans les données
+  réelles, au point d'exécuter pour de bon la migration de `modules_activés` sur
+  la config de l'utilisateur. Verrouillé par `test_data_dir.py`, qui pose la
+  variable **après** les imports et vérifie que l'écriture suit.
+
+Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
+ces imports (`backend/_test_env.py` pose `EPURE_DATA_DIR` sur un temporaire
+unique pour la session). `test_data_dir.RealDataUntouchedTest` échoue si
+`backend/memory/` est touché pendant la suite.
 
 Le confinement se fait par **`Path.resolve()` puis `is_relative_to()`**, jamais
 par `startswith` de chaînes (contournable par un dossier frère `modules-autre/`).
