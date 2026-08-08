@@ -123,7 +123,15 @@ export default function RangementModule(_props: SharedModuleProps) {
     relativeParent: string,
     files: FileInfo[]
   ): Promise<void> {
-    for await (const [name, handle] of (dirHandle as any).entries()) {
+    // `entries()` fait partie de la File System Access API mais pas de la lib
+    // DOM de TypeScript (tsconfig.app.json : lib ["ES2023","DOM"], sans
+    // DOM.AsyncIterable). On décrit exactement ce qu'on consomme au lieu de
+    // masquer tout le handle derrière `any` : `kind` reste discriminant, donc
+    // getFile() et la récursion ci-dessous sont vérifiés par le compilateur.
+    const entrees = (dirHandle as unknown as {
+      entries(): AsyncIterable<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>;
+    }).entries();
+    for await (const [name, handle] of entrees) {
       const childRel = relativeParent ? `${relativeParent}/${name}` : name;
       if (handle.kind === "file") {
         const file = await handle.getFile();
@@ -144,7 +152,12 @@ export default function RangementModule(_props: SharedModuleProps) {
   const handleSelectFolder = async () => {
     setError(null);
     try {
-      const dirHandle = await (window as any).showDirectoryPicker();
+      // Idem : absente de la lib DOM. On ne type que ce qu'on appelle. Si
+      // l'API manque (Firefox, Safari), l'appel lève et le catch ci-dessous
+      // affiche déjà le message d'échec — comportement inchangé.
+      const dirHandle = await (window as unknown as {
+        showDirectoryPicker(): Promise<FileSystemDirectoryHandle>;
+      }).showDirectoryPicker();
       setFolderPath(dirHandle.name || "");
       const collected: FileInfo[] = [];
       await readFolder(dirHandle, "", collected);
@@ -152,8 +165,13 @@ export default function RangementModule(_props: SharedModuleProps) {
       setResult(null);
       setStreamTokens("");
       setStreamStatus("");
-    } catch (err: any) {
-      if (err?.name !== "AbortError") {
+      // `instanceof Error` plutôt qu'un `any` : en JS n'importe quoi peut être
+      // lancé, donc TypeScript 6 type la variable de catch en `{}`. L'annulation
+      // par l'utilisateur arrive sous forme de DOMException (qui hérite d'Error),
+      // le test reste donc exact — et une valeur lancée d'un autre type retombe
+      // sur la branche d'erreur, comme avant.
+    } catch (err) {
+      if (!(err instanceof Error) || err.name !== "AbortError") {
         setError("Impossible d'ouvrir le dossier. Vérifiez les permissions.");
         console.error("Folder selection error", err);
       }
@@ -191,9 +209,9 @@ export default function RangementModule(_props: SharedModuleProps) {
       const data: AnalyzeResponse = await res.json();
       setResult(data);
       fetchHistory();
-    } catch (err: any) {
+    } catch (err) {
       console.error("Analyze error", err);
-      setError(err?.message || "Erreur lors de l'analyse.");
+      setError((err instanceof Error && err.message) || "Erreur lors de l'analyse.");
       setResult(null);
     } finally {
       setLoading(false);
@@ -270,12 +288,12 @@ export default function RangementModule(_props: SharedModuleProps) {
           }
         }
       }
-    } catch (err: any) {
-      if (err?.name === "AbortError") {
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
         // annulation volontaire, rien à faire
       } else {
         console.error("Stream error", err);
-        setError(err?.message || "Erreur lors du streaming.");
+        setError((err instanceof Error && err.message) || "Erreur lors du streaming.");
       }
     } finally {
       setIsStreaming(false);
@@ -284,7 +302,17 @@ export default function RangementModule(_props: SharedModuleProps) {
     }
   };
 
-  /** Traite un événement SSE reçu du backend. */
+  /**
+   * Traite un événement SSE reçu du backend.
+   *
+   * `any` assumé, pas une négligence : la forme de `payload` change à chaque
+   * type d'événement (status/token/result/error) et n'est définie que côté
+   * backend, sans schéma partagé. Écrire ici une union devinée serait un type
+   * faux — pire qu'un `any` explicite : il mentirait au prochain lecteur et
+   * casserait au premier champ ajouté côté FastAPI. À typer honnêtement le jour
+   * où ces événements auront un `response_model` (cf. CLAUDE.md §10).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- cf. docstring ci-dessus
   function handleSSEEvent(event: string, payload: any) {
     switch (event) {
       case "status":

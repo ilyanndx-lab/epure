@@ -6,6 +6,7 @@ import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
 import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
+import { AT_COMMANDS, SLASH_COMMANDS } from './commands'
 
 interface MsgStats {
   tps: number
@@ -53,25 +54,6 @@ interface ChatProps {
   ttsEnabled?: boolean
   onTtsToggle?: () => void
 }
-
-const AT_COMMANDS = [
-  { trigger: '@cours',      desc: 'RAG sur tous les fichiers indexés' },
-  { trigger: '@strict',     desc: 'Réponse concise, sans intro' },
-  { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
-  { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
-  { trigger: '@web',        desc: 'Recherche web complémentaire avant la réponse [sujet]' },
-] as const
-
-const SLASH_COMMANDS = [
-  { trigger: '/kholle',     desc: 'Ouvre le module Kholle [matière?]' },
-  { trigger: '/flashcards', desc: 'Ouvre les Flashcards [source?]' },
-  { trigger: '/résumé',     desc: 'Résumé des fichiers actifs (streaming)' },
-  { trigger: '/modèle',     desc: 'Change le modèle actif [nom]' },
-  { trigger: '/lacunes',    desc: 'Lacunes + erreurs des 7 derniers jours' },
-  { trigger: '/direct',     desc: 'Bypass orchestrateur — 1 modèle direct [message]' },
-] as const
-
-export const SKILL_COMMANDS = { at: AT_COMMANDS, slash: SLASH_COMMANDS }
 
 function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
