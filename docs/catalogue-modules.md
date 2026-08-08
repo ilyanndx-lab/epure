@@ -40,32 +40,113 @@ documenter dans le README, pas à contourner.
 
 ---
 
-## §1 — Clarifier les trois états d'un module
+## §1 — Deux états d'un module, une seule source de vérité
 
 **À faire avant d'ajouter quoi que ce soit**, sinon la dette est immédiate.
 
-Aujourd'hui, deux notions coexistent déjà :
+### Décision : deux états, pas trois
 
-- `backend/memory/modules_state.json` → `status: active | disabled`
-  (`core/module_registry.py:111`, `set_status`) — conditionne le **montage du
-  routeur**.
-- `instance_config.modules_activés` (liste ordonnée) — conditionne
-  **l'affichage dans la barre** et son ordre
-  (`frontend/src/modules/settings/Component.tsx:296-312`).
+| État | Source de vérité | Effet | Stockage |
+|---|---|---|---|
+| **Installé** | présence de `backend/modules/<id>/manifest.json` | le module existe pour cette instance | aucun — dérivé du disque |
+| **Actif** | appartenance à `instance_config.modules_activés` | routeur monté **et** visible dans la barre, à la position donnée par la liste | `memory/instance_config.json` |
 
-Le catalogue en ajoute un troisième : **présent sur disque ou non**.
+`modules_activés` est une **liste ordonnée** et devient l'**unique** source de
+vérité. Il n'y a pas d'état « monté mais invisible » : un module actif est monté
+et affiché, un module inactif n'est ni l'un ni l'autre.
 
-Modèle cible, à écrire noir sur blanc dans `CLAUDE.md` :
+### Pourquoi pas trois états
 
-| État | Source de vérité | Effet |
+La version précédente de ce plan séparait « actif » (montage, via
+`modules_state.json`) et « épinglé + ordre » (barre, via `modules_activés`).
+Cette séparation est abandonnée pour deux raisons :
+
+1. **Elle ne décrit aucun cas réel.** Il n'existe aujourd'hui aucun module
+   monté-mais-invisible, ni aucun besoin identifié d'en avoir un. On paierait la
+   complexité d'un état pour un cas hypothétique.
+2. **Deux fichiers pour une notion produisent la divergence, mécaniquement.**
+   Constat sur l'instance de référence avant migration :
+
+   - `modules_state.json` : 11 entrées, dont **9 fantômes** (`minuteur`, `snake`,
+     `emojis`, `pong`, `clicker`, `vroom`, `dinosaure`, `minecraft`, `astral`)
+     pointant des modules supprimés à l'étape A ;
+   - `modules_activés` : 12 entrées, dont **4 fantômes** (`snake`, `minecraft`,
+     `dinosaure`, `astral`) ;
+   - `reviseur` : installé, monté, fonctionnel — et **absent** de
+     `modules_activés`. Cause : le défaut `_CORE_MODULES` de `core/instance.py`
+     est une liste écrite en dur qui ne le mentionne pas (ni `settings`, ni
+     `hello`). Un module ajouté au dépôt après cette constante n'entrait jamais
+     dans la liste.
+
+   Les deux fichiers ne divergeaient pas par accident : rien ne les tenait
+   ensemble.
+
+`backend/memory/modules_state.json` **disparaît**. Il ne doit pas être recréé —
+cf. `CLAUDE.md` §3.3.
+
+### Règles dérivées
+
+- **Défaut sur une installation neuve** : `modules_activés` absent ou vide → tous
+  les modules installés sont actifs, dans l'ordre de `discover_manifests()`
+  (tri alphabétique du nom de dossier, donc déterministe et reproductible).
+  C'est ce que voit quelqu'un qui clone le dépôt et démarre, sans rien régler.
+  L'invariant tient parce que la liste ne peut pas devenir vide par l'usage :
+  `settings` est indésactivable, donc « vide » signifie sans ambiguïté « jamais
+  initialisée », jamais « tout désactivé par l'utilisateur ».
+- **`settings` reste indésactivable** — sinon plus d'écran pour réactiver quoi
+  que ce soit. Refusé par `set_status`, et réinjecté à la lecture si la liste
+  stockée l'a perdu.
+- **Un id présent mais non installé est purgé** au démarrage (entrée fantôme).
+- **Un module installé absent de la liste est ajouté en fin** : l'absence
+  signifie « jamais vu », pas « masqué ». C'est ce qui rattrape `reviseur`, et ce
+  qui fera entrer tout module installé depuis le catalogue à l'étape C.
+
+### Migration, une seule fois au démarrage
+
+Journalisée ligne par ligne, dans cet ordre :
+
+| # | Opération | Sur l'instance de référence |
 |---|---|---|
-| **Installé** | présence de `backend/modules/<id>/manifest.json` | le module existe pour cette instance |
-| **Actif** | `modules_state.json.status` | son routeur est monté, son composant résolvable |
-| **Épinglé + ordre** | `instance_config.modules_activés` | présence et position dans la barre latérale |
+| a | tout module `status: "disabled"` d'un ancien `modules_state.json` est retiré de `modules_activés` **et exclu de l'étape c** | aucun (les 11 entrées sont `active`) |
+| b | tout id de `modules_activés` non installé est purgé | `snake`, `minecraft`, `dinosaure`, `astral` |
+| c | tout module installé absent de `modules_activés` est ajouté en fin | `hello`, `reviseur`, `settings` |
+| d | `modules_state.json` est supprimé | 11 entrées jetées |
 
-Règle : `modules_activés` ne doit plus servir à activer/désactiver — seulement à
-ordonner ce qui est déjà actif. Un id qui y figure sans être installé est purgé
-au démarrage (aujourd'hui il produit une entrée fantôme).
+L'exclusion en (a) est ce qui rend (a) et (c) compatibles au sein d'un même
+passage : sans elle, un module explicitement désactivé serait retiré par (a) puis
+aussitôt réajouté par (c). « Désactivé » est une information, « absent » n'en est
+pas une.
+
+#### Correction apportée à l'implémentation : (a) et (c) sont conditionnelles
+
+Le plan ci-dessus, appliqué tel quel à **chaque** démarrage, ne tient pas. Le
+test d'idempotence l'a montré :
+
+> (a) exclut `zeta` parce que `modules_state.json` le dit désactivé. (d) supprime
+> ce fichier. Au démarrage suivant, plus rien ne porte l'information : (c) voit
+> `zeta` installé et absent de la liste, et le réintègre.
+
+Le défaut ne se limite pas à la migration. Une fois la bascule faite, `set_status`
+désactive un module **en le retirant de la liste** — c'est tout le modèle à deux
+états. Donc « installé et absent » ne signifie plus « jamais vu » mais
+« désactivé par l'utilisateur », et (c) à chaque démarrage **annulerait toute
+désactivation au reboot suivant**.
+
+Règle retenue :
+
+| Étape | Quand |
+|---|---|
+| (a) désactivations héritées | **bascule seulement** — `modules_state.json` présent, ou liste vide |
+| (b) purge des fantômes | **à chaque démarrage** (un module effacé du disque doit sortir de la barre) |
+| (c) installés absents ajoutés | **bascule seulement** — même condition que (a) |
+| (d) suppression de l'ancien fichier | **bascule seulement**, par construction |
+
+Un module installé après coup n'a pas besoin de (c) : l'installation depuis le
+catalogue (étape C) passera par `set_status(id, "active")`, qui l'ajoute.
+
+La migration est ainsi **idempotente** : en régime établi, (b) ne trouve rien et
+il n'y a aucune écriture. C'est testé, ainsi que le cas d'usage réel — désactiver
+un module puis redémarrer doit le laisser désactivé.
 
 ---
 

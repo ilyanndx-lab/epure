@@ -22,19 +22,19 @@ import secrets
 import uuid
 from pathlib import Path
 from threading import RLock
-from typing import Optional
+from typing import Any, Optional
 
-from core.jsonstore import read_json, write_json
+from core.jsonstore import read_json, transaction, write_json
 from core.paths import FICHES_DIR
 
 logger = logging.getLogger(__name__)
 
 _CONFIG_FILE = Path(__file__).parent.parent / "memory" / "instance_config.json"
 
-# Modules « core » livrés avec Épure (cf. core.module_registry / manifests).
-# settings est volontairement exclu de la liste activable : il reste toujours
-# accessible (sinon impossible de réactiver un module).
-_CORE_MODULES = ["chat", "kholle", "flashcards", "code", "docs", "admin", "history"]
+#: Module dont la désactivation est refusée : sans lui, plus d'écran pour
+#: réactiver quoi que ce soit. Réinjecté à l'écriture si un patch client
+#: l'omet (cf. :meth:`InstanceConfig.update`).
+_MODULE_INDESACTIVABLE = "settings"
 
 _API_KEY_NAMES = ["GEMINI_API_KEY", "GROQ_API_KEY", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "NVIDIA_API_KEY", "DEEPSEEK_API_KEY"]
 _KEY_TO_PROVIDER = {
@@ -53,7 +53,14 @@ def _default_config() -> dict:
     return {
         "instance_id": str(uuid.uuid4()),
         "nom_affiché": "Épure",
-        "modules_activés": list(_CORE_MODULES),
+        # Vide et NON une liste de modules en dur. L'ancien défaut était
+        # ["chat","kholle","flashcards","code","docs","admin","history"] : tout
+        # module ajouté au dépôt après l'écriture de cette constante n'y entrait
+        # jamais — c'est ainsi que `reviseur` était installé, monté, et pourtant
+        # absent de la barre. Vide signifie « jamais initialisée » et déclenche
+        # le défaut dynamique « tous les modules installés, ordre
+        # discover_manifests() » (core.module_registry.active_ids).
+        "modules_activés": [],
         "providers": {
             "actif": _DEFAULT_LOCAL_MODEL,
             "local": _DEFAULT_LOCAL_MODEL,
@@ -121,6 +128,63 @@ class InstanceConfig:
             else:
                 # Fusion avec les défauts : tolère les champs absents (migrations).
                 self._cache = self._merge_defaults(self._load())
+
+    @staticmethod
+    def _garder_settings(modules: Any) -> list:
+        """Réinjecte ``settings`` dans une liste de modules non vide.
+
+        Depuis que ``modules_activés`` est l'unique source de vérité, elle ne
+        pilote plus seulement l'affichage : elle conditionne le **montage du
+        routeur**. Une liste qui perd ``settings`` ne cache donc plus un écran,
+        elle le débranche — et c'est précisément l'écran par lequel on
+        réactiverait quoi que ce soit. Le garde-fou est ici, au point d'écriture,
+        et pas seulement dans ``set_status`` : ``update()`` accepte une liste
+        entière venant du client (réordonnancement, retrait), qui ne passe pas
+        par ``set_status``.
+
+        La liste VIDE est laissée telle quelle : elle signifie « jamais
+        initialisée » et déclenche le défaut dynamique de
+        ``module_registry.active_ids()``, qui remonte tout — settings compris.
+        """
+        if not isinstance(modules, list):
+            return modules
+        if modules and _MODULE_INDESACTIVABLE not in modules:
+            logger.info(
+                "modules_activés : %r réinjecté (indésactivable)", _MODULE_INDESACTIVABLE
+            )
+            return [*modules, _MODULE_INDESACTIVABLE]
+        return modules
+
+    def _mutate(self, muter) -> dict:
+        """Read-modify-write de instance_config.json, sous verrou de FICHIER.
+
+        Passe par ``jsonstore.transaction`` et non par ``read_json`` puis
+        ``write_json`` : entre les deux, une autre écriture du même fichier
+        s'intercale et se fait écraser (mesuré ailleurs dans le dépôt : 240
+        écritures concurrentes attendues, 2 conservées — cf. la docstring de
+        core/jsonstore.py). Le ``RLock`` de l'instance ne suffit pas : il ne
+        sérialise que les appelants qui passent par CET objet, alors que
+        ``instance_config.json`` porte désormais la liste qui pilote le montage
+        des routeurs au démarrage. La corrompre coûte un démarrage sans modules.
+
+        Ordre de verrouillage : ``self._lock`` PUIS le verrou de fichier. Jamais
+        l'inverse, sous peine d'interblocage.
+
+        Si le fichier est illisible, on repart du cache mémoire plutôt que des
+        défauts : régénérer ``_default_config()`` par-dessus écraserait
+        ``instance_id`` et le token d'API.
+        """
+        with self._lock:
+            with transaction(self._path, {}) as doc:
+                source = doc if (isinstance(doc, dict) and doc) else (self._cache or {})
+                cfg = self._merge_defaults(source)
+                muter(cfg)
+                cfg.get("providers", {}).pop("clés_présentes", None)  # dérivé
+                cfg["modules_activés"] = self._garder_settings(cfg.get("modules_activés"))
+                doc.clear()
+                doc.update(cfg)  # mutation EN PLACE : c'est doc qui est réécrit
+            self._cache = cfg
+        return cfg
 
     @staticmethod
     def _deep_merge(base: dict, patch: dict) -> dict:
@@ -222,19 +286,22 @@ class InstanceConfig:
 
     def update(self, partial: dict) -> dict:
         """Applique un merge partiel, persiste, et retourne la config à jour."""
-        with self._lock:
-            cfg = self._merge_defaults(self._cache or self._load())
-            self._apply_partial(cfg, partial)
-            cfg.get("providers", {}).pop("clés_présentes", None)
-            self._save(cfg)
-            self._cache = cfg
+        self._mutate(lambda cfg: self._apply_partial(cfg, partial))
         return self.get()
 
     def enabled_modules(self) -> list[str]:
-        """Identifiants des modules activés par l'utilisateur."""
+        """Liste ORDONNÉE des modules actifs, telle qu'elle est stockée.
+
+        Peut être vide : c'est le cas « jamais initialisée » d'une installation
+        neuve. Le défaut « tous les modules installés » n'est délibérément PAS
+        appliqué ici — seul :func:`core.module_registry.active_ids` sait quels
+        modules sont réellement présents sur le disque. Le sens de la dépendance
+        est imposé : ``module_registry`` importe ``instance``, l'inverse
+        créerait un cycle d'import.
+        """
         with self._lock:
             cfg = self._cache or self._load()
-        return list(cfg.get("modules_activés", _CORE_MODULES))
+        return list(cfg.get("modules_activés") or [])
 
     def auth_token(self) -> str:
         """Token d'API de l'instance — généré au premier appel puis persistant.
@@ -245,13 +312,21 @@ class InstanceConfig:
         with self._lock:
             cfg = self._merge_defaults(self._cache or self._load())
             token = (cfg.get("auth") or {}).get("token") or ""
-            if not token:
-                token = secrets.token_urlsafe(32)
-                cfg.setdefault("auth", {})["token"] = token
-                self._save(cfg)
-                self._cache = cfg
-                logger.info("Token d'API généré (premier démarrage)")
-            return token
+            if token:
+                return token
+            # Génération : read-modify-write, donc sous verrou de fichier. Deux
+            # threads qui arrivent ici en même temps ne doivent pas produire deux
+            # tokens dont un seul survit — le client appairé avec le perdant
+            # serait rejeté par le middleware jusqu'au prochain /pair.
+            nouveau = secrets.token_urlsafe(32)
+
+            def _poser(c: dict) -> None:
+                if not (c.get("auth") or {}).get("token"):
+                    c.setdefault("auth", {})["token"] = nouveau
+
+            cfg = self._mutate(_poser)
+            logger.info("Token d'API généré (premier démarrage)")
+            return (cfg.get("auth") or {}).get("token") or nouveau
 
 
 # Singleton applicatif (créé une fois au démarrage).

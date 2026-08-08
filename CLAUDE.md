@@ -54,17 +54,22 @@ Les tests sont des scripts `unittest` **autonomes à la racine de `backend/`**
 
 ```powershell
 cd backend
+python -m unittest discover -s . -p "test_*.py"   # la commande de la CI
 python test_module_validate.py    # gate AST des routers générés
 python test_safe_path.py          # confinement de chemin du codeagent
 python test_jsonstore.py          # lecture/écriture JSON (BOM)
+python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
-python test_modules_mount.py      # LOURD : importe core.runtime (torch, chromadb)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
+python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
 ```
 
-**IMPÉRATIF — quand tu ajoutes un fichier de test, ajoute-le aussi à
-`.github/workflows/ci.yml`.** La CI lance les tests un par un, nommément : un
-test non listé ne tourne jamais. C'est déjà arrivé pour 4 des 6 fichiers.
+**Un nouveau `backend/test_*.py` est pris en compte sans toucher au workflow** :
+la CI tourne en `unittest discover` depuis le commit `7e3bf8c`. Ce n'est plus une
+liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
+tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
+l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
+torch et chromadb et tourne dans le job `integration`, manuel).
 
 ### Écart de version Python — piège actif
 
@@ -140,8 +145,42 @@ possédant un `router.py`, `importlib.import_module(f"modules.{mid}.router")` pu
 chaque route doit être écrite préfixée à la main : `@router.get("/<id>/ping")`.
 Sans ça, collision silencieuse avec une route core (`/models`, `/analyze`).
 
-Le status effectif fusionne le manifeste avec `memory/modules_state.json`
-(overrides via `set_status`). `settings` ne peut pas être désactivé.
+#### Deux états, une seule source de vérité
+
+| État | Source de vérité | Effet | Stockage |
+|---|---|---|---|
+| **Installé** | `backend/modules/<id>/manifest.json` existe | le module existe pour cette instance | aucun — dérivé du disque |
+| **Actif** | `id` ∈ `instance_config.modules_activés` (liste **ordonnée**) | routeur monté **et** visible dans la barre, à la position donnée par la liste | `memory/instance_config.json` |
+
+Il n'y a **pas** d'état « monté mais invisible ». Actif = les deux à la fois.
+
+**IMPÉRATIF : `backend/memory/modules_state.json` a été supprimé et ne doit pas
+être recréé.** Il portait un second `status` par module, en doublon de
+`modules_activés`. Deux fichiers pour une notion divergent mécaniquement — c'est
+ce qui a été mesuré avant migration : 9 des 11 entrées de `modules_state.json`
+pointaient des modules effacés, 4 des 12 entrées de `modules_activés` aussi, et
+`reviseur` était installé et monté tout en étant absent de la barre. Si tu crois
+avoir besoin d'un état supplémentaire, c'est probablement `installé` que tu
+cherches, et il se lit sur le disque.
+
+Règles à respecter :
+
+- `core/module_registry.py:active_ids()` est la **seule** lecture d'état. Liste
+  vide → tous les modules installés (défaut d'installation neuve, ordre
+  `discover_manifests`, donc alphabétique et déterministe).
+- `set_status(id, "active"|"disabled")` ajoute/retire dans la liste. Signature et
+  endpoint `PUT /modules/{id}/status` conservés.
+- Le champ `status` de `GET /modules` reste `"active"|"disabled"` : il est
+  **dérivé** de l'appartenance à la liste. Le frontend en dépend
+  (`src/modules.ts`, `ModuleManifest.status`) — ne pas le renommer.
+- `settings` ne peut pas être désactivé : refusé par `set_status`, et réinjecté à
+  l'écriture (`core/instance.py:_garder_settings`) comme à la lecture. La liste
+  pilote le montage : la lui faire perdre débranche l'écran qui sert à la
+  réparer.
+- **Toute écriture de `instance_config.json` passe par
+  `core/jsonstore.transaction()`** (`InstanceConfig._mutate`). Cette liste
+  conditionne le démarrage ; un read-modify-write non verrouillé y perd des
+  écritures.
 
 ### 3.4 Persistance
 
@@ -342,6 +381,7 @@ dépôt : elle rend le code relisible après trois semaines d'absence. La respec
 - Écrire un chemin absolu en dur (`C:\Users\Ilyan\...`) — il en reste un dans
   `start.ps1`, c'est une dette, pas un exemple.
 - Rendre `_LazyEngine` « plus simple » en instanciant directement.
-- Ajouter un test sans l'ajouter à `ci.yml`.
+- Recréer `backend/memory/modules_state.json` (§3.3) — ou tout second stockage
+  de l'état « actif » à côté de `modules_activés`.
 - Élargir le périmètre fonctionnel tant que la CI ne peut pas dire non
   (1 `response_model` sur 103 endpoints à ce jour).

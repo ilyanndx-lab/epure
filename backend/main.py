@@ -45,6 +45,7 @@ from core.instance import instance_config, fiches_root, fiches_watch_paths
 from core.memory import MemoryEngine
 from core.module_registry import (
     list_modules as _list_modules,
+    migrate_module_state as _migrate_module_state,
     register_routers as _register_routers,
     set_status as _set_module_status,
 )
@@ -718,6 +719,10 @@ async def health():
 
 
 # ── Montage des routeurs de modules ─────────────────────────────────────────
+# La migration passe AVANT le montage : c'est elle qui purge les fantômes et
+# rattrape les modules installés jamais vus, et `register_routers` lit la liste
+# qu'elle vient d'écrire. Idempotente — au démarrage suivant elle n'écrit rien.
+_migrate_module_state()
 # Monte tous les modules actifs disposant d'un modules/<id>/router.py (core ou
 # non). Les modules core pas encore migrés restent décorés sur `app` ci-dessus.
 _register_routers(app)
