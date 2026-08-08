@@ -34,13 +34,21 @@ from typing import Optional
 
 from core.instance import instance_config
 from core.jsonstore import read_json
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
 _MODULES_DIR = Path(__file__).parent.parent / "modules"
-#: Ancien stockage, supprimé par :func:`migrate_module_state`. Le chemin ne
-#: subsiste que pour détecter puis effacer un reliquat — on n'y écrit jamais.
-_LEGACY_STATE_FILE = Path(__file__).parent.parent / "memory" / "modules_state.json"
+
+
+def _legacy_state_file() -> Path:
+    """Ancien stockage, supprimé par :func:`migrate_module_state`.
+
+    Ne subsiste que pour détecter puis effacer un reliquat — on n'y écrit
+    jamais. Fonction et non constante : cf. core.paths.resolve_data_dir.
+    """
+    return resolve_data_dir() / "modules_state.json"
+
 
 _VALID_STATUS = {"active", "disabled"}
 #: Sans lui, plus d'écran pour réactiver quoi que ce soit.
@@ -243,13 +251,13 @@ def migrate_module_state() -> dict:
     with _lock:
         avant = list(instance_config.enabled_modules())
         actifs = list(avant)
-        bascule = _LEGACY_STATE_FILE.is_file() or not avant
+        bascule = _legacy_state_file().is_file() or not avant
 
         # (a) désactivations héritées de l'ancien fichier d'état.
         desactives: list[str] = []
-        legacy_present = _LEGACY_STATE_FILE.is_file()
+        legacy_present = _legacy_state_file().is_file()
         if legacy_present:
-            etat = read_json(_LEGACY_STATE_FILE, {})
+            etat = read_json(_legacy_state_file(), {})
             if isinstance(etat, dict):
                 for mid, entree in etat.items():
                     if isinstance(entree, dict) and entree.get("status") == "disabled":
@@ -310,10 +318,10 @@ def migrate_module_state() -> dict:
         # (d) suppression de l'ancien stockage.
         if legacy_present:
             try:
-                _LEGACY_STATE_FILE.unlink()
-                logger.info("Migration modules (d) : %s supprimé", _LEGACY_STATE_FILE.name)
+                _legacy_state_file().unlink()
+                logger.info("Migration modules (d) : %s supprimé", _legacy_state_file().name)
             except OSError:
-                logger.exception("Migration modules (d) : suppression de %s impossible", _LEGACY_STATE_FILE)
+                logger.exception("Migration modules (d) : suppression de %s impossible", _legacy_state_file())
 
     return {
         "avant": avant,

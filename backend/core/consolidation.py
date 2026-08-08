@@ -6,10 +6,16 @@ from pathlib import Path
 from typing import Optional
 
 from core.jsonstore import read_json, transaction
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-_LOG_PATH = Path(__file__).parent.parent / "memory" / "consolidation_log.json"
+
+# Fonction et non constante : cf. core.paths.resolve_data_dir.
+def _log_path() -> Path:
+    return resolve_data_dir() / "consolidation_log.json"
+
+
 _CLOUD_MODEL = "groq:llama-3.3-70b-versatile"
 _CTX_LIMIT = 12000  # chars fed to LLM for conversation consolidation
 
@@ -23,10 +29,10 @@ class ConsolidationEngine:
     # ── Log ──────────────────────────────────────────────────────────────────
 
     def _load_log(self) -> list:
-        return read_json(_LOG_PATH, {}).get("log", [])
+        return read_json(_log_path(), {}).get("log", [])
 
     def _append_log(self, entry: dict) -> None:
-        with transaction(_LOG_PATH, {"log": []}) as doc:
+        with transaction(_log_path(), {"log": []}) as doc:
             log = doc.setdefault("log", [])
             log.insert(0, entry)
             del log[50:]   # en place : `log = log[:50]` ne persisterait rien

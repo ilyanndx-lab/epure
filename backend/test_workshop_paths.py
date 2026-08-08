@@ -27,6 +27,8 @@ from unittest import mock
 # Permettre d'importer le package `core` depuis le dossier backend.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
+
 os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 

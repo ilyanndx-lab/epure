@@ -14,10 +14,14 @@ from pathlib import Path
 from typing import Optional
 
 from core.jsonstore import read_json, write_json
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-_USAGE_FILE = Path(__file__).parent.parent / "memory" / "quota_usage.json"
+
+# Fonction et non constante : cf. core.paths.resolve_data_dir.
+def _usage_file() -> Path:
+    return resolve_data_dir() / "quota_usage.json"
 
 # Estimated free-tier limits. limit=None → unlimited (rate-limited only).
 PROVIDER_LIMITS: dict[str, dict] = {
@@ -33,8 +37,9 @@ _LOCAL_PROVIDERS = {"local", "ollama", "flm"}
 
 
 class QuotaTracker:
-    def __init__(self, path: Path = _USAGE_FILE):
-        self._path = Path(path)
+    def __init__(self, path: Optional[Path] = None):
+        # Sentinelle None : un défaut d'argument est évalué à l'import.
+        self._path = Path(path) if path is not None else _usage_file()
         self._lock = threading.Lock()
         self._data: dict[str, dict] = self._load()
         # Single background writer: concurrent per-call save threads corrupt

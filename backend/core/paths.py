@@ -51,6 +51,36 @@ def resolve_workspace() -> Path:
     return base.resolve()
 
 
+def resolve_data_dir() -> Path:
+    """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
+
+    Priorité : ``$EPURE_DATA_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/memory``. Toujours renvoyé résolu, comme
+    :func:`resolve_workspace`.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER DANS UNE CONSTANTE DE MODULE.** C'est tout
+    l'intérêt de la fonction, et c'est une contrainte, pas un détail de style.
+    Neuf modules construisaient leur chemin en ``Path(__file__).parent.parent /
+    "memory" / …`` au niveau module. Un chemin calculé à l'import est figé à
+    l'import : une variable d'environnement posée ensuite n'a plus aucun effet,
+    et l'ordre d'import devient une dépendance invisible. La conséquence a été
+    payée : la suite de tests écrivait dans les données réelles, au point
+    d'exécuter pour de bon la migration de ``modules_activés`` sur la
+    configuration de l'utilisateur.
+
+    Attention particulière aux **arguments par défaut** : ``def __init__(self,
+    path=_CONSTANTE)`` est évalué à la définition de la fonction, donc à
+    l'import — même piège, moins visible. Utiliser ``path=None`` puis résoudre
+    dans le corps.
+
+    Le comportement est verrouillé par ``test_data_dir.py``, qui pose la
+    variable APRÈS avoir importé les modules et vérifie que l'écriture suit.
+    """
+    env = os.environ.get("EPURE_DATA_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "memory")
+    return base.resolve()
+
+
 #: Dossier racine des fiches, résolu une fois au chargement du module.
 FICHES_DIR = resolve_fiches_dir()
 

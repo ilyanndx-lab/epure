@@ -9,6 +9,7 @@ from threading import Thread
 from typing import Optional
 
 from core.jsonstore import read_json, transaction, write_json
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,11 @@ def _ollama_ok() -> bool:
     except Exception:
         return False
 
-_PRESETS_FILE = Path(__file__).parent.parent / "memory" / "orchestrator_presets.json"
+
+# Fonction et non constante : cf. core.paths.resolve_data_dir.
+def _presets_file() -> Path:
+    return resolve_data_dir() / "orchestrator_presets.json"
+
 
 EFFORT_PIPELINES: dict = {
     "direct": [],
@@ -161,14 +166,14 @@ _DEFAULT_PRESETS = [
 
 
 def _load_presets() -> list:
-    data = read_json(_PRESETS_FILE, None)
+    data = read_json(_presets_file(), None)
     if isinstance(data, dict):
         return data.get("presets", [])
     return list(_DEFAULT_PRESETS)
 
 
 def _save_presets(presets: list) -> None:
-    write_json(_PRESETS_FILE, {"presets": presets})
+    write_json(_presets_file(), {"presets": presets})
 
 
 @contextmanager
@@ -179,20 +184,20 @@ def _presets_transaction():
     livrés, jamais d'une liste vide, sinon une création concurrente juste après une
     suppression du fichier les effacerait.
     """
-    with transaction(_PRESETS_FILE, {"presets": list(_DEFAULT_PRESETS)}) as doc:
+    with transaction(_presets_file(), {"presets": list(_DEFAULT_PRESETS)}) as doc:
         # Fichier hand-édité en liste nue (`_load_presets` tolère ce cas en
         # lecture) : impossible de le normaliser en place, donc on refuse la
         # mutation — rien n'est réécrit — plutôt que de persister une forme
         # inattendue.
         if not isinstance(doc, dict):
             raise TypeError(
-                f"{_PRESETS_FILE.name} : document {type(doc).__name__}, attendu un objet"
+                f"{_presets_file().name} : document {type(doc).__name__}, attendu un objet"
             )
         yield doc.setdefault("presets", list(_DEFAULT_PRESETS))
 
 
 def _ensure_presets_file() -> None:
-    if not _PRESETS_FILE.exists():
+    if not _presets_file().exists():
         _save_presets(list(_DEFAULT_PRESETS))
 
 
