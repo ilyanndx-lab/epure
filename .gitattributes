@@ -1,0 +1,30 @@
+# Fins de ligne normalisées.
+#
+# Sans ce fichier, 28 des 110 fichiers texte suivis apparaissaient en
+# permanence comme « modifiés » : le disque était en CRLF, HEAD en LF, et
+# core.autocrlf n'était pas défini. Cinq semaines de git status illisible.
+# Git stocke désormais du LF quoi qu'écrive l'éditeur.
+
+* text=auto eol=lf
+
+# Scripts Windows : CRLF sur le disque, sinon cmd.exe peut mal les lire.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Scripts shell : LF obligatoire (un hook .sh en CRLF échoue avec une
+# erreur incompréhensible du type « bad interpreter »).
+*.sh text eol=lf
+
+# Binaires : jamais de conversion.
+*.png  binary
+*.jpg  binary
+*.webp binary
+*.pdf  binary
+*.onnx binary
+*.bin  binary
+*.sqlite3 binary
+
+# SVG et lockfiles : texte, LF.
+*.svg text eol=lf
+package-lock.json text eol=lf
