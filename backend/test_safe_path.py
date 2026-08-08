@@ -96,11 +96,14 @@ class SafePathTest(_GuardContract, unittest.TestCase):
 
 class ModulesSafePathTest(_GuardContract, unittest.TestCase):
     def set_root(self, root):
-        self._orig = module_workshop.MODULES_DIR
-        module_workshop.MODULES_DIR = root
+        # modules_dir est une FONCTION depuis la bascule EPURE_MODULES_DIR (un
+        # chemin figé à l'import ignorerait la variable) : on remplace la
+        # fonction, pas une constante.
+        self._orig = module_workshop.modules_dir
+        module_workshop.modules_dir = lambda: root
 
     def tearDown(self):
-        module_workshop.MODULES_DIR = self._orig
+        module_workshop.modules_dir = self._orig
         super().tearDown()
 
     def guard(self, rel):

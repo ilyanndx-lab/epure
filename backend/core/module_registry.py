@@ -34,11 +34,14 @@ from typing import Optional
 
 from core.instance import instance_config
 from core.jsonstore import read_json
-from core.paths import resolve_data_dir
+from core.paths import resolve_data_dir, resolve_modules_dir
 
 logger = logging.getLogger(__name__)
 
-_MODULES_DIR = Path(__file__).parent.parent / "modules"
+
+def _modules_dir() -> Path:
+    """Dossier des modules. Fonction et non constante : cf. core.paths."""
+    return resolve_modules_dir()
 
 
 def _legacy_state_file() -> Path:
@@ -59,9 +62,9 @@ _lock = RLock()
 def discover_manifests() -> list[dict]:
     """Lit tous les ``modules/<id>/manifest.json`` présents sur disque."""
     manifests: list[dict] = []
-    if not _MODULES_DIR.is_dir():
+    if not _modules_dir().is_dir():
         return manifests
-    for sub in sorted(_MODULES_DIR.iterdir()):
+    for sub in sorted(_modules_dir().iterdir()):
         mf = sub / "manifest.json"
         if not mf.is_file():
             continue
@@ -156,7 +159,7 @@ def register_routers(app) -> None:
         if m.get("status") != "active":
             continue
         mid = m.get("id")
-        if not (_MODULES_DIR / str(mid) / "router.py").is_file():
+        if not (_modules_dir() / str(mid) / "router.py").is_file():
             continue  # pas de backend pour ce module (ou core non migré)
         try:
             mod = importlib.import_module(f"modules.{mid}.router")

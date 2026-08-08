@@ -51,40 +51,68 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
 
-from core.paths import resolve_data_dir  # noqa: E402
+from core.paths import (  # noqa: E402
+    resolve_data_dir,
+    resolve_generated_dir,
+    resolve_modules_dir,
+)
 
 
 class RealDataUntouchedTest(unittest.TestCase):
-    """Le vrai ``backend/memory/`` doit être bit-à-bit identique à l'empreinte."""
+    """Les trois arborescences réelles doivent être identiques à leur empreinte.
 
-    def test_le_vrai_dossier_de_donnees_est_intact(self):
-        actuel = _test_env._instantaner(_test_env.REAL_DATA_DIR)
-        avant = _test_env.REAL_SNAPSHOT
+    ``backend/memory/`` seul ne suffit plus : ``DELETE /settings/modules/{id}``
+    fait un ``rmtree`` sur ``backend/modules/<id>`` et
+    ``frontend/src/modules/generated/<id>``. Un test de suppression mal isolé
+    n'écrit pas un fichier parasite, il en efface de vrais — d'où la surveillance
+    des suppressions autant que des créations.
+    """
 
+    def _comparer(self, dossier):
+        actuel = _test_env._instantaner(dossier)
+        avant = _test_env.REAL_SNAPSHOTS[str(dossier)]
         crees = sorted(set(actuel) - set(avant))
         supprimes = sorted(set(avant) - set(actuel))
         modifies = sorted(f for f in set(avant) & set(actuel) if avant[f] != actuel[f])
-
         self.assertEqual(
             (crees, supprimes, modifies), ([], [], []),
-            f"\nLa suite a touché {_test_env.REAL_DATA_DIR} :"
+            f"\nLa suite a touché {dossier} :"
             f"\n  créés     : {crees}"
             f"\n  supprimés : {supprimes}"
             f"\n  modifiés  : {modifies}"
             "\nUn test importe core.* ou main sans passer par `import _test_env` "
-            "en premier, ou un chemin de données est encore codé en dur "
-            "(cf. core.paths.resolve_data_dir, CLAUDE.md §3.5).",
+            "en premier, ou un chemin est encore codé en dur (cf. core.paths : "
+            "resolve_data_dir / resolve_modules_dir / resolve_generated_dir, "
+            "CLAUDE.md §3.5).",
         )
 
-    def test_la_suite_ecrit_bien_ailleurs(self):
-        """Contrôle du contrôle : EPURE_DATA_DIR est posé et pointe ailleurs.
+    def test_le_vrai_dossier_de_donnees_est_intact(self):
+        self._comparer(_test_env.REAL_DATA_DIR)
 
-        Sans ça, un garde-fou vert pourrait simplement signifier que la variable
-        n'a jamais été posée et que tout le monde écrit… ailleurs par hasard.
+    def test_le_vrai_dossier_de_modules_est_intact(self):
+        self._comparer(_test_env.REAL_MODULES_DIR)
+
+    def test_le_vrai_dossier_frontend_est_intact(self):
+        self._comparer(_test_env.REAL_FRONTEND_MODULES)
+
+    def test_la_suite_ecrit_bien_ailleurs(self):
+        """Contrôle du contrôle : les trois variables pointent ailleurs.
+
+        Sans ça, un garde-fou vert pourrait simplement signifier qu'aucune
+        variable n'a été posée et que tout le monde écrit… ailleurs par hasard.
         """
-        courant = resolve_data_dir()
-        self.assertNotEqual(courant, _test_env.REAL_DATA_DIR.resolve())
-        self.assertEqual(courant, _test_env.DATA_DIR.resolve())
+        for resolveur, reel in (
+            (resolve_data_dir, _test_env.REAL_DATA_DIR),
+            (resolve_modules_dir, _test_env.REAL_MODULES_DIR),
+            (resolve_generated_dir, _test_env.REAL_FRONTEND_MODULES / "generated"),
+        ):
+            with self.subTest(resolveur=resolveur.__name__):
+                courant = resolveur()
+                self.assertNotEqual(courant, reel.resolve())
+                self.assertFalse(
+                    courant.is_relative_to(_test_env._REPO),
+                    f"{resolveur.__name__} pointe encore dans le dépôt : {courant}",
+                )
 
     def test_ce_module_est_bien_le_dernier_decouvert(self):
         """L'invariant qui rend les deux tests ci-dessus utiles.

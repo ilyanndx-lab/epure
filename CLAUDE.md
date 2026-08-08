@@ -198,18 +198,36 @@ Aucune base de données côté application. Deux stockages :
 
 - `FICHES_DIR` / `resolve_fiches_dir()` — `$EPURE_FICHES_DIR`, sinon `<repo>/data/fiches`
 - `resolve_workspace()` — `$EPURE_WORKSPACE`, sinon `<repo>/workspace`, toujours `.resolve()`
-- `resolve_data_dir()` — `$EPURE_DATA_DIR`, sinon `<backend>/memory`, toujours
-  `.resolve()`. **IMPÉRATIF : l'appeler, jamais figer son résultat dans une
-  constante de module** (ni dans un défaut d'argument, `def f(p=CONST)` étant
-  évalué à l'import). Neuf modules calculaient `Path(__file__).parent.parent /
-  "memory" / …` au chargement : la suite de tests écrivait donc dans les données
-  réelles, au point d'exécuter pour de bon la migration de `modules_activés` sur
-  la config de l'utilisateur. Verrouillé par `test_data_dir.py`, qui pose la
-  variable **après** les imports et vérifie que l'écriture suit.
+- `resolve_data_dir()` — `$EPURE_DATA_DIR`, sinon `<backend>/memory`
+- `resolve_modules_dir()` — `$EPURE_MODULES_DIR`, sinon `<backend>/modules`
+- `resolve_generated_dir()` — `$EPURE_GENERATED_DIR`, sinon
+  `<repo>/frontend/src/modules/generated`. Le parent (`frontend/src/modules`)
+  s'en déduit par `.parent` : une seule variable pour les deux, sinon un
+  `generated/` détourné sous un parent resté en place ferait chercher le
+  composant d'un module core dans un arbre et son composant généré dans un autre.
+
+Les trois suivent la même règle. **IMPÉRATIF : les appeler, jamais figer leur
+résultat dans une constante de module** — ni dans un défaut d'argument,
+`def f(p=CONST)` étant évalué à l'import (c'est sous cette forme que le piège
+s'était glissé dans `InstanceConfig` et `QuotaTracker`). Neuf modules
+calculaient `Path(__file__).parent.parent / "memory" / …` au chargement : la
+suite écrivait donc dans les données réelles, au point d'exécuter pour de bon la
+migration de `modules_activés` sur la config de l'utilisateur. Verrouillé par
+`test_data_dir.py`, qui pose les variables **après** les imports et vérifie que
+l'écriture suit.
+
+**Corollaire à ne pas rater : ne jamais remonter depuis un dossier de données
+pour obtenir une racine de code.** `MODULES_DIR.parent.parent` donnait la racine
+du dépôt tant que `MODULES_DIR` n'était pas déplaçable ; il l'est désormais.
+Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchors
+statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
 
 Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
-ces imports (`backend/_test_env.py` pose `EPURE_DATA_DIR` sur un temporaire
-unique pour la session).
+ces imports. `backend/_test_env.py` pose les **trois** variables sur des
+temporaires uniques pour la session — `backend/modules/` et
+`frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
+voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
+testable : son `rmtree` frappe la copie.
 
 **IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
 découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
