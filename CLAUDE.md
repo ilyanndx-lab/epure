@@ -129,9 +129,19 @@ Un module = **exactement 3 fichiers** :
 ```
 backend/modules/<id>/manifest.json
 backend/modules/<id>/router.py
-frontend/src/modules/generated/<id>/Component.tsx   (généré)
-   ou frontend/src/modules/<id>/Component.tsx        (core)
+frontend/src/modules/generated/<id>/Component.tsx   (généré ou installé)
+   ou frontend/src/modules/<id>/Component.tsx        (cœur)
 ```
+
+Troisième emplacement depuis l'étape C : **`modules-catalogue/<id>/`**, qui
+réunit les trois fichiers côte à côte (`manifest.json`, `router.py`,
+`Component.tsx`). C'est la **source** des modules installables, pas une
+instance : rien n'y est monté. Installer = copier vers `backend/modules/<id>/`
+et `frontend/src/modules/generated/<id>/`. Les six qui y sont
+(`code`, `docs`, `flashcards`, `kholle`, `reviseur`, `rangement`) portent
+`core_module: false`, `origin: "catalogue"`, `removable: true` — `origin`
+distinct de `"workshop"` pour que l'Atelier ne les propose pas à la ré-édition
+comme du code jetable.
 
 `manifest.json` : `id`, `version`, `nom`, `icon` (nom lucide-react), `description`,
 `frontend.component`, `backend.prefix`, `core_module`, `origin`, `status`,

@@ -41,16 +41,19 @@ function lazyComponent(loader: ModuleLoader): ComponentType<SharedModuleProps> {
 }
 
 // ── Modules core (label/icône de repli ; le manifeste backend fait foi) ──────
+//
+// Ne restent ici que le CŒUR — les modules livrés avec Épure et jamais
+// désinstallables. Les six installables (code, docs, flashcards, kholle,
+// reviseur, rangement) sont partis dans `modules-catalogue/` : leur composant
+// n'est plus dans le bundle, et une fois installé il atterrit dans
+// `generated/<id>/Component.tsx` où le glob ci-dessous le découvre comme
+// n'importe quel module ajouté. C'est ce qui donne son sens au catalogue : le
+// code d'un module non installé n'est pas chez l'utilisateur.
 const CORE_DEFS: ModuleDef[] = [
   { id: 'chat',       label: 'Chat',        icon: 'MessageSquare', core: true, component: lazyComponent(() => import('./chat/Component')) },
-  { id: 'kholle',     label: 'Kholle',      icon: 'GraduationCap', core: true, component: lazyComponent(() => import('./kholle/Component')) },
-  { id: 'flashcards', label: 'Flashcards',  icon: 'Layers',        core: true, component: lazyComponent(() => import('./flashcards/Component')) },
-  { id: 'code',       label: 'Code',        icon: 'Code2',         core: true, component: lazyComponent(() => import('./code/Component')) },
-  { id: 'docs',       label: 'Docs',        icon: 'FileSearch',    core: true, component: lazyComponent(() => import('./docs/Component')) },
   { id: 'admin',      label: 'Admin',       icon: 'FolderCog',     core: true, component: lazyComponent(() => import('./admin/Component')) },
   { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('./history/Component')) },
   { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('./settings/Component')) },
-  { id: 'reviseur',   label: 'Réviseur',    icon: 'CalendarCheck', core: true, component: lazyComponent(() => import('./reviseur/Component')) },
   // Atelier : outil transverse (pas un module backend), composant dans components/.
   { id: 'workshop',   label: 'Atelier',     icon: 'Hammer',        core: true, component: lazyComponent(() => import('../components/Workshop')) },
 ]

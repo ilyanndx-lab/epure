@@ -13,7 +13,7 @@
 #              tourne dans un thread et échoue proprement).
 # - frontend : npm ci + tsc -b + npm run build + eslint — les trois BLOQUANTS
 #              depuis le 2026-08-08. eslint tourne avec un cliquet
-#              `--max-warnings 63` (0 erreur) : le détail de ce chiffre est
+#              `--max-warnings 36` (0 erreur) : le détail de ce chiffre est
 #              au-dessus de l'étape elle-même, plus bas dans ce fichier.
 #              Le type-check est gardé EN PLUS du build, pour que le nom de
 #              l'étape en échec dise tout de suite si c'est le typage ou le
@@ -106,24 +106,30 @@ jobs:
         # dans tsconfig.app.json ("include": ["src"]) : un module généré qui ne
         # bundle pas cassait l'image frontend sans que la CI le voie.
         run: npm run build
-      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus 63
+      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus 36
       # avertissements. Le nombre ne peut que baisser — quiconque en ajoute un
       # casse la CI, et quiconque en résorbe doit descendre le plafond dans le
       # même commit. C'est ce qui empêche la dette de regrimper en silence, ce
       # que `continue-on-error: true` avait laissé faire pendant des mois.
       #
-      # Les 63 se décomposent en deux populations à ne pas confondre :
-      #   41 react-hooks/exhaustive-deps — faux positifs. eslint ne peut pas
+      # 63 → 36 au déplacement des six modules installables vers
+      # modules-catalogue/ : leurs composants ont quitté le périmètre de lint,
+      # emportant 27 avertissements. Le plafond descend dans le MÊME commit,
+      # conformément à la règle ci-dessus — sinon le cliquet garde du mou et
+      # laisse repasser 27 régressions sans rien dire.
+      #
+      # Les 36 se décomposent en deux populations à ne pas confondre :
+      #   22 react-hooks/exhaustive-deps — faux positifs. eslint ne peut pas
       #      voir à travers usePersistentState que le setter retourné est celui
       #      de useState, donc stable ; il exige des dépendances inutiles.
-      #   22 react-hooks/{set-state-in-effect,refs,immutability} — VRAIES
+      #   14 react-hooks/{refs,set-state-in-effect,immutability} — VRAIES
       #      violations des Rules of React, passées en « warn » dans
       #      eslint.config.js faute de tests frontend pour rattraper une
       #      régression. Prérequis pour les traiter : vitest +
       #      testing-library, en commençant par usePersistentState.ts.
       #      Voir CHANGELOG.md, « dette assumée ».
-      - name: eslint (bloquant — cliquet à 63 avertissements)
-        run: npm run lint -- --max-warnings 63
+      - name: eslint (bloquant — cliquet à 36 avertissements)
+        run: npm run lint -- --max-warnings 36
 
   integration:
     name: Intégration — montage de tous les modules (manuel)

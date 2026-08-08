@@ -4,10 +4,14 @@
   "nom": "Code",
   "icon": "Code2",
   "description": "Agent de code multi-langages avec exécution et vérification",
-  "frontend": { "component": "Code" },
-  "backend": { "prefix": "" },
-  "core_module": true,
-  "origin": "builtin",
+  "frontend": {
+    "component": "Code"
+  },
+  "backend": {
+    "prefix": ""
+  },
+  "core_module": false,
+  "origin": "catalogue",
   "status": "active",
   "removable": true
 }

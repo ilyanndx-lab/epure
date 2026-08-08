@@ -55,12 +55,11 @@ frontend/src/modules/_workshop_check/
 # dossiers étaient dans ce cas ; contrôle :
 #     git check-ignore -q <dossier>/__probe__   # exit 0 = ignoré
 #
-# ÉTAPE C — les six modules installables ci-dessous (code, docs, flashcards,
-# kholle, rangement, reviseur) partent dans modules-catalogue/, et leur composant
-# quitte generated/. Leurs lignes d'exception devront alors être retirées.
-# IMPÉRATIF : réduire cette liste DANS LE MÊME COMMIT que le déplacement. La
-# faire dans un commit ultérieur rouvre exactement le piège décrit ci-dessus ;
-# l'oublier laisse une allowlist qui ment sur ce que contient le dépôt.
+# Les six installables (code, docs, flashcards, kholle, rangement, reviseur)
+# sont partis dans modules-catalogue/, qui est suivi normalement. Leurs lignes
+# d'exception ont été retirées DANS LE MÊME COMMIT que le déplacement — sans
+# quoi l'allowlist aurait menti sur le contenu du dépôt, et un fichier ajouté
+# dans un dossier fraîchement installé aurait disparu sans un mot.
 backend/modules/*/
 !backend/modules/_atelier/
 !backend/modules/admin/
@@ -68,18 +67,13 @@ backend/modules/*/
 !backend/modules/hello/
 !backend/modules/history/
 !backend/modules/settings/
-# Installables — à retirer à l'étape C (cf. ci-dessus).
-!backend/modules/code/
-!backend/modules/docs/
-!backend/modules/flashcards/
-!backend/modules/kholle/
-!backend/modules/rangement/
-!backend/modules/reviseur/
 
+# Un module installé depuis le catalogue est copié ici : il est PERSONNEL à
+# l'instance et ne doit pas revenir au dépôt. C'est exactement le même régime
+# que pour un module généré par l'Atelier — d'où l'absence d'exception pour les
+# six ci-dessus, désormais servis depuis modules-catalogue/.
 frontend/src/modules/generated/*/
 !frontend/src/modules/generated/hello/
-# Installable — à retirer à l'étape C (cf. ci-dessus).
-!frontend/src/modules/generated/rangement/
 
 # Logs
 *.log
