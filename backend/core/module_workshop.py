@@ -1568,8 +1568,23 @@ def _backup_existing(module_id: str) -> Optional[str]:
 
 
 def _drop_module_routes(app, module_id: str) -> None:
+    """Retire les routes d'un module de l'app vivante.
+
+    ⚠️ MUTATION EN PLACE (``[:] =``) et NON réaffectation. Réaffecter
+    ``app.router.routes`` crée une NOUVELLE liste : tout ce qui détient une
+    référence à l'ancienne continue de router vers les routes supprimées. C'est
+    une vraie régression observée, pas une précaution : les deux tests de route
+    fantôme passaient en local (fastapi 0.136.3 / starlette 1.2.0) et
+    échouaient en CI, où `pip install` résout d'autres versions —
+    ``AssertionError: 200 != 404``, la route servait encore.
+
+    Il n'existe pas d'API publique de démontage dans Starlette ; ce filtrage est
+    le seul moyen. C'est précisément pourquoi
+    ``test_hello_ne_repond_plus_apres_suppression`` existe : il transforme cette
+    dépendance aux internes en invariant qui échoue bruyamment.
+    """
     modname = f"modules.{module_id}.router"
-    app.router.routes = [
+    app.router.routes[:] = [
         r for r in app.router.routes
         if getattr(getattr(r, "endpoint", None), "__module__", None) != modname
     ]
