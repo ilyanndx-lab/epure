@@ -1,5 +1,11 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
+Trois arborescences sont détournées vers des temporaires :
+
+    EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
+    EPURE_MODULES_DIR    backend/modules/                (copie)
+    EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
+
 Pourquoi ce fichier existe : la suite écrivait dans les données réelles de
 l'utilisateur. Neuf modules construisaient leur chemin en
 ``Path(__file__).parent.parent / "memory" / …``, donc importer ``main`` suffisait
@@ -7,6 +13,16 @@ l'utilisateur. Neuf modules construisaient leur chemin en
 ``modules_activés`` s'est exécutée sur la configuration de l'utilisateur au
 premier passage de la suite, parce que ``main.py`` la lance à l'import et que
 plusieurs tests montent l'app via ``TestClient``.
+
+Les deux arborescences de modules ont été ajoutées **avant** d'écrire
+``DELETE /settings/modules/{id}`` : cet endpoint fait un ``rmtree`` sur
+``<modules>/<id>`` et ``<generated>/<id>``. Un test de suppression visant les
+dossiers de production ne se rate qu'une fois.
+
+Elles sont COPIÉES et non vides : les tests existants s'appuient sur un arbre
+réaliste (``module_exists("chat")``, les manifestes du cœur, le ``hello`` de
+référence). ``_backups`` est exclu de la copie — 1,2 Mo des 1,6 Mo, et ce n'est
+qu'un historique de runtime.
 
 Usage, dans chaque test qui importe ``core.*`` ou ``main`` :
 
@@ -33,8 +49,19 @@ import shutil
 import tempfile
 from pathlib import Path
 
-#: Le vrai dossier de données, celui qu'aucun test ne doit toucher.
-REAL_DATA_DIR = Path(__file__).resolve().parent / "memory"
+_BACKEND = Path(__file__).resolve().parent
+_REPO = _BACKEND.parent
+
+#: Les trois arborescences réelles qu'aucun test ne doit toucher.
+REAL_DATA_DIR = _BACKEND / "memory"
+REAL_MODULES_DIR = _BACKEND / "modules"
+REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
+REAL_DIRS = (REAL_DATA_DIR, REAL_MODULES_DIR, REAL_FRONTEND_MODULES)
+
+#: Non copiés dans l'arbre temporaire : `_backups` pèse 1,2 Mo des 1,6 Mo de
+#: modules/ et n'est qu'un historique de runtime ; `_staging` et les caches sont
+#: recréés à la demande par le code testé.
+_IGNORES = shutil.ignore_patterns("_backups", "_staging", "__pycache__", "*.pyc")
 
 
 def _instantaner(dossier: Path) -> dict[str, tuple[int, float]]:
@@ -69,9 +96,51 @@ def _installer() -> Path:
     return d
 
 
-#: Empreinte du VRAI dossier, prise avant tout import de core.* — c'est le
-#: témoin comparé par test_data_dir.RealDataUntouchedTest.
-REAL_SNAPSHOT = _instantaner(REAL_DATA_DIR)
+def _installer_arbre(var: str, source: Path, nom: str) -> Path:
+    """Pose ``var`` sur une COPIE de ``source`` dans un temporaire.
 
-#: Dossier temporaire où toute la suite écrit.
+    Une copie et non un dossier vide : les tests existants s'appuient sur un
+    arbre réaliste (``module_exists("chat")``, ``discover_manifests`` qui doit
+    trouver les manifestes du cœur, le ``hello`` de référence lu par l'Atelier).
+    Un dossier vide les ferait tous tomber pour de mauvaises raisons.
+
+    C'est aussi ce qui rend testable ``DELETE /settings/modules/{id}`` : son
+    ``rmtree`` frappe la copie. Sans ça, le premier test de suppression
+    détruirait un vrai module.
+    """
+    existant = os.environ.get(var, "").strip()
+    if existant:
+        return Path(existant).expanduser().resolve()
+    racine = Path(tempfile.mkdtemp(prefix=f"epure-test-{nom}-"))
+    atexit.register(shutil.rmtree, racine, True)
+    cible = racine / source.name
+    if source.is_dir():
+        shutil.copytree(source, cible, ignore=_IGNORES)
+    else:
+        cible.mkdir(parents=True, exist_ok=True)
+    os.environ[var] = str(cible)
+    return cible
+
+
+#: Empreintes des VRAIS dossiers, prises avant tout import de core.* — témoins
+#: comparés par test_zz_donnees_reelles.
+REAL_SNAPSHOT = _instantaner(REAL_DATA_DIR)
+REAL_SNAPSHOTS = {str(d): _instantaner(d) for d in REAL_DIRS}
+
+#: Dossier temporaire où toute la suite écrit ses JSON de runtime.
 DATA_DIR = _installer()
+
+#: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus.
+MODULES_DIR = _installer_arbre("EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules")
+
+#: Copie de frontend/src/modules/ — EPURE_GENERATED_DIR pointe sur son
+#: sous-dossier `generated`, dont core.paths déduit le parent.
+_FRONTEND_COPIE = _installer_arbre("EPURE_GENERATED_DIR", REAL_FRONTEND_MODULES, "frontend")
+if _FRONTEND_COPIE.name != "generated":
+    # _installer_arbre a copié `modules/` ; la variable doit désigner
+    # `modules/generated`, le parent en étant déduit par core.paths.
+    GENERATED_DIR = _FRONTEND_COPIE / "generated"
+    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    os.environ["EPURE_GENERATED_DIR"] = str(GENERATED_DIR)
+else:
+    GENERATED_DIR = _FRONTEND_COPIE

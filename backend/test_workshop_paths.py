@@ -2,8 +2,8 @@
 """Confinement des identifiants de module de l'Atelier (durcissement v1, lot 3.1).
 
 Le garde-fou de chemin (`_modules_safe_path`) ne voyait rien passer, et c'est
-contre-intuitif : `(MODULES_DIR / "_staging/../chat").resolve()` vaut
-`modules/chat`, dont `is_relative_to(MODULES_DIR)` est **vrai**. La cible ne sort
+contre-intuitif : `(modules_dir() / "_staging/../chat").resolve()` vaut
+`modules/chat`, dont `is_relative_to(modules_dir())` est **vrai**. La cible ne sort
 jamais de `modules/` — elle change juste de module. Deux dégâts concrets :
 
   - `{"type":"generate","id":"../chat"}` → le LLM écrit dans un module core,
@@ -72,14 +72,14 @@ class StagingDirTest(unittest.TestCase):
     def test_id_valide(self):
         self.assertEqual(
             module_workshop._staging_dir("hello"),
-            module_workshop.MODULES_DIR / "_staging" / "hello",
+            module_workshop.modules_dir() / "_staging" / "hello",
         )
 
     def test_id_valide_avec_espaces_autour(self):
         """L'id est strippé avant validation (le front peut envoyer du blanc)."""
         self.assertEqual(
             module_workshop._staging_dir("  hello  "),
-            module_workshop.MODULES_DIR / "_staging" / "hello",
+            module_workshop.modules_dir() / "_staging" / "hello",
         )
 
     def test_ids_invalides(self):
@@ -93,8 +93,8 @@ class StagingDirTest(unittest.TestCase):
         Si ce test échoue un jour, c'est que la sémantique de resolve() a changé
         et que la validation d'id n'est plus la seule protection.
         """
-        cible = (module_workshop.MODULES_DIR / "_staging/../chat").resolve()
-        self.assertTrue(cible.is_relative_to(module_workshop.MODULES_DIR))
+        cible = (module_workshop.modules_dir() / "_staging/../chat").resolve()
+        self.assertTrue(cible.is_relative_to(module_workshop.modules_dir()))
         self.assertEqual(cible.name, "chat")
 
 
@@ -134,7 +134,7 @@ class DestructionTest(unittest.TestCase):
     """Ce qu'un id non validé détruisait réellement."""
 
     def test_reject_ne_supprime_pas_un_module_en_place(self):
-        chat = module_workshop.MODULES_DIR / "chat" / "manifest.json"
+        chat = module_workshop.modules_dir() / "chat" / "manifest.json"
         self.assertTrue(chat.is_file(), "prérequis : le module chat existe")
         with self.assertRaises(SecurityError):
             module_workshop.reject("../chat")
@@ -150,8 +150,8 @@ class DestructionTest(unittest.TestCase):
         """Filtrage et non validation : un résidu de sonde de verrou
         (`hello.__lockprobe__`, cf. _staging_locked) ne doit pas faire tomber
         GET /workshop/modules en 500."""
-        module_workshop.STAGING_DIR.mkdir(parents=True, exist_ok=True)
-        residu = module_workshop.STAGING_DIR / "zz_test.__lockprobe__"
+        module_workshop.staging_root().mkdir(parents=True, exist_ok=True)
+        residu = module_workshop.staging_root() / "zz_test.__lockprobe__"
         residu.mkdir(exist_ok=True)
         self.addCleanup(lambda: residu.exists() and residu.rmdir())
         module_workshop.list_staging()  # ne doit pas lever
@@ -194,7 +194,7 @@ class HttpStatusTest(unittest.TestCase):
         """Un détail d'erreur renvoyé au client ne doit pas exposer l'arborescence."""
         res = self.client.post("/workshop/Chat/reject", headers=self.headers)
         detail = res.json().get("detail", "")
-        self.assertNotIn(str(module_workshop.MODULES_DIR), detail)
+        self.assertNotIn(str(module_workshop.modules_dir()), detail)
 
 
 class WebSocketErrorTest(unittest.TestCase):

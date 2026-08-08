@@ -10,7 +10,7 @@ absent de la barre). Rien ne l'avait signalé parce que rien ne le vérifiait.
 
 Isolation — aucun test ne touche la vraie configuration :
   * `_test_env` pose `EPURE_DATA_DIR` sur un temporaire avant tout import ;
-  * `_MODULES_DIR` pointe un dossier temporaire de faux manifestes ;
+  * `_modules_dir` (fonction) renvoie un dossier temporaire de faux manifestes ;
   * `instance_config` est remplacé par une `InstanceConfig` sur un JSON temporaire ;
   * `_legacy_state_file` (fonction) renvoie le temporaire lui aussi ;
   * `register_routers` reçoit une fausse app et un faux `import_module`, pour ne
@@ -86,7 +86,7 @@ class BaseEtatsModules(unittest.TestCase):
         self.cfg = InstanceConfig(path=self.config_file)
 
         patches = [
-            mock.patch.object(module_registry, "_MODULES_DIR", self.modules_dir),
+            mock.patch.object(module_registry, "_modules_dir", lambda: self.modules_dir),
             # _legacy_state_file est une FONCTION depuis la bascule EPURE_DATA_DIR
             # (un chemin figé à l'import ignorerait la variable d'environnement) :
             # on remplace la fonction, pas une constante.
