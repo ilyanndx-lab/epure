@@ -13,8 +13,8 @@
 #              tourne dans un thread et échoue proprement).
 # - frontend : npm ci + tsc -b + npm run build + eslint — les trois BLOQUANTS
 #              depuis le 2026-08-08. eslint tourne avec un cliquet
-#              `--max-warnings 36` (0 erreur) : le détail de ce chiffre est
-#              au-dessus de l'étape elle-même, plus bas dans ce fichier.
+#              `--max-warnings 63` (0 erreur, périmètre src/ + catalogue
+#              installé) : le détail est au-dessus de l'étape, plus bas.
 #              Le type-check est gardé EN PLUS du build, pour que le nom de
 #              l'étape en échec dise tout de suite si c'est le typage ou le
 #              bundling. Détail et durées mesurées au-dessus de l'étape.
@@ -100,36 +100,108 @@ jobs:
       # de ce commentaire était inventé — d'où le détail des runs ici.
       - name: Type-check (bloquant)
         run: npx tsc -b
+      # CATALOGUE — vérification après INSTALLATION SIMULÉE.
+      #
+      # Les composants de modules-catalogue/<id>/ ne sont compilés par personne
+      # là où ils dorment : ils ne sont sous aucun `include` de tsconfig, et
+      # leurs imports relatifs ne sont valides QU'À LEUR EMPLACEMENT INSTALLÉ
+      # (frontend/src/modules/generated/<id>/, soit trois niveaux sous src/).
+      # Les vérifier sur place est donc impossible — pas difficile, impossible :
+      # un `../../../api` est faux tant que le fichier n'est pas à la bonne
+      # profondeur. Les installer d'abord est la seule méthode correcte.
+      #
+      # Bénéfice secondaire, et il n'est pas mince : cette étape exécute
+      # exactement l'opération que fera `POST /settings/catalogue/{id}/install`
+      # — copier `modules-catalogue/<id>/Component.tsx` vers
+      # `generated/<id>/`. La copie est donc testée en même temps que son
+      # résultat.
+      #
+      # Ce gate n'est pas théorique : à son écriture il a immédiatement trouvé
+      # que les six modules n'étaient pas installables (cf. 352d56e — cinq
+      # composants avaient gardé la profondeur d'imports de leur ancien
+      # emplacement, TS2307 sur tous leurs imports).
+      #
+      # `if: always()` sur le nettoyage : sans lui, un échec de tsc laisserait
+      # les copies en place et l'étape Build suivante ne vérifierait plus src/
+      # seul mais src/ + catalogue — elle mesurerait autre chose que son nom.
+      - name: Catalogue — installation simulée
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            id=$(basename "$d")
+            mkdir -p "src/modules/generated/$id"
+            cp "$d/Component.tsx" "src/modules/generated/$id/Component.tsx"
+            echo "installé : $id"
+          done
+      - name: Catalogue — type-check + build après installation
+        run: |
+          set -euo pipefail
+          rm -rf node_modules/.tmp   # tsc -b est incrémental : forcer la relecture
+          npx tsc -b
+          npm run build
+      - name: Catalogue — désinstallation
+        if: always()
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            rm -rf "src/modules/generated/$(basename "$d")"
+          done
+          rm -rf node_modules/.tmp
+          git diff --exit-code --stat -- src/modules/generated || {
+            echo "::error::la désinstallation n'a pas rendu generated/ à son état d'origine"
+            exit 1
+          }
       - name: Build (bloquant)
         # Le type-check ne voit pas les erreurs de bundling. Or le TSX généré
         # par l'Atelier atterrit dans frontend/src/modules/generated/, inclus
         # dans tsconfig.app.json ("include": ["src"]) : un module généré qui ne
         # bundle pas cassait l'image frontend sans que la CI le voie.
         run: npm run build
-      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus 36
+      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus 63
       # avertissements. Le nombre ne peut que baisser — quiconque en ajoute un
       # casse la CI, et quiconque en résorbe doit descendre le plafond dans le
       # même commit. C'est ce qui empêche la dette de regrimper en silence, ce
       # que `continue-on-error: true` avait laissé faire pendant des mois.
       #
-      # 63 → 36 au déplacement des six modules installables vers
-      # modules-catalogue/ : leurs composants ont quitté le périmètre de lint,
-      # emportant 27 avertissements. Le plafond descend dans le MÊME commit,
-      # conformément à la règle ci-dessus — sinon le cliquet garde du mou et
-      # laisse repasser 27 régressions sans rien dire.
+      # PÉRIMÈTRE : `src/` **plus le catalogue installé**. Le lint tourne donc
+      # sur une seconde installation simulée, pour la même raison que le
+      # type-check plus haut — un composant de catalogue n'est lintable qu'une
+      # fois à sa profondeur d'installation.
       #
-      # Les 36 se décomposent en deux populations à ne pas confondre :
-      #   22 react-hooks/exhaustive-deps — faux positifs. eslint ne peut pas
+      # Le plafond est repassé de 36 à 63. Le 36 était honnête au sens du
+      # cliquet (on ne remonte pas un plafond sans raison) mais il décrivait une
+      # CI qui ne regardait plus que la moitié du code : les 27 avertissements
+      # des six composants n'avaient pas été résorbés, ils étaient simplement
+      # sortis du champ. Un cliquet qui descend parce qu'on a cessé de regarder
+      # ne mesure plus rien.
+      #
+      # Les 63 se décomposent en deux populations à ne pas confondre :
+      #   41 react-hooks/exhaustive-deps — faux positifs. eslint ne peut pas
       #      voir à travers usePersistentState que le setter retourné est celui
       #      de useState, donc stable ; il exige des dépendances inutiles.
-      #   14 react-hooks/{refs,set-state-in-effect,immutability} — VRAIES
+      #   22 react-hooks/{refs,set-state-in-effect,immutability} — VRAIES
       #      violations des Rules of React, passées en « warn » dans
       #      eslint.config.js faute de tests frontend pour rattraper une
       #      régression. Prérequis pour les traiter : vitest +
       #      testing-library, en commençant par usePersistentState.ts.
       #      Voir CHANGELOG.md, « dette assumée ».
-      - name: eslint (bloquant — cliquet à 36 avertissements)
-        run: npm run lint -- --max-warnings 36
+      - name: eslint — installation simulée du catalogue
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            id=$(basename "$d")
+            mkdir -p "src/modules/generated/$id"
+            cp "$d/Component.tsx" "src/modules/generated/$id/Component.tsx"
+          done
+      - name: eslint (bloquant — cliquet à 63 avertissements, src + catalogue)
+        run: npm run lint -- --max-warnings 63
+      - name: eslint — désinstallation du catalogue
+        if: always()
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            rm -rf "src/modules/generated/$(basename "$d")"
+          done
 
   integration:
     name: Intégration — montage de tous les modules (manuel)
