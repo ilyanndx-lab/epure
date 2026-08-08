@@ -5,11 +5,11 @@ import {
   FlaskConical, FolderPlus, Loader2, Maximize2, Monitor, Package, Pencil, Play, RefreshCw,
   Save, Terminal as TerminalIcon, Wrench, X, Zap,
 } from 'lucide-react'
-import { Badge, Button, Input, Select, Toggle } from '../../components/ui'
-import RichMessage from '../../components/RichMessage'
-import ModuleBar from '../../components/ModuleBar'
-import { usePersistentState } from '../../usePersistentState'
-import { API, apiFetch, wsUrl } from '../../api'
+import { Badge, Button, Input, Select, Toggle } from '../../../components/ui'
+import RichMessage from '../../../components/RichMessage'
+import ModuleBar from '../../../components/ModuleBar'
+import { usePersistentState } from '../../../usePersistentState'
+import { API, apiFetch, wsUrl } from '../../../api'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

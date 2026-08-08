@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { usePersistentState } from '../../usePersistentState'
+import { usePersistentState } from '../../../usePersistentState'
 import { FileSearch, Loader2, Plus, Send, Trash2 } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from '../../components/ui'
-import RichMessage from '../../components/RichMessage'
-import ModuleBar from '../../components/ModuleBar'
-import { API, apiFetch, wsUrl } from '../../api'
+import { Badge, Button, Card, Input, ProgressBar, Tabs, Toggle } from '../../../components/ui'
+import RichMessage from '../../../components/RichMessage'
+import ModuleBar from '../../../components/ModuleBar'
+import { API, apiFetch, wsUrl } from '../../../api'
 
 interface DocInfo {
   id: string
