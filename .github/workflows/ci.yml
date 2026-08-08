@@ -11,18 +11,13 @@
 #              imports de niveau module de main.py, mesuré, et il n'inclut PAS
 #              torch/sentence-transformers (le préchauffage RAG de core.runtime
 #              tourne dans un thread et échoue proprement).
-# - frontend : npm ci + tsc --noEmit + npm run build + eslint — les trois
-#              BLOQUANTS depuis le 2026-08-08. eslint tourne avec un cliquet
+# - frontend : npm ci + tsc -b + npm run build + eslint — les trois BLOQUANTS
+#              depuis le 2026-08-08. eslint tourne avec un cliquet
 #              `--max-warnings 63` (0 erreur) : le détail de ce chiffre est
 #              au-dessus de l'étape elle-même, plus bas dans ce fichier.
-#              `tsc --noEmit` est gardé EN PLUS du build : il échoue en ~15 s là
-#              où le build échoue en ~1 min, et le message est plus direct.
-#              ⚠️ Attention : `tsc --noEmit` seul ne garde rien ici —
-#              frontend/tsconfig.json est un fichier « solution » (`files: []`
-#              + `references`), et hors mode `-b` tsc ne suit pas les
-#              références : il type-checke zéro fichier et sort 0. C'est
-#              `npm run build` (qui lance `tsc -b`) qui attrape réellement les
-#              erreurs de type. Mesuré le 2026-08-08.
+#              Le type-check est gardé EN PLUS du build, pour que le nom de
+#              l'étape en échec dise tout de suite si c'est le typage ou le
+#              bundling. Détail et durées mesurées au-dessus de l'étape.
 # - integration : integration_modules_mount.py charge core.runtime (torch,
 #              chromadb…) → trop lourd pour chaque push, déclenchement MANUEL
 #              uniquement (workflow_dispatch). Son préfixe `integration_` est ce
@@ -81,10 +76,24 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Installation (npm ci)
         run: npm ci
+      # `tsc -b` et NON `tsc --noEmit` : frontend/tsconfig.json est un fichier
+      # « solution » ("files": [] + "references"), et hors mode -b tsc ne suit
+      # pas les références. `--noEmit` ne lisait donc aucun fichier et sortait 0
+      # quoi qu'il arrive — un gate vert par vacuité. Mesuré : 1 s sur le run
+      # 31261765846, contre 8,9 s pour `tsc -b` à froid en local sur le même
+      # arbre. Ce n'était pas « rapide », c'était vide.
+      #
+      # Étape gardée séparée du build plutôt que supprimée : son nom distinct
+      # dans l'UI GitHub dit immédiatement si c'est le typage ou le bundling qui
+      # a cassé, sans ouvrir les logs. Et elle ne coûte presque rien en double
+      # emploi : `tsc -b` écrit son .tsbuildinfo dans node_modules/.tmp, donc le
+      # `tsc -b` que relance `npm run build` juste après est incrémental — il ne
+      # refait pas le travail, l'étape Build ne paie plus que le bundling vite
+      # (~2,3 s mesurés en local).
       - name: Type-check (bloquant)
-        run: npx tsc --noEmit
+        run: npx tsc -b
       - name: Build (bloquant)
-        # `tsc --noEmit` ne voit pas les erreurs de bundling. Or le TSX généré
+        # Le type-check ne voit pas les erreurs de bundling. Or le TSX généré
         # par l'Atelier atterrit dans frontend/src/modules/generated/, inclus
         # dans tsconfig.app.json ("include": ["src"]) : un module généré qui ne
         # bundle pas cassait l'image frontend sans que la CI le voie.
