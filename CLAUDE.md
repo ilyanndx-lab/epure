@@ -215,8 +215,20 @@ Aucune base de données côté application. Deux stockages :
   s'en déduit par `.parent` : une seule variable pour les deux, sinon un
   `generated/` détourné sous un parent resté en place ferait chercher le
   composant d'un module core dans un arbre et son composant généré dans un autre.
+- `resolve_models_dir()` — `$EPURE_MODELS_DIR`, sinon `<backend>/piper_models`.
+  **C'est un cache de modèles, pas des données utilisateur**, et la distinction
+  a des conséquences. Le `.onnx` de Piper (76 Mo) y est téléchargé au premier
+  usage de la voix puis vérifié par sha256 : le contenu est reconstructible à
+  l'identique, rien d'irremplaçable n'y vit. Il est donc délibérément **absent**
+  de `_test_env.REAL_DIRS`, la liste surveillée par `test_zz_donnees_reelles` —
+  un téléchargement légitime pendant la suite y écrirait 76 Mo et ferait tomber
+  un garde-fou qui parle d'autre chose. Il est en revanche bien **détourné** par
+  `_test_env` : ne pas confondre « non surveillé » et « laissé au vrai chemin ».
+  Avant, `PiperEngine` recevait `models_dir="piper_models"` — un chemin
+  **relatif au cwd**, qui ne fonctionnait que parce qu'`epure_tray.py` lance
+  uvicorn depuis `backend/`.
 
-Les trois suivent la même règle. **IMPÉRATIF : les appeler, jamais figer leur
+**Tous** suivent la même règle. **IMPÉRATIF : les appeler, jamais figer leur
 résultat dans une constante de module** — ni dans un défaut d'argument,
 `def f(p=CONST)` étant évalué à l'import (c'est sous cette forme que le piège
 s'était glissé dans `InstanceConfig` et `QuotaTracker`). Neuf modules
@@ -233,11 +245,14 @@ Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchor
 statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
 
 Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
-ces imports. `backend/_test_env.py` pose les **trois** variables sur des
+ces imports. `backend/_test_env.py` pose les **quatre** variables sur des
 temporaires uniques pour la session — `backend/modules/` et
 `frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
 voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
-testable : son `rmtree` frappe la copie.
+testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR` est le seul posé sur
+un temporaire **vide** : copier 76 Mo de modèle vocal n'aurait aucun sens, et
+aucun test ne le lit — il est détourné pour qu'un test qui construirait
+`PiperEngine` par accident ne tire pas 76 Mo dans le cache réel.
 
 **IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
 découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
