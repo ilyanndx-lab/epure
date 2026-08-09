@@ -1,5 +1,68 @@
 # Changelog
 
+## 2026-08-09 — fastapi/starlette épinglés en CI ; le démontage de routes reste cassé au-delà de 0.136
+
+La CI installait `fastapi` sans épingle : pip résolvait donc la dernière version
+publiée à chaque push, pendant que le poste de dev restait en 0.136.3, celle de
+`requirements.txt`. C'est la version validée qui fait foi — l'inverse n'est pas
+un choix, c'est un bump silencieux. `ci.yml` installe désormais
+`fastapi==0.136.3 starlette==1.2.0`, et son en-tête ne présente plus la liste
+non épinglée comme délibérée. `starlette` entre dans `requirements.txt` bien
+qu'il arrive en transitif : fastapi le déclare `>=0.46.0` sans borne haute, donc
+sa version était subie et non choisie, alors qu'on dépend de ses internes.
+
+### Ce que l'épinglage cache, et qu'il faut lire avant de le lever
+
+**Le bug de `_remount` / `_drop_module_routes` sur fastapi ≥ 0.137 est antérieur
+au catalogue, et il n'est PAS corrigé.** Dit explicitement parce que la
+prochaine personne à monter la version verra deux tests du catalogue devenir
+rouges et cherchera la cause dans le catalogue : elle n'y est pas.
+`_drop_module_routes` vit dans `core/module_workshop.py`, appelé par `_remount`,
+et était déjà cassé avant que le catalogue existe. Le catalogue n'a fait que
+l'exposer, en ajoutant les deux premiers tests qui suppriment un module puis
+vérifient que son API se taise.
+
+Ce qui se passe : à partir de **fastapi 0.137.0** (bascule mesurée par
+bissection — pas 0.141, comme on l'avait d'abord cru), `include_router`
+n'aplatit plus les routes dans `app.router.routes`. Il y met une seule entrée
+`_IncludedRouter`, sans `endpoint`, derrière laquelle vivent les vraies routes,
+servies via un cache invalidé par un compteur de version. Le filtre de
+`_drop_module_routes` ne trouve alors plus rien à retirer — la liste passe de 5
+à 5 — et la route d'un module supprimé **continue de répondre 200**. Une API
+fantôme, pas une panne visible.
+
+La cause est côté **fastapi**, pas Starlette, contrairement à ce que suggérait
+le message d'échec d'origine : 0.136.3 + starlette 1.6.0 passe les 207 tests.
+
+Ce n'était pas théorique — la CI était rouge sur les deux derniers commits
+(`8fdc31c`, run `31277621748`), avec `fastapi-0.141.1` résolu par pip. À noter
+que `8fdc31c` (« `_drop_module_routes` mutait une liste qu'il remplaçait »)
+corrige un vrai défaut mais **n'était pas** la cause de cet échec : le code
+mute bien en place et échoue quand même en ≥ 0.137.
+
+Ce qui tient la frontière, faute de correctif :
+
+- **`backend/test_versions_epinglees.py`** échoue si `fastapi.__version__` sort
+  de `0.136.x`, avec un message qui dit quoi faire et renvoie vers la doc.
+  Vérifié rouge en 0.137.0 et 0.141.1, vert en 0.136.1 et 0.136.3. Il vérifie
+  aussi que `ci.yml` et `requirements.txt` n'épinglent pas des versions
+  différentes.
+- **Les deux tests de route fantôme** restent en place et passent sur la version
+  épinglée : ils définissent le comportement voulu, le test de version garde la
+  frontière.
+- **`docs/limite-demontage.md`** — le symptôme mesuré, l'inspection verbatim des
+  internes en 0.141, les tentatives et ce qu'elles ont appris, et les cinq
+  options restantes avec leur coût. À lire avant tout bump. Y figure aussi ce
+  qui n'a *pas* été mesuré.
+
+Sur les tentatives, un point à ne pas résumer de travers : deux d'entre elles
+**fonctionnent** (retirer l'entrée `_IncludedRouter`, ou filtrer récursivement
+en invalidant le compteur au bon endroit) et font passer les tests en 0.141.
+Elles n'ont pas été adoptées parce qu'elles écrivent du code contre des noms
+privés absents de la version épinglée — donc à double chemin sur deux
+dispositions internes à la fois — et parce que leur décision d'appartenance a
+des trous mesurés. Le choix reste ouvert, options en §7 de la doc.
+
 ## 2026-08-08 — eslint bloquant en CI (cliquet à 63 avertissements)
 
 `continue-on-error: true` neutralisait l'étape eslint : elle s'affichait verte

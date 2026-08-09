@@ -8,10 +8,9 @@ from pathlib import Path
 from typing import Optional
 
 from core.jsonstore import read_json, transaction, write_json
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
-
-_MEMORY_DIR = Path(__file__).parent.parent / "memory"
 
 _PROFILE_DEFAULT = {
     "identité": {"niveau": "PTSI2", "établissement": "", "objectif": ""},
@@ -55,10 +54,13 @@ def _cache_set(key: str, value: list) -> None:
 class MemoryEngine:
     def __init__(self, llm=None):
         self._llm = llm
-        _MEMORY_DIR.mkdir(exist_ok=True)
-        self._profile_path = _MEMORY_DIR / "profile.json"
-        self._sessions_path = _MEMORY_DIR / "memory_sessions.json"
-        self._context_path = _MEMORY_DIR / "context_session.json"
+        # Résolu à la CONSTRUCTION du moteur, pas à l'import du module :
+        # cf. core.paths.resolve_data_dir.
+        data_dir = resolve_data_dir()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self._profile_path = data_dir / "profile.json"
+        self._sessions_path = data_dir / "memory_sessions.json"
+        self._context_path = data_dir / "context_session.json"
 
         if not self._profile_path.exists():
             self._write(self._profile_path, _PROFILE_DEFAULT)

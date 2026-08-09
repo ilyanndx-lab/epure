@@ -42,6 +42,12 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from core.codeagent import SecurityError, _make_exec_env
 from core.instance import instance_config
+from core.paths import (
+    BACKEND_DIR,
+    REPO_ROOT,
+    resolve_generated_dir,
+    resolve_modules_dir,
+)
 from core.module_validate import (
     validate_component_tsx, validate_router_py, ui_component_exports,
 )
@@ -65,12 +71,35 @@ class SessionLockedError(ValueError):
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # ── Racines confinées ────────────────────────────────────────────────────────
-MODULES_DIR = (Path(__file__).parent.parent / "modules").resolve()
-STAGING_DIR = MODULES_DIR / "_staging"
-BACKUPS_DIR = MODULES_DIR / "_backups"
-_ATELIER_DIR = MODULES_DIR / "_atelier"
-_FRONTEND_MODULES = (Path(__file__).parent.parent.parent / "frontend" / "src" / "modules").resolve()
-_FRONTEND_GENERATED = _FRONTEND_MODULES / "generated"
+# FONCTIONS et non constantes : cf. core.paths.resolve_modules_dir. Un chemin
+# figé à l'import ignore la variable d'environnement, et c'est ce dossier que
+# le rmtree de la suppression de module vise — les tests doivent pouvoir le
+# détourner ailleurs que sur les vrais modules de l'utilisateur.
+
+
+def modules_dir() -> Path:
+    return resolve_modules_dir()
+
+
+def staging_root() -> Path:
+    return modules_dir() / "_staging"
+
+
+def backups_root() -> Path:
+    return modules_dir() / "_backups"
+
+
+def _atelier_dir() -> Path:
+    return modules_dir() / "_atelier"
+
+
+def _frontend_modules() -> Path:
+    """``frontend/src/modules`` — déduit du dossier generated (cf. paths)."""
+    return resolve_generated_dir().parent
+
+
+def _frontend_generated() -> Path:
+    return resolve_generated_dir()
 
 _FILES = ("manifest.json", "router.py", "Component.tsx")
 # Ids impossibles : collisions avec des dossiers internes. 'settings' n'est PAS
@@ -84,11 +113,11 @@ _CLAUDE_TIMEOUT = 600  # secondes (génération headless)
 
 def _write_module_index() -> Path:
     """Génère _atelier/MODULE_INDEX.md : id, nom, description de chaque module actif."""
-    _ATELIER_DIR.mkdir(parents=True, exist_ok=True)
+    _atelier_dir().mkdir(parents=True, exist_ok=True)
     lines = ["# Modules existants dans cette instance Épure\n"]
     for m in module_registry.list_modules():
         lines.append(f"- **{m.get('id')}** ({m.get('nom','')}) — {m.get('description','') or 'sans description'}")
-    p = _ATELIER_DIR / "MODULE_INDEX.md"
+    p = _atelier_dir() / "MODULE_INDEX.md"
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p
 
@@ -103,19 +132,19 @@ def _atelier_read_files(extra: Optional[list[str]] = None, minimal: bool = False
     """Chemins --read (lecture seule) : conventions + index + exemple hello + extras autorisés.
     minimal=True (modèle local, contexte limité) : CONVENTIONS seul (pas d'index ni d'exemple)."""
     out: list[str] = []
-    conv = _ATELIER_DIR / "CONVENTIONS.md"
+    conv = _atelier_dir() / "CONVENTIONS.md"
     if conv.is_file():
         out.append(str(conv))
     if not minimal:                                  # local minimal : CONVENTIONS seul
         out.append(str(_write_module_index()))
         for name in ("manifest.json", "router.py"):
-            f = MODULES_DIR / "hello" / name
+            f = modules_dir() / "hello" / name
             if f.is_file():
                 out.append(str(f))
     for e in (extra or []):
         p = Path(e).expanduser()
         if not p.is_absolute():
-            p = (MODULES_DIR.parent.parent / e).resolve()  # racine projet
+            p = (REPO_ROOT / e).resolve()  # racine projet (anchor statique, pas modules_dir)
         if p.exists() and _read_is_safe(p):
             if p.is_dir():
                 for sub in list(p.rglob("*.py"))[:20] + list(p.rglob("*.tsx"))[:20] + list(p.rglob("*.md"))[:10]:
@@ -131,7 +160,7 @@ def grant_read(module_id: str, path: str) -> bool:
     Refuse si inexistant ou non sûr (secrets / données perso). Renvoie True si accordé."""
     p = Path(path).expanduser()
     if not p.is_absolute():
-        p = (MODULES_DIR.parent.parent / path).resolve()
+        p = (REPO_ROOT / path).resolve()
     if not (p.exists() and _read_is_safe(p)):
         return False
     meta = _read_meta(module_id) or {}
@@ -149,8 +178,8 @@ def _modules_safe_path(relative: str) -> Path:
     ``startswith`` de chaînes, contournable par un dossier frère du type
     ``modules-autre/`` ou une traversée ``..``/symlink).
     """
-    target = (MODULES_DIR / relative).resolve()
-    if not target.is_relative_to(MODULES_DIR):
+    target = (modules_dir() / relative).resolve()
+    if not target.is_relative_to(modules_dir()):
         logger.warning("SECURITY: écriture refusée hors modules/ — %s", target)
         raise SecurityError(f"Écriture refusée hors de modules/ : {target}")
     return target
@@ -203,7 +232,7 @@ def _check_module_id(module_id: str) -> str:
     """Valide un identifiant de module venant du client, ou lève SecurityError.
 
     ``_modules_safe_path`` ne suffit pas, et c'est contre-intuitif :
-    ``(MODULES_DIR / "_staging/../chat").resolve()`` vaut ``modules/chat``, dont
+    ``(modules_dir() / "_staging/../chat").resolve()`` vaut ``modules/chat``, dont
     ``is_relative_to(MODULES_DIR)`` est **vrai**. Le garde-fou ne voit rien
     passer parce que la cible ne sort jamais de ``modules/`` — elle change juste
     de module. D'où deux dégâts concrets : ``{"type":"generate","id":"../chat"}``
@@ -264,9 +293,9 @@ def cleanup_orphan_staging() -> list[str]:
     qu'un terminal tenait encore le dossier sous Windows → fichiers retirés mais
     dossier vide laissé). Renvoie la liste des ids nettoyés."""
     removed: list[str] = []
-    if not STAGING_DIR.is_dir():
+    if not staging_root().is_dir():
         return removed
-    for sub in STAGING_DIR.iterdir():
+    for sub in staging_root().iterdir():
         if not sub.is_dir() or (sub / ".workshop.json").is_file():
             continue                      # staging réel : on garde
         if _staging_locked(sub):
@@ -299,7 +328,7 @@ def _write_meta(module_id: str, meta: dict) -> None:
 
 
 def module_exists(module_id: str) -> bool:
-    return (MODULES_DIR / _check_module_id(module_id) / "manifest.json").is_file()
+    return (modules_dir() / _check_module_id(module_id) / "manifest.json").is_file()
 
 
 def is_core(module_id: str) -> bool:
@@ -312,7 +341,7 @@ def is_core(module_id: str) -> bool:
 def _active_files(module_id: str) -> dict:
     """Contenu actuel des 3 fichiers d'un module en place (chaînes, '' si absent)."""
     out = {"manifest.json": "", "router.py": "", "Component.tsx": ""}
-    base = MODULES_DIR / _check_module_id(module_id)
+    base = modules_dir() / _check_module_id(module_id)
     for name in ("manifest.json", "router.py"):
         f = base / name
         if f.is_file():
@@ -354,8 +383,8 @@ def _frontend_component_path(module_id: str, must_exist: bool = False) -> Option
     un id non contraint donnerait une écriture arbitraire dans ``frontend/``.
     """
     module_id = _check_module_id(module_id)
-    core_path = _FRONTEND_MODULES / module_id / "Component.tsx"
-    gen_path = _FRONTEND_GENERATED / module_id / "Component.tsx"
+    core_path = _frontend_modules() / module_id / "Component.tsx"
+    gen_path = _frontend_generated() / module_id / "Component.tsx"
     if core_path.is_file():
         return core_path
     if gen_path.is_file():
@@ -1455,7 +1484,7 @@ def smoke_test_staging(module_id: str) -> dict:
         r = subprocess.run(
             [sys.executable, str(runner), str(sdir), module_id],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_SMOKE_TIMEOUT, cwd=str(MODULES_DIR.parent),
+            timeout=_SMOKE_TIMEOUT, cwd=str(BACKEND_DIR),
             env=_make_exec_env(), stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
@@ -1524,9 +1553,9 @@ def _backup_existing(module_id: str) -> Optional[str]:
     if not module_exists(module_id):
         return None
     ts = time.strftime("%Y%m%d-%H%M%S")
-    dest = BACKUPS_DIR / module_id / ts
+    dest = backups_root() / module_id / ts
     dest.mkdir(parents=True, exist_ok=True)
-    base = MODULES_DIR / module_id
+    base = modules_dir() / module_id
     for name in ("manifest.json", "router.py"):
         f = base / name
         if f.is_file():
@@ -1539,8 +1568,33 @@ def _backup_existing(module_id: str) -> Optional[str]:
 
 
 def _drop_module_routes(app, module_id: str) -> None:
+    """Retire les routes d'un module de l'app vivante.
+
+    ⚠️ MUTATION EN PLACE (``[:] =``) et NON réaffectation. Réaffecter
+    ``app.router.routes`` crée une NOUVELLE liste : tout ce qui détient une
+    référence à l'ancienne continue de router vers les routes supprimées.
+
+    ⚠️ NE FONCTIONNE QU'EN FASTAPI ≤ 0.136 — et c'est pour ça que
+    ``requirements.txt`` y est épinglé. À partir de **fastapi 0.137.0**,
+    ``include_router`` n'aplatit plus les routes dans ``app.router.routes`` : il
+    y ajoute une seule entrée ``_IncludedRouter``, sans ``endpoint``, derrière
+    laquelle les routes vivent (``original_router``) et sont servies via un
+    cache invalidé par un compteur de version. Le filtre ci-dessous ne trouve
+    alors plus rien à retirer (mesuré : la liste passe de 5 à 5) et la route
+    d'un module supprimé répond encore 200.
+
+    La cause est côté **fastapi**, pas Starlette : 0.136.3 + starlette 1.6.0
+    passe la suite complète. Le bug n'est PAS corrigé ; la frontière est tenue
+    par ``test_versions_epinglees.py``. Design, mesures et options :
+    ``docs/limite-demontage.md``.
+
+    Il n'existe pas d'API publique de démontage, ni dans FastAPI ni dans
+    Starlette ; ce filtrage est le seul moyen. C'est précisément pourquoi
+    ``test_hello_ne_repond_plus_apres_suppression`` existe : il transforme cette
+    dépendance aux internes en invariant qui échoue bruyamment.
+    """
     modname = f"modules.{module_id}.router"
-    app.router.routes = [
+    app.router.routes[:] = [
         r for r in app.router.routes
         if getattr(getattr(r, "endpoint", None), "__module__", None) != modname
     ]
@@ -1586,7 +1640,7 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
     backup = _backup_existing(module_id)
 
     # Backend : manifest.json + router.py → modules/<id>/
-    dest = MODULES_DIR / module_id
+    dest = modules_dir() / module_id
     dest.mkdir(parents=True, exist_ok=True)
     for name in ("manifest.json", "router.py"):
         src = sdir / name
@@ -1611,23 +1665,21 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
     dest_manifest.write_text(
         json.dumps(norm.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    # Override de status persistant (modules_state.json) — ceinture+bretelles.
+    # Activation : un seul chemin. set_status ajoute l'id à modules_activés
+    # (unique source de vérité depuis la bascule à deux états) et refuse les cas
+    # interdits. Il y avait ici un doublon — set_status écrivait modules_state.json
+    # et le bloc plus bas ajoutait à modules_activés : deux écritures pour une
+    # notion, c'est exactement ce qui avait divergé.
     module_registry.set_status(module_id, "active")
 
     # Frontend : Component.tsx → emplacement existant, sinon generated/<id>/
     comp_src = sdir / "Component.tsx"
     if comp_src.is_file():
-        comp_dest = _frontend_component_path(module_id, must_exist=True) or (_FRONTEND_GENERATED / module_id / "Component.tsx")
+        comp_dest = _frontend_component_path(module_id, must_exist=True) or (_frontend_generated() / module_id / "Component.tsx")
         comp_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(comp_src, comp_dest)
 
-    # Activation : ajout à modules_activés + (re)montage du router.
-    cfg = instance_config.get()
-    enabled = list(cfg.get("modules_activés", []))
-    if module_id not in enabled:
-        enabled.append(module_id)
-        instance_config.update({"modules_activés": enabled})
-
+    # (l'ajout à modules_activés est fait par set_status ci-dessus)
     remounted = False
     remount_error = None
     if app is not None:
@@ -1661,8 +1713,8 @@ def list_staging() -> list[dict]:
     orphelins (restes de rmtree partiel) pour qu'ils ne traînent pas."""
     cleanup_orphan_staging()
     out = []
-    if STAGING_DIR.is_dir():
-        for sub in sorted(STAGING_DIR.iterdir()):
+    if staging_root().is_dir():
+        for sub in sorted(staging_root().iterdir()):
             # Nom de dossier filtré, pas validé : _staging_dir lève SecurityError
             # sur un id invalide, et un résidu de sonde de verrou
             # (`hello.__lockprobe__`, cf. _staging_locked) ferait alors planter

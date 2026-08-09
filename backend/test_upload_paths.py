@@ -33,6 +33,8 @@ from unittest import mock
 # Permettre d'importer le package `core` depuis le dossier backend.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
+
 os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
@@ -42,8 +44,35 @@ import main  # noqa: E402
 from core import paths as core_paths  # noqa: E402
 from core.auth import get_api_token  # noqa: E402
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name  # noqa: E402
-from modules.docs import router as docs_router  # noqa: E402
 from modules.settings import router as settings_router  # noqa: E402
+
+
+def _charger_docs_router():
+    """Charge le routeur `docs` depuis `modules-catalogue/` et le monte.
+
+    `docs` est parti au catalogue : il n'est plus installé par défaut, donc plus
+    importable en `modules.docs` ni monté sur `main.app`. Le contrat de sécurité
+    testé ici — confinement des noms d'upload et des chemins clients, lots 3.2
+    et 3.3 du durcissement — reste pourtant le sien, et il n'a pas changé.
+
+    On le charge donc depuis sa source canonique et on le monte pour la durée de
+    ce fichier de test, plutôt que de perdre la couverture d'un lot de
+    durcissement à l'occasion d'un déplacement de fichiers. Le jour où
+    l'installation depuis le catalogue existera, ce chargement pourra être
+    remplacé par une installation réelle dans l'arbre temporaire.
+    """
+    import importlib.util
+
+    src = Path(__file__).resolve().parent.parent / "modules-catalogue" / "docs" / "router.py"
+    spec = importlib.util.spec_from_file_location("catalogue_docs_router", src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # prefix "" : les chemins sont écrits en entier dans le routeur.
+    main.app.include_router(mod.router)
+    return mod
+
+
+docs_router = _charger_docs_router()  # noqa: E402
 
 #: Le fichier qui contient le token d'API — la cible réelle de 3.3.
 _INSTANCE_CONFIG = Path(__file__).parent / "memory" / "instance_config.json"

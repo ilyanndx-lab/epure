@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePersistentState } from '../../usePersistentState'
 import {
-  Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Eye, EyeOff,
-  FolderTree, Gauge, GripVertical, Hammer, KeyRound, Palette, Plus, RefreshCw,
+  Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Download, Eye, EyeOff,
+  FolderTree, Gauge, GripVertical, Hammer, KeyRound, Package, Palette, Plus, RefreshCw,
   RotateCcw, Trash2, User, X,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from '../../components/ui'
 import { useTheme } from '../../theme'
 import { useInstanceConfig, updateInstance } from '../../instance'
-import { useModules, resolveIcon } from '../../modules'
+import { useModules, resolveIcon, fetchModules } from '../../modules'
 import { API, apiFetch } from '../../api'
 
 interface ModelOption { id: string; nom: string; disponible: boolean }
@@ -43,6 +43,14 @@ interface Session {
   réussies: number
   ratées: number
   archivée: boolean
+}
+
+interface CatalogueEntry {
+  id: string
+  nom: string
+  description: string
+  icon: string
+  installé: boolean
 }
 
 interface QuotaEntry {
@@ -194,6 +202,10 @@ export default function Settings() {
   // Quota usage state
   const [quotas, setQuotas] = useState<Record<string, QuotaEntry>>({})
   const [quotasLoading, setQuotasLoading] = useState(false)
+  // null = pas encore chargé (distinct de [] = catalogue vide).
+  const [catalogue, setCatalogue] = useState<CatalogueEntry[] | null>(null)
+  const [catalogueBusy, setCatalogueBusy] = useState<string | null>(null)
+  const [catalogueMsg, setCatalogueMsg] = useState('')
   const [deepseekBalance, setDeepseekBalance] = useState<DeepSeekBalance | null>(null)
 
   // API keys state
@@ -255,6 +267,10 @@ export default function Settings() {
 
     loadEngines()
     loadQuotas()
+    // Rattaché à l'effet de montage existant plutôt qu'à un useEffect dédié :
+    // un effet de plus ajoutait un avertissement react-hooks au cliquet, pour
+    // un chargement que celui-ci fait déjà.
+    void loadCatalogue()
   }, [])
 
   const loadEngines = (force = false) => {
@@ -327,6 +343,70 @@ export default function Settings() {
       return null
     })
   }, [config.modules_activés])
+
+  // ── Catalogue ─────────────────────────────────────────────────────────────
+  // Fonctions simples et non useCallback, comme loadEngines/loadQuotas juste
+  // en dessous : une mémoïsation manuelle ici déclenche
+  // react-hooks/preserve-manual-memoization (le React Compiler ne peut pas la
+  // préserver), et ces fonctions ne sont passées à aucun composant mémoïsé.
+  //
+  // fetchModules() après chaque mutation : GET /modules est la source des
+  // métadonnées de la barre (src/modules.ts), et l'installation vient de la
+  // changer côté backend. Sans ce rafraîchissement, la barre garde son cache.
+
+  async function loadCatalogue() {
+    try {
+      const res = await apiFetch(`${API}/settings/catalogue`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const d = await res.json() as { modules: CatalogueEntry[] }
+      setCatalogue(d.modules)
+    } catch (err) {
+      console.error('GET /settings/catalogue:', err)
+      setCatalogue([])
+      setCatalogueMsg('Catalogue indisponible.')
+    }
+  }
+
+  async function installerModule(id: string) {
+    setCatalogueBusy(id); setCatalogueMsg('')
+    try {
+      const res = await apiFetch(`${API}/settings/catalogue/${id}/install`, { method: 'POST' })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`)
+      if (d?.erreur_montage) {
+        setCatalogueMsg(`Installé, mais le routeur n'a pas pu être monté à chaud : ${d.erreur_montage}. Redémarrez le backend.`)
+      }
+      await Promise.all([loadCatalogue(), fetchModules()])
+    } catch (err) {
+      setCatalogueMsg(`Installation impossible : ${(err as Error).message}`)
+    } finally {
+      setCatalogueBusy(null)
+    }
+  }
+
+  async function supprimerModule(id: string, nom: string) {
+    // Destructif : confirmation explicite. Le message dit qu'une sauvegarde est
+    // faite, pour que le refus soit informé et non de la peur.
+    if (!window.confirm(
+      `Supprimer le module « ${nom} » ?
+
+`
+      + `Son code sera effacé de cette instance. Une sauvegarde datée est `
+      + `conservée dans backend/modules/_backups/, et le module reste `
+      + `réinstallable depuis le catalogue.`
+    )) return
+    setCatalogueBusy(id); setCatalogueMsg('')
+    try {
+      const res = await apiFetch(`${API}/settings/modules/${id}`, { method: 'DELETE' })
+      const d = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`)
+      await Promise.all([loadCatalogue(), fetchModules()])
+    } catch (err) {
+      setCatalogueMsg(`Suppression impossible : ${(err as Error).message}`)
+    } finally {
+      setCatalogueBusy(null)
+    }
+  }
 
   const loadQuotas = () => {
     setQuotasLoading(true)
@@ -662,6 +742,68 @@ export default function Settings() {
             Le retrait d'un dossier prend effet au redémarrage du backend.
           </p>
         </div>
+      </Card>
+
+      {/* ── Catalogue de modules installables ── */}
+      <Card className="max-w-lg space-y-4">
+        <div className="flex items-center justify-between">
+          <SectionTitle icon={<Package size={15} />}>Catalogue</SectionTitle>
+          <Button variant="ghost" size="sm" icon={<RefreshCw size={12} />} onClick={() => void loadCatalogue()}>
+            Actualiser
+          </Button>
+        </div>
+        <p className="text-xs text-muted/70">
+          Modules livrés avec Épure mais non installés par défaut. Installer copie
+          leur code dans votre instance ; supprimer en fait une sauvegarde datée
+          avant de l'effacer.
+        </p>
+
+        {catalogue === null ? (
+          <p className="text-xs text-muted">Chargement…</p>
+        ) : catalogue.length === 0 ? (
+          <p className="text-xs text-muted">Aucun module au catalogue.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {catalogue.map(m => (
+              <div key={m.id} className="flex items-start gap-2 py-1.5 border-b border-line/40 last:border-0">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-primary">{m.nom}</span>
+                    {m.installé && <Badge variant="success">installé</Badge>}
+                  </div>
+                  <p className="text-xs text-muted/80 line-clamp-2">{m.description}</p>
+                </div>
+                {m.installé ? (
+                  <Button
+                    variant="ghost" size="sm" icon={<Trash2 size={13} />}
+                    disabled={catalogueBusy === m.id}
+                    onClick={() => void supprimerModule(m.id, m.nom)}
+                  >
+                    Supprimer
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary" size="sm" icon={<Download size={13} />}
+                    disabled={catalogueBusy === m.id}
+                    onClick={() => void installerModule(m.id)}
+                  >
+                    {catalogueBusy === m.id ? 'Installation…' : 'Installer'}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {catalogueMsg && <p className="text-xs text-warning">{catalogueMsg}</p>}
+
+        {/* Limite assumée du catalogue local, cf. README : le backend monte la
+            route immédiatement, mais le composant n'entre dans le bundle que si
+            un serveur de dev le recompile. */}
+        <p className="text-xs text-muted/70">
+          En développement, un module installé apparaît immédiatement. Avec un
+          frontend déjà construit (Docker), il faut reconstruire l'interface.
+        </p>
       </Card>
 
       {/* ── Atelier (moteurs Claude Code) ── */}

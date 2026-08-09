@@ -11,10 +11,26 @@
 #              imports de niveau module de main.py, mesuré, et il n'inclut PAS
 #              torch/sentence-transformers (le préchauffage RAG de core.runtime
 #              tourne dans un thread et échoue proprement).
+#              VERSIONS : `fastapi` et `starlette` sont épinglées sur
+#              backend/requirements.txt. C'est la version validée qui fait foi,
+#              pas la dernière publiée — l'inverse n'est pas un choix, c'est un
+#              bump silencieux à chaque push. Ce fichier a d'ailleurs déjà
+#              résolu du fastapi ≥ 0.137 et fait échouer les deux tests de route
+#              fantôme (`AssertionError: 200 != 404`) là où le poste de dev, en
+#              0.136.3, passait : le démontage de routes ne fonctionne plus
+#              au-delà de 0.136 et le bug n'est PAS corrigé
+#              (docs/limite-demontage.md). `test_versions_epinglees.py` tient la
+#              frontière et vérifie que ces deux épinglages-ci ne divergent pas
+#              de requirements.txt.
+#              Le RESTE de la liste flotte, délibérément : rien n'y dépend d'un
+#              interne de version, et recopier tout requirements.txt ici en
+#              dupliquerait la maintenance (torch/sentence-transformers y sont).
+#              Si un autre paquet devient porteur d'un invariant, il rejoint les
+#              deux épinglés.
 # - frontend : npm ci + tsc -b + npm run build + eslint — les trois BLOQUANTS
 #              depuis le 2026-08-08. eslint tourne avec un cliquet
-#              `--max-warnings 63` (0 erreur) : le détail de ce chiffre est
-#              au-dessus de l'étape elle-même, plus bas dans ce fichier.
+#              `--max-warnings 61` (0 erreur, périmètre src/ + catalogue
+#              installé) : le détail est au-dessus de l'étape, plus bas.
 #              Le type-check est gardé EN PLUS du build, pour que le nom de
 #              l'étape en échec dise tout de suite si c'est le typage ou le
 #              bundling. Détail et durées mesurées au-dessus de l'étape.
@@ -47,9 +63,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      # fastapi/starlette épinglés sur requirements.txt — voir en-tête. Ne pas
+      # « rafraîchir » ces deux versions ici : elles ne se montent qu'avec
+      # requirements.txt, et seulement après docs/limite-demontage.md.
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
-          pip install fastapi pydantic pyyaml python-dotenv
+          pip install fastapi==0.136.3 starlette==1.2.0
+          pydantic pyyaml python-dotenv
           httpx python-multipart chromadb ollama pypdf watchdog uvicorn
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
@@ -100,6 +120,57 @@ jobs:
       # de ce commentaire était inventé — d'où le détail des runs ici.
       - name: Type-check (bloquant)
         run: npx tsc -b
+      # CATALOGUE — vérification après INSTALLATION SIMULÉE.
+      #
+      # Les composants de modules-catalogue/<id>/ ne sont compilés par personne
+      # là où ils dorment : ils ne sont sous aucun `include` de tsconfig, et
+      # leurs imports relatifs ne sont valides QU'À LEUR EMPLACEMENT INSTALLÉ
+      # (frontend/src/modules/generated/<id>/, soit trois niveaux sous src/).
+      # Les vérifier sur place est donc impossible — pas difficile, impossible :
+      # un `../../../api` est faux tant que le fichier n'est pas à la bonne
+      # profondeur. Les installer d'abord est la seule méthode correcte.
+      #
+      # Bénéfice secondaire, et il n'est pas mince : cette étape exécute
+      # exactement l'opération que fera `POST /settings/catalogue/{id}/install`
+      # — copier `modules-catalogue/<id>/Component.tsx` vers
+      # `generated/<id>/`. La copie est donc testée en même temps que son
+      # résultat.
+      #
+      # Ce gate n'est pas théorique : à son écriture il a immédiatement trouvé
+      # que les six modules n'étaient pas installables (cf. 352d56e — cinq
+      # composants avaient gardé la profondeur d'imports de leur ancien
+      # emplacement, TS2307 sur tous leurs imports).
+      #
+      # `if: always()` sur le nettoyage : sans lui, un échec de tsc laisserait
+      # les copies en place et l'étape Build suivante ne vérifierait plus src/
+      # seul mais src/ + catalogue — elle mesurerait autre chose que son nom.
+      - name: Catalogue — installation simulée
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            id=$(basename "$d")
+            mkdir -p "src/modules/generated/$id"
+            cp "$d/Component.tsx" "src/modules/generated/$id/Component.tsx"
+            echo "installé : $id"
+          done
+      - name: Catalogue — type-check + build après installation
+        run: |
+          set -euo pipefail
+          rm -rf node_modules/.tmp   # tsc -b est incrémental : forcer la relecture
+          npx tsc -b
+          npm run build
+      - name: Catalogue — désinstallation
+        if: always()
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            rm -rf "src/modules/generated/$(basename "$d")"
+          done
+          rm -rf node_modules/.tmp
+          git diff --exit-code --stat -- src/modules/generated || {
+            echo "::error::la désinstallation n'a pas rendu generated/ à son état d'origine"
+            exit 1
+          }
       - name: Build (bloquant)
         # Le type-check ne voit pas les erreurs de bundling. Or le TSX généré
         # par l'Atelier atterrit dans frontend/src/modules/generated/, inclus
@@ -112,18 +183,46 @@ jobs:
       # même commit. C'est ce qui empêche la dette de regrimper en silence, ce
       # que `continue-on-error: true` avait laissé faire pendant des mois.
       #
-      # Les 63 se décomposent en deux populations à ne pas confondre :
+      # PÉRIMÈTRE : `src/` **plus le catalogue installé**. Le lint tourne donc
+      # sur une seconde installation simulée, pour la même raison que le
+      # type-check plus haut — un composant de catalogue n'est lintable qu'une
+      # fois à sa profondeur d'installation.
+      #
+      # Le plafond était repassé de 36 à 63 en rétablissant le périmètre (le 36
+      # décrivait une CI qui ne regardait plus que la moitié du code : les 27
+      # avertissements des six composants n'avaient pas été résorbés, ils étaient
+      # sortis du champ — un cliquet qui descend parce qu'on a cessé de regarder
+      # ne mesure plus rien). Il redescend à 61 avec l'UI du catalogue : ses
+      # gestionnaires sont écrits en fonctions simples plutôt qu'en useCallback,
+      # ce qui retire deux exhaustive-deps au passage.
+      #
+      # Les 61 se décomposent en deux populations à ne pas confondre :
       #   41 react-hooks/exhaustive-deps — faux positifs. eslint ne peut pas
       #      voir à travers usePersistentState que le setter retourné est celui
       #      de useState, donc stable ; il exige des dépendances inutiles.
-      #   22 react-hooks/{set-state-in-effect,refs,immutability} — VRAIES
+      #   20 react-hooks/{refs,set-state-in-effect,immutability} — VRAIES
       #      violations des Rules of React, passées en « warn » dans
       #      eslint.config.js faute de tests frontend pour rattraper une
       #      régression. Prérequis pour les traiter : vitest +
       #      testing-library, en commençant par usePersistentState.ts.
       #      Voir CHANGELOG.md, « dette assumée ».
-      - name: eslint (bloquant — cliquet à 63 avertissements)
-        run: npm run lint -- --max-warnings 63
+      - name: eslint — installation simulée du catalogue
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            id=$(basename "$d")
+            mkdir -p "src/modules/generated/$id"
+            cp "$d/Component.tsx" "src/modules/generated/$id/Component.tsx"
+          done
+      - name: eslint (bloquant — cliquet à 61 avertissements, src + catalogue)
+        run: npm run lint -- --max-warnings 61
+      - name: eslint — désinstallation du catalogue
+        if: always()
+        run: |
+          set -euo pipefail
+          for d in ../modules-catalogue/*/; do
+            rm -rf "src/modules/generated/$(basename "$d")"
+          done
 
   integration:
     name: Intégration — montage de tous les modules (manuel)

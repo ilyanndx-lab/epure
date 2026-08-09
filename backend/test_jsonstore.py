@@ -20,6 +20,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
+
 from core.jsonstore import read_json, write_json
 
 

@@ -4,10 +4,14 @@
   "nom": "Flashcards",
   "icon": "Layers",
   "description": "Cartes de révision à répétition espacée",
-  "frontend": { "component": "Flashcards" },
-  "backend": { "prefix": "/flashcards" },
-  "core_module": true,
-  "origin": "builtin",
+  "frontend": {
+    "component": "Flashcards"
+  },
+  "backend": {
+    "prefix": "/flashcards"
+  },
+  "core_module": false,
+  "origin": "catalogue",
   "status": "active",
   "removable": true
 }

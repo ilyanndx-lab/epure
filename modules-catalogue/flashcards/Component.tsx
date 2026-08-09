@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { usePersistentState } from '../../usePersistentState'
+import { usePersistentState } from '../../../usePersistentState'
 import { ArrowLeft, Check, Layers, Plus, Sparkles, Trash2, X } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Select } from '../../components/ui'
-import { API, apiFetch } from '../../api'
+import { Badge, Button, Card, Input, ProgressBar, Select } from '../../../components/ui'
+import { API, apiFetch } from '../../../api'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

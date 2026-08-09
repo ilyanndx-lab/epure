@@ -54,17 +54,22 @@ Les tests sont des scripts `unittest` **autonomes à la racine de `backend/`**
 
 ```powershell
 cd backend
+python -m unittest discover -s . -p "test_*.py"   # la commande de la CI
 python test_module_validate.py    # gate AST des routers générés
 python test_safe_path.py          # confinement de chemin du codeagent
 python test_jsonstore.py          # lecture/écriture JSON (BOM)
+python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
-python test_modules_mount.py      # LOURD : importe core.runtime (torch, chromadb)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
+python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
 ```
 
-**IMPÉRATIF — quand tu ajoutes un fichier de test, ajoute-le aussi à
-`.github/workflows/ci.yml`.** La CI lance les tests un par un, nommément : un
-test non listé ne tourne jamais. C'est déjà arrivé pour 4 des 6 fichiers.
+**Un nouveau `backend/test_*.py` est pris en compte sans toucher au workflow** :
+la CI tourne en `unittest discover` depuis le commit `7e3bf8c`. Ce n'est plus une
+liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
+tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
+l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
+torch et chromadb et tourne dans le job `integration`, manuel).
 
 ### Écart de version Python — piège actif
 
@@ -124,9 +129,19 @@ Un module = **exactement 3 fichiers** :
 ```
 backend/modules/<id>/manifest.json
 backend/modules/<id>/router.py
-frontend/src/modules/generated/<id>/Component.tsx   (généré)
-   ou frontend/src/modules/<id>/Component.tsx        (core)
+frontend/src/modules/generated/<id>/Component.tsx   (généré ou installé)
+   ou frontend/src/modules/<id>/Component.tsx        (cœur)
 ```
+
+Troisième emplacement depuis l'étape C : **`modules-catalogue/<id>/`**, qui
+réunit les trois fichiers côte à côte (`manifest.json`, `router.py`,
+`Component.tsx`). C'est la **source** des modules installables, pas une
+instance : rien n'y est monté. Installer = copier vers `backend/modules/<id>/`
+et `frontend/src/modules/generated/<id>/`. Les six qui y sont
+(`code`, `docs`, `flashcards`, `kholle`, `reviseur`, `rangement`) portent
+`core_module: false`, `origin: "catalogue"`, `removable: true` — `origin`
+distinct de `"workshop"` pour que l'Atelier ne les propose pas à la ré-édition
+comme du code jetable.
 
 `manifest.json` : `id`, `version`, `nom`, `icon` (nom lucide-react), `description`,
 `frontend.component`, `backend.prefix`, `core_module`, `origin`, `status`,
@@ -140,8 +155,42 @@ possédant un `router.py`, `importlib.import_module(f"modules.{mid}.router")` pu
 chaque route doit être écrite préfixée à la main : `@router.get("/<id>/ping")`.
 Sans ça, collision silencieuse avec une route core (`/models`, `/analyze`).
 
-Le status effectif fusionne le manifeste avec `memory/modules_state.json`
-(overrides via `set_status`). `settings` ne peut pas être désactivé.
+#### Deux états, une seule source de vérité
+
+| État | Source de vérité | Effet | Stockage |
+|---|---|---|---|
+| **Installé** | `backend/modules/<id>/manifest.json` existe | le module existe pour cette instance | aucun — dérivé du disque |
+| **Actif** | `id` ∈ `instance_config.modules_activés` (liste **ordonnée**) | routeur monté **et** visible dans la barre, à la position donnée par la liste | `memory/instance_config.json` |
+
+Il n'y a **pas** d'état « monté mais invisible ». Actif = les deux à la fois.
+
+**IMPÉRATIF : `backend/memory/modules_state.json` a été supprimé et ne doit pas
+être recréé.** Il portait un second `status` par module, en doublon de
+`modules_activés`. Deux fichiers pour une notion divergent mécaniquement — c'est
+ce qui a été mesuré avant migration : 9 des 11 entrées de `modules_state.json`
+pointaient des modules effacés, 4 des 12 entrées de `modules_activés` aussi, et
+`reviseur` était installé et monté tout en étant absent de la barre. Si tu crois
+avoir besoin d'un état supplémentaire, c'est probablement `installé` que tu
+cherches, et il se lit sur le disque.
+
+Règles à respecter :
+
+- `core/module_registry.py:active_ids()` est la **seule** lecture d'état. Liste
+  vide → tous les modules installés (défaut d'installation neuve, ordre
+  `discover_manifests`, donc alphabétique et déterministe).
+- `set_status(id, "active"|"disabled")` ajoute/retire dans la liste. Signature et
+  endpoint `PUT /modules/{id}/status` conservés.
+- Le champ `status` de `GET /modules` reste `"active"|"disabled"` : il est
+  **dérivé** de l'appartenance à la liste. Le frontend en dépend
+  (`src/modules.ts`, `ModuleManifest.status`) — ne pas le renommer.
+- `settings` ne peut pas être désactivé : refusé par `set_status`, et réinjecté à
+  l'écriture (`core/instance.py:_garder_settings`) comme à la lecture. La liste
+  pilote le montage : la lui faire perdre débranche l'écran qui sert à la
+  réparer.
+- **Toute écriture de `instance_config.json` passe par
+  `core/jsonstore.transaction()`** (`InstanceConfig._mutate`). Cette liste
+  conditionne le démarrage ; un read-modify-write non verrouillé y perd des
+  écritures.
 
 ### 3.4 Persistance
 
@@ -159,6 +208,51 @@ Aucune base de données côté application. Deux stockages :
 
 - `FICHES_DIR` / `resolve_fiches_dir()` — `$EPURE_FICHES_DIR`, sinon `<repo>/data/fiches`
 - `resolve_workspace()` — `$EPURE_WORKSPACE`, sinon `<repo>/workspace`, toujours `.resolve()`
+- `resolve_data_dir()` — `$EPURE_DATA_DIR`, sinon `<backend>/memory`
+- `resolve_modules_dir()` — `$EPURE_MODULES_DIR`, sinon `<backend>/modules`
+- `resolve_generated_dir()` — `$EPURE_GENERATED_DIR`, sinon
+  `<repo>/frontend/src/modules/generated`. Le parent (`frontend/src/modules`)
+  s'en déduit par `.parent` : une seule variable pour les deux, sinon un
+  `generated/` détourné sous un parent resté en place ferait chercher le
+  composant d'un module core dans un arbre et son composant généré dans un autre.
+
+Les trois suivent la même règle. **IMPÉRATIF : les appeler, jamais figer leur
+résultat dans une constante de module** — ni dans un défaut d'argument,
+`def f(p=CONST)` étant évalué à l'import (c'est sous cette forme que le piège
+s'était glissé dans `InstanceConfig` et `QuotaTracker`). Neuf modules
+calculaient `Path(__file__).parent.parent / "memory" / …` au chargement : la
+suite écrivait donc dans les données réelles, au point d'exécuter pour de bon la
+migration de `modules_activés` sur la config de l'utilisateur. Verrouillé par
+`test_data_dir.py`, qui pose les variables **après** les imports et vérifie que
+l'écriture suit.
+
+**Corollaire à ne pas rater : ne jamais remonter depuis un dossier de données
+pour obtenir une racine de code.** `MODULES_DIR.parent.parent` donnait la racine
+du dépôt tant que `MODULES_DIR` n'était pas déplaçable ; il l'est désormais.
+Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchors
+statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
+
+Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
+ces imports. `backend/_test_env.py` pose les **trois** variables sur des
+temporaires uniques pour la session — `backend/modules/` et
+`frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
+voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
+testable : son `rmtree` frappe la copie.
+
+**IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
+découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
+modules dans l'ordre alphabétique, et un garde-fou qui vérifie que personne n'a
+sali `backend/memory/` ne vaut que s'il passe après tous les autres. Le contrôle
+vivait dans `test_data_dir.py` (3e sur 12) : un fichier écrit par
+`test_workshop_paths` (12e) laissait la suite verte — 179 tests OK avec un
+intrus sur le disque, mesuré. Donc : **tout nouveau fichier de test doit trier
+avant `test_zz_`** (c'est le cas de tout nom ne commençant pas par `test_z`).
+L'invariant est lui-même testé (`test_ce_module_est_bien_le_dernier_decouvert`).
+
+Ce que le garde-fou ne couvre pas, et qu'il ne faut pas lui prêter : un
+`tearDownModule`/`tearDownClass` qui s'exécuterait après lui, les `atexit`, et
+les threads démons (`QuotaTracker` en lance un). Il prouve qu'aucun *test* n'a
+écrit, pas qu'aucune *ligne de code* n'écrira.
 
 Le confinement se fait par **`Path.resolve()` puis `is_relative_to()`**, jamais
 par `startswith` de chaînes (contournable par un dossier frère `modules-autre/`).
@@ -342,6 +436,7 @@ dépôt : elle rend le code relisible après trois semaines d'absence. La respec
 - Écrire un chemin absolu en dur (`C:\Users\Ilyan\...`) — il en reste un dans
   `start.ps1`, c'est une dette, pas un exemple.
 - Rendre `_LazyEngine` « plus simple » en instanciant directement.
-- Ajouter un test sans l'ajouter à `ci.yml`.
+- Recréer `backend/memory/modules_state.json` (§3.3) — ou tout second stockage
+  de l'état « actif » à côté de `modules_activés`.
 - Élargir le périmètre fonctionnel tant que la CI ne peut pas dire non
   (1 `response_model` sur 103 endpoints à ce jour).

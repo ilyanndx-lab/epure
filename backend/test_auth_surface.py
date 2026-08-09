@@ -35,6 +35,8 @@ from pathlib import Path
 # Permettre d'importer le package `core` depuis le dossier backend.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de core.* / main
+
 # Ces trois variables sont lues À L'IMPORT de main : les figer ici rend le test
 # indépendant de l'environnement du poste (et de backend/.env, que load_dotenv
 # n'applique jamais par-dessus une variable déjà posée).

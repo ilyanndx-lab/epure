@@ -51,6 +51,82 @@ def resolve_workspace() -> Path:
     return base.resolve()
 
 
+#: Racine du dépôt et dossier backend — anchors STATIQUES, dérivés de
+#: ``__file__``. Pas de surcharge d'environnement : ce sont des repères de
+#: code source, pas des dossiers de données. À utiliser explicitement partout où
+#: on veut « la racine du projet », et surtout PAS en remontant depuis un
+#: dossier de données (``MODULES_DIR.parent.parent`` donnait la racine du dépôt
+#: tant que MODULES_DIR n'était pas déplaçable — il l'est désormais).
+BACKEND_DIR = _BACKEND_DIR
+REPO_ROOT = _REPO_ROOT
+
+
+def resolve_modules_dir() -> Path:
+    """Dossier des modules backend (l'ancien ``backend/modules/`` en dur).
+
+    Priorité : ``$EPURE_MODULES_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/modules``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Pourquoi c'est surchargeable : ``DELETE /settings/modules/{id}`` fait un
+    ``rmtree`` sur ``<modules>/<id>``, et ses tests détruiraient les vrais
+    modules de l'utilisateur. Un endpoint destructif dont les tests visent le
+    dossier de production est un accident qui n'attend que d'être écrit.
+    """
+    env = os.environ.get("EPURE_MODULES_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "modules")
+    return base.resolve()
+
+
+def resolve_generated_dir() -> Path:
+    """Dossier des composants générés (``frontend/src/modules/generated``).
+
+    Priorité : ``$EPURE_GENERATED_DIR`` (``~`` accepté) puis le défaut ci-dessus.
+    Toujours résolu. Même règle d'appel que :func:`resolve_modules_dir`.
+
+    Le dossier PARENT (``frontend/src/modules``) est déduit de celui-ci
+    (``.parent``) plutôt que d'avoir sa propre variable : les deux doivent
+    bouger ensemble — un `generated/` détourné sous un parent resté en place
+    ferait chercher le composant d'un module core dans un arbre et son composant
+    généré dans un autre. Une seule variable rend l'incohérence impossible.
+    """
+    env = os.environ.get("EPURE_GENERATED_DIR", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return (_REPO_ROOT / "frontend" / "src" / "modules" / "generated").resolve()
+
+
+def resolve_data_dir() -> Path:
+    """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
+
+    Priorité : ``$EPURE_DATA_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/memory``. Toujours renvoyé résolu, comme
+    :func:`resolve_workspace`.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER DANS UNE CONSTANTE DE MODULE.** C'est tout
+    l'intérêt de la fonction, et c'est une contrainte, pas un détail de style.
+    Neuf modules construisaient leur chemin en ``Path(__file__).parent.parent /
+    "memory" / …`` au niveau module. Un chemin calculé à l'import est figé à
+    l'import : une variable d'environnement posée ensuite n'a plus aucun effet,
+    et l'ordre d'import devient une dépendance invisible. La conséquence a été
+    payée : la suite de tests écrivait dans les données réelles, au point
+    d'exécuter pour de bon la migration de ``modules_activés`` sur la
+    configuration de l'utilisateur.
+
+    Attention particulière aux **arguments par défaut** : ``def __init__(self,
+    path=_CONSTANTE)`` est évalué à la définition de la fonction, donc à
+    l'import — même piège, moins visible. Utiliser ``path=None`` puis résoudre
+    dans le corps.
+
+    Le comportement est verrouillé par ``test_data_dir.py``, qui pose la
+    variable APRÈS avoir importé les modules et vérifie que l'écriture suit.
+    """
+    env = os.environ.get("EPURE_DATA_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "memory")
+    return base.resolve()
+
+
 #: Dossier racine des fiches, résolu une fois au chargement du module.
 FICHES_DIR = resolve_fiches_dir()
 

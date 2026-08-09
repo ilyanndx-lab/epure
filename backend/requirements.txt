@@ -1,4 +1,14 @@
 fastapi==0.136.3
+# Épinglée bien que fastapi la tire déjà : fastapi 0.136.3 déclare
+# `starlette>=0.46.0` SANS borne haute, donc `pip install -r requirements.txt`
+# résout aujourd'hui starlette 1.6.0 et non la 1.2.0 du poste de dev — une
+# version subie, pas choisie. Or on dépend directement de ses internes :
+# `_drop_module_routes` filtre `app.router.routes` à la main, faute d'API
+# publique de démontage (cf. docs/limite-demontage.md).
+# Mesuré avant de l'épingler : 0.136.3 + starlette 1.6.0 passe les 207 tests.
+# L'épinglage sert donc la reproductibilité, pas une correction — c'est
+# `fastapi` qui porte la limite, pas `starlette`.
+starlette==1.2.0
 uvicorn==0.48.0
 # Requis par les endpoints à UploadFile/File(...) : FastAPI lève à l'import du
 # router si le paquet manque. Il était présent par hasard sur le poste de dev,
