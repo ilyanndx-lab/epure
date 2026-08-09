@@ -28,8 +28,10 @@ docker compose up --build
 - API : <http://localhost:8000> (docs interactives : <http://localhost:8000/docs>)
 
 Au premier démarrage, le backend télécharge ses modèles ML (embeddings,
-Whisper, Piper) ; comptez quelques minutes. Le healthcheck patiente jusqu'à
-5 min avant de considérer le service en échec.
+Whisper) ; comptez quelques minutes. Le healthcheck patiente jusqu'à
+5 min avant de considérer le service en échec. Le modèle de **synthèse vocale**,
+lui, n'arrive qu'au premier usage de la voix (cf. plus bas) — le démarrage n'en
+dépend pas.
 
 ### Ollama avec Docker
 
@@ -131,6 +133,7 @@ Toutes optionnelles ; définies dans `backend/.env` (local) ou via Compose.
 | Variable               | Défaut                                        | Rôle                                                          |
 | ---------------------- | --------------------------------------------- | ------------------------------------------------------------- |
 | `EPURE_FICHES_DIR`     | `<repo>/data/fiches`                          | Dossier racine des fiches PDF (RAG).                          |
+| `EPURE_MODELS_DIR`     | `backend/piper_models`                        | Cache du modèle de synthèse vocale (76 Mo, téléchargé).       |
 | `EPURE_BIND`           | `127.0.0.1`                                   | Interface d'écoute du backend lancé par `epure_tray.py`.      |
 | `EPURE_ALLOWED_HOSTS`  | `localhost,127.0.0.1,::1`                     | En-têtes `Host` acceptés (anti DNS rebinding).                |
 | `EPURE_CORS_ORIGINS`   | `http://localhost:5173,http://127.0.0.1:5173` | Origines autorisées (séparées par des virgules).              |
@@ -156,6 +159,29 @@ et pourrait récupérer le token via `/pair`.
 Les paramètres de modèle, génération, RAG et voix sont dans
 `backend/config.yaml`. Les `watch_folders` y sont des chemins relatifs,
 résolus sous `EPURE_FICHES_DIR` (un chemin absolu reste utilisé tel quel).
+
+### Voix — le modèle est téléchargé au premier usage
+
+Le modèle de synthèse Piper (`fr_FR-upmc-medium`, **~77 Mo**) n'est pas dans le
+dépôt : c'est un binaire, pas du code, et le versionner faisait payer 71 Mo de
+`.git` à chaque clone. Il est récupéré depuis
+[`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices) à la
+**première synthèse vocale**, pas au démarrage, puis vérifié par sha256 et rangé
+dans `backend/piper_models/` (`EPURE_MODELS_DIR`). Les téléchargements suivants
+n'ont pas lieu : le modèle reste sur le disque.
+
+L'interface prévient avant de lancer les 77 Mo et n'insiste pas si vous refusez.
+La progression part dans les logs du backend.
+
+**Hors ligne, ou si le téléchargement échoue** : la synthèse vocale est
+indisponible et le dit (`503` avec un message explicite) ; **tout le reste
+d'Épure fonctionne normalement** — chat, RAG, flashcards, transcription. La voix
+est optionnelle par conception. Une tentative ratée n'est pas mise en cache : la
+synthèse suivante réessaie, donc il suffit de retrouver du réseau.
+
+Si l'empreinte du fichier téléchargé ne correspond pas à celle attendue, le
+fichier est supprimé plutôt que conservé — mieux vaut pas de voix qu'une voix
+issue d'un fichier qu'on n'a pas reconnu.
 
 ---
 

@@ -32,6 +32,7 @@ from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
 from core.rag import RAGEngine
 from core.runtime import (
     API_KEY_NAMES,
+    PIPER_VOICE,
     SSE_HEADERS,
     consolidation_engine,
     llm,
@@ -43,6 +44,7 @@ from core.runtime import (
     usage_tracker,
     whisper,
 )
+from core.voice import VoiceModelUnavailable, etat_modele_vocal
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +75,30 @@ async def voice_transcribe(audio: UploadFile = File(...)):
     return {"text": text}
 
 
+@router.get("/voice/model")
+async def voice_model():
+    """État du modèle de synthèse — sert à prévenir AVANT 77 Mo de téléchargement.
+
+    Le frontend l'interroge avant la première synthèse : le modèle n'est plus
+    versionné, il arrive au premier usage. Demander l'état au moteur lui-même
+    serait contradictoire — le construire déclenche le téléchargement qu'on veut
+    annoncer.
+    """
+    return etat_modele_vocal(PIPER_VOICE)
+
+
 @router.post("/voice/synthesize")
 async def voice_synthesize(req: SynthesizeRequest):
     loop = asyncio.get_running_loop()
     try:
         wav_bytes = await loop.run_in_executor(None, piper.synthesize, req.text)
+    except VoiceModelUnavailable as exc:
+        # 503 et pas 500 : dans une app local-first la voix est optionnelle, son
+        # indisponibilité est un état prévu. Le message part tel quel — il dit
+        # s'il manque le réseau, si l'empreinte a divergé ou si piper-tts est
+        # absent, et on ne peut rien faire d'un « Erreur synthèse vocale » nu.
+        logger.warning("Synthèse vocale indisponible : %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
         logger.exception("Erreur synthèse /voice/synthesize")
         raise HTTPException(status_code=500, detail="Erreur synthèse vocale")

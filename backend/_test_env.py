@@ -5,6 +5,7 @@ Trois arborescences sont détournées vers des temporaires :
     EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
     EPURE_MODULES_DIR    backend/modules/                (copie)
     EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
+    EPURE_MODELS_DIR     backend/piper_models/           (temporaire VIDE)
 
 Pourquoi ce fichier existe : la suite écrivait dans les données réelles de
 l'utilisateur. Neuf modules construisaient leur chemin en
@@ -121,6 +122,22 @@ def _installer() -> Path:
     return d
 
 
+def _installer_vide(var: str, nom: str) -> Path:
+    """Pose ``var`` sur un temporaire VIDE — pas une copie.
+
+    Pour les caches reconstructibles, dont on veut seulement qu'un test ne
+    puisse pas écrire dans le vrai. Copier n'aurait aucun sens ici : le modèle
+    vocal pèse 76 Mo, et la suite ne le lit jamais.
+    """
+    existant = os.environ.get(var, "").strip()
+    if existant:
+        return Path(existant).expanduser().resolve()
+    d = Path(tempfile.mkdtemp(prefix=f"epure-test-{nom}-"))
+    atexit.register(shutil.rmtree, d, True)
+    os.environ[var] = str(d)
+    return d
+
+
 def _installer_arbre(var: str, source: Path, nom: str) -> Path:
     """Pose ``var`` sur une COPIE de ``source`` dans un temporaire.
 
@@ -157,6 +174,17 @@ DATA_DIR = _installer()
 
 #: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus.
 MODULES_DIR = _installer_arbre("EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules")
+
+#: Cache des modèles vocaux — temporaire VIDE, et volontairement ABSENT de
+#: REAL_DIRS. Deux raisons distinctes, à ne pas confondre :
+#:
+#:   * détourné, parce qu'un test qui construirait `PiperEngine` par accident
+#:     tirerait 76 Mo dans le vrai cache (aucun ne le fait aujourd'hui, mais
+#:     c'est le genre de chose qui ne se rate qu'une fois) ;
+#:   * non surveillé, parce que ce n'est pas une donnée utilisateur mais un
+#:     cache reconstructible : un téléchargement légitime pendant la suite ferait
+#:     tomber un garde-fou qui parle d'autre chose (cf. resolve_models_dir).
+MODELS_DIR = _installer_vide("EPURE_MODELS_DIR", "models")
 
 def _rebrancher_package_modules(cible: Path) -> None:
     """Fait résoudre ``import modules.<id>.…`` depuis l'arbre TEMPORAIRE.

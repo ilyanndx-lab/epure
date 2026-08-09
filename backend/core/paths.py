@@ -97,6 +97,33 @@ def resolve_generated_dir() -> Path:
     return (_REPO_ROOT / "frontend" / "src" / "modules" / "generated").resolve()
 
 
+def resolve_models_dir() -> Path:
+    """Cache des modèles de synthèse vocale (l'ancien ``piper_models`` relatif).
+
+    Priorité : ``$EPURE_MODELS_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/piper_models``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Pourquoi la fonction existe : ``PiperEngine`` recevait ``"piper_models"``,
+    un chemin **relatif** résolu contre le répertoire courant. Ça n'a jamais
+    fonctionné que parce que ``epure_tray.py`` lance uvicorn depuis
+    ``backend/``. Lancé d'ailleurs, le moteur créait un dossier vide à côté du
+    cwd et retéléchargeait 76 Mo — sans rien signaler, puisque « le modèle est
+    absent » est un état normal désormais.
+
+    ⚠️ Ce n'est **pas** un dossier de données utilisateur, c'est un **cache**.
+    Il est délibérément absent de la liste surveillée par
+    ``test_zz_donnees_reelles`` : un téléchargement légitime y écrirait 76 Mo et
+    ferait tomber un garde-fou qui ne parle pas de ça. Le contenu est
+    reconstructible à l'identique — c'est vérifié par sha256 à chaque
+    téléchargement — donc rien d'irremplaçable n'y vit.
+    """
+    env = os.environ.get("EPURE_MODELS_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "piper_models")
+    return base.resolve()
+
+
 def resolve_data_dir() -> Path:
     """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
 

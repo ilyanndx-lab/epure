@@ -47,8 +47,43 @@ export default function App() {
     setSpeakingText(null)
   }, [])
 
+  // Le modèle de synthèse (~77 Mo) n'est plus versionné : il est téléchargé au
+  // premier usage de la voix. On demande avant — 77 Mo tirés sans prévenir, sur
+  // une connexion de fortune, ce n'est pas acceptable. Le ref évite de reposer
+  // la question à chaque phrase : une fois le modèle sur le disque, le backend
+  // le sert sans réseau.
+  const modeleVocalPret = useRef(false)
+  const voixSignalee = useRef(false)
+
+  const confirmerModeleVocal = useCallback(async (): Promise<boolean> => {
+    if (modeleVocalPret.current) return true
+    try {
+      const res = await apiFetch(`${API}/voice/model`)
+      // État inconnu (endpoint absent, backend qui redémarre) : on n'empêche pas
+      // d'essayer. Bloquer sur une incertitude coûterait la voix à quelqu'un qui
+      // a déjà son modèle.
+      if (!res.ok) return true
+      const etat = await res.json()
+      if (etat['présent'] || etat['téléchargement_en_cours']) {
+        modeleVocalPret.current = true
+        return true
+      }
+      const mo = etat['taille_attendue_mo'] ?? 77
+      const ok = window.confirm(
+        `La synthèse vocale doit d'abord télécharger son modèle (~${mo} Mo).\n` +
+        `C'est une seule fois : il reste ensuite sur le disque.\n\n` +
+        `Lancer le téléchargement ?`
+      )
+      if (ok) modeleVocalPret.current = true
+      return ok
+    } catch {
+      return true
+    }
+  }, [])
+
   const playSpeech = useCallback(async (text: string) => {
     if (!text.trim()) return
+    if (!(await confirmerModeleVocal())) return
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
@@ -60,6 +95,20 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       })
+      if (res.status === 503) {
+        // Voix indisponible (hors ligne, empreinte divergente…). Le backend
+        // envoie un message utile — le jeter dans la console serait le perdre.
+        // Une seule fois par session : la lecture auto (ttsEnabled) rejouerait
+        // l'alerte à chaque réponse de l'assistant.
+        const detail = await res.json().then(d => d?.detail).catch(() => null)
+        if (!voixSignalee.current) {
+          voixSignalee.current = true
+          window.alert(detail || 'Synthèse vocale indisponible.')
+        }
+        // Le modèle n'est pas arrivé : reposer la question au prochain essai.
+        modeleVocalPret.current = false
+        throw new Error(detail || 'Synthèse vocale indisponible')
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
@@ -79,7 +128,7 @@ export default function App() {
       console.error('Erreur TTS:', err)
       setSpeakingText(null)
     }
-  }, [])
+  }, [confirmerModeleVocal])
 
   const onAssistantDone = useCallback(
     (text: string) => {

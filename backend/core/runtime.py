@@ -148,8 +148,13 @@ whisper = _LazyEngine(
     ),
     "Whisper (transcription vocale)",
 )
+#: Voix Piper active. Exposée parce que le modèle est téléchargé à la demande :
+#: `GET /voice/model` doit pouvoir dire s'il est déjà là SANS construire le
+#: moteur — le construire, c'est déclencher le téléchargement. Un routeur qui
+#: relirait config.yaml de son côté ferait diverger les deux.
+PIPER_VOICE = _voice_cfg.get("piper_voice", "fr_FR-upmc-medium")
 piper = _LazyEngine(
-    lambda: PiperEngine(voice=_voice_cfg.get("piper_voice", "fr_FR-upmc-medium")),
+    lambda: PiperEngine(voice=PIPER_VOICE),
     "Piper (synthèse vocale)",
 )
 
