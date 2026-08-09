@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-08-09 — Purge du modèle vocal Piper de l'historique git (hashes réécrits)
+
+L'intégralité de l'historique (les deux branches, `main` et
+`claude/elegant-ramanujan-aoxyrv`) a été réécrite avec
+`git filter-repo --invert-paths` pour retirer définitivement le modèle de
+synthèse vocale :
+
+- `backend/piper_models/fr_FR-upmc-medium.onnx` (76 733 615 o)
+- `backend/piper_models/fr_FR-upmc-medium.onnx.json` (4 996 o)
+
+`.git` passe de **69,6 Mo à 1,7 Mo**. Ce n'était pas du code : un binaire
+reconstructible, que chaque personne clonant le dépôt payait intégralement.
+
+La purge n'a été lancée qu'**après** que le téléchargement à la demande soit en
+place et prouvé (`feat(voice): telecharge le modele piper a la demande`) : le
+modèle est récupéré depuis `rhasspy/piper-voices` au premier usage de la voix,
+vérifié par sha256, et son absence ne dégrade que la synthèse vocale. La preuve
+a été faite avant la réécriture — dossier déplacé, backend relancé,
+`POST /voice/synthesize` → 200 et 4,33 s d'audio, octets identiques à
+l'original. Sans cette vérification préalable, un clone frais se serait retrouvé
+sans voix et sans moyen de l'obtenir.
+
+### Conséquence à assumer : les hashes antérieurs ne résolvent plus
+
+**Tous les hashes de commit ont changé.** Les clones antérieurs au 2026-08-09
+doivent être re-clonés — pas de `pull`, les historiques ont divergé
+volontairement. C'est la même situation que la purge du 2026-07-02.
+
+Plusieurs documents et messages de commit citent des hashes désormais pendants :
+ce `CHANGELOG.md` lui-même, `docs/limite-demontage.md`, `docs/rapport-verif.md`,
+et les références du type `64a5636`, `8fdc31c`, `e498e65`. **Ils n'ont pas été
+réécrits** : ce serait interminable, et faux dès le commit suivant. Les commits
+concernés restent trouvables par **recherche textuelle de leur sujet**
+(`git log --oneline --all | Select-String "…"`), qui est stable, elle.
+
+À savoir aussi : GitHub ne libère pas immédiatement l'espace côté serveur — les
+anciens objets subsistent jusqu'à un ramasse-miettes qu'on ne contrôle pas. Un
+clone frais, lui, est immédiatement léger, et c'est ce qui compte.
+
+Une sauvegarde miroir complète de l'état antérieur est conservée localement,
+hors dépôt.
+
 ## 2026-08-09 — fastapi/starlette épinglés en CI ; le démontage de routes reste cassé au-delà de 0.136
 
 La CI installait `fastapi` sans épingle : pip résolvait donc la dernière version
