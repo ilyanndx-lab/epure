@@ -1572,14 +1572,24 @@ def _drop_module_routes(app, module_id: str) -> None:
 
     ⚠️ MUTATION EN PLACE (``[:] =``) et NON réaffectation. Réaffecter
     ``app.router.routes`` crée une NOUVELLE liste : tout ce qui détient une
-    référence à l'ancienne continue de router vers les routes supprimées. C'est
-    une vraie régression observée, pas une précaution : les deux tests de route
-    fantôme passaient en local (fastapi 0.136.3 / starlette 1.2.0) et
-    échouaient en CI, où `pip install` résout d'autres versions —
-    ``AssertionError: 200 != 404``, la route servait encore.
+    référence à l'ancienne continue de router vers les routes supprimées.
 
-    Il n'existe pas d'API publique de démontage dans Starlette ; ce filtrage est
-    le seul moyen. C'est précisément pourquoi
+    ⚠️ NE FONCTIONNE QU'EN FASTAPI ≤ 0.136 — et c'est pour ça que
+    ``requirements.txt`` y est épinglé. À partir de **fastapi 0.137.0**,
+    ``include_router`` n'aplatit plus les routes dans ``app.router.routes`` : il
+    y ajoute une seule entrée ``_IncludedRouter``, sans ``endpoint``, derrière
+    laquelle les routes vivent (``original_router``) et sont servies via un
+    cache invalidé par un compteur de version. Le filtre ci-dessous ne trouve
+    alors plus rien à retirer (mesuré : la liste passe de 5 à 5) et la route
+    d'un module supprimé répond encore 200.
+
+    La cause est côté **fastapi**, pas Starlette : 0.136.3 + starlette 1.6.0
+    passe la suite complète. Le bug n'est PAS corrigé ; la frontière est tenue
+    par ``test_versions_epinglees.py``. Design, mesures et options :
+    ``docs/limite-demontage.md``.
+
+    Il n'existe pas d'API publique de démontage, ni dans FastAPI ni dans
+    Starlette ; ce filtrage est le seul moyen. C'est précisément pourquoi
     ``test_hello_ne_repond_plus_apres_suppression`` existe : il transforme cette
     dépendance aux internes en invariant qui échoue bruyamment.
     """
