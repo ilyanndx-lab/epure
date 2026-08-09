@@ -76,7 +76,30 @@ class PiperEngine:
         return PiperVoice.load(str(self._onnx), config_path=str(self._config))
 
     def synthesize(self, text: str) -> bytes:
+        """Texte → WAV en mémoire.
+
+        ``synthesize_wav`` et pas ``synthesize`` : depuis piper-tts 1.3,
+        ``PiperVoice.synthesize(text, wav)`` n'existe plus sous cette forme.
+        ``synthesize`` est devenu un **générateur** d'``AudioChunk`` dont le 2e
+        paramètre est une ``SynthesisConfig``. L'ancien appel ne levait donc
+        rien : il fabriquait un générateur jamais consommé, n'écrivait pas une
+        trame, et c'est ``wave.close()`` qui finissait par lever « # channels
+        not specified » — une erreur qui ne dit pas un mot de la vraie cause.
+        Résultat mesuré sur piper-tts 1.4.2 : ``/voice/synthesize`` en 500 avec
+        un modèle parfaitement chargé.
+
+        Le format WAV est posé ici, et ``set_wav_format=False`` le confirme à
+        piper : lui ne le pose qu'au PREMIER chunk audio, si bien qu'un texte
+        n'en produisant aucun (blancs, ponctuation seule, emoji) laisserait
+        l'en-tête incomplet et rejouerait exactement la même erreur pour une
+        entrée bénigne. Un WAV vide est une réponse valide ; un 500 non.
+        Les valeurs viennent de la même source que piper : 1 canal, 16 bits,
+        échantillonnage déclaré par le modèle.
+        """
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wav:
-            self._piper_voice.synthesize(text, wav)
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(self._piper_voice.config.sample_rate)
+            self._piper_voice.synthesize_wav(text, wav, set_wav_format=False)
         return buf.getvalue()
