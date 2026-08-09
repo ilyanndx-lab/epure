@@ -189,11 +189,16 @@ class SuppressionOrdreTest(BaseCatalogue):
         servie — incohérence silencieuse, pas erreur visible.
 
         Le retrait repose sur `_drop_module_routes`, qui filtre
-        `app.router.routes` : ce n'est PAS une API publique de Starlette (aucune
-        méthode de démontage n'existe). Ce test convertit cette dépendance
-        implicite en invariant tenu : le jour où Starlette change ses internes,
-        il échouera bruyamment ici plutôt que de laisser une API fantôme.
-        Même geste que `test_ce_module_est_bien_le_dernier_decouvert`.
+        `app.router.routes` : ce n'est PAS une API publique (ni FastAPI ni
+        Starlette n'offrent de méthode de démontage). Ce test convertit cette
+        dépendance implicite en invariant tenu : le jour où ces internes
+        changent, il échoue bruyamment ici plutôt que de laisser une API
+        fantôme. Même geste que `test_ce_module_est_bien_le_dernier_decouvert`.
+
+        C'est déjà arrivé, et ce test l'a bien attrapé : **fastapi ≥ 0.137**
+        casse le démontage (cf. `docs/limite-demontage.md`). D'où l'épinglage de
+        `requirements.txt` en 0.136.3 et `test_versions_epinglees.py`. Si ce test
+        échoue, regarder la version de fastapi AVANT de suspecter le catalogue.
         """
         client = _client()
         headers = {"Authorization": f"Bearer {get_api_token()}"}
@@ -208,8 +213,10 @@ class SuppressionOrdreTest(BaseCatalogue):
         self.assertEqual(
             apres.status_code, 404,
             "la route de hello répond encore après suppression du module — "
-            "API fantôme. `_drop_module_routes` ne filtre plus app.router.routes "
-            "(internes Starlette changés ?).",
+            "API fantôme. `_drop_module_routes` ne retire plus rien de "
+            "app.router.routes. Vérifier fastapi.__version__ d'abord : au-delà "
+            "de 0.136, include_router n'aplatit plus les routes "
+            "(docs/limite-demontage.md).",
         )
 
     def _reinstaller_hello(self):
