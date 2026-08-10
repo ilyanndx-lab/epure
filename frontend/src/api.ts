@@ -1,7 +1,7 @@
 /**
  * Point d'accès unique au backend Épure.
  *
- * - `API` : URL de base HTTP (surchargeable par VITE_API_URL, défaut localhost:8000).
+ * - `API` : URL de base HTTP (cf. les deux modes ci-dessous).
  * - `apiFetch` : fetch qui joint le token d'API (Authorization: Bearer) et
  *   ré-appaire automatiquement sur 401.
  * - `wsUrl('/ws/chat')` : URL WebSocket avec `?token=` (pas de headers possibles
@@ -13,13 +13,44 @@
  * automatique et invisible. Depuis un autre poste, coller le code affiché par
  * http://localhost:8000/pair ouvert sur la machine qui héberge Épure
  * (via `setToken`, cf. écran d'appairage dans App.tsx).
+ *
+ * ── Deux modes de déploiement, un seul réglage ────────────────────────────────
+ *
+ * 1. **Développement** — `VITE_API_URL` non définie. Vite sert le front sur
+ *    :5173, uvicorn l'API sur :8000 : deux origines, donc URL absolue.
+ * 2. **Paquet distribué** — le front construit est servi par FastAPI lui-même,
+ *    une seule origine. `API` doit alors être vide pour que les appels soient
+ *    relatifs, sinon `http://localhost:8000` en dur casse dès que le
+ *    destinataire ouvre `http://127.0.0.1:8000` : l'appel devient cross-origin
+ *    et EPURE_CORS_ORIGINS ne liste que les origines :5173 (main.py).
+ *
+ * Le test distingue `undefined` de la chaîne vide — et NON par coquetterie :
+ * l'ancien `VITE_API_URL?.replace(…) || 'http://localhost:8000'` ne permettait
+ * pas d'exprimer le mode 2. Une chaîne vide est falsy, donc `|| ` retombait sur
+ * le défaut : construire avec une valeur vide donnait quand même du localhost:8000.
+ *
+ * **Sous Windows, `VITE_API_URL=''` est inexprimable** : `$env:VAR = ''`
+ * SUPPRIME la variable (mesuré — l'enfant voit « non définie »), et Windows est
+ * la plateforme primaire du projet. Le réglage du mode 2 est donc
+ * `VITE_API_URL=/`, que le `replace` ci-dessous normalise en chaîne vide. La
+ * chaîne vide reste acceptée pour un build POSIX.
  */
 
-export const API: string =
-  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') ||
-  'http://localhost:8000'
+const _API_URL = import.meta.env.VITE_API_URL as string | undefined
 
-const WS_BASE = API.replace(/^http/, 'ws')
+export const API: string =
+  _API_URL === undefined ? 'http://localhost:8000' : _API_URL.replace(/\/+$/, '')
+
+/**
+ * En mode 2, `API` est vide : on ne peut pas en dériver le schéma ws. On le
+ * prend sur la page, qui EST le backend. Résolu explicitement plutôt que de
+ * confier `/ws/chat` au constructeur WebSocket : la résolution d'une URL
+ * relative y est bien spécifiée, mais un `ws://` complet reste lisible dans les
+ * outils réseau et dans les logs uvicorn.
+ */
+const WS_BASE = API
+  ? API.replace(/^http/, 'ws')
+  : window.location.origin.replace(/^http/, 'ws')
 
 const TOKEN_KEY = 'epure.apiToken'
 
