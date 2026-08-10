@@ -448,8 +448,8 @@ dépôt : elle rend le code relisible après trois semaines d'absence. La respec
 - Instancier un moteur hors de `core/runtime.py`.
 - Écrire un JSON de runtime sans passer par `core/jsonstore.py`.
 - Ajouter un `shell=True`, même « juste pour Windows ».
-- Écrire un chemin absolu en dur (`C:\Users\Ilyan\...`) — il en reste un dans
-  `start.ps1`, c'est une dette, pas un exemple.
+- Écrire un chemin absolu en dur (`C:\Users\Ilyan\...`). Le dernier vivait dans
+  `start.ps1`, retiré du dépôt pour cette raison ; il n'en reste aucun.
 - Rendre `_LazyEngine` « plus simple » en instanciant directement.
 - Recréer `backend/memory/modules_state.json` (§3.3) — ou tout second stockage
   de l'état « actif » à côté de `modules_activés`.

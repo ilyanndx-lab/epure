@@ -103,8 +103,37 @@ pour cette origine).
 
 ### Lanceur Windows tout-en-un
 
-`start.ps1` démarre Ollama, le backend et le frontend puis ouvre le navigateur
-(adaptez les chemins à votre installation).
+```powershell
+python epure_tray.py
+```
+
+Démarre Ollama, le backend et le frontend, ouvre le navigateur, et pose une
+icône dans la zone de notification (Ouvrir / Redémarrer / Quitter). Les
+dépendances du lanceur (`pystray`, `Pillow`) sont dans
+`backend/requirements.txt`. Le journal part dans `epure_tray.log`.
+
+Windows uniquement : le script utilise `subprocess.STARTUPINFO`, `taskkill` et
+`netstat`. Sous Linux/macOS, lancez les trois services à la main (sections
+ci-dessus).
+
+> **Ollama doit être installé** avant le premier lancement. S'il est absent du
+> PATH, le lanceur pose bien son icône mais s'arrête en silence sur
+> `Popen(["ollama", "serve"])` : ni backend, ni frontend, ni navigateur, et
+> `epure_tray.log` s'interrompt après `Lancement ollama serve` sans message
+> d'erreur. Contrairement à `flm`, qui est optionnel et dont l'absence est
+> attrapée.
+
+Ce lanceur remplace `start.ps1`, retiré du dépôt : il n'était utilisable que sur
+le poste de son auteur.
+
+- **Chemins absolus en dur** (`cd C:\Users\Ilyan\epure\backend`) — faux chez
+  tout le monde sauf lui.
+- **Lancement inconditionnel de `flm`**, un runtime NPU propre à une machine
+  précise, sans garde si le binaire est absent. `epure_tray.py` le traite comme
+  ce qu'il est : optionnel.
+- **`taskkill` sur le processus qui écoute le port 11434**, avant tout le reste.
+  Sur un poste où ce port sert à autre chose, le lanceur tuait un programme sans
+  rapport avec Épure. `epure_tray.py` cible `ollama.exe` par nom d'image.
 
 ---
 

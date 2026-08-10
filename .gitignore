@@ -109,3 +109,8 @@ Thumbs.db
 
 # Sorties du code-agent (données perso de runtime, recréé au démarrage)
 workspace/
+
+# Ancien lanceur PowerShell, retiré du dépôt (chemins absolus, flm inconditionnel,
+# taskkill sur le port 11434). Remplacé par `python epure_tray.py`. Ignoré pour
+# que la copie locale de ce poste ne revienne pas par un `git add`.
+start.ps1

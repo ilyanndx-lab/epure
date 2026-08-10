@@ -23,8 +23,8 @@ mécanismes ci-dessous : écriture atomique (tmp + replace) et verrou par fichie
 ⚠️ LES VERROUS SONT INTRA-PROCESSUS (``threading.RLock``). Ils sérialisent les
 threads d'UN process — le pool de threads de FastAPI et les ``Thread`` explicites
 de la consolidation, ce qui est le cas d'usage réel d'Épure (une instance, un
-worker : Dockerfile, epure_tray.py, start.ps1). Ils ne protègent RIEN entre
-plusieurs processus : **ne pas lancer uvicorn avec ``--workers > 1``** (ni
+worker : Dockerfile, epure_tray.py). Ils ne protègent RIEN entre plusieurs
+processus : **ne pas lancer uvicorn avec ``--workers > 1``** (ni
 plusieurs instances sur le même dossier ``memory/``) sans passer d'abord à un
 verrou de fichier — ``msvcrt.locking`` sous Windows, ``fcntl.flock`` sous POSIX.
 L'écriture atomique, elle, reste correcte entre processus : un lecteur ne verra
