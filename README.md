@@ -13,6 +13,36 @@ ferez générer par l'**Atelier**.
 - **Frontend** : React + Vite + TypeScript (`frontend/`)
 - **LLM local** : [Ollama](https://ollama.com) (cloud optionnel : Gemini, Groq, Cerebras, Mistral, NVIDIA)
 
+> 📖 **Vous voulez juste vous servir d'Épure ?** Le [guide
+> d'utilisation](docs/guide.md) s'adresse à vous : installation en un fichier,
+> premiers pas, modules, dépannage — sans terminal. Ce README-ci s'adresse à qui
+> installe à la main, développe ou déploie.
+
+---
+
+## Installation en un fichier (Windows)
+
+Dans le dossier du projet, clic droit sur `install.ps1` → **Exécuter avec
+PowerShell**. Le script installe ce qui manque (Python 3.12, Node.js LTS,
+Ollama, le modèle de `backend/config.yaml`), pose les dépendances, crée
+`backend/.env` s'il n'existe pas, et ajoute un raccourci **Épure** sur le
+Bureau.
+
+```powershell
+.\install.ps1 -DryRun   # affiche chaque décision, n'installe rien
+.\install.ps1           # installe
+```
+
+Il est **idempotent** : le relancer détecte ce qui est déjà présent, ne réécrit
+aucun fichier existant, et sert donc aussi de mise à jour. Journal dans
+`install.log`, code de sortie non nul dès qu'une étape échoue.
+
+> ⚠️ Ce script n'a **jamais tourné sur une machine vierge** à ce jour. Sur un
+> poste déjà équipé, chaque détection répond « déjà présent » et ne prouve rien
+> des chemins d'installation. Lancez `-DryRun` d'abord.
+
+Les sections ci-dessous décrivent l'installation manuelle, qui reste le repli.
+
 ---
 
 ## Démarrage rapide (Docker)

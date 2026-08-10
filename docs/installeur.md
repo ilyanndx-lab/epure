@@ -15,6 +15,22 @@ la boucle de l'Atelier de instantanée à ~10 s par approbation. Cf. §5.
 
 ---
 
+## État au 2026-08-10
+
+| Étape | État |
+|---|---|
+| A — `epure_tray.py` installable et lançable | **faite** — `pystray`/`Pillow` déclarées, `start.ps1` retiré, `Epure.bat`, garde Ollama, instance unique, plus de kill des processus d'autrui, logique extraite dans `lanceur.py` et testée en CI (`backend/test_lanceur.py`) |
+| B — `install.ps1` | **faite** — neuf étapes, `-DryRun`, journal, identifiants winget vérifiés. Jamais exécutée sur machine vierge |
+| C — Documentation | **faite** — `docs/guide.md` (utilisateur), README « Installation en un fichier », section « Mettre à jour » |
+
+Deux chantiers sont apparus en route et sont faits eux aussi, hors de ce
+document : le retrait du prépa en dur du cœur (`backend/test_coeur_generique.py`
+tient la frontière) et un bug d'installation neuve où la barre ne montrait que
+Réglages parce que le frontend lisait `modules_activés: []` comme « aucun
+module » là où le backend y lit « tous les modules installés ».
+
+---
+
 ## §0 — Ce qui existe déjà, à vérifier plutôt qu'à croire
 
 `epure_tray.py` résout tous ses chemins depuis `Path(__file__).parent` — il est
@@ -151,10 +167,22 @@ semaines pour un résultat fragile.
 
 ## §6 — Ce qui n'a pas été vérifié
 
-- Les identifiants `winget` (`Python.Python.3.12`, `OpenJS.NodeJS.LTS`,
-  `Ollama.Ollama`) sont cités de mémoire. **À confirmer par `winget search`
-  avant de les écrire dans le script** — c'est exactement le genre de valeur
-  plausible qui se révèle fausse au premier usage chez quelqu'un d'autre.
-- Le comportement de `epure_tray.py` quand Ollama est absent : non mesuré.
-- Le comportement de `pythonw` vis-à-vis du journal du tray : non mesuré.
-- Aucune exécution du script sur une machine vierge à ce stade.
+- ~~Les identifiants `winget` sont cités de mémoire.~~ **Vérifiés** le
+  2026-08-10 par `winget search --exact` : `Python.Python.3.12` → 3.12.10,
+  `OpenJS.NodeJS.LTS` → 24.19.0, `Ollama.Ollama` → 0.32.6. Les trois étaient
+  exacts, ce qui ne rendait pas la vérification inutile.
+- ~~Le comportement de `epure_tray.py` quand Ollama est absent : non mesuré.~~
+  **Mesuré** : `FileNotFoundError` ligne 110, thread démon tué, ni uvicorn ni
+  npm lancés, journal s'arrêtant sur « Lancement ollama serve » sans erreur, et
+  icône d'apparence normale. Corrigé et re-mesuré.
+- ~~Le comportement de `pythonw` vis-à-vis du journal du tray : non mesuré.~~
+  **Mesuré** : le journal reste écrit (`_log` ouvre un vrai fichier). En
+  revanche il n'y a plus de stderr du tout, donc une traceback non rattrapée
+  n'existe nulle part — d'où le try/except global de `_start_processes`.
+- **Aucune exécution d'`install.ps1` sur une machine vierge.** Toujours vrai, et
+  c'est désormais la seule inconnue qui reste. Le `-DryRun` passe sur ce poste,
+  ce qui ne prouve que la syntaxe et les détections positives.
+- Une prescription du document s'est révélée fausse à l'usage : **§B exige un
+  script « UTF-8 sans BOM »**, mais PowerShell 5.1 lit alors le fichier comme de
+  l'ANSI et casse sur les caractères accentués. `install.ps1` est en ASCII pur,
+  ce qui satisfait la prescription et supprime la classe de problème.
