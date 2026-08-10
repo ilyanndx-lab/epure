@@ -1,9 +1,13 @@
 # Épure
 
-Assistant d'étude local-first pour la prépa scientifique : chat multi-modèles
-(Ollama local + fournisseurs cloud optionnels), analyse documentaire (RAG sur
-vos fiches PDF), flashcards, kholles, agent de code et synthèse/transcription
-vocale.
+Assistant d'étude et de travail local-first : chat multi-modèles (Ollama local +
+fournisseurs cloud optionnels), analyse documentaire (RAG sur vos PDF),
+historique consultable et synthèse/transcription vocale.
+
+Le cœur ne présume rien de votre domaine. Ce qui spécialise une instance, ce
+sont ses **modules**, installables à la demande depuis le catalogue : flashcards,
+kholles, agent de code, tri de documents, révision espacée — et ceux que vous
+ferez générer par l'**Atelier**.
 
 - **Backend** : FastAPI (`backend/`)
 - **Frontend** : React + Vite + TypeScript (`frontend/`)
