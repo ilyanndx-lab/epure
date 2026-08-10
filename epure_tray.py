@@ -106,17 +106,38 @@ def _start_processes():
     # 5 min d'inactivité) — comme start.ps1.
     env_ollama["OLLAMA_KEEP_ALIVE"] = "-1"
 
+    # Ollama absent du PATH : on journalise et on continue, comme pour flm.
+    #
+    # Sans ce try, le FileNotFoundError remontait hors de _start_processes, qui
+    # tourne dans un thread démon (cf. main() et _do_restart) : le thread mourait
+    # sur place, donc NI uvicorn NI npm n'étaient lancés et le navigateur ne
+    # s'ouvrait pas. La traceback partait sur stderr — pas dans epure_tray.log,
+    # dont la dernière ligne restait « Lancement ollama serve », sans erreur. Et
+    # comme icon.run() vit sur le thread principal, l'icône apparaissait
+    # normalement : une application qui a l'air lancée et dont rien ne répond.
+    # Sous pythonw (Épure.bat) il n'y a même plus de stderr pour recueillir la
+    # traceback : le journal est le seul endroit où l'incident peut se voir.
+    #
+    # Dégradation choisie : le chat échoue faute de modèle, tout le reste — RAG,
+    # fiches, flashcards, réglages, Atelier — fonctionne.
     _log("Lancement ollama serve")
-    p_ollama = subprocess.Popen(
-        ["ollama", "serve"],
-        env=env_ollama,
-        stdout=fh,
-        stderr=fh,
-        startupinfo=_HIDDEN,
-        encoding="utf-8",
-        errors="ignore",
-    )
-    _processes.append(p_ollama)
+    try:
+        p_ollama = subprocess.Popen(
+            ["ollama", "serve"],
+            env=env_ollama,
+            stdout=fh,
+            stderr=fh,
+            startupinfo=_HIDDEN,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        _processes.append(p_ollama)
+    except FileNotFoundError:
+        _log(
+            "Ollama introuvable sur le PATH — le chat ne fonctionnera pas. "
+            "Installez-le depuis https://ollama.com puis « Redémarrer » dans le "
+            "menu de l'icône. Le reste d'Épure démarre normalement."
+        )
 
     _log("Lancement flm serve")
     try:
