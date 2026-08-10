@@ -3,7 +3,7 @@ import { Loader2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import ModuleErrorBoundary from './components/ModuleErrorBoundary'
 import { useInstanceConfig } from './instance'
-import { useModules } from './modules'
+import { useModules, orderedModules } from './modules'
 import { getModuleDef, type SharedModuleProps } from './modules/registry'
 import { usePersistentState } from './usePersistentState'
 import { API, apiFetch, ensureToken, setToken } from './api'
@@ -138,18 +138,15 @@ export default function App() {
   )
 
   // Modules réellement accessibles (settings toujours inclus).
-  const visibleIds = new Set<string>([
-    'settings',
-    'workshop',
-    ...modules
-      .filter(m => m.status === 'active' && config.modules_activés.includes(m.id))
-      .map(m => m.id),
-  ])
+  // orderedModules et non un `includes` sur modules_activés : une liste VIDE
+  // signifie « tous les modules installés » (cf. sa docstring), pas « aucun ».
+  const ordre = orderedModules(modules, config.modules_activés)
+  const visibleIds = new Set<string>(['settings', 'workshop', ...ordre.map(m => m.id)])
 
   // Si le module courant devient inaccessible, bascule vers le premier visible.
   useEffect(() => {
     if (!visibleIds.has(activeModule)) {
-      const first = config.modules_activés.find(id => visibleIds.has(id))
+      const first = ordre.map(m => m.id).find(id => visibleIds.has(id))
       setActiveModule(first ?? 'settings')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

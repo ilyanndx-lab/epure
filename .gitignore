@@ -29,12 +29,11 @@ backend/chroma_db/
 # de .git payés par chaque clone. Il est téléchargé au premier usage de la voix
 # et vérifié par sha256 (cf. core/voice.py), donc reconstructible à l'identique.
 #
-# ⚠️ ÉTAT TRANSITOIRE : ces fichiers sont encore SUIVIS par git à ce commit.
-# Un dossier suivi mais ignoré est le piège décrit plus bas — ici il est assumé
-# et temporaire : la purge d'historique (docs/purge-onnx.md, commit B) les retire
-# de tous les commits, y compris du tip. Si cette purge n'a finalement pas lieu,
-# il faut faire un `git rm --cached backend/piper_models/*` — sinon la ligne
-# ci-dessus ne protège rien et ment sur le contenu du dépôt.
+# La purge d'historique a eu lieu (docs/purge-onnx.md, commit B) : ces fichiers
+# ne sont plus suivis et n'existent dans aucun commit. Vérifié —
+# `git ls-files backend/piper_models` ne rend rien, et `git rev-list --objects
+# --all` ne contient plus d'objet .onnx. Cette ligne protège donc bien quelque
+# chose, au lieu de décrire un état transitoire qui n'existe plus.
 backend/piper_models/
 
 # Données utilisateur (fiches PDF) — défaut portable de EPURE_FICHES_DIR

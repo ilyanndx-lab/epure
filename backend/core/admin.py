@@ -14,7 +14,27 @@ from core.paths import FICHES_DIR as _FICHES_DIR, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-_MATIERES = ["Maths", "Physique-Chimie", "SI"]
+def _categories() -> list[str]:
+    """Dossiers de classement, relus dans la config d'instance à chaque appel.
+
+    Étaient figés à ``["Maths", "Physique-Chimie", "SI"]`` : le tri de PDF ne
+    servait qu'à une prépa scientifique, alors qu'il vit dans le cœur. Ce sont
+    désormais les dossiers que l'utilisateur a lui-même déclarés dans
+    Réglages › Fiches — le cœur d'Épure ne connaît plus aucune matière, c'est
+    le rôle des modules et de la configuration.
+
+    Liste vide (installation neuve) : le classement est simplement
+    indisponible, tout fichier reste « Inconnu ». Pas d'erreur, pas de
+    catégorie inventée.
+
+    Fonction et non constante de module (CLAUDE.md §3.5) : la lire à l'import
+    figerait la liste d'avant le premier réglage. L'import est local pour ne
+    pas ajouter ``core.instance`` au graphe d'import de ``core.admin``.
+    """
+    from core.instance import instance_config
+
+    folders = (instance_config.get().get("fiches") or {}).get("watch_folders") or []
+    return [str(f).strip() for f in folders if str(f).strip()]
 
 
 # Fonctions et non constantes : cf. core.paths.resolve_data_dir — un chemin figé
@@ -72,6 +92,14 @@ class AdminEngine:
         except Exception:
             mtime = None
 
+        # Aucun dossier déclaré : il n'y a rien à quoi rattacher ce fichier. On
+        # sort AVANT de lire le PDF et d'appeler le modèle — les deux seraient
+        # du travail pur perte. C'est l'état d'une installation neuve, pas une
+        # erreur : le classement s'active quand l'utilisateur déclare ses
+        # dossiers dans Réglages › Fiches.
+        if not _categories():
+            return {"matière": "Inconnu", "nom_suggéré": filename, "confiance": 0.0}
+
         # Read PDF excerpt (800 chars — title + beginning is enough for classification)
         try:
             reader = pypdf.PdfReader(str(path))
@@ -81,15 +109,18 @@ class AdminEngine:
             logger.exception("Erreur lecture PDF %s", path)
             excerpt = ""
 
+        categories = _categories()
+        liste = ", ".join(f'"{c}"' for c in categories)
+        exemple = categories[0]
         prompt = (
-            "Tu analyses un fichier PDF de cours de classe préparatoire scientifique (PTSI/MP).\n"
+            "Tu analyses un document PDF pour le ranger dans un dossier.\n"
             f"Nom actuel : {filename}\n"
             f"Début du contenu :\n{excerpt}\n\n"
             "Réponds UNIQUEMENT avec ce JSON valide, sans texte avant ou après :\n"
-            '{"matière": "Maths", "nom_suggéré": "Maths_Suites_S24.pdf", "confiance": 0.9}\n\n'
+            f'{{"matière": "{exemple}", "nom_suggéré": "{exemple}_Sujet.pdf", "confiance": 0.9}}\n\n'
             "Règles :\n"
-            '- matière : exactement "Maths", "Physique-Chimie", "SI", ou "Inconnu"\n'
-            "- nom_suggéré : Format Matière_Sujet_Semestre.pdf, underscores, pas d'espaces\n"
+            f'- matière : exactement {liste}, ou "Inconnu"\n'
+            "- nom_suggéré : Format Dossier_Sujet.pdf, underscores, pas d'espaces\n"
             "- confiance : 0.0 à 1.0\n"
             "- Si incertain, garde le nom actuel et mets confiance < 0.5"
         )
@@ -108,7 +139,7 @@ class AdminEngine:
             if match:
                 data = json.loads(match.group())
                 matiere = data.get("matière", "Inconnu")
-                if matiere not in _MATIERES:
+                if matiere not in categories:
                     matiere = "Inconnu"
                 nom = data.get("nom_suggéré", filename) or filename
                 if not nom.endswith(".pdf"):

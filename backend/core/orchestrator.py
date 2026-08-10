@@ -85,7 +85,8 @@ EFFORT_PIPELINES: dict = {
             "role": "pedagogue",
             "label": "Reformulation pédagogique",
             "prompt_template": (
-                "Reformule cette solution pour un étudiant en prépa scientifique :\n{solver_output}"
+                "Reformule cette solution de façon pédagogique, en explicitant "
+                "les étapes :\n{solver_output}"
             ),
             "recommended": "gemini:gemini-2.5-flash",
         },
@@ -120,7 +121,7 @@ EFFORT_PIPELINES: dict = {
             "role": "pedagogue",
             "label": "Synthèse finale",
             "prompt_template": (
-                "Synthétise pédagogiquement pour prépa scientifique :\n"
+                "Synthétise pédagogiquement :\n"
                 "Résolution vérifiée : {verifier_output}"
             ),
             "recommended": "gemini:gemini-2.5-flash",

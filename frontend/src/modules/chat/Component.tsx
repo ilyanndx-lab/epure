@@ -6,7 +6,8 @@ import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
 import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
-import { AT_COMMANDS, SLASH_COMMANDS } from './commands'
+import { AT_COMMANDS, allSlashCommands, moduleCommands } from './commands'
+import { useModules } from '../../modules'
 
 interface MsgStats {
   tps: number
@@ -50,7 +51,11 @@ interface ChatProps {
   playSpeech?: (text: string) => void
   stopSpeech?: () => void
   speakingText?: string | null
-  onNavigate?: (module: 'chat' | 'kholle' | 'flashcards' | 'settings') => void
+  // `string` et non une union fermée : l'union nommait `kholle` et
+  // `flashcards`, deux modules du CATALOGUE, dans le type d'un composant du
+  // cœur. App.tsx pilote de toute façon `activeModule: string` — la contrainte
+  // n'était pas une garantie, seulement un couplage.
+  onNavigate?: (module: string) => void
   ttsEnabled?: boolean
   onTtsToggle?: () => void
 }
@@ -143,6 +148,8 @@ export default function Chat({
   ttsEnabled,
   onTtsToggle,
 }: ChatProps) {
+  // Modules réellement installés : source des commandes `/` d'ouverture.
+  const modules = useModules()
   const [effort, setEffort] = usePersistentState<EffortLevel>('epure.chat.effort', 'direct')
   const [pipelineSteps, setPipelineSteps] = useState<StepConfig[]>([])
   const [messages, setMessages] = usePersistentState<Message[]>('epure.chat.messages', [])
@@ -393,9 +400,11 @@ export default function Chat({
   const suggestions = useMemo(() => {
     if (input.includes(' ')) return []
     if (input.startsWith('@')) return AT_COMMANDS.filter(c => c.trigger.startsWith(input))
-    if (input.startsWith('/')) return SLASH_COMMANDS.filter(c => c.trigger.startsWith(input))
+    // Les commandes `/` incluent une entrée par module INSTALLÉ : on ne propose
+    // jamais d'ouvrir quelque chose qui n'est pas là.
+    if (input.startsWith('/')) return allSlashCommands(modules).filter(c => c.trigger.startsWith(input))
     return []
-  }, [input])
+  }, [input, modules])
 
   useEffect(() => { setSelectedSuggestion(0) }, [suggestions])
 
@@ -504,10 +513,9 @@ export default function Chat({
   }, [])
 
   const handleNavigate = useCallback(
-    (userText: string, module: 'kholle' | 'flashcards', param?: string) => {
+    (userText: string, moduleId: string, label: string, param?: string) => {
       pushMsg('user', userText)
-      onNavigate?.(module)
-      const label = module === 'kholle' ? 'Kholle' : 'Flashcards'
+      onNavigate?.(moduleId)
       pushMsg('assistant', `→ ${label}${param ? ` — ${param}` : ''}`)
     },
     [onNavigate]
@@ -566,13 +574,21 @@ export default function Chat({
     if (rawText.startsWith('/')) {
       const [cmd, ...argParts] = rawText.slice(1).trim().split(/\s+/)
       const arg = argParts.join(' ')
+
+      // Ouverture d'un module INSTALLÉ. Résolue avant le switch, et sur la
+      // liste réelle : `/kholle` n'existe que si kholle est là. Avant, deux
+      // `case` en dur répondaient toujours et faisaient naviguer vers un
+      // module absent.
+      const cible = moduleCommands(modules).find(
+        c => c.trigger.slice(1).toLowerCase() === cmd?.toLowerCase()
+      )
+      if (cible) {
+        const id = cible.trigger.slice(1)
+        handleNavigate(rawText, id, modules.find(m => m.id === id)?.nom ?? id, arg || undefined)
+        return
+      }
+
       switch (cmd?.toLowerCase()) {
-        case 'kholle':
-          handleNavigate(rawText, 'kholle', arg || undefined)
-          return
-        case 'flashcards':
-          handleNavigate(rawText, 'flashcards', arg || undefined)
-          return
         case 'résumé':
           await streamSSE(rawText)
           return
@@ -612,7 +628,7 @@ export default function Chat({
     // Message normal : délégué à sendUserText (réutilisé par « relancer »).
     sendUserText(rawText)
   }, [
-    input, connected, streaming, sendUserText,
+    input, connected, streaming, sendUserText, modules,
     streamSSE, handleMémoire, handleModèle, handleLacunes, handleNavigate,
   ])
 

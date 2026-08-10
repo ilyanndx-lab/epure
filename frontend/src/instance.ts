@@ -61,7 +61,11 @@ export interface InstanceConfigPatch {
 const DEFAULT_CONFIG: InstanceConfig = {
   instance_id: '',
   nom_affiché: 'Épure',
-  modules_activés: ['chat', 'kholle', 'flashcards', 'code', 'docs', 'admin', 'history'],
+  // Vide, et non une liste en dur de modules du catalogue qui peuvent très bien
+  // ne pas être installés. Côté backend, la liste vide signifie déjà « tous les
+  // modules installés » (core/module_registry.active_ids) : c'est le seul défaut
+  // qui ne puisse pas nommer un module absent.
+  modules_activés: [],
   providers: { actif: 'qwen2.5:7b', local: 'qwen2.5:7b', clés_présentes: {} },
   fiches: { racine: '', watch_folders: [] },
   atelier: {

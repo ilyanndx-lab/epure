@@ -13,7 +13,12 @@ from core.paths import resolve_data_dir
 logger = logging.getLogger(__name__)
 
 _PROFILE_DEFAULT = {
-    "identité": {"niveau": "PTSI2", "établissement": "", "objectif": ""},
+    # `niveau` naissait en « PTSI2 » : la filière de l'auteur, servie par défaut
+    # à quiconque installe Épure. Le cœur ne suppose plus rien de l'utilisateur ;
+    # ce qui spécialise une instance, ce sont ses modules et sa configuration.
+    # (Ce bloc n'est aujourd'hui lu par personne — cf. l'issue « identité est
+    # éditable et sans effet » : à lire ou à retirer, mais pas à pré-remplir.)
+    "identité": {"niveau": "", "établissement": "", "objectif": ""},
     "préférences_interaction": {
         "style": "direct, sans reformulation inutile",
         "ne_pas_faire": ["répéter la question", "sur-expliquer les bases"],

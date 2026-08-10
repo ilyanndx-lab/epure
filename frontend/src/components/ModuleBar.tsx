@@ -7,6 +7,8 @@ import {
 import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
 import { API, apiFetch } from '../api'
+import { useModules } from '../modules'
+import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
 
 // Curated model recommendations per module (IDs morts retirés —
 // la disponibilité live /models grise automatiquement le reste)
@@ -17,9 +19,13 @@ const MODULE_RECOMMENDATIONS: Record<string, { id: string; label: string }[]> = 
     { id: 'gemini:gemini-2.5-flash',                  label: 'Général · Cloud' },
     { id: 'nvidia:nvidia/nemotron-3-super-120b-a12b',  label: 'Puissant · Cloud' },
   ],
+  // Les libellés décrivent le MODÈLE, jamais une matière : « Maths · Cloud » et
+  // « Physique · Cloud » supposaient la filière de l'auteur dans un composant du
+  // cœur. Une entrée dont le module n'est pas installé est simplement ignorée
+  // (`MODULE_RECOMMENDATIONS[module] ?? []`).
   kholle: [
-    { id: 'groq:openai/gpt-oss-120b',                 label: 'Maths · Cloud' },
-    { id: 'nvidia:nvidia/nemotron-3-super-120b-a12b',  label: 'Physique · Cloud' },
+    { id: 'groq:openai/gpt-oss-120b',                 label: 'Puissant · Cloud' },
+    { id: 'nvidia:nvidia/nemotron-3-super-120b-a12b',  label: 'Détaillé · Cloud' },
     { id: 'flm:qwen3:8b',                             label: 'Raisonnement · NPU' },
     { id: 'gemini:gemini-2.5-flash',                  label: 'Général · Cloud' },
   ],
@@ -156,6 +162,8 @@ export default function ModuleBar({
   pipelineSteps = [],
   onPipelineStepsChange,
 }: ModuleBarProps) {
+  // Modules installés : source des commandes `/` du panneau Compétences.
+  const modules = useModules()
   const [activePanel, setActivePanel] = useState<Panel>(null)
   const [showFullModelList, setShowFullModelList] = useState(false)
 
@@ -612,12 +620,10 @@ export default function ModuleBar({
 
           <div className="space-y-1.5">
             <p className="text-xs text-muted uppercase tracking-wide">Préfixes @</p>
-            {[
-              { trigger: '@cours',      desc: 'RAG sur tous les fichiers indexés' },
-              { trigger: '@strict',     desc: 'Réponse concise, sans intro' },
-              { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
-              { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
-            ].map(c => (
+            {/* AT_COMMANDS et non une copie : cette liste était dupliquée du
+                fichier de commandes du chat, et avait déjà divergé — il y
+                manquait `@web`. */}
+            {AT_COMMANDS.map(c => (
               <div key={c.trigger} className="flex gap-2 items-baseline">
                 <span className="text-xs font-mono text-accent2 shrink-0 w-24">{c.trigger}</span>
                 <span className="text-xs text-muted">{c.desc}</span>
@@ -627,14 +633,10 @@ export default function ModuleBar({
 
           <div className="space-y-1.5">
             <p className="text-xs text-muted uppercase tracking-wide">Commandes /</p>
-            {[
-              { trigger: '/kholle',     desc: 'Ouvre le module Kholle' },
-              { trigger: '/flashcards', desc: 'Ouvre les Flashcards' },
-              { trigger: '/résumé',     desc: 'Résumé des fichiers actifs' },
-              { trigger: '/modèle',     desc: 'Change le modèle actif [nom]' },
-              { trigger: '/lacunes',    desc: 'Lacunes + erreurs des 7 derniers jours' },
-              { trigger: '/direct',     desc: 'Envoie sans orchestrateur [message]' },
-            ].map(c => (
+            {/* Dérivées des modules installés, comme dans le chat : ce panneau
+                annonçait `/kholle` et `/flashcards` à tout le monde, y compris
+                là où ces modules n'existent pas. */}
+            {allSlashCommands(modules).map(c => (
               <div key={c.trigger} className="flex gap-2 items-baseline">
                 <span className="text-xs font-mono text-accent shrink-0 w-24">{c.trigger}</span>
                 <span className="text-xs text-muted">{c.desc}</span>

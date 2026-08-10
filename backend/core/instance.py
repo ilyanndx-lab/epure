@@ -74,7 +74,12 @@ def _default_config() -> dict:
         },
         "fiches": {
             "racine": str(FICHES_DIR),
-            "watch_folders": ["Maths", "Physique-Chimie", "SI"],
+            # Vide, et non les trois matières de l'auteur. Une installation
+            # neuve ne surveille rien tant que l'utilisateur n'a pas déclaré ses
+            # propres dossiers dans Réglages › Fiches. `fiches_watch_paths()`
+            # gère la liste vide sans erreur, et `core.admin._categories()` en
+            # déduit qu'il n'y a pas encore de classement possible.
+            "watch_folders": [],
         },
         "thème": "dark",
         "preset_défaut": None,

@@ -700,20 +700,45 @@ async def pair(request: Request):
 @app.get("/health")
 async def health():
     loop = asyncio.get_running_loop()
-    models = await loop.run_in_executor(None, get_ollama_installed)
+    # Bornée comme check_flm juste en dessous. Sans ce wait_for, c'est la sonde
+    # Ollama qui dictait la latence de /health : mesuré à 2,05-2,20 s Ollama
+    # allumé, et au-delà de 5 s Ollama ÉTEINT — `localhost` résout en ::1 puis
+    # 127.0.0.1, et urllib paie son timeout=3 sur chaque famille d'adresse.
+    # Or le HEALTHCHECK du Dockerfile a un --timeout=5s : un conteneur dont
+    # l'hôte n'a pas d'Ollama passait « unhealthy » au bout de 5 essais alors
+    # que l'API répondait parfaitement. Un `depends_on: service_healthy` ne se
+    # déclenchait alors jamais — même symptôme que le /openapi.json d'avant,
+    # pour une autre cause.
+    #
+    # wait_for n'interrompt PAS le thread de l'exécuteur (on n'annule pas un
+    # thread) : il cesse de l'attendre. La requête sous-jacente se termine dans
+    # son coin et /health répond sans elle, en dégradant `ollama` à false. C'est
+    # le compromis déjà retenu pour check_flm.
+    #
+    # Les deux sondes tournent EN PARALLÈLE, et c'est ce qui rend la borne utile.
+    # Enchaînées, elles additionnaient leurs plafonds : mesuré à 4,05 s avec les
+    # deux serveurs éteints, soit toujours au-dessus du --timeout=5s une fois la
+    # latence réseau du conteneur ajoutée. Elles sont indépendantes, rien ne
+    # justifie de les séquencer. Plafond réel : max(2, 2) et non 2 + 2.
+    async def _borne(sonde, defaut, timeout=2.0):
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, sonde), timeout=timeout
+            )
+        except Exception:
+            return defaut
+
+    models, flm_ok = await asyncio.gather(
+        _borne(get_ollama_installed, None),
+        _borne(check_flm, False),
+    )
+
     if models is not None:
         ctx = memory.get_context()
         active_model = ctx.get("modèle_actif", llm._model)
         ollama_ok = True
     else:
         active_model, models, ollama_ok = "", [], False
-
-    try:
-        flm_ok = await asyncio.wait_for(
-            loop.run_in_executor(None, check_flm), timeout=2.0
-        )
-    except Exception:
-        flm_ok = False
 
     return {"ollama": ollama_ok, "model": active_model, "models": models, "flm": flm_ok}
 

@@ -174,7 +174,7 @@ class ConsolidationEngine:
         )[:_CTX_LIMIT]
 
         prompt = (
-            "Analyse cette conversation entre un étudiant en prépa et son assistant IA. "
+            "Analyse cette conversation entre un utilisateur et son assistant IA. "
             "Extrais des observations utiles pour personnaliser les futures interactions.\n\n"
             f"Conversation :\n{text}\n\n"
             "Génère UNIQUEMENT ce JSON valide :\n"
@@ -211,7 +211,7 @@ class ConsolidationEngine:
         profile = self._memory.load_profile()
 
         prompt = (
-            "Tu es un expert pédagogique. Génère une synthèse du profil d'un étudiant en prépa "
+            "Tu es un expert pédagogique. Génère une synthèse du profil d'un apprenant "
             "à partir de ses sessions de révision et de l'historique de ses conversations.\n\n"
             f"Sessions récentes : {json.dumps(sessions, ensure_ascii=False)[:3000]}\n"
             f"Conversations (titres) : {[c.get('titre', '') for c in conversations]}\n"

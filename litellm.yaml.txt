@@ -1,7 +1,0 @@
-model_list:
-  - model_name: epure-gw                 # le nom que tu mettras dans Épure
-    litellm_params:
-      model: ollama_chat/qwen2.5:7b      # route vers ton Ollama local
-      api_base: http://localhost:11434
-general_settings:
-  master_key: sk-epure-local             # la "clé" que tu mettras dans Épure

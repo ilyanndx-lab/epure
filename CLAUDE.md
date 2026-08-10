@@ -8,10 +8,19 @@ que l'utilisateur (Ilyann) l'ait validé explicitement dans la conversation.
 
 ## 1. Ce qu'est le projet
 
-Assistant d'étude **local-first** pour la prépa scientifique. Chat multi-modèles,
-RAG sur fiches PDF, flashcards, kholles, agent de code, voix — et un **Atelier**
-qui fait générer par un LLM de nouveaux modules (backend + frontend) et les monte
-dans l'application.
+Assistant d'étude et de travail **local-first**. Chat multi-modèles, RAG sur PDF,
+historique, voix — et un **Atelier** qui fait générer par un LLM de nouveaux
+modules (backend + frontend) et les monte dans l'application.
+
+**IMPÉRATIF — le cœur est générique.** Il ne présume aucune filière, aucune
+matière, aucun métier. Ce qui spécialise une instance, ce sont ses *modules*
+(`modules-catalogue/`) et sa configuration. Le contraire s'était installé sans
+que rien ne le signale : profil élève né en « PTSI2 », `watch_folders` sur
+`Maths / Physique-Chimie / SI`, tri de PDF n'acceptant que ces trois matières,
+et trois prompts de `core/` parlant d'un « étudiant en prépa ». Quiconque
+installait Épure héritait de la filière de son auteur.
+`backend/test_coeur_generique.py` tient la frontière — il liste ses tolérances,
+qui sont des explications historiques, jamais du comportement.
 
 - **Backend** : FastAPI, `backend/` — port 8000
 - **Frontend** : React 19 + Vite + TypeScript + Tailwind, `frontend/` — port 5173

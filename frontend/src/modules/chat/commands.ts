@@ -19,13 +19,47 @@ export const AT_COMMANDS = [
   { trigger: '@web',        desc: 'Recherche web complémentaire avant la réponse [sujet]' },
 ] as const
 
+/**
+ * Commandes du CŒUR : elles existent quels que soient les modules installés.
+ *
+ * `/kholle` et `/flashcards` étaient ici, en dur. Le chat les annonçait donc à
+ * tout le monde, y compris sur une installation où ces modules n'existent pas —
+ * l'utilisateur tapait une commande qui ne pouvait rien ouvrir. Elles sont
+ * désormais dérivées des modules réellement installés, cf. `moduleCommands`.
+ */
 export const SLASH_COMMANDS = [
-  { trigger: '/kholle',     desc: 'Ouvre le module Kholle [matière?]' },
-  { trigger: '/flashcards', desc: 'Ouvre les Flashcards [source?]' },
-  { trigger: '/résumé',     desc: 'Résumé des fichiers actifs (streaming)' },
-  { trigger: '/modèle',     desc: 'Change le modèle actif [nom]' },
-  { trigger: '/lacunes',    desc: 'Lacunes + erreurs des 7 derniers jours' },
-  { trigger: '/direct',     desc: 'Bypass orchestrateur — 1 modèle direct [message]' },
+  { trigger: '/résumé',  desc: 'Résumé des fichiers actifs (streaming)' },
+  { trigger: '/modèle',  desc: 'Change le modèle actif [nom]' },
+  { trigger: '/lacunes', desc: 'Lacunes + erreurs des 7 derniers jours' },
+  { trigger: '/direct',  desc: 'Bypass orchestrateur — 1 modèle direct [message]' },
 ] as const
 
 export const SKILL_COMMANDS = { at: AT_COMMANDS, slash: SLASH_COMMANDS }
+
+/** Ce qu'il faut d'un module pour en faire une commande. */
+export interface ModuleOuvrable {
+  id: string
+  nom: string
+}
+
+/** Modules qu'une commande `/` ne doit pas proposer d'ouvrir. */
+const NON_OUVRABLES = new Set(['chat'])
+
+/**
+ * Commandes d'ouverture, DÉRIVÉES des modules installés.
+ *
+ * C'est le principe d'Épure appliqué à la barre de commandes : le cœur ne
+ * connaît aucun module par son nom, il expose ce qui est là. Installer un
+ * module lui donne sa commande ; le désinstaller la retire. Aucune liste à
+ * tenir à jour, donc aucune liste qui puisse mentir.
+ */
+export function moduleCommands(modules: readonly ModuleOuvrable[]) {
+  return modules
+    .filter(m => !NON_OUVRABLES.has(m.id))
+    .map(m => ({ trigger: `/${m.id}`, desc: `Ouvre ${m.nom}` }))
+}
+
+/** Liste complète affichée à l'utilisateur : modules d'abord, cœur ensuite. */
+export function allSlashCommands(modules: readonly ModuleOuvrable[]) {
+  return [...moduleCommands(modules), ...SLASH_COMMANDS]
+}

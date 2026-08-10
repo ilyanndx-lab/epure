@@ -45,6 +45,33 @@ export async function fetchModules(): Promise<ModuleManifest[]> {
   return cache ?? []
 }
 
+/**
+ * Modules à afficher, dans l'ordre — miroir exact de `core.module_registry.active_ids`.
+ *
+ * ⚠️ `modules_activés` VIDE ne signifie pas « aucun module » mais « jamais
+ * initialisée ». Le backend y répond « tous les modules installés, dans l'ordre
+ * du catalogue », et monte leurs routeurs en conséquence
+ * (`core/module_registry.py`, règle 1).
+ *
+ * Le frontend, lui, la lisait littéralement : il exigeait l'appartenance à la
+ * liste. Sur une INSTALLATION NEUVE — le seul cas où elle est vide — la barre
+ * ne montrait donc que Réglages, alors que `GET /modules` annonçait tous les
+ * modules `active` et que le backend servait leurs routes. Invisible sur un
+ * poste existant, dont la liste est peuplée depuis longtemps ; fatal pour
+ * quiconque installe Épure pour la première fois.
+ */
+export function orderedModules(
+  modules: ModuleManifest[],
+  actifs: readonly string[],
+): ModuleManifest[] {
+  const actifsCatalogue = modules.filter(m => m.status === 'active')
+  if (actifs.length === 0) return actifsCatalogue
+  const byId = new Map(actifsCatalogue.map(m => [m.id, m]))
+  return actifs
+    .map(id => byId.get(id))
+    .filter((m): m is ModuleManifest => !!m)
+}
+
 /** Catalogue réactif (chargé une fois, rafraîchissable). */
 export function useModules(): ModuleManifest[] {
   const [mods, setMods] = useState<ModuleManifest[]>(cache ?? [])
