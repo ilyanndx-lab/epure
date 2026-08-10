@@ -2,8 +2,21 @@ import { useState, useEffect, useRef } from 'react'
 import { Check, Copy, FolderCog, RefreshCw, Scan, Square, Undo2, X } from 'lucide-react'
 import { Badge, Button, Card, Modal, ProgressBar } from '../../components/ui'
 import { API, apiFetch } from '../../api'
+import { useInstanceConfig } from '../../instance'
 
-const FICHES_ROOT = 'C:\\Users\\Ilyan\\Fiches\\'
+/** Joint la racine des fiches à un chemin relatif, sans doubler le séparateur.
+ *
+ * Remplace un `const FICHES_ROOT = 'C:\\Users\\Ilyan\\Fiches\\'` en dur : la
+ * racine est un réglage d'instance, et ce chemin-là n'existait que sur le poste
+ * de l'auteur. Il avait survécu au nettoyage des chemins absolus parce que la
+ * source JS échappe ses antislashs — `C:\\Users\\Ilyan` ne correspond pas au
+ * motif `C:\Users\Ilyan` qu'on cherchait.
+ */
+function sousRacine(racine: string, ...parties: string[]): string {
+  const sep = racine.includes('/') && !racine.includes('\\') ? '/' : '\\'
+  const base = racine.replace(/[\\/]+$/, '')
+  return [base, ...parties].join(sep)
+}
 
 interface ScanResult {
   path: string
@@ -57,6 +70,8 @@ function isRecent(dateStr: string) {
 }
 
 export default function Admin() {
+  // Racine des fiches : réglage d'instance, jamais un chemin en dur.
+  const racineFiches = useInstanceConfig().fiches.racine
   // Scan
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState<{ file: string; index: number; total: number } | null>(null)
@@ -143,10 +158,10 @@ export default function Admin() {
         let destination: string
         let type: string
         if (isTri && isRen) {
-          destination = `${FICHES_ROOT}${r.matière_détectée}\\${r.nom_suggéré}`
+          destination = sousRacine(racineFiches, r.matière_détectée, r.nom_suggéré)
           type = 'tri+renommage'
         } else if (isTri) {
-          destination = `${FICHES_ROOT}${r.matière_détectée}\\${r.nom_actuel}`
+          destination = sousRacine(racineFiches, r.matière_détectée, r.nom_actuel)
           type = 'tri'
         } else {
           destination = `${curDir}\\${r.nom_suggéré}`
@@ -282,7 +297,7 @@ export default function Admin() {
                   <tr className="text-muted uppercase tracking-wide border-b border-line bg-elevated/50">
                     <th className="text-left px-3 py-2 font-medium">Fichier</th>
                     <th className="text-left px-3 py-2 font-medium">Dossier</th>
-                    <th className="text-left px-3 py-2 font-medium">Matière</th>
+                    <th className="text-left px-3 py-2 font-medium">Dossier cible</th>
                     <th className="text-left px-3 py-2 font-medium">Conf.</th>
                     <th className="text-left px-3 py-2 font-medium">Nom suggéré</th>
                     <th className="text-center px-3 py-2 font-medium">Déplacer</th>

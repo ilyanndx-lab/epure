@@ -735,9 +735,19 @@ export default function Settings() {
             <EditableList
               items={config.fiches.watch_folders}
               onChange={items => void updateInstance({ fiches: { watch_folders: items } })}
-              placeholder="Ajouter un dossier (ex : Maths)..."
+              placeholder="Ajouter un dossier (ex : Cours, Projets)..."
             />
           </div>
+          {/* État d'une installation neuve : la liste est vide par défaut, plus
+              aucun dossier n'est présumé. Sans ce message, l'utilisateur ne
+              comprend pas pourquoi le RAG ne trouve rien — l'écran a l'air
+              correctement rempli parce qu'il n'y a rien à voir. */}
+          {config.fiches.watch_folders.length === 0 && (
+            <p className="text-xs text-amber-500/90">
+              Aucun dossier surveillé : vos documents ne sont pas encore indexés.
+              Ajoutez au moins un sous-dossier de la racine ci-dessus.
+            </p>
+          )}
           <p className="text-xs text-muted/70">
             Le retrait d'un dossier prend effet au redémarrage du backend.
           </p>
@@ -1058,7 +1068,7 @@ export default function Settings() {
 
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-secondary">Consolidation cloud après kholle</p>
+            <p className="text-sm text-secondary">Consolidation cloud en fin de session</p>
             <p className="text-xs text-muted mt-0.5">
               {consolidCloud ? 'Groq Llama 3.3 70B (envoi erreurs + scores uniquement)' : 'LLM local (défaut)'}
             </p>
@@ -1265,7 +1275,10 @@ export default function Settings() {
       {/* ── Sessions ── */}
       <Card className="space-y-4">
         <div className="flex items-center justify-between">
-          <SectionTitle icon={<Archive size={15} />}>Sessions kholle</SectionTitle>
+          {/* « Sessions kholle » nommait un module du catalogue depuis un écran
+              du cœur. Le moteur (core/memory.py) enregistre des sessions de
+              révision, quel que soit le module qui les produit. */}
+          <SectionTitle icon={<Archive size={15} />}>Sessions de révision</SectionTitle>
           {selectedDates.length > 0 && (
             <Button variant="ghost" size="sm" icon={<Archive size={12} />} onClick={archiveSelected}>
               Archiver la sélection ({selectedDates.length})

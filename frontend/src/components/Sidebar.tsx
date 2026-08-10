@@ -4,7 +4,7 @@ import type { LucideIcon } from 'lucide-react'
 import { ThemeToggle } from './ui'
 import { API, apiFetch } from '../api'
 import { useInstanceConfig } from '../instance'
-import { useModules, resolveIcon } from '../modules'
+import { useModules, resolveIcon, orderedModules } from '../modules'
 
 interface SidebarProps {
   activeModule: string
@@ -63,10 +63,8 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
   // Modules visibles, DANS L'ORDRE de modules_activés (réordonnable depuis
   // Réglages) : on mappe la liste ordonnée vers les manifestes, en ne gardant
   // que ceux actifs au catalogue. settings est exclu (bouton Profil dédié).
-  const byId = new Map(modules.map(m => [m.id, m]))
-  const navModules = config.modules_activés
-    .map(id => byId.get(id))
-    .filter((m): m is NonNullable<typeof m> => !!m && m.id !== 'settings' && m.status === 'active')
+  const navModules = orderedModules(modules, config.modules_activés)
+    .filter(m => m.id !== 'settings')
 
   const settingsModule = modules.find(m => m.id === 'settings')
 
