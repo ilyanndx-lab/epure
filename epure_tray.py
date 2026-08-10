@@ -1,3 +1,21 @@
+"""Lanceur système d'Épure : Ollama, uvicorn, Vite, plus une icône de notification.
+
+Windows uniquement (``subprocess.STARTUPINFO``, ``netstat``, ``taskkill``).
+
+**Le journal est le seul canal de diagnostic.** Sous ``pythonw`` (le lanceur
+double-cliquable) il n'y a pas de console, donc pas de stderr : une traceback
+n'existe nulle part. Tout ce qui rate doit passer par :func:`_log`, et tout ce
+qui dégrade le service doit remonter à l'infobulle de l'icône — une icône
+d'apparence normale au-dessus de rien qui tourne est le pire état possible, et
+c'est l'état qu'on a mesuré quand Ollama manquait.
+
+**Une seule instance.** Rien ne détectait un tray déjà lancé : quatre sont
+restés vivants une nuit entière sur le poste de dev. Avec un raccourci sur le
+Bureau, le double-lancement devient le cas normal — chaque instance ajoutant son
+icône et son jeu d'enfants se disputant les ports. Cf. :func:`_verrou_instance`.
+"""
+
+import ctypes
 import os
 import subprocess
 import sys
@@ -17,6 +35,12 @@ URL = "http://localhost:5173"
 
 _processes: list[subprocess.Popen] = []
 _log_handle = None
+_icon = None
+#: Ce qui empêche Épure de fonctionner normalement, remonté à l'infobulle.
+_incidents: list[str] = []
+#: Handle du mutex d'instance unique — gardé en vie pour la durée du process.
+_mutex_handle = None
+
 
 def _bind_host() -> str:
     """Interface d'écoute d'uvicorn : $EPURE_BIND, sinon backend/.env, sinon loopback.
@@ -57,6 +81,112 @@ def _log(msg: str):
     fh.flush()
 
 
+# ── État dégradé, remonté à l'icône ──────────────────────────────────────────
+
+def _maj_infobulle():
+    """Reflète ``_incidents`` dans l'infobulle. Sans effet si l'icône n'existe pas encore.
+
+    L'infobulle Windows est tronquée au-delà de 127 caractères ; on coupe
+    nous-mêmes pour que la fin reste lisible plutôt qu'arbitraire.
+    """
+    if _icon is None:
+        return
+    try:
+        if _incidents:
+            texte = "Épure — dégradé : " + " · ".join(_incidents)
+            _icon.title = (texte[:124] + "…") if len(texte) > 125 else texte
+        else:
+            _icon.title = "Épure"
+    except Exception:  # pragma: no cover - dépend du backend pystray
+        pass
+
+
+def _incident(msg: str):
+    """Journalise ET fait apparaître le problème dans l'interface.
+
+    Tout ce qui passe ici est un service qui ne rendra pas le service attendu.
+    Le journal seul ne suffit pas : personne ne lit un fichier de log quand
+    l'icône a l'air normale.
+    """
+    _log(msg)
+    _incidents.append(msg)
+    _maj_infobulle()
+
+
+def _notifier(titre: str, message: str):
+    if _icon is None:
+        return
+    try:
+        _icon.notify(message, titre)
+    except Exception:  # pragma: no cover - notify indisponible selon le backend
+        _log(f"(notification impossible : {titre} — {message})")
+
+
+# ── Instance unique ──────────────────────────────────────────────────────────
+
+_MUTEX_NOM = "Local\\EpureTray"
+_ERROR_ALREADY_EXISTS = 183
+
+
+def _verrou_instance() -> bool:
+    """True si ce process est le seul tray. False s'il y en a déjà un.
+
+    Mutex nommé plutôt que fichier de verrou à PID : le noyau le libère quand le
+    process meurt, quelle qu'en soit la façon. Un fichier survit à un `taskkill`
+    et il faut alors vérifier si le PID qu'il contient est encore vivant — et si
+    ce PID n'a pas été recyclé par un process sans rapport.
+
+    En cas d'échec de l'appel système, on renvoie True : mieux vaut un second
+    tray qu'un lanceur qui refuse de démarrer pour une raison qu'il n'explique
+    pas.
+    """
+    global _mutex_handle
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        # c_int et non c_bool : le BOOL de l'API Win32 fait 4 octets, le c_bool de
+        # ctypes un seul. La différence ne se voit pas avec False, elle se voit un
+        # jour où quelqu'un passe True.
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        handle = k32.CreateMutexW(None, False, _MUTEX_NOM)
+        erreur = ctypes.get_last_error()
+    except Exception as exc:  # pragma: no cover - dépend de l'OS
+        _log(f"Verrou d'instance indisponible ({exc}) — démarrage sans garde")
+        return True
+    if not handle:
+        _log(f"Verrou d'instance non créé (erreur {erreur}) — démarrage sans garde")
+        return True
+    if erreur == _ERROR_ALREADY_EXISTS:
+        return False
+    _mutex_handle = handle
+    return True
+
+
+def _refuser_second_lancement():
+    """Reprend la main sur l'instance existante, puis le dit — visiblement.
+
+    Sans console, un `print` n'irait nulle part et l'utilisateur ne comprendrait
+    pas pourquoi son double-clic n'a « rien fait ». On rouvre donc l'onglet de
+    l'instance en place (c'est ce qu'il voulait) et on affiche une boîte de
+    dialogue, seul canal visible depuis un process pythonw.
+    """
+    _log("Second lancement refusé : une instance d'Épure tourne déjà")
+    webbrowser.open(URL)
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "Épure est déjà lancé.\n\n"
+            "L'onglet vient d'être rouvert dans votre navigateur. "
+            "Utilisez l'icône dans la zone de notification pour redémarrer ou quitter.",
+            "Épure",
+            0x40,  # MB_OK | MB_ICONINFORMATION
+        )
+    except Exception:  # pragma: no cover - dépend de l'OS
+        pass
+
+
+# ── Cycle de vie des processus ───────────────────────────────────────────────
+
 def _kill_existing():
     for name in ("ollama.exe", "flm.exe", "uvicorn"):
         try:
@@ -95,63 +225,112 @@ _HIDDEN.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 _HIDDEN.wShowWindow = subprocess.SW_HIDE
 
 
+def _tuer_arbre(pid: int):
+    """taskkill /T sur un PID donné : le process ET ses descendants.
+
+    ``/T`` est indispensable pour npm, lancé via un shell intermédiaire :
+    terminer le shell seul laissait `node` (Vite) vivant et le port 5173 pris.
+    N'est appelé que sur des PID dont on a établi qu'ils sont les nôtres.
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True, encoding="utf-8", errors="ignore",
+        )
+    except Exception:
+        pass
+
+
+def _elaguer_processus():
+    """Retire de ``_processes`` les Popen déjà morts, en les nommant.
+
+    Un Popen mort qui reste dans la liste fait croire que le service tourne :
+    c'est ce qui masquait l'échec de ``ollama serve`` quand son port était déjà
+    pris. Le tray se croyait complet au-dessus d'un processus inexistant.
+    """
+    global _processes
+    vivants = []
+    for p in _processes:
+        code = p.poll()
+        if code is None:
+            vivants.append(p)
+        else:
+            nom = getattr(p, "_epure_nom", "processus")
+            _log(f"{nom} s'est arrêté immédiatement (code {code}) — retiré du suivi")
+    _processes = vivants
+
+
+def _lancer(nom: str, cmd: list, **kwargs):
+    """Lance un binaire, ou signale son absence sans interrompre le reste.
+
+    Chaque service est gardé individuellement : un binaire manquant doit coûter
+    une ligne de journal, pas le démarrage des autres. Avant, seul `flm` l'était
+    — un Ollama absent levait FileNotFoundError, qui remontait hors du thread
+    démon de `_start_processes` et emportait uvicorn et Vite avec lui, sans rien
+    écrire dans le journal.
+    """
+    try:
+        p = subprocess.Popen(cmd, **kwargs)
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        _incident(f"{nom} : lancement impossible ({exc})")
+        return None
+    p._epure_nom = nom
+    _processes.append(p)
+    return p
+
+
 def _start_processes():
+    """Démarre les services. Ne lève jamais : tout échec finit dans le journal.
+
+    Le try/except global est le filet de dernier recours. Cette fonction tourne
+    dans un thread démon ; sans lui, une exception imprévue tue le thread en
+    silence et la traceback part sur stderr — qui n'existe pas sous pythonw.
+    L'icône resterait alors parfaitement normale au-dessus de rien.
+    """
     global _processes
     _processes = []
+    _incidents.clear()
+    _maj_infobulle()
+    try:
+        _demarrer()
+    except Exception as exc:
+        import traceback
+        _incident(f"échec inattendu du démarrage : {type(exc).__name__} — {exc}")
+        _log("Traceback :\n" + traceback.format_exc())
+        _notifier("Épure", "Le démarrage a échoué. Détails dans epure_tray.log.")
+
+
+def _demarrer():
     fh = _open_log()
 
     env_ollama = os.environ.copy()
     env_ollama["OLLAMA_GPU_LAYERS"] = "-1"
     # Garde le modèle chargé en VRAM (pas de re-chargement à chaque requête après
-    # 5 min d'inactivité) — comme start.ps1.
+    # 5 min d'inactivité).
     env_ollama["OLLAMA_KEEP_ALIVE"] = "-1"
 
-    # Ollama absent du PATH : on journalise et on continue, comme pour flm.
-    #
-    # Sans ce try, le FileNotFoundError remontait hors de _start_processes, qui
-    # tourne dans un thread démon (cf. main() et _do_restart) : le thread mourait
-    # sur place, donc NI uvicorn NI npm n'étaient lancés et le navigateur ne
-    # s'ouvrait pas. La traceback partait sur stderr — pas dans epure_tray.log,
-    # dont la dernière ligne restait « Lancement ollama serve », sans erreur. Et
-    # comme icon.run() vit sur le thread principal, l'icône apparaissait
-    # normalement : une application qui a l'air lancée et dont rien ne répond.
-    # Sous pythonw (Épure.bat) il n'y a même plus de stderr pour recueillir la
-    # traceback : le journal est le seul endroit où l'incident peut se voir.
-    #
-    # Dégradation choisie : le chat échoue faute de modèle, tout le reste — RAG,
-    # fiches, flashcards, réglages, Atelier — fonctionne.
     _log("Lancement ollama serve")
-    try:
-        p_ollama = subprocess.Popen(
-            ["ollama", "serve"],
-            env=env_ollama,
-            stdout=fh,
-            stderr=fh,
-            startupinfo=_HIDDEN,
-            encoding="utf-8",
-            errors="ignore",
-        )
-        _processes.append(p_ollama)
-    except FileNotFoundError:
-        _log(
-            "Ollama introuvable sur le PATH — le chat ne fonctionnera pas. "
-            "Installez-le depuis https://ollama.com puis « Redémarrer » dans le "
-            "menu de l'icône. Le reste d'Épure démarre normalement."
+    if _lancer(
+        "ollama", ["ollama", "serve"],
+        env=env_ollama, stdout=fh, stderr=fh, startupinfo=_HIDDEN,
+        encoding="utf-8", errors="ignore",
+    ) is None:
+        _incident(
+            "Ollama introuvable — le chat ne fonctionnera pas "
+            "(installez-le depuis ollama.com, puis « Redémarrer »)"
         )
 
     _log("Lancement flm serve")
-    try:
-        p_flm = subprocess.Popen(
-            ["flm", "serve", "--port", "11435"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            startupinfo=_HIDDEN,
-        )
-        _processes.append(p_flm)
-    except FileNotFoundError:
-        _log("flm non trouvé — ignoré")
+    if _lancer(
+        "flm", ["flm", "serve", "--port", "11435"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=_HIDDEN,
+    ) is None:
+        _log("flm non trouvé — ignoré (runtime NPU optionnel)")
 
     time.sleep(4)
+    _elaguer_processus()
 
     _log("Lancement uvicorn")
     # Interface d'écoute : LOOPBACK par défaut. Écouter sur 0.0.0.0 rendait le
@@ -175,57 +354,68 @@ def _start_processes():
     # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
     # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
     # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur
-    # non valide » → backend qui crashe/devient « injoignable ». C'est ce qui
-    # rendait le lancement par le raccourci lent/cassé alors que start.ps1 (sans
-    # --reload) démarre vite. Quand activé, on surveille UNIQUEMENT core/ (écrire
-    # un router.py dans modules/ lors d'une approbation atelier ne doit pas
-    # relancer le backend, qui monte déjà les routes à chaud).
+    # non valide » → backend qui crashe/devient « injoignable ». Quand activé, on
+    # surveille UNIQUEMENT core/ (écrire un router.py dans modules/ lors d'une
+    # approbation atelier ne doit pas relancer le backend, qui monte déjà les
+    # routes à chaud).
     if os.environ.get("EPURE_RELOAD", "0").strip().lower() in ("1", "true", "yes"):
         uvicorn_cmd += ["--reload", "--reload-dir", "core"]
         _log("uvicorn : rechargement auto activé sur core/ (instable sous Windows ; EPURE_RELOAD=0 pour désactiver)")
     else:
         _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
-    p_uvicorn = subprocess.Popen(
-        uvicorn_cmd,
-        cwd=str(BACKEND_DIR),
-        stdout=fh,
-        stderr=fh,
-        startupinfo=_HIDDEN,
-        encoding="utf-8",
-        errors="ignore",
-    )
-    _processes.append(p_uvicorn)
+    if _lancer(
+        "uvicorn", uvicorn_cmd,
+        cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=_HIDDEN,
+        encoding="utf-8", errors="ignore",
+    ) is None:
+        _incident(f"interpréteur introuvable ({sys.executable}) — backend non lancé")
 
     time.sleep(6)
+    _elaguer_processus()
 
     _log("Lancement npm run dev")
-    p_npm = subprocess.Popen(
-        ["npm", "run", "dev"],
-        cwd=str(FRONTEND_DIR),
-        stdout=fh,
-        stderr=fh,
-        startupinfo=_HIDDEN,
-        shell=True,
-        encoding="utf-8",
-        errors="ignore",
-    )
-    _processes.append(p_npm)
+    if _lancer(
+        "npm", ["npm", "run", "dev"],
+        cwd=str(FRONTEND_DIR), stdout=fh, stderr=fh, startupinfo=_HIDDEN,
+        shell=True, encoding="utf-8", errors="ignore",
+    ) is None:
+        _incident("npm introuvable — l'interface ne démarrera pas")
 
     _log("Services démarrés — ouverture du navigateur dans 8 s")
     time.sleep(8)
+    _elaguer_processus()
+    if _incidents:
+        _notifier("Épure — démarrage dégradé", " · ".join(_incidents))
+    _maj_infobulle()
     webbrowser.open(URL)
 
 
 def _stop_processes():
-    for p in _processes:
+    """Arrête NOS processus, et eux seuls.
+
+    On ne connaît comme siens que les PID enregistrés au lancement. ``_tuer_arbre``
+    est appelé sur chacun — et sur eux seuls.
+    """
+    for p in list(_processes):
+        nom = getattr(p, "_epure_nom", "processus")
+        if p.poll() is not None:
+            continue
         try:
-            p.terminate()
+            _tuer_arbre(p.pid)
+        except Exception:
+            _log(f"{nom} (PID {p.pid}) : arrêt impossible")
+    for p in list(_processes):
+        try:
+            p.wait(timeout=5)
         except Exception:
             pass
-    _kill_existing()
     _processes.clear()
+    _incidents.clear()
+    _maj_infobulle()
     _log("Services arrêtés")
 
+
+# ── Icône ────────────────────────────────────────────────────────────────────
 
 def _make_icon() -> Image.Image:
     size = 64
@@ -266,11 +456,14 @@ def _on_quit(icon, item):
 
 
 def main():
+    global _icon
+    if not _verrou_instance():
+        _refuser_second_lancement()
+        return
+
     _log("=== Épure démarrage ===")
     _kill_existing()
     time.sleep(2)
-
-    threading.Thread(target=_start_processes, daemon=True).start()
 
     menu = pystray.Menu(
         pystray.MenuItem("Ouvrir Épure", _on_open, default=True),
@@ -278,14 +471,17 @@ def main():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quitter", _on_quit),
     )
-
-    icon = pystray.Icon(
+    _icon = pystray.Icon(
         name="epure",
         icon=_make_icon(),
         title="Épure",
         menu=menu,
     )
-    icon.run()
+    # L'icône est créée AVANT le thread de démarrage : _incident() doit pouvoir
+    # écrire dans l'infobulle dès la première seconde, y compris pour un
+    # incident survenu avant que icon.run() ne prenne la main.
+    threading.Thread(target=_start_processes, daemon=True).start()
+    _icon.run()
 
 
 if __name__ == "__main__":
