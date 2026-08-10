@@ -40,7 +40,7 @@ le proche.
 | Étape | État |
 |---|---|
 | §0 — les quatre vérifications | **faites**, résultats ci-dessous. Aucune n'invalide l'approche |
-| A — frontend construit servi par FastAPI | **en cours** — `src/api.ts` corrigé (appels relatifs possibles, deux modes vérifiés sur le bundle construit) ; le service par FastAPI reste à écrire |
+| A — frontend construit servi par FastAPI | **faite** — `src/api.ts` corrigé, `main._register_web`, `core.paths.resolve_web_dir`, `test_web_statique.py` (10 tests). Vérifiée dans un vrai navigateur, profil neuf |
 | B — script de constitution du paquet | à faire |
 | C — installeur minimal | à faire |
 | D — Réglages du proche : catalogue restreint | à faire — déjà partiellement acquis, cf. fin du §0 |
@@ -195,8 +195,53 @@ Point d'attention sécurité : le middleware `_require_api_token` exige un token
 elle répond 401 avant que le JS ait pu s'appairer. L'exemption doit couvrir exactement les
 fichiers statiques, jamais une route d'API.
 
-Vérification : `npm run build`, servir le résultat par FastAPI, ouvrir dans un navigateur
-propre (cache vidé), naviguer sur toutes les routes du front y compris par URL directe.
+**Réalisation.** `core.paths.resolve_web_dir()` (`$EPURE_WEB_DIR`, sinon
+`<repo>/frontend/dist`) et `main._register_web(app)`, appelé après `_register_routers`.
+Éteint sans `index.html` — donc le mode développement d'Ilyann est inchangé. Sont montés :
+`/` et chaque fichier de la racine de `dist/` en routes explicites, plus `/_assets` en
+`StaticFiles`.
+
+`build.assetsDir = '_assets'` dans `vite.config.ts`, et pas le défaut `assets` : le préfixe
+des assets est exempté d'authentification, or un id de module valide est
+`[a-z][a-z0-9_]{1,30}` — un module nommé `assets` aurait donc vu ses routes exemptées.
+L'underscore initial rend la collision impossible, et reprend la convention déjà en place
+côté source (`registry.ts` exclut `./generated/_*/**`).
+
+**Vérification faite le 2026-08-10.** `npm run build` avec `VITE_API_URL=/`, backend sur
+127.0.0.1:8000 avec `EPURE_WEB_DIR` sur le `dist/`, puis Chrome headless **avec un profil
+neuf** (donc cache et localStorage vides, l'appairage devant se refaire de zéro) :
+
+- l'interface se rend complètement — barre de modules, thème, écran Réglages peuplé de
+  vraies données (modèle actif, dossiers de fiches, catalogue), ce qui prouve que
+  l'appairage automatique et les appels API relatifs fonctionnent ;
+- **le WebSocket s'ouvre** : `WebSocket /ws/chat?token=… [accepted]`, `connection open`
+  dans le journal uvicorn. C'est la dernière inconnue du §6 qui tombe — `wsUrl` dérive bien
+  son `ws://` de `window.location.origin` quand `API` est vide ;
+- sans token : `/`, `/index.html`, `/favicon.svg`, `/icons.svg` et `/_assets/*` répondent
+  200 ; `/models`, `/modules`, `/instance/config`, `/workshop/engines` répondent 401, et
+  `/_assets/../models` aussi ;
+- avec token : `/models` et `/hello/ping` répondent 200, et **`/inconnu` répond 404 et non
+  du HTML** — l'absence de catch-all, vue du client.
+
+Couvert par `backend/test_web_statique.py` (10 tests), dont celui qui compte :
+`PasDeCatchAllTest` installe une route **après** le montage statique, comme le fait
+`_remount`, et échoue si le statique la masque.
+
+#### Deux constats à trancher, hors étape A
+
+- **Le token d'API apparaît en clair dans le journal uvicorn** :
+  `"WebSocket /ws/chat?token=YGdS…" [accepted]`. C'est contraire à l'IMPÉRATIF de
+  CLAUDE.md §6 (« le token ne sort jamais — ni des logs »). Préexistant : le token voyage en
+  query param parce qu'un `new WebSocket()` n'accepte pas d'en-tête, et le log d'accès
+  d'uvicorn imprime la query. Dans le paquet ce journal est un fichier sur le disque du
+  destinataire. Deux corrections possibles : un filtre de logging qui coupe la query des
+  chemins `/ws/`, ou passer le token en sous-protocole WebSocket.
+- **Une installation neuve ouvre sur Réglages, pas sur Chat.** Au premier rendu `modules`
+  est vide (`GET /modules` n'a pas répondu), donc `visibleIds` ne contient que
+  `settings` et `workshop`, `activeModule` valant `chat` n'y est pas, et `App.tsx:148`
+  bascule sur `settings` — sans jamais revenir quand les modules arrivent. Préexistant et
+  identique en développement, mais c'est le **premier écran** que verra le destinataire du
+  paquet. Frère du bug déjà corrigé où la barre ne montrait que Réglages.
 
 ### Étape B — Constituer un paquet pour un destinataire donné
 
@@ -328,10 +373,6 @@ retirés d'ici. Ce qui reste :
   jamais vu ces binaires.
 - **`win_arm64`** — tout le §0 a été mesuré sur x64. `chroma-hnswlib` a disparu de
   l'arbre, mais `grpcio` reste, et la question d'une machine ARM est intacte.
-- **L'URL WebSocket en mode paquet servie pour de vrai.** Le code est en place et
-  vérifié sur le bundle construit (`window.location.origin.replace(/^http/, 'ws')`),
-  mais aucun `/ws/*` n'a encore été ouvert depuis une page servie par FastAPI. C'est la
-  vérification de l'étape A.
 - **Le premier lancement du RAG chez le proche** — l'installation à la demande de torch
   (16 paquets, dont `torch 2.13.0` et `transformers 5.15.0`) n'a jamais été exécutée
   depuis un Python embeddable, seulement résolue en `--dry-run`.

@@ -69,6 +69,7 @@ python test_safe_path.py          # confinement de chemin du codeagent
 python test_jsonstore.py          # lecture/écriture JSON (BOM)
 python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
+python test_web_statique.py       # interface servie par FastAPI (paquet distribué)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
 ```
@@ -224,6 +225,14 @@ Aucune base de données côté application. Deux stockages :
   s'en déduit par `.parent` : une seule variable pour les deux, sinon un
   `generated/` détourné sous un parent resté en place ferait chercher le
   composant d'un module core dans un arbre et son composant généré dans un autre.
+- `resolve_web_dir()` — `$EPURE_WEB_DIR`, sinon `<repo>/frontend/dist`. Frontend
+  **construit** que FastAPI sert lui-même dans le paquet distribué
+  (`docs/distribution-empaquetee.md` étape A). Le service est **éteint** si le
+  dossier n'a pas d'`index.html` : c'est le mode développement, où Vite sert
+  l'interface. Surchargeable non pour protéger des données mais pour rendre la
+  suite **déterministe** — sans ça son comportement dépendrait de la présence
+  d'un `npm run build` sur le poste, et un test de l'interface servie passerait
+  en local pour échouer en CI.
 - `resolve_models_dir()` — `$EPURE_MODELS_DIR`, sinon `<backend>/piper_models`.
   **C'est un cache de modèles, pas des données utilisateur**, et la distinction
   a des conséquences. Le `.onnx` de Piper (76 Mo) y est téléchargé au premier
@@ -254,14 +263,18 @@ Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchor
 statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
 
 Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
-ces imports. `backend/_test_env.py` pose les **quatre** variables sur des
+ces imports. `backend/_test_env.py` pose les **cinq** variables sur des
 temporaires uniques pour la session — `backend/modules/` et
 `frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
 voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
-testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR` est le seul posé sur
-un temporaire **vide** : copier 76 Mo de modèle vocal n'aurait aucun sens, et
-aucun test ne le lit — il est détourné pour qu'un test qui construirait
-`PiperEngine` par accident ne tire pas 76 Mo dans le cache réel.
+testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR` et `EPURE_WEB_DIR`
+sont posés sur des temporaires **vides**, pour deux raisons distinctes : copier
+76 Mo de modèle vocal n'aurait aucun sens et aucun test ne le lit (détourné
+seulement pour qu'un test construisant `PiperEngine` par accident ne tire pas
+76 Mo dans le cache réel) ; `frontend/dist/` est vidé pour le **déterminisme** —
+`main._register_web` ne monte l'interface que s'il y trouve un `index.html`, donc
+sur le vrai chemin la suite se comporterait différemment selon que le front a été
+construit sur le poste. `test_web_statique.py` fabrique son propre `dist/`.
 
 **IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
 découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
