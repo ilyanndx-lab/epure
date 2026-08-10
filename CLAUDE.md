@@ -70,6 +70,7 @@ python test_jsonstore.py          # lecture/écriture JSON (BOM)
 python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
 python test_web_statique.py       # interface servie par FastAPI (paquet distribué)
+python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
 ```
@@ -398,7 +399,16 @@ Règles :
 - **IMPÉRATIF : aucun `shell=True`.** `subprocess.Popen(["binaire", arg1, ...])`,
   toujours en liste. Une entrée utilisateur ne doit jamais atteindre un shell.
 - **IMPÉRATIF : le token d'API ne sort jamais** — ni de `GET /instance/config`
-  (le bloc `auth` est retiré), ni des logs, ni d'un message d'erreur.
+  (le bloc `auth` est retiré), ni des logs, ni d'un message d'erreur. La partie
+  « logs » n'était pas tenue et ne pouvait pas se voir en relisant Épure : la
+  ligne fuyante est écrite par **uvicorn**, qui journalise le chemin avec sa
+  query (`"WebSocket /ws/chat?token=…" [accepted]`), et le token du WebSocket
+  voyage en query param faute d'en-tête possible sur `new WebSocket()`. Tenu
+  désormais par `core/logs.py`, un filtre de logging posé sur `uvicorn.access`,
+  `uvicorn.error` et la racine — ces deux loggers ont leurs propres handlers et
+  `propagate = False`, donc **il faut les nommer**, un filtre sur la racine ne
+  les voit pas. Vérifié par `test_logs_secrets.py`, qui affirme aussi que
+  `main` l'installe (sinon le module resterait parfait et jamais appelé).
 - Un chemin venant du client est **toujours** `Path(...).name` ou confiné par
   `resolve()` + `is_relative_to()`. Jamais concaténé tel quel.
 - Comparaison de token : `hmac.compare_digest` (`core/auth.py`), jamais `==`.

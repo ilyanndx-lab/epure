@@ -73,6 +73,15 @@ logger = logging.getLogger(__name__)
 for _noisy in ("httpx", "watchdog", "sentence_transformers", "urllib3"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
+# ── Le token ne doit pas atterrir dans un journal (CLAUDE.md §6) ─────────────
+# uvicorn journalise le chemin AVEC sa query, et le token du WebSocket voyage en
+# query param faute d'en-tête possible sur `new WebSocket()`. À poser ici, juste
+# après basicConfig : uvicorn a déjà configuré ses loggers quand il importe
+# l'app, donc `uvicorn.access` et `uvicorn.error` existent. Cf. core/logs.py.
+from core.logs import masquer_secrets_dans_logs  # noqa: E402
+
+logger.debug("Masquage des secrets dans les logs : %s", masquer_secrets_dans_logs())
+
 app = FastAPI(title="Épure", version="1.0.0")
 
 # ── Auth locale : token d'instance exigé partout sauf /health et /pair ───────
