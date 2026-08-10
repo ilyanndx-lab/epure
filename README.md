@@ -137,6 +137,99 @@ le poste de son auteur.
 
 ---
 
+## Mettre à jour
+
+```bash
+git pull
+cd backend   && pip install -r requirements.txt
+cd ../frontend && npm ci
+```
+
+Puis relancez (`python epure_tray.py`, ou les trois services à la main).
+
+Rien n'est automatique au-delà de ces trois lignes. Six points à connaître : les
+cinq premiers concernent la mise à jour elle-même, le sixième la façon de
+modifier Épure pour que les mises à jour suivantes se passent bien.
+
+### 1. Vos modules installés ne sont pas mis à jour
+
+Installer un module du catalogue **copie** ses trois fichiers vers
+`backend/modules/<id>/` et `frontend/src/modules/generated/<id>/` — deux
+emplacements ignorés par git. Un `git pull` qui corrige
+`modules-catalogue/<id>/` ne touche donc pas votre copie : elle reste à la
+version du jour où vous l'avez installée.
+
+Pour récupérer la correction : **Réglages › Catalogue**, supprimer puis
+réinstaller. La suppression écrit d'abord une sauvegarde horodatée dans
+`backend/modules/_backups/<id>/`.
+
+### 2. `backend/.env` n'est jamais touché
+
+Seul `.env.example` est versionné. Une variable qui y apparaît (nouvelle option,
+nouveau fournisseur) doit être recopiée à la main dans votre `.env`. Après un
+pull, la différence se lit d'une commande :
+
+```bash
+git diff HEAD@{1} -- backend/.env.example
+```
+
+### 3. Le frontend doit être reconstruit hors mode dev
+
+`npm ci` efface `node_modules` et le réinstalle exactement d'après
+`package-lock.json` — c'est ce qui rend l'installation reproductible, et c'est
+pour ça qu'on ne met pas `npm install` ici. Mais il ne construit rien :
+
+| Contexte | Ce qu'il reste à faire |
+| --- | --- |
+| `npm run dev` (ce que lance `epure_tray.py`) | rien : Vite recompile à chaud |
+| Frontend construit (Docker, `npm run build`) | `npm run build`, puis redémarrer |
+
+### 4. Un module du cœur ajouté par la mise à jour reste invisible
+
+`modules_activés`, dans `backend/memory/instance_config.json`, est une liste
+**explicite et ordonnée** qui pilote à la fois le montage du routeur et la barre
+de modules. Un module que la mise à jour ajoute au cœur n'y figure pas : il sera
+installé, mais ni monté ni affiché.
+
+Activez-le dans **Réglages › Modules**. Il n'existe pas de mécanisme de
+migration : votre config est fusionnée avec les défauts, donc un champ
+nouvellement apparu est comblé, mais rien ne devine qu'une nouvelle entrée doit
+rejoindre *votre* liste ordonnée.
+
+(Le cas inverse est déjà couvert : un id resté dans la liste alors que le module
+a été supprimé du disque est filtré à la lecture.)
+
+### 5. Les modèles Ollama restent à votre charge
+
+Si `backend/config.yaml` se met à pointer un modèle que vous n'avez pas, rien ne
+le signale au démarrage : `/health` répond, l'interface s'affiche, et c'est le
+premier message envoyé qui échoue.
+
+```bash
+ollama list                      # ce que vous avez déjà
+ollama pull <le modèle de config.yaml>
+```
+
+### 6. Ne modifiez pas le cœur à la main
+
+C'est le point le plus probable en pratique, et le seul qui dépende de vous
+avant la mise à jour. Les fichiers du cœur sont **suivis par git** :
+
+- `backend/core/`, `backend/main.py` ;
+- `backend/modules/{_atelier,admin,chat,hello,history,settings}/` ;
+- tout `frontend/src/`, à l'exception de `src/modules/generated/`.
+
+Une retouche locale sur l'un d'eux, et `git pull` s'arrête sur un conflit à
+résoudre à la main.
+
+Passez par l'**Atelier**. Il écrit dans des chemins que `.gitignore` exclut
+(`backend/modules/<votre-id>/`, `frontend/src/modules/generated/<votre-id>/`) :
+vos modules survivent aux mises à jour sans jamais entrer en conflit avec elles.
+C'est exactement ce à quoi sert l'allowlist de `.gitignore` — le cœur est suivi,
+tout le reste est à vous.
+
+---
+
 ## Clés API cloud (optionnelles)
 
 Aucune clé n'est nécessaire : sans clé, seuls les modèles Ollama locaux sont
