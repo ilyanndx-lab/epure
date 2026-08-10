@@ -32,3 +32,26 @@ google-generativeai==0.8.6
 openai==2.38.0
 python-docx==1.2.0
 pandas==3.0.3
+
+# ── Lanceur système : epure_tray.py, PAS le backend ──────────────────────────
+# Ni `main.py` ni `core/*` ne les importent — le backend démarre sans. Elles
+# sont déclarées ici parce que requirements.txt est le seul fichier de
+# dépendances Python du dépôt et que `python epure_tray.py` est la façon
+# documentée de lancer Épure (README, CLAUDE.md §2) : non déclarées, cette
+# commande échouait sur `import pystray` dès le premier poste neuf. Troisième
+# dépendance présente par hasard sur le poste de dev, après python-multipart et
+# httpx — même symptôme à chaque fois, un `pip install -r requirements.txt`
+# complet qui ne suffit pas à faire tourner ce qu'on documente.
+#
+# Coût assumé : l'image Docker, qui n'exécute jamais le tray, installe deux
+# paquets pour rien — 15,6 Mo sur disque, mesurés, dont 15,4 pour Pillow. Les
+# en sortir demanderait un second fichier de dépendances, donc deux listes à
+# tenir à jour pour un unique poste : plus cher que les 15 Mo, et c'est
+# précisément le genre d'écart qui recrée le trou qu'on bouche ici.
+#
+# Sous Linux (job `integration` de la CI, runner sans serveur X) l'installation
+# passe : la seule dépendance que pystray y ajoute est `python-xlib`, du Python
+# pur — rien ne compile et rien ne réclame d'affichage à l'installation. C'est
+# l'IMPORT de pystray qui exigerait un display, et aucun test ne charge le tray.
+pystray==0.19.5
+Pillow==12.2.0
