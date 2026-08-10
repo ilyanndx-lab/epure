@@ -1,72 +1,60 @@
-"""Lanceur système d'Épure : Ollama, uvicorn, Vite, plus une icône de notification.
+"""Icône de notification d'Épure : menu, orchestration des services, journal.
 
-Windows uniquement (``subprocess.STARTUPINFO``, ``netstat``, ``taskkill``).
+Windows uniquement. Toute la logique qui se raisonne — quel port, tenu par qui,
+prêt ou non — vit dans ``lanceur.py``, qui n'importe ni pystray ni PIL et se
+teste donc en CI sur un runner Linux sans display (``backend/test_lanceur.py``).
+Ce fichier-ci ne garde que ce qui exige une interface ou un effet de bord.
 
-Trois incidents mesurés dictent la forme de ce fichier ; les rejouer coûte cher,
-donc ils sont écrits ici plutôt que dans un commit qu'on ne relira pas.
+Trois incidents mesurés dictent sa forme ; les rejouer coûte cher, donc ils sont
+écrits ici plutôt que dans un commit qu'on ne relira pas.
 
 1. **Quatre trays vivants en même temps.** Rien ne détectait une instance déjà
    lancée. Avec un raccourci sur le Bureau, le double-lancement devient le cas
-   normal : on accumulait les icônes, chacune avec son jeu d'enfants se
-   disputant les ports. D'où le mutex nommé de :func:`_verrou_instance`.
+   normal. D'où le mutex nommé de :func:`_verrou_instance`.
 
 2. **Épure fonctionnait par accident.** ``taskkill /F /IM ollama.exe`` tuait le
-   serveur Ollama de l'utilisateur, mais ratait ``ollama app.exe`` — nom d'image
-   différent — qui le relançait aussitôt. Le ``ollama serve`` du tray échouait
-   alors sur un port déjà pris (« Only one usage of each socket address »),
-   mourait, et restait dans ``_processes`` comme un Popen mort. Ce qui servait
-   les requêtes, c'était l'Ollama de l'application de bureau, pas le nôtre.
-   Désormais : si quelque chose répond sur 11434, on le réutilise.
+   serveur Ollama de l'utilisateur mais ratait ``ollama app.exe``, qui le
+   relançait aussitôt ; notre ``ollama serve`` mourait alors sur un port pris.
+   Ce qui servait les requêtes, c'était l'Ollama de l'application de bureau.
 
-3. **On tuait les processus des autres.** Le kill par port sur 8000 frappait le
-   détenteur du port quel qu'il soit — exactement le reproche fait à
-   ``start.ps1`` en le retirant du dépôt. Un port n'est libéré que si son
-   occupant a été *identifié* comme un reste d'Épure (sonde ``/health``) ; sinon
-   on refuse et on le dit.
+3. **On tuait les processus des autres.** Le kill par port frappait le détenteur
+   quel qu'il soit — le reproche même fait à ``start.ps1``. Un port n'est libéré
+   que si son occupant a été identifié comme un reste d'Épure.
 
 **Le journal est le seul canal de diagnostic.** Sous ``pythonw`` (Epure.bat) il
 n'y a pas de console, donc pas de stderr : une traceback n'existe nulle part.
-Tout ce qui rate doit passer par :func:`_log`, et tout ce qui dégrade le service
-doit remonter à l'infobulle de l'icône — une icône d'apparence normale au-dessus
-de rien qui tourne est le pire état possible.
+Tout ce qui rate passe par :func:`_log`, et tout ce qui dégrade le service
+remonte à l'infobulle — une icône d'apparence normale au-dessus de rien qui
+tourne est le pire état possible.
 """
 
 import ctypes
-import json
 import os
-import re
-import socket
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import webbrowser
 from pathlib import Path
 
 import pystray
 from PIL import Image, ImageDraw
 
+import lanceur
+from lanceur import PORT_BACKEND, PORT_FLM, PORT_OLLAMA, PORT_VITE
+
 ROOT = Path(__file__).parent.resolve()
 BACKEND_DIR = ROOT / "backend"
 FRONTEND_DIR = ROOT / "frontend"
 LOG_FILE = ROOT / "epure_tray.log"
 
-PORT_BACKEND = 8000
-PORT_OLLAMA = 11434
-PORT_FLM = 11435
-PORT_VITE = 5173
-
-#: URL réellement ouverte. Vite bascule de port si 5173 est pris ; on la corrige
-#: après lecture de sa sortie (cf. _detecter_port_vite).
-_url = f"http://localhost:{PORT_VITE}"
+#: État partagé (URL servie, incidents). Un objet et non des globals : cf. la
+#: docstring de lanceur.EtatLanceur, qui explique le bug que ça supprime.
+ETAT = lanceur.EtatLanceur()
 
 _processes: list[subprocess.Popen] = []
 _log_handle = None
 _icon = None
-#: Ce qui empêche Épure de fonctionner normalement, remonté à l'infobulle.
-_incidents: list[str] = []
 #: Handle du mutex d'instance unique — gardé en vie pour la durée du process.
 _mutex_handle = None
 
@@ -113,19 +101,11 @@ def _log(msg: str):
 # ── État dégradé, remonté à l'icône ──────────────────────────────────────────
 
 def _maj_infobulle():
-    """Reflète ``_incidents`` dans l'infobulle. Sans effet si l'icône n'existe pas encore.
-
-    L'infobulle Windows est tronquée au-delà de 127 caractères ; on coupe
-    nous-mêmes pour que la fin reste lisible plutôt qu'arbitraire.
-    """
+    """Reflète les incidents dans l'infobulle. Sans effet si l'icône n'existe pas."""
     if _icon is None:
         return
     try:
-        if _incidents:
-            texte = "Épure — dégradé : " + " · ".join(_incidents)
-            _icon.title = (texte[:124] + "…") if len(texte) > 125 else texte
-        else:
-            _icon.title = "Épure"
+        _icon.title = ETAT.infobulle()
     except Exception:  # pragma: no cover - dépend du backend pystray
         pass
 
@@ -138,7 +118,7 @@ def _incident(msg: str):
     l'icône a l'air normale.
     """
     _log(msg)
-    _incidents.append(msg)
+    ETAT.ajouter_incident(msg)
     _maj_infobulle()
 
 
@@ -149,82 +129,6 @@ def _notifier(titre: str, message: str):
         _icon.notify(message, titre)
     except Exception:  # pragma: no cover - notify indisponible selon le backend
         _log(f"(notification impossible : {titre} — {message})")
-
-
-# ── Sondes de ports : qui écoute, et est-ce nous ? ───────────────────────────
-
-def _port_pid(port: int):
-    """PID du processus qui ÉCOUTE sur ``port``, ou None.
-
-    On découpe les colonnes de netstat au lieu de chercher ``":8000"`` dans la
-    ligne entière : la version en sous-chaîne attrapait aussi bien l'adresse
-    distante qu'un port dont 8000 est un suffixe.
-    """
-    try:
-        res = subprocess.run(
-            ["netstat", "-ano", "-p", "TCP"],
-            capture_output=True, encoding="utf-8", errors="ignore",
-        )
-    except Exception:
-        return None
-    for ligne in res.stdout.splitlines():
-        champs = ligne.split()
-        if len(champs) < 5 or champs[0].upper() != "TCP" or champs[3].upper() != "LISTENING":
-            continue
-        if champs[1].rsplit(":", 1)[-1] == str(port):
-            try:
-                return int(champs[4])
-            except ValueError:
-                continue
-    return None
-
-
-def _nom_processus(pid: int) -> str:
-    try:
-        res = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-            capture_output=True, encoding="utf-8", errors="ignore",
-        )
-        premiere = res.stdout.strip().splitlines()[0]
-        return premiere.split('","')[0].strip('"')
-    except Exception:
-        return "inconnu"
-
-
-def _http_json(url: str, timeout: float = 5.0):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", errors="replace"))
-    except Exception:
-        return None
-
-
-def _ollama_repond(port: int = PORT_OLLAMA) -> bool:
-    """True si un vrai serveur Ollama sert déjà sur ce port."""
-    data = _http_json(f"http://127.0.0.1:{port}/api/tags")
-    return isinstance(data, dict) and "models" in data
-
-
-def _backend_epure_repond(port: int = PORT_BACKEND) -> bool:
-    """True si le port est tenu par un backend Épure — et non par un inconnu.
-
-    Identification par le COMPORTEMENT et non par le nom du process : ``/health``
-    est la seule route ouverte sans token (CLAUDE.md §3.1) et sa forme est
-    reconnaissable. C'est ce qui autorise à tuer le détenteur du port sans
-    reproduire l'erreur de start.ps1 — on ne tue que ce qu'on a identifié.
-
-    ⚠️ Délai d'attente volontairement large. ``/health`` interroge Ollama et
-    énumère ses modèles : mesuré à 2,05–2,20 s de façon stable Ollama allumé, et
-    au-delà de 5 s Ollama ÉTEINT — le handler y attend le timeout de connexion
-    du client Ollama (``connect=5.0``, core/llm.py). Deux valeurs trop courtes
-    ont déjà fait conclure « le backend n'a pas répondu » alors qu'uvicorn
-    écrivait « Application startup complete » dans le même journal.
-
-    Ici la justesse prime sur la vitesse : se tromper, c'est soit tuer le
-    processus d'autrui, soit refuser de récupérer son propre port.
-    """
-    data = _http_json(f"http://127.0.0.1:{port}/health", timeout=12.0)
-    return isinstance(data, dict) and "ollama" in data and "model" in data
 
 
 # ── Instance unique ──────────────────────────────────────────────────────────
@@ -238,12 +142,11 @@ def _verrou_instance() -> bool:
 
     Mutex nommé plutôt que fichier de verrou à PID : le noyau le libère quand le
     process meurt, quelle qu'en soit la façon. Un fichier survit à un `taskkill`
-    et il faut alors vérifier si le PID qu'il contient est encore vivant — et
-    si ce PID n'a pas été recyclé par un process sans rapport.
+    et il faut alors vérifier si le PID qu'il contient est encore vivant — et si
+    ce PID n'a pas été recyclé par un process sans rapport.
 
     En cas d'échec de l'appel système, on renvoie True : mieux vaut un second
-    tray qu'un lanceur qui refuse de démarrer pour une raison qu'il n'explique
-    pas.
+    tray qu'un lanceur qui refuse de démarrer sans savoir dire pourquoi.
     """
     global _mutex_handle
     try:
@@ -276,7 +179,7 @@ def _refuser_second_lancement():
     dialogue, seul canal visible depuis un process pythonw.
     """
     _log("Second lancement refusé : une instance d'Épure tourne déjà")
-    webbrowser.open(_url)
+    webbrowser.open(ETAT.url)
     try:
         ctypes.windll.user32.MessageBoxW(
             0,
@@ -291,11 +194,6 @@ def _refuser_second_lancement():
 
 
 # ── Cycle de vie des processus ───────────────────────────────────────────────
-
-_HIDDEN = subprocess.STARTUPINFO()
-_HIDDEN.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-_HIDDEN.wShowWindow = subprocess.SW_HIDE
-
 
 def _elaguer_processus():
     """Retire de ``_processes`` les Popen déjà morts, en les nommant.
@@ -316,7 +214,7 @@ def _elaguer_processus():
 
 
 def _lancer(nom: str, cmd: list, **kwargs):
-    """Lance un binaire, ou journalise son absence sans interrompre le reste.
+    """Lance un binaire, ou signale son absence sans interrompre le reste.
 
     Chaque service est gardé individuellement : un binaire manquant doit coûter
     une ligne de journal, pas le démarrage des autres. Avant, seul `flm` l'était
@@ -337,105 +235,37 @@ def _lancer(nom: str, cmd: list, **kwargs):
 
 
 def _liberer_port_backend() -> bool:
-    """Libère le port 8000 s'il est tenu par un reste d'Épure. True si utilisable.
+    """Libère le port du backend s'il est tenu par un reste d'Épure. True si utilisable.
 
-    Ne tue QUE ce qui a été identifié comme un backend Épure par sa réponse à
-    ``/health``. Un port 8000 tenu par autre chose n'est pas touché : c'est un
-    refus explicite, pas un kill à l'aveugle. Le tray de la veille pouvait
-    laisser un uvicorn orphelin ; un Jupyter ou un autre serveur de dev sur 8000,
-    lui, n'a rien demandé.
+    Ne tue QUE ce que ``lanceur.backend_epure_repond`` a identifié. Un port tenu
+    par autre chose n'est pas touché : refus explicite, pas kill à l'aveugle.
     """
-    pid = _port_pid(PORT_BACKEND)
+    pid = lanceur.port_occupant(PORT_BACKEND)
     if pid is None:
         return True
-    if _backend_epure_repond():
+    if lanceur.backend_epure_repond(PORT_BACKEND):
         _log(f"Backend Épure résiduel sur {PORT_BACKEND} (PID {pid}) — arrêté")
-        _tuer_arbre(pid)
+        lanceur.tuer_arbre(pid)
         time.sleep(1.5)
-        return _port_pid(PORT_BACKEND) is None
-    nom = _nom_processus(pid)
+        return lanceur.port_occupant(PORT_BACKEND) is None
     _incident(
-        f"port {PORT_BACKEND} occupé par {nom} (PID {pid}), qui n'est pas Épure — "
-        "je ne le tue pas ; le backend ne démarrera pas"
+        f"port {PORT_BACKEND} occupé par {lanceur.nom_processus(pid)} (PID {pid}), "
+        "qui n'est pas Épure — je ne le tue pas ; le backend ne démarrera pas"
     )
     return False
-
-
-def _tuer_arbre(pid: int):
-    """taskkill /T sur un PID donné : le process ET ses descendants.
-
-    ``/T`` est indispensable pour npm, lancé via un shell intermédiaire :
-    terminer le shell seul laissait `node` (Vite) vivant et le port 5173 pris.
-    N'est appelé que sur des PID dont on a établi qu'ils sont les nôtres.
-    """
-    try:
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid)],
-            capture_output=True, encoding="utf-8", errors="ignore",
-        )
-    except Exception:
-        pass
-
-
-def _attendre_backend(timeout: float = 45.0) -> bool:
-    """Attend qu'uvicorn ACCEPTE les connexions. False s'il reste muet.
-
-    Simple connexion TCP, et surtout PAS ``/health`` : uvicorn ne se lie au port
-    qu'une fois le démarrage applicatif terminé, donc accepter suffit à prouver
-    qu'il est prêt — et cela ne dépend pas d'Ollama. La version à ``/health``
-    signalait faussement « le backend n'a pas répondu » dès qu'Ollama était
-    éteint, parce que le handler attend alors le timeout de connexion du client
-    Ollama : la sonde mesurait la santé d'Ollama, pas celle du backend.
-
-    Le premier démarrage charge des modèles ML : quelques dizaines de secondes
-    sont normales. Mieux vaut ouvrir l'onglet tard que sur une API absente.
-    """
-    limite = time.time() + timeout
-    while time.time() < limite:
-        try:
-            with socket.create_connection(("127.0.0.1", PORT_BACKEND), timeout=1.0):
-                return True
-        except OSError:
-            time.sleep(0.5)
-    return False
-
-
-_RE_VITE_URL = re.compile(r"http://localhost:(\d+)/")
-
-
-def _detecter_port_vite(offset: int, timeout: float = 25.0) -> int:
-    """Lit le port réellement retenu par Vite dans sa propre sortie.
-
-    Vite bascule silencieusement sur 5174 si 5173 est pris (un `npm run dev`
-    oublié, par exemple). Le tray ouvrait alors 5173 quoi qu'il arrive, et
-    l'utilisateur regardait l'ANCIEN frontend sans le moindre avertissement.
-    On lit donc la ligne « Local: http://localhost:<port>/ » que Vite écrit dans
-    le journal, à partir de l'offset noté juste avant son lancement.
-    """
-    limite = time.time() + timeout
-    while time.time() < limite:
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as fh:
-                fh.seek(offset)
-                for m in _RE_VITE_URL.finditer(fh.read()):
-                    return int(m.group(1))
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return PORT_VITE
 
 
 def _start_processes():
     """Démarre les services. Ne lève jamais : tout échec finit dans le journal.
 
-    Le try/except global est le filet de sécurité de dernier recours. Cette
-    fonction tourne dans un thread démon ; sans lui, une exception imprévue tue
-    le thread en silence et la traceback part sur stderr — qui n'existe pas sous
-    pythonw. L'icône resterait alors parfaitement normale au-dessus de rien.
+    Le try/except global est le filet de dernier recours. Cette fonction tourne
+    dans un thread démon ; sans lui, une exception imprévue tue le thread en
+    silence et la traceback part sur stderr — qui n'existe pas sous pythonw.
+    L'icône resterait alors parfaitement normale au-dessus de rien.
     """
-    global _processes, _url
+    global _processes
     _processes = []
-    _incidents.clear()
+    ETAT.reinitialiser()
     _maj_infobulle()
     try:
         _demarrer()
@@ -447,19 +277,14 @@ def _start_processes():
 
 
 def _demarrer():
-    # `global` indispensable : sans lui, `_url = …` plus bas créait une variable
-    # LOCALE. Le navigateur s'ouvrait bien sur le bon port (variable locale),
-    # mais « Ouvrir Épure » dans le menu de l'icône relisait le global resté à
-    # 5173 — donc l'ancien frontend, exactement le bug qu'on corrige ici.
-    global _url
     fh = _open_log()
+    masque = lanceur.fenetre_masquee()
 
     # ── Ollama : réutilisé s'il tourne déjà ──────────────────────────────────
-    # On ne tue plus rien ici. L'application de bureau Ollama (« ollama app.exe »)
-    # relance son serveur dès qu'on le tue, et notre propre `ollama serve`
-    # mourait alors sur un port pris. Un serveur qui répond fait le travail,
-    # qu'il soit le nôtre ou non.
-    if _ollama_repond():
+    # On ne tue plus rien ici : l'application de bureau Ollama relance son
+    # serveur dès qu'on le tue, et notre propre `ollama serve` mourait alors sur
+    # un port pris. Un serveur qui répond fait le travail, qu'il soit nôtre ou non.
+    if lanceur.ollama_repond():
         _log(f"Ollama déjà en service sur {PORT_OLLAMA} — réutilisé, pas de relance")
     else:
         env_ollama = os.environ.copy()
@@ -468,25 +293,24 @@ def _demarrer():
         # après 5 min d'inactivité).
         env_ollama["OLLAMA_KEEP_ALIVE"] = "-1"
         _log("Lancement ollama serve")
-        p = _lancer(
+        if _lancer(
             "ollama", ["ollama", "serve"],
-            env=env_ollama, stdout=fh, stderr=fh, startupinfo=_HIDDEN,
+            env=env_ollama, stdout=fh, stderr=fh, startupinfo=masque,
             encoding="utf-8", errors="ignore",
-        )
-        if p is None:
+        ) is None:
             _incident(
                 "Ollama introuvable — le chat ne fonctionnera pas "
                 "(installez-le depuis ollama.com, puis « Redémarrer »)"
             )
 
     # ── flm : optionnel par nature, jamais un incident ───────────────────────
-    if _port_pid(PORT_FLM) is not None:
+    if lanceur.port_occupant(PORT_FLM) is not None:
         _log(f"flm déjà en service sur {PORT_FLM} — réutilisé")
     else:
         _log("Lancement flm serve")
         if _lancer(
             "flm", ["flm", "serve", "--port", str(PORT_FLM)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=_HIDDEN,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=masque,
         ) is None:
             _log("flm non trouvé — ignoré (runtime NPU optionnel)")
 
@@ -531,7 +355,7 @@ def _demarrer():
             _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
         if _lancer(
             "uvicorn", uvicorn_cmd,
-            cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=_HIDDEN,
+            cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
             encoding="utf-8", errors="ignore",
         ) is None:
             _incident(f"interpréteur introuvable ({sys.executable}) — backend non lancé")
@@ -542,60 +366,56 @@ def _demarrer():
     _elaguer_processus()
 
     # ── Vite ─────────────────────────────────────────────────────────────────
-    # Le port 5173 déjà pris n'est PAS une erreur : Vite en choisit un autre.
-    # Ce qui était une erreur, c'était de continuer à ouvrir 5173 malgré tout.
-    occupant = _port_pid(PORT_VITE)
+    # Le port déjà pris n'est PAS une erreur : Vite en choisit un autre. Ce qui
+    # était une erreur, c'était de continuer à ouvrir 5173 malgré tout.
+    occupant = lanceur.port_occupant(PORT_VITE)
     if occupant is not None:
         _log(
-            f"port {PORT_VITE} déjà pris par {_nom_processus(occupant)} (PID {occupant}) — "
-            "Vite prendra un autre port, que le tray lira dans sa sortie"
+            f"port {PORT_VITE} déjà pris par {lanceur.nom_processus(occupant)} "
+            f"(PID {occupant}) — Vite prendra un autre port, lu dans sa sortie"
         )
-    offset = LOG_FILE.stat().st_size if LOG_FILE.exists() else 0
+    offset = lanceur.taille_journal(LOG_FILE)
     _log("Lancement npm run dev")
-    p_npm = _lancer(
+    if _lancer(
         "npm", ["npm", "run", "dev"],
-        cwd=str(FRONTEND_DIR), stdout=fh, stderr=fh, startupinfo=_HIDDEN,
+        cwd=str(FRONTEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
         shell=True, encoding="utf-8", errors="ignore",
-    )
-    if p_npm is None:
+    ) is None:
         _incident("npm introuvable — l'interface ne démarrera pas")
         _maj_infobulle()
         return
 
-    port_vite = _detecter_port_vite(offset)
-    _url = f"http://localhost:{port_vite}"
-    if port_vite != PORT_VITE:
-        _incident(f"interface sur le port {port_vite} et non {PORT_VITE} (déjà occupé)")
+    if ETAT.definir_port_interface(lanceur.lire_port_vite(LOG_FILE, offset)):
+        _incident(
+            f"interface sur le port {ETAT.port_interface} et non {PORT_VITE} "
+            "(déjà occupé)"
+        )
 
-    # Attendre le backend AVANT d'ouvrir l'onglet. Auparavant un `sleep(8)` fixe
-    # servait de marge ; lire la sortie de Vite rend le démarrage plus rapide et
-    # ferait ouvrir la page avant que l'API réponde. On sonde donc /health, ce
-    # qui a l'avantage de transformer « backend muet » en incident visible au
-    # lieu d'un onglet blanc.
-    if backend_lance and not _attendre_backend():
+    # Attendre le backend AVANT d'ouvrir l'onglet : lire la sortie de Vite rend
+    # le démarrage plus rapide qu'un sleep fixe, et ferait sinon ouvrir la page
+    # avant que l'API écoute.
+    if backend_lance and not lanceur.attendre_backend(PORT_BACKEND):
         _incident(f"le backend n'a pas répondu sur {PORT_BACKEND} — voir epure_tray.log")
 
     _elaguer_processus()
-    _log(f"Services démarrés — ouverture de {_url}")
-    if _incidents:
-        _notifier("Épure — démarrage dégradé", " · ".join(_incidents))
+    _log(f"Services démarrés — ouverture de {ETAT.url}")
+    if ETAT.incidents:
+        _notifier("Épure — démarrage dégradé", ETAT.resume())
     _maj_infobulle()
-    webbrowser.open(_url)
+    webbrowser.open(ETAT.url)
 
 
 def _stop_processes():
     """Arrête NOS processus, et eux seuls.
 
-    Plus aucun ``taskkill /IM`` : tuer par nom d'image frappait l'Ollama de
-    l'utilisateur (et n'atteignait de toute façon pas « ollama app.exe »). On ne
-    connaît comme siens que les PID enregistrés au lancement.
+    On ne connaît comme siens que les PID enregistrés au lancement.
     """
     for p in list(_processes):
         nom = getattr(p, "_epure_nom", "processus")
         if p.poll() is not None:
             continue
         try:
-            _tuer_arbre(p.pid)
+            lanceur.tuer_arbre(p.pid)
         except Exception:
             _log(f"{nom} (PID {p.pid}) : arrêt impossible")
     for p in list(_processes):
@@ -604,7 +424,7 @@ def _stop_processes():
         except Exception:
             pass
     _processes.clear()
-    _incidents.clear()
+    ETAT.reinitialiser()
     _maj_infobulle()
     _log("Services arrêtés")
 
@@ -626,7 +446,8 @@ def _make_icon() -> Image.Image:
 
 
 def _on_open(icon, item):
-    webbrowser.open(_url)
+    # ETAT.url et non une constante : c'est le port RÉELLEMENT servi.
+    webbrowser.open(ETAT.url)
 
 
 def _on_restart(icon, item):
