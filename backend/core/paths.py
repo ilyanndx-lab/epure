@@ -124,6 +124,32 @@ def resolve_models_dir() -> Path:
     return base.resolve()
 
 
+def resolve_web_dir() -> Path:
+    """Frontend **construit** que FastAPI sert lui-même (paquet distribué).
+
+    Priorité : ``$EPURE_WEB_DIR`` (``~`` accepté) puis défaut
+    ``<racine_du_repo>/frontend/dist``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Pourquoi ce dossier est surchargeable alors que c'est du code construit et
+    non des données : c'est la variable qui rend le service statique
+    **déterministe en test**. Le montage est conditionné à la présence d'un
+    ``index.html`` — sans surcharge, la suite se comporterait différemment selon
+    que quelqu'un a lancé ``npm run build`` sur le poste ou non, et un test de
+    l'interface servie passerait en local pour échouer en CI (ou l'inverse).
+    ``_test_env`` la pose donc sur un temporaire VIDE, comme
+    ``EPURE_MODELS_DIR`` : par défaut, en test, le service statique est éteint,
+    et le test qui le vise fabrique son propre ``dist/``.
+
+    En mode développement le dossier n'existe pas (ou est ignoré) : Vite sert
+    l'interface sur :5173 et rien n'est monté ici.
+    """
+    env = os.environ.get("EPURE_WEB_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_REPO_ROOT / "frontend" / "dist")
+    return base.resolve()
+
+
 def resolve_data_dir() -> Path:
     """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
 

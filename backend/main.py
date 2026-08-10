@@ -21,7 +21,8 @@ from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 _ENV_FILE = Path(__file__).parent / ".env"
@@ -49,6 +50,7 @@ from core.module_registry import (
     register_routers as _register_routers,
     set_status as _set_module_status,
 )
+from core.paths import resolve_web_dir
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
@@ -80,10 +82,54 @@ from core.auth import get_api_token, is_local_client, token_ok, ws_require_token
 
 _AUTH_EXEMPT_PATHS = {"/health", "/pair"}
 
+#: Préfixe des assets du frontend construit, exempté d'authentification quand le
+#: service statique est monté (cf. :func:`_register_web`). Rempli à
+#: l'enregistrement, vide en mode développement.
+_WEB_EXEMPT_PATHS: set[str] = set()
+_WEB_ASSETS_PREFIX = "/_assets/"
+
+
+def _est_public(chemin: str, methode: str) -> bool:
+    """Requête servie sans token d'API.
+
+    Trois familles, et rien d'autre : les deux exemptions historiques
+    (``/health``, ``/pair``), les préflights CORS, et — seulement si le frontend
+    construit est servi (mode paquet) — les fichiers statiques de l'interface.
+
+    L'exemption statique est nécessaire : la page HTML doit se charger AVANT que
+    son JavaScript puisse s'appairer via ``/pair``. Elle est sûre parce qu'aucun
+    de ces fichiers ne contient de secret — le token vient de ``/pair``, jamais
+    du bundle.
+
+    Deux précautions qui ne sont pas décoratives :
+
+    * les fichiers de la racine de ``dist/`` sont exemptés **un par un, par
+      égalité stricte**, pas par préfixe : ``/`` et ``/index.html`` ne doivent
+      pas ouvrir tout l'espace de nommage ;
+    * un chemin contenant ``..`` est refusé d'office. Starlette ne normalise pas
+      le chemin ASGI, donc ``/_assets/../models`` satisfait un test de préfixe
+      naïf. Le routeur ne servirait pas ``/models`` pour autant (il n'y a aucune
+      route qui corresponde à ce chemin brut), mais faire dépendre une décision
+      d'authentification de ce détour serait mal placé.
+
+    Le préfixe ``/_assets/`` est lui-même sûr par construction : un id de module
+    valide est ``[a-z][a-z0-9_]{1,30}`` (``module_workshop._ID_RE``), donc aucun
+    module ne peut poser de route sous ce préfixe. C'est la raison du réglage
+    ``build.assetsDir = '_assets'`` dans ``vite.config.ts`` — avec le défaut
+    ``assets``, un module nommé ``assets`` aurait vu ses routes exemptées.
+    """
+    if methode == "OPTIONS":
+        return True
+    if ".." in chemin:
+        return False
+    if chemin in _AUTH_EXEMPT_PATHS or chemin in _WEB_EXEMPT_PATHS:
+        return True
+    return bool(_WEB_EXEMPT_PATHS) and chemin.startswith(_WEB_ASSETS_PREFIX)
+
 
 @app.middleware("http")
 async def _require_api_token(request: Request, call_next):
-    if request.url.path in _AUTH_EXEMPT_PATHS or request.method == "OPTIONS":
+    if _est_public(request.url.path, request.method):
         return await call_next(request)
     header = request.headers.get("authorization", "")
     candidate = header[7:].strip() if header.startswith("Bearer ") else ""
@@ -751,3 +797,82 @@ _migrate_module_state()
 # Monte tous les modules actifs disposant d'un modules/<id>/router.py (core ou
 # non). Les modules core pas encore migrés restent décorés sur `app` ci-dessus.
 _register_routers(app)
+
+
+# ── Interface servie par FastAPI (paquet distribué) ──────────────────────────
+
+def _servir_fichier(fichier: Path):
+    """Fabrique un endpoint qui renvoie un fichier fixe.
+
+    Une fabrique et non une route paramétrée (``/{nom}``) : un paramètre de
+    chemin venant du client rouvrirait la question du confinement, pour servir
+    trois fichiers connus au démarrage. Ici il n'y a rien à confiner — le chemin
+    est capturé à l'enregistrement, le client ne choisit que parmi les routes qui
+    existent.
+    """
+
+    async def _endpoint() -> FileResponse:
+        return FileResponse(fichier)
+
+    return _endpoint
+
+
+def _register_web(app) -> dict:
+    """Sert ``frontend/dist`` — un seul processus au lieu de Vite + uvicorn.
+
+    Éteint et sans effet si le dossier n'a pas d'``index.html`` : c'est le mode
+    développement, où Vite sert l'interface sur :5173 et où ce montage n'aurait
+    aucun intérêt. Le dossier vient de ``core.paths.resolve_web_dir`` (donc
+    surchargeable par ``$EPURE_WEB_DIR``, ce qui rend l'ensemble testable).
+
+    **IMPÉRATIF — pas de catch-all, et surtout pas un mount sur ``/``.** Deux
+    raisons, dans cet ordre d'importance :
+
+    1. ``module_workshop._remount`` fait un ``app.include_router`` qui **ajoute
+       en fin** de ``app.router.routes``. Starlette prend la première route qui
+       correspond : un catch-all posé au démarrage serait donc devant les routes
+       de tout module installé **ensuite**, et ``index.html`` répondrait à la
+       place du module. Or installer un module depuis le catalogue est
+       précisément la fonction que le destinataire du paquet garde
+       (``POST /settings/catalogue/{id}/install``).
+    2. Il n'y en a pas besoin. Le frontend n'a aucun routeur client (pas de
+       ``react-router``, pas de ``history.pushState``) : la navigation est l'état
+       React ``activeModule`` persisté dans localStorage. Il n'existe qu'une
+       seule URL, ``/``. C'est mesuré dans ``docs/distribution-empaquetee.md``
+       §0, et c'est ce qui permet de s'en tenir à des routes explicites.
+
+    Conséquence à garder : une route d'API mal orthographiée répond 404 et non
+    ``index.html``, ce qui est le bon comportement et non une limite.
+    """
+    web = resolve_web_dir()
+    index = web / "index.html"
+    if not index.is_file():
+        logger.info(
+            "Interface non servie par le backend (pas de %s) — mode développement",
+            index,
+        )
+        return {"servi": False, "dossier": str(web), "routes": []}
+
+    assets = web / _WEB_ASSETS_PREFIX.strip("/")
+    if assets.is_dir():
+        app.mount(_WEB_ASSETS_PREFIX.rstrip("/"), StaticFiles(directory=assets), name="web-assets")
+
+    routes = ["/"]
+    app.get("/", include_in_schema=False)(_servir_fichier(index))
+    _WEB_EXEMPT_PATHS.add("/")
+    for fichier in sorted(web.iterdir()):
+        if not fichier.is_file():
+            continue
+        chemin = f"/{fichier.name}"
+        app.get(chemin, include_in_schema=False)(_servir_fichier(fichier))
+        _WEB_EXEMPT_PATHS.add(chemin)
+        routes.append(chemin)
+
+    logger.info(
+        "Interface servie depuis %s — %d route(s) racine + %s",
+        web, len(routes), _WEB_ASSETS_PREFIX,
+    )
+    return {"servi": True, "dossier": str(web), "routes": routes}
+
+
+_register_web(app)

@@ -1,11 +1,12 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
-Trois arborescences sont détournées vers des temporaires :
+Cinq arborescences sont détournées vers des temporaires :
 
     EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
     EPURE_MODULES_DIR    backend/modules/                (copie)
     EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
     EPURE_MODELS_DIR     backend/piper_models/           (temporaire VIDE)
+    EPURE_WEB_DIR        frontend/dist/                  (temporaire VIDE)
 
 Pourquoi ce fichier existe : la suite écrivait dans les données réelles de
 l'utilisateur. Neuf modules construisaient leur chemin en
@@ -185,6 +186,21 @@ MODULES_DIR = _installer_arbre("EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules")
 #:     cache reconstructible : un téléchargement légitime pendant la suite ferait
 #:     tomber un garde-fou qui parle d'autre chose (cf. resolve_models_dir).
 MODELS_DIR = _installer_vide("EPURE_MODELS_DIR", "models")
+
+#: Frontend construit — temporaire VIDE, et absent de REAL_DIRS comme MODELS_DIR.
+#: Détourné pour une raison qui n'est pas la protection des données mais le
+#: DÉTERMINISME : `main._register_web` ne monte le service statique que si le
+#: dossier contient un `index.html`. Sur le vrai chemin, la suite se comporterait
+#: donc différemment selon que quelqu'un a lancé `npm run build` — un test de
+#: l'interface servie passerait en local et échouerait en CI, ou l'inverse, et le
+#: pire est que ni l'un ni l'autre ne serait un bug. Vide = service éteint par
+#: défaut ; le test qui le vise (`test_web_statique.py`) fabrique son propre
+#: `dist/` et appelle `_register_web` dessus.
+#:
+#: Non surveillé : `frontend/dist/` est un artefact de build gitignoré, pas une
+#: donnée utilisateur. Le surveiller ferait échouer la suite chez quiconque a
+#: construit le front entre deux exécutions.
+WEB_DIR = _installer_vide("EPURE_WEB_DIR", "web")
 
 def _rebrancher_package_modules(cible: Path) -> None:
     """Fait résoudre ``import modules.<id>.…`` depuis l'arbre TEMPORAIRE.
