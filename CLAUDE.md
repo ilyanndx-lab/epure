@@ -69,8 +69,9 @@ python test_safe_path.py          # confinement de chemin du codeagent
 python test_jsonstore.py          # lecture/écriture JSON (BOM)
 python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
-python test_web_statique.py       # interface servie par FastAPI (paquet distribué)
+python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
 python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
+python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
 ```
@@ -366,6 +367,27 @@ Trois moteurs de génération, diagnostiqués dans Réglages › Atelier :
 | `claude_gateway` | CLI `claude` + passerelle Anthropic-compatible locale (LiteLLM exposant `/v1/messages`). `ANTHROPIC_BASE_URL` pointé dessus. |
 
 Un moteur `aider` existe également (mode architect, conversation Plan/Construire).
+
+**L'Atelier est désactivable, pour le paquet distribué** (`docs/distribution-empaquetee.md`
+étape B) — **désactivable, pas supprimable**. Deux interrupteurs, à poser ensemble
+(`tools/faire_paquet.py` le fait) mais indépendants :
+
+| Interrupteur | Effet |
+|---|---|
+| `EPURE_ATELIER=0` | 404 sur `/workshop*`, `/settings/test/*`, `/settings/gateway/*`, et fermeture de `/ws/workshop` avant `accept()`. Le 404 est posé **avant** le contrôle de token : un 401 révélerait que la route existe. |
+| `VITE_ATELIER=0` | l'Atelier sort du **bundle**, pas seulement de l'écran. |
+
+**IMPÉRATIF — ne pas supprimer `core/module_workshop.py` ni `core/module_validate.py`
+d'un paquet.** `core/catalogue.py` importe sept symboles du premier, qui importe le second
+au niveau module : les retirer casse `POST /settings/catalogue/{id}/install` et
+`DELETE /settings/modules/{id}`, c'est-à-dire l'écran Réglages du destinataire, pas
+l'Atelier.
+
+Côté frontend, `src/atelier.ts` doit rester une **comparaison directe**
+(`import.meta.env.VITE_ATELIER !== '0'`). Un `?.trim()` la rend non pliable par rolldown,
+la branche morte reste atteignable, et un `Workshop-*.js` de 26,1 ko **contenant le code de
+l'Atelier** part quand même dans le paquet — orphelin, mais sur le disque et lisible.
+Verrouillé par `test_paquet.py`.
 
 **IMPÉRATIF : ne jamais ajouter de règle à la denylist de `core/module_validate.py`
 en croyant renforcer la sécurité.** C'est une denylist AST sur des noms exacts :

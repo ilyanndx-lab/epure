@@ -41,7 +41,7 @@ le proche.
 |---|---|
 | §0 — les quatre vérifications | **faites**, résultats ci-dessous. Aucune n'invalide l'approche |
 | A — frontend construit servi par FastAPI | **faite** — `src/api.ts` corrigé, `main._register_web`, `core.paths.resolve_web_dir`, `test_web_statique.py` (10 tests). Vérifiée dans un vrai navigateur, profil neuf |
-| B — script de constitution du paquet | à faire |
+| B — script de constitution du paquet | **faite** — `tools/faire_paquet.py`, hors de ce qui est livré ; `backend/test_paquet.py` (27 tests) tient les règles d'exclusion |
 | C — installeur minimal | à faire |
 | D — Réglages du proche : catalogue restreint | à faire — déjà partiellement acquis, cf. fin du §0 |
 | E — documentation | à faire |
@@ -276,6 +276,91 @@ n'arrive que par `google-generativeai==0.8.6`, dont l'import affiche déjà « A
 the `google.generativeai` package has ended […] switch to the `google.genai` package ».
 Migrer ce fournisseur est le plus gros gain de poids disponible, et c'est un chantier à
 part.
+
+**Réalisation : `tools/faire_paquet.py`.** Hors de ce qui est livré, comme demandé —
+`tools/` n'est pas dans `backend/`, donc rien ne peut l'y faire entrer, et
+`test_paquet.py` l'affirme quand même (la façon la plus probable de le casser serait de
+déplacer le script dans `backend/` pour qu'il puisse importer `core.*`).
+
+```powershell
+python tools\faire_paquet.py --lister-modules
+python tools\faire_paquet.py --destinataire sandr --modules flashcards,reviseur
+```
+
+Arborescence produite — elle **reproduit celle du dépôt**, `app/` tenant le rôle de
+racine :
+
+```
+epure-sandr.zip
+  python/                  runtime embeddable 3.12 + site-packages
+  app/backend/             le code, sans les données ni l'Atelier
+  app/backend/modules/<id> les modules choisis, déjà installés
+  app/frontend/dist/       l'interface construite en mode paquet
+  PAQUET.json              ce qui a été mis dedans, et avec quoi
+```
+
+Ce n'est pas cosmétique : ainsi **tous les défauts de `core/paths.py` tombent juste sans
+une seule variable d'environnement** — `resolve_web_dir()` trouve `app/frontend/dist`,
+`resolve_modules_dir()` trouve `app/backend/modules`, `resolve_data_dir()` crée
+`app/backend/memory`. Poser cinq variables dans un lanceur serait cinq occasions d'en
+oublier une, et l'oubli se verrait tard.
+
+#### Trois décisions prises en écrivant le script
+
+**1. L'Atelier est désactivé, pas retiré.** Contrainte du §0 : `catalogue.py` importe sept
+symboles de `module_workshop.py`, qui importe `module_validate.py` au niveau module.
+Supprimer ces fichiers casserait l'écran Réglages du destinataire, pas l'Atelier. Ce qu'on
+retire, ce sont les routes et l'écran, par deux interrupteurs :
+
+- `EPURE_ATELIER=0` (backend) → 404 sur `/workshop*`, `/settings/test/*`,
+  `/settings/gateway/*`, et fermeture de `/ws/workshop` avant `accept()`. Le 404 est posé
+  **avant** le contrôle de token, sinon un 401 révélerait que la route existe.
+- `VITE_ATELIER=0` (frontend) → l'Atelier sort du **bundle**, pas seulement de l'écran.
+  Mesuré et corrigé en route : avec le drapeau écrit `VITE_ATELIER?.trim() !== '0'`,
+  rolldown ne plie plus la constante, la branche morte reste atteignable et un
+  `Workshop-*.js` de **26,1 ko contenant le code de l'Atelier** partait quand même, non
+  référencé par l'index mais bien sur le disque. Orphelin n'est pas absent. Deux gardes :
+  la comparaison reste directe (`test_paquet.py`), et `vite.config.ts` détourne le
+  specifier vers un module vide quand le drapeau est à `0`.
+
+**2. `modules-catalogue/` ne part pas.** Installer un module depuis le catalogue écrit un
+`Component.tsx` dans les sources du frontend, ce qui suppose un build ; dans un paquet il
+n'y a ni `npm` ni sources. Le destinataire peut donc **activer et désactiver** ce qu'il a
+reçu (étape D), pas installer autre chose. Sans catalogue livré,
+`GET /settings/catalogue` renvoie une liste vide et le bouton n'apparaît pas —
+l'incapacité est honnête plutôt que cassée.
+
+**3. Le `generated/` du poste de build est mis de côté pendant le build.** `registry.ts`
+découvre les modules par `import.meta.glob('./generated/**/*.tsx')` : **tout** ce qui
+traîne dans cet arbre entre dans le bundle. Sans filtre, le paquet de quelqu'un
+contiendrait le code source des modules faits pour quelqu'un d'autre — ce que l'étape D
+interdit. Le vrai dossier est écarté par un `rename`, reconstruit avec les seuls modules
+choisis (depuis le catalogue, pas depuis l'arbre installé), et restauré dans un `finally`.
+Si une garde résiduelle traîne, le script **refuse** au lieu d'écraser : les composants
+installés d'Ilyann ne se rattrapent pas.
+
+#### Ce que les tests couvrent, et pourquoi eux
+
+`backend/test_paquet.py` (27 tests). Le sujet n'est pas « le script marche » mais **ce qui
+ne doit pas sortir du poste** : un paquet est une archive envoyée à quelqu'un, et s'il
+emporte `backend/.env` il emporte toutes les clés cloud, sans reprise possible. D'où deux
+niveaux : la règle d'exclusion interrogée comme fonction pure, **et** la copie réelle de
+`backend/` inspectée après coup — une règle correcte peut être contournée par un parcours
+qui ne la lui passe pas au bon chemin relatif.
+
+Trois défauts trouvés par ces tests avant tout usage :
+
+- `modules/history/` — le module core Historique — **disparaissait du paquet**, parce que
+  `history` est aussi le nom du dossier de données `backend/history/` et que l'exclusion
+  s'appliquait à n'importe quelle profondeur. Les exclusions de données sont désormais
+  ancrées à la racine de `backend/`. Le paquet se construisait sans erreur ; le
+  destinataire n'avait simplement pas d'historique.
+- `.env.example` était exclu par une assertion trop large. Il **doit** partir : il ne
+  contient que des clés vides et c'est ce qui explique comment renseigner les siennes. Un
+  test vérifie maintenant qu'aucune valeur n'y est renseignée.
+- un test de non-fuite qui ne peut pas échouer est plus dangereux que pas de test — il dit
+  « aucune clé ne part » alors qu'il n'y avait aucune clé. Le test vérifie donc d'abord que
+  `backend/.env` existe, et se déclare `skip` sinon (cas de la CI).
 
 ### Étape C — Installeur minimal pour le proche
 
