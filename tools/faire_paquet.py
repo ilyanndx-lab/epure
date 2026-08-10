@@ -85,6 +85,13 @@ VERSION_PYTHON = "3.12.10"
 URL_EMBEDDABLE = "https://www.python.org/ftp/python/{v}/python-{v}-embed-amd64.zip"
 URL_GET_PIP = "https://bootstrap.pypa.io/pip/get-pip.py"
 
+#: `pip freeze` du paquet du 2026-08-10 (§0.3 de `docs/distribution-empaquetee.md`) —
+#: fige l'arbre transitif, que `requirements.txt` seul laisse dériver (mesuré :
+#: `google-generativeai==0.8.6` rétrograde `protobuf` selon ce qui est publié sur
+#: PyPI au moment du build). Utilisé par défaut ; `--sans-contraintes` régénère ce
+#: fichier lui-même, `--contraintes` en pointe un autre.
+CONTRAINTES_DEFAUT = REPO / "tools" / "contraintes-paquet.txt"
+
 #: Exclu de l'installation : tire torch (~2 Go), téléchargé au premier usage du
 #: RAG. Cf. décision 3 du docstring.
 HORS_PAQUET_PIP = ("sentence-transformers",)
@@ -497,8 +504,12 @@ def main(argv=None) -> int:
     p.add_argument("--sortie", type=Path, default=REPO / "dist-paquets")
     p.add_argument("--embeddable", type=Path,
                    help="zip embeddable local (évite le téléchargement)")
-    p.add_argument("--contraintes", type=Path,
-                   help="fichier -c pour pip (reproductibilité — cf. étape B)")
+    p.add_argument("--contraintes", type=Path, default=CONTRAINTES_DEFAUT,
+                   help="fichier -c pour pip (reproductibilité — cf. étape B) ; "
+                        f"défaut {CONTRAINTES_DEFAUT.relative_to(REPO)}")
+    p.add_argument("--sans-contraintes", action="store_true",
+                   help="ignore le fichier de contraintes par défaut — pour en "
+                        "régénérer un nouveau après un changement de requirements.txt")
     p.add_argument("--horodatage", default="",
                    help="suffixe de l'archive ; défaut : aucun (nom stable)")
     p.add_argument("--sauter-python", action="store_true",
@@ -513,6 +524,9 @@ def main(argv=None) -> int:
         return 0
     if not args.destinataire:
         p.error("--destinataire est requis (sauf avec --lister-modules)")
+
+    if args.sans_contraintes:
+        args.contraintes = None
 
     demandes = [m.strip() for m in args.modules.split(",") if m.strip()]
     try:
