@@ -22,6 +22,34 @@ ferez générer par l'**Atelier**.
 
 ## Installation en un fichier (Windows)
 
+### 1. Git, puis un terminal neuf
+
+`install.ps1` vit **dans** le dépôt : il faut donc l'avoir cloné pour pouvoir le
+lancer, et aucun script ne peut automatiser une étape qu'il faudrait déjà avoir
+franchie pour s'exécuter.
+
+```powershell
+winget install Git.Git
+```
+
+**Fermez ensuite le terminal et rouvrez-en un autre** : le `PATH` n'est rafraîchi
+qu'au nouveau shell, et `git` reste introuvable dans celui qui vient de
+l'installer.
+
+```powershell
+git clone <URL du dépôt> epure
+cd epure
+```
+
+> 🚫 **Ne prenez pas le bouton « Download ZIP » de GitHub.** Un ZIP n'a pas de
+> dossier `.git`, donc pas de `git pull` : la section [Mettre à
+> jour](#mettre-à-jour) ne s'applique plus du tout. Il faudrait re-télécharger
+> l'archive entière à chaque version et la déballer par-dessus l'installation
+> existante, au risque d'écraser vos données, vos documents et vos modules.
+> Clonez.
+
+### 2. L'installeur
+
 Dans le dossier du projet, clic droit sur `install.ps1` → **Exécuter avec
 PowerShell**. Le script installe ce qui manque (Python 3.12, Node.js LTS,
 Ollama, le modèle de `backend/config.yaml`), pose les dépendances, crée
@@ -40,6 +68,12 @@ aucun fichier existant, et sert donc aussi de mise à jour. Journal dans
 > ⚠️ Ce script n'a **jamais tourné sur une machine vierge** à ce jour. Sur un
 > poste déjà équipé, chaque détection répond « déjà présent » et ne prouve rien
 > des chemins d'installation. Lancez `-DryRun` d'abord.
+
+**Clés API** : aucune n'est nécessaire — sans clé, Épure tourne sur Ollama local,
+et c'est le cas nominal. Pour un fournisseur cloud, mettez **vos** clés dans le
+`backend/.env` que l'installeur a copié depuis `.env.example` (cf. [Clés API
+cloud](#clés-api-cloud-optionnelles)) ; ne réutilisez jamais le `.env` de
+quelqu'un d'autre.
 
 Les sections ci-dessous décrivent l'installation manuelle, qui reste le repli.
 
