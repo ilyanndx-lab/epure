@@ -253,5 +253,65 @@ class SurfacePubliqueTest(_BaseWeb):
         )
 
 
+class AtelierDesactiveTest(unittest.TestCase):
+    """`EPURE_ATELIER=0` : l'Atelier n'existe pas dans un paquet distribué.
+
+    Le drapeau est lu au démarrage (comme `EPURE_ALLOWED_HOSTS`), donc on
+    bascule l'état de module et on le restaure — l'alternative serait de relire
+    l'environnement à chaque requête pour le confort d'un test.
+
+    Le point sensible est le **code de retour** : 404 et non 401. La garde est
+    posée AVANT le contrôle de token, sinon un 401 sur `/workshop/generate`
+    apprendrait au destinataire que la route existe et qu'il lui manque un
+    jeton — alors que dans son installation, elle n'existe pas.
+    """
+
+    def setUp(self):
+        self._original = main._ATELIER_ACTIF
+
+    def tearDown(self):
+        main._ATELIER_ACTIF = self._original
+
+    def test_actif_par_defaut(self):
+        """L'instance de développement d'Ilyann ne doit rien perdre."""
+        self.assertTrue(self._original, "l'Atelier est désactivé hors paquet")
+        for chemin in ("/workshop/engines", "/ws/workshop", "/settings/test/aider"):
+            with self.subTest(chemin=chemin):
+                self.assertFalse(main._atelier_refuse(chemin))
+
+    def test_desactive_refuse_toute_la_surface_atelier(self):
+        main._ATELIER_ACTIF = False
+        for chemin in ("/workshop", "/workshop/engines", "/workshop/modules",
+                       "/workshop/hello/validate", "/ws/workshop",
+                       "/settings/test/aider", "/settings/test/gateway",
+                       "/settings/gateway/start"):
+            with self.subTest(chemin=chemin):
+                self.assertTrue(main._atelier_refuse(chemin), f"{chemin} reste ouvert")
+
+    def test_desactive_ne_touche_pas_le_reste_des_reglages(self):
+        """`/settings/catalogue` et `/settings/modules/{id}` restent au destinataire.
+
+        C'est toute la raison pour laquelle l'Atelier est désactivé et non retiré :
+        ces routes passent par `core/catalogue.py`, qui importe `module_workshop`.
+        Un préfixe trop large ici casserait l'écran Réglages.
+        """
+        main._ATELIER_ACTIF = False
+        for chemin in ("/settings/api-keys", "/settings/catalogue",
+                       "/settings/modules/flashcards", "/settings/provider-models",
+                       "/modules", "/models", "/instance/config", "/ws/chat"):
+            with self.subTest(chemin=chemin):
+                self.assertFalse(main._atelier_refuse(chemin), f"{chemin} serait cassé")
+
+    def test_404_et_non_401_sur_l_app_reelle(self):
+        """Bout en bout, sans token : le 404 doit primer sur le 401."""
+        main._ATELIER_ACTIF = False
+        with TestClient(main.app, headers={"Host": "localhost"}) as client:
+            for chemin in ("/workshop/engines", "/workshop/modules"):
+                with self.subTest(chemin=chemin):
+                    self.assertEqual(client.get(chemin).status_code, 404)
+            # Le contraste : une route d'API existante répond bien 401 sans token.
+            self.assertEqual(client.get("/models").status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

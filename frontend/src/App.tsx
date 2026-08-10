@@ -7,6 +7,7 @@ import { useModules, orderedModules } from './modules'
 import { getModuleDef, type SharedModuleProps } from './modules/registry'
 import { usePersistentState } from './usePersistentState'
 import { API, apiFetch, ensureToken, setToken } from './api'
+import { ATELIER_PRESENT } from './atelier'
 
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
@@ -141,7 +142,11 @@ export default function App() {
   // orderedModules et non un `includes` sur modules_activés : une liste VIDE
   // signifie « tous les modules installés » (cf. sa docstring), pas « aucun ».
   const ordre = orderedModules(modules, config.modules_activés)
-  const visibleIds = new Set<string>(['settings', 'workshop', ...ordre.map(m => m.id)])
+  const visibleIds = new Set<string>([
+    'settings',
+    ...(ATELIER_PRESENT ? ['workshop'] : []),
+    ...ordre.map(m => m.id),
+  ])
 
   // Si le module courant devient inaccessible, bascule vers le premier visible.
   useEffect(() => {

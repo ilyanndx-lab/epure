@@ -10,6 +10,7 @@ import { useTheme } from '../../theme'
 import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon, fetchModules } from '../../modules'
 import { API, apiFetch } from '../../api'
+import { ATELIER_PRESENT } from '../../atelier'
 
 interface ModelOption { id: string; nom: string; disponible: boolean }
 
@@ -265,7 +266,7 @@ export default function Settings() {
       })
       .catch(() => {})
 
-    loadEngines()
+    if (ATELIER_PRESENT) loadEngines()
     loadQuotas()
     // Rattaché à l'effet de montage existant plutôt qu'à un useEffect dédié :
     // un effet de plus ajoutait un avertissement react-hooks au cliquet, pour
@@ -816,7 +817,8 @@ export default function Settings() {
         </p>
       </Card>
 
-      {/* ── Atelier (moteurs Claude Code) ── */}
+      {/* ── Atelier (moteurs Claude Code) — absent d'un paquet distribué ── */}
+      {ATELIER_PRESENT && (
       <Card className="max-w-lg space-y-4">
         <div className="flex items-center justify-between">
           <SectionTitle icon={<Hammer size={15} />}>Atelier — moteurs</SectionTitle>
@@ -958,6 +960,7 @@ export default function Settings() {
           </div>
         </div>
       </Card>
+      )}
 
       {/* ── Profile ── */}
       <Card className="max-w-lg space-y-5">

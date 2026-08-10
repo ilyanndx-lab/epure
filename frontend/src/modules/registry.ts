@@ -1,5 +1,7 @@
 import { lazy, type ComponentType } from 'react'
 
+import { ATELIER_PRESENT } from '../atelier'
+
 /**
  * Registre frontend des modules — remplace les unions `Module` codées en dur et
  * la cascade `activeModule === ...` d'App.tsx.
@@ -55,7 +57,12 @@ const CORE_DEFS: ModuleDef[] = [
   { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('./history/Component')) },
   { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('./settings/Component')) },
   // Atelier : outil transverse (pas un module backend), composant dans components/.
-  { id: 'workshop',   label: 'Atelier',     icon: 'Hammer',        core: true, component: lazyComponent(() => import('../components/Workshop')) },
+  // Absent d'un paquet distribué — et absent du BUNDLE, pas seulement caché :
+  // c'est le seul endroit qui importe Workshop.tsx, donc le drapeau à faux le
+  // rend inatteignable et rolldown l'élimine. Cf. src/atelier.ts.
+  ...(ATELIER_PRESENT
+    ? [{ id: 'workshop', label: 'Atelier', icon: 'Hammer', core: true, component: lazyComponent(() => import('../components/Workshop')) } as ModuleDef]
+    : []),
 ]
 
 // ── Modules ajoutés (composants générés) ─────────────────────────────────────

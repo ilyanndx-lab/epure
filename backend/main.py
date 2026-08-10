@@ -98,6 +98,47 @@ _WEB_EXEMPT_PATHS: set[str] = set()
 _WEB_ASSETS_PREFIX = "/_assets/"
 
 
+# ── L'Atelier n'est pas livré dans un paquet distribué ───────────────────────
+# Lu AU DÉMARRAGE, comme EPURE_ALLOWED_HOSTS et EPURE_CORS_ORIGINS juste en
+# dessous : c'est un réglage d'instance, pas une bascule par requête.
+#
+# « Désactivé » et non « retiré », et ce n'est pas de la paresse : `core/
+# catalogue.py` importe sept symboles de `core/module_workshop.py`, et c'est ce
+# qui fait marcher `POST /settings/catalogue/{id}/install` et
+# `DELETE /settings/modules/{id}` — les deux fonctions que le destinataire du
+# paquet garde. `module_workshop` importe lui-même `core.module_validate` au
+# niveau module. Retirer ces fichiers du paquet casserait donc l'écran Réglages,
+# pas l'Atelier. Ce qu'on retire, ce sont les ROUTES et l'écran ; le code qui
+# sert au catalogue reste.
+_ATELIER_ACTIF = os.environ.get("EPURE_ATELIER", "1").strip() != "0"
+
+#: Routes de l'Atelier, à refuser quand il est désactivé. `/settings/test/` et
+#: `/settings/gateway/` en font partie : ce sont les diagnostics de moteurs de
+#: l'écran Réglages › Atelier, inutiles sans lui et qui lancent des process.
+_ATELIER_PREFIXES = ("/workshop", "/ws/workshop", "/settings/test/", "/settings/gateway/")
+
+if not _ATELIER_ACTIF:
+    logger.info("Atelier DÉSACTIVÉ (EPURE_ATELIER=0) — routes %s refusées", _ATELIER_PREFIXES)
+
+
+def _atelier_refuse(chemin: str) -> bool:
+    """True si ``chemin`` appartient à l'Atelier et que l'Atelier est éteint.
+
+    404 et non 403 : dans un paquet distribué, l'Atelier n'existe pas, et le
+    destinataire n'a pas à apprendre qu'il aurait pu exister. C'est aussi ce que
+    verra un module généré qui tenterait ces routes.
+    """
+    if _ATELIER_ACTIF:
+        return False
+    for prefixe in _ATELIER_PREFIXES:
+        if prefixe.endswith("/"):
+            if chemin.startswith(prefixe):
+                return True
+        elif chemin == prefixe or chemin.startswith(prefixe + "/"):
+            return True
+    return False
+
+
 def _est_public(chemin: str, methode: str) -> bool:
     """Requête servie sans token d'API.
 
@@ -138,6 +179,10 @@ def _est_public(chemin: str, methode: str) -> bool:
 
 @app.middleware("http")
 async def _require_api_token(request: Request, call_next):
+    # AVANT le contrôle de token : une route absente de cette installation doit
+    # répondre 404 même sans token, sinon le 401 révèle qu'elle existe.
+    if _atelier_refuse(request.url.path):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     if _est_public(request.url.path, request.method):
         return await call_next(request)
     header = request.headers.get("authorization", "")
@@ -497,6 +542,12 @@ async def workshop_reject(module_id: str):
 @app.websocket("/ws/workshop")
 async def ws_workshop(websocket: WebSocket):
     """Stream de génération (ollama / claude headless) + pilotage mode terminal."""
+    # Le middleware HTTP ne voit pas les WebSocket (CLAUDE.md §3.6) : la garde de
+    # `_atelier_refuse` ne s'applique pas ici, il faut la reposer. Fermer AVANT
+    # `accept()`, comme le contrôle de token juste en dessous.
+    if _atelier_refuse("/ws/workshop"):
+        await websocket.close(code=1008)  # policy violation
+        return
     if not await ws_require_token(websocket):
         return
     await websocket.accept()
