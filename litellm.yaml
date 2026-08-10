@@ -1,7 +1,21 @@
-﻿model_list:
+# Exemple de passerelle LiteLLM pour le moteur d'Atelier `claude_gateway`.
+#
+# Épure ne lit JAMAIS ce fichier : c'est vous qui lancez LiteLLM avec, et qui
+# reportez ensuite l'URL, le nom du modèle et la clé dans
+# Réglages › Atelier › passerelle.
+#
+#   $env:LITELLM_MASTER_KEY = "<une clé que vous choisissez>"
+#   litellm --config litellm.yaml
+#
+# La clé n'est PAS écrite ici. Une valeur en dur dans un fichier versionné est
+# une clé publiée : `sk-epure-local` traînait dans ce fichier et dans tout
+# l'historique du dépôt. `os.environ/NOM` est la syntaxe LiteLLM pour lire une
+# variable d'environnement — si elle est absente, LiteLLM refuse de démarrer,
+# ce qui est le bon échec : bruyant, et avant tout trafic.
+model_list:
   - model_name: epure-gw
     litellm_params:
       model: ollama_chat/qwen2.5:7b
       api_base: http://localhost:11434
 general_settings:
-  master_key: sk-epure-local
+  master_key: os.environ/LITELLM_MASTER_KEY
