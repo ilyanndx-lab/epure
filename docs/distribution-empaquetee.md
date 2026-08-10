@@ -227,21 +227,20 @@ Couvert par `backend/test_web_statique.py` (10 tests), dont celui qui compte :
 `PasDeCatchAllTest` installe une route **après** le montage statique, comme le fait
 `_remount`, et échoue si le statique la masque.
 
-#### Deux constats à trancher, hors étape A
+#### Deux constats faits en vérifiant l'étape A
 
-- **Le token d'API apparaît en clair dans le journal uvicorn** :
-  `"WebSocket /ws/chat?token=YGdS…" [accepted]`. C'est contraire à l'IMPÉRATIF de
-  CLAUDE.md §6 (« le token ne sort jamais — ni des logs »). Préexistant : le token voyage en
-  query param parce qu'un `new WebSocket()` n'accepte pas d'en-tête, et le log d'accès
-  d'uvicorn imprime la query. Dans le paquet ce journal est un fichier sur le disque du
-  destinataire. Deux corrections possibles : un filtre de logging qui coupe la query des
-  chemins `/ws/`, ou passer le token en sous-protocole WebSocket.
-- **Une installation neuve ouvre sur Réglages, pas sur Chat.** Au premier rendu `modules`
-  est vide (`GET /modules` n'a pas répondu), donc `visibleIds` ne contient que
-  `settings` et `workshop`, `activeModule` valant `chat` n'y est pas, et `App.tsx:148`
-  bascule sur `settings` — sans jamais revenir quand les modules arrivent. Préexistant et
-  identique en développement, mais c'est le **premier écran** que verra le destinataire du
-  paquet. Frère du bug déjà corrigé où la barre ne montrait que Réglages.
+- **Le token d'API apparaissait en clair dans le journal uvicorn** —
+  `"WebSocket /ws/chat?token=YGdS…" [accepted]`, contre l'IMPÉRATIF de CLAUDE.md §6.
+  Préexistant, mais aggravé par l'empaquetage : jusqu'ici le journal restait sur le poste
+  de son propriétaire, qui connaît déjà son token ; dans un paquet c'est un fichier sur le
+  disque de quelqu'un d'autre, recopié dans un message quand quelque chose ne marche pas.
+  **Corrigé** avant l'étape B : `core/logs.py`, filtre de logging sur `uvicorn.access`,
+  `uvicorn.error` et la racine. Vérifié dans le vrai journal —
+  `"WebSocket /ws/chat?token=***masqué***" [accepted]`, et le token n'apparaît nulle part
+  ailleurs. Le passage du token en sous-protocole WebSocket reste la correction de fond,
+  et reste à faire un jour : elle ne protégerait pas les journaux déjà écrits.
+- **Une installation neuve ouvre sur Réglages, pas sur Chat.** Hors périmètre de ce
+  chantier — note ouverte dans `docs/note-premier-ecran.md`.
 
 ### Étape B — Constituer un paquet pour un destinataire donné
 
