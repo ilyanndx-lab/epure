@@ -24,6 +24,18 @@ le proche.
 > précompilés (`chromadb_rust_bindings`). Il ne reste que `grpcio`, qui a bien une wheel
 > `cp312-win_amd64`. Le cas `win_arm64` reste entier et non testé : ce qui précède a été
 > mesuré sur x64.
+>
+> **Mesuré depuis, seconde fois (2026-08-10, cf. §0.5) : le quart qui restait de ce mur
+> n'existe plus non plus, mais pas parce qu'une wheel `win_arm64` de `grpcio` a été
+> trouvée — parce que `grpcio` n'est plus installé du tout, sur aucune architecture.**
+> `google-generativeai` est retiré à l'installation (`HORS_PAQUET_PIP`), et `grpcio` /
+> `opentelemetry-exporter-otlp-proto-grpc` / `googleapis-common-protos` — que chromadb
+> déclare en dépendances directes et que retirer de `requirements.txt` ne suffit donc pas
+> à écarter — sont purgés du `site-packages` après coup. La question « existe-t-il une
+> wheel `grpcio` pour `win_arm64` » ne se pose donc plus. Ce qui reste non résolu pour
+> `win_arm64` : les AUTRES extensions natives du paquet (`chromadb_rust_bindings`,
+> `ctranslate2`, `onnxruntime`, `av`, `numpy`, `PIL`, `piper-tts`) — cf. §0.5 et le nouveau
+> §7 sur le profil ARM64.
 
 **Précisions fixées après relecture (à ne pas redemander) :**
 - **Python visé : 3.12**, aligné sur `docs/installeur.md` étape B et sur la CI.
@@ -41,7 +53,7 @@ le proche.
 |---|---|
 | §0 — les quatre vérifications | **faites**, résultats ci-dessous. Aucune n'invalide l'approche |
 | A — frontend construit servi par FastAPI | **faite** — `src/api.ts` corrigé, `main._register_web`, `core.paths.resolve_web_dir`, `test_web_statique.py` (10 tests). Vérifiée dans un vrai navigateur, profil neuf |
-| B — script de constitution du paquet | **faite** — `tools/faire_paquet.py`, hors de ce qui est livré ; `backend/test_paquet.py` (27 tests) tient les règles d'exclusion |
+| B — script de constitution du paquet | **faite** — `tools/faire_paquet.py`, hors de ce qui est livré ; `backend/test_paquet.py` (35 tests) tient les règles d'exclusion, dont la purge de `grpcio`/`opentelemetry-exporter-otlp-proto-grpc`/`googleapis-common-protos` (§0.5) |
 | C — installeur minimal | à faire |
 | D — Réglages du proche : catalogue restreint | à faire — déjà partiellement acquis, cf. fin du §0 |
 | E — documentation | à faire |
@@ -161,6 +173,62 @@ routes, pas le module.
 disque et non stocké. Le seul levier restant est `GET /settings/catalogue`, qui liste
 `modules-catalogue/` : la restriction se fait en ne mettant dans ce dossier que les
 modules choisis pour la personne.
+
+### 5. `google-generativeai` retiré, `grpcio`/`opentelemetry-exporter-otlp-proto-grpc`/`googleapis-common-protos` purgés — **159,4 Mo à télécharger**
+
+Mesuré le 2026-08-10, en fin de journée. `googleapiclient` (97,9 Mo, le plus gros poste
+du point 3 ci-dessus) n'arrivait que par `google-generativeai==0.8.6`, dont l'import
+affichait déjà « All support for the `google.generativeai` package has ended ». Rien
+d'autre dans `requirements.txt` n'en dépend : l'ajouter à `HORS_PAQUET_PIP` (comme
+`sentence-transformers`) fait disparaître tout son arbre transitif de la résolution —
+`grpcio-status`, `proto-plus`, `google-ai-generativelanguage`, `google-api-core`,
+`google-auth`, `google-api-python-client`. Vérifié dans le paquet construit : aucun de
+ces noms n'apparaît plus sous `site-packages/`.
+
+**`grpcio` et `opentelemetry-exporter-otlp-proto-grpc`, eux, restent installés même sans
+`google-generativeai`** — chromadb les déclare en dépendances directes et
+inconditionnelles (`Requires-Dist: grpcio>=1.58.0`,
+`opentelemetry-exporter-otlp-proto-grpc>=1.2.0`), donc `pip` les réinstalle pour le
+satisfaire, quoi qu'on retire de `requirements.txt`. Idem pour `googleapis-common-protos` :
+`opentelemetry-exporter-otlp-proto-common` (qui reste, chromadb en a besoin pour encoder
+traces/métriques) le déclare à son tour. Les trois sont donc **purgés du `site-packages`
+après installation** (`PURGE_DISTRIBUTIONS`, `tools/faire_paquet.py`) — par lecture du
+`RECORD` de leur `.dist-info`, pas par un simple nom de dossier : `grpcio` installe
+`grpc/` (pas `grpcio/`), et `opentelemetry-exporter-otlp-proto-grpc` /
+`googleapis-common-protos` installent chacun sous un espace de noms **partagé** avec
+d'autres distributions qui restent (`opentelemetry/exporter/otlp/proto/common/`,
+`google/protobuf/`) — un retrait par nom de dossier aurait emporté les deux à la fois.
+
+Un seul point d'import casse avec cette purge :
+`chromadb/telemetry/opentelemetry/__init__.py` importe `OTLPSpanExporter` de
+`opentelemetry.exporter.otlp.proto.grpc.trace_exporter` **au niveau module** — donc dès
+`import chromadb`, avant même de construire un client. Elle n'est pourtant jamais
+INSTANCIÉE en usage réel : `chroma_otel_granularity` vaut `"none"` par défaut, et
+`otel_init()` retourne avant de la construire. D'où `sitecustomize.py`, posé dans
+`Lib/site-packages/` (chargé automatiquement par `site` — la même bascule `import site`
+déjà nécessaire pour `pip`) : il pré-enregistre un module factice pour ce seul chemin
+d'import, avec une classe qui n'existe que pour être importée.
+
+**Vérifié pour de vrai**, sur le Python embeddable construit, pas seulement en lisant le
+code : `import chromadb`, `PersistentClient` et `EphemeralClient` — `add`/`query`/`count`
+fonctionnent tous les trois sans `grpcio` ni `opentelemetry-exporter-otlp-proto-grpc`
+installés. **Contrôle négatif** : retirer `sitecustomize.py` du même paquet fait
+effectivement casser `import chromadb` (`ModuleNotFoundError: No module named
+'opentelemetry.exporter.otlp.proto.grpc'`, dès `chromadb/__init__.py` ligne 11) — la
+preuve que le stub est réellement nécessaire, pas accessoire. `import google.generativeai`
+et `import grpc` échouent proprement (`ModuleNotFoundError`), comme voulu.
+
+| | zippé |
+|---|---|
+| point 3 (`google-generativeai` installé) | 186,6 Mo |
+| **ce point (`google-generativeai` exclu, `grpcio`+cluster purgés)** | **159,4 Mo** |
+
+Chiffres non directement comparables : le paquet de ce point inclut un module du
+catalogue (`flashcards`), celui du point 3 le cœur seul — l'écart de poids réel
+qu'attribuer à cette seule décision est plus proche de 27-30 Mo compressés. Reste que
+c'est net, et **conséquence pour l'étape ARM64 (§7, nouveau)** : le mur `grpcio` du
+2026-08-10 (aucune wheel `win_arm64`) ne se contourne plus, il s'évapore — `grpcio` n'est
+plus installé sur AUCUNE architecture.
 
 ---
 
@@ -437,7 +505,10 @@ Python embeddable : moins de risques d'imports cachés cassés silencieusement s
 stack avec extensions natives.
 
 **Build ARM64.** Reporté tant qu'aucun proche confirmé n'est sur cette architecture
-au-delà de sandr. À construire à la demande, sur une machine ARM empruntée.
+au-delà de sandr. À construire à la demande, sur une machine ARM empruntée. Ce qui
+bloquait CE build spécifiquement (`grpcio`, aucune wheel `win_arm64`) a disparu avec §0.5
+— `grpcio` n'est plus installé sur aucune architecture. Ce qui reste à vérifier sur du
+matériel ARM64 réel : les autres extensions natives du paquet. Cf. §7.
 
 **macOS et Linux pour les proches.** Non demandé à ce stade.
 
@@ -455,10 +526,123 @@ retirés d'ici. Ce qui reste :
 - **Le comportement de Smart App Control sur une machine vierge** — le blocage observé
   ici était transitoire (étape C), mais rien ne dit ce qu'il donne sur un poste qui n'a
   jamais vu ces binaires.
-- **`win_arm64`** — tout le §0 a été mesuré sur x64. `chroma-hnswlib` a disparu de
-  l'arbre, mais `grpcio` reste, et la question d'une machine ARM est intacte.
+- **`win_arm64`** — tout le §0 a été mesuré sur x64. `chroma-hnswlib` et `grpcio` ont
+  disparu de l'arbre installé (§0.2, §0.5) : les deux blocages *connus* pour cette
+  architecture n'ont donc plus lieu d'être. Mais rien de tout ça n'a encore tourné sur du
+  matériel ARM64 réel — cf. §7, qui documente ce point précisément et ce qui reste
+  à construire dessus.
 - **Le premier lancement du RAG chez le proche** — l'installation à la demande de torch
   (16 paquets, dont `torch 2.13.0` et `transformers 5.15.0`) n'a jamais été exécutée
   depuis un Python embeddable, seulement résolue en `--dry-run`.
 - Le temps qu'Ilyann devra consacrer à reconstituer un paquet par destinataire — workflow
   manuel acceptable pour deux ou trois proches, à revoir si ça grandit.
+
+---
+
+## §7 — Profil ARM64 : ce qui est résolu, ce qui reste à mesurer sur du matériel réel
+
+Écrit le 2026-08-10, après §0.5. Distingue ce qui a été réglé **par construction** (donc
+vrai sur toute architecture, x64 compris — ce n'est pas une garantie ARM64 spécifique) de
+ce qui n'a encore été mesuré **sur aucune machine ARM64 réelle**.
+
+### Résolu par construction (§0.5), pas par une vérification ARM64
+
+**Gemini est indisponible dans le paquet — pas parce qu'aucune wheel `grpcio` n'existe
+pour `win_arm64`, mais parce que `google-generativeai` (et tout ce qu'il tire :
+`grpcio`, `grpcio-status`, `opentelemetry-exporter-otlp-proto-grpc`,
+`googleapis-common-protos`, `google-ai-generativelanguage`, `google-api-core`,
+`google-auth`, `googleapiclient`) n'est plus installé du tout, sur AUCUNE architecture.**
+Le mur `win_arm64` du 2026-08-10 (§0, en tête de ce document) est devenu sans objet : il
+ne s'agit plus de trouver une wheel qui n'existe pas, il s'agit d'un fournisseur retiré du
+paquet par décision, avant même de se poser la question de l'architecture.
+
+Côté proche, ça se traduit par un message clair et non par un plantage : si l'interface
+propose encore un modèle `gemini:…` dans la liste (le catalogue de modèles n'a pas été
+filtré, cf. ce qui reste à faire ci-dessous) et que quelqu'un le sélectionne,
+`core/llm.py` intercepte l'absence du paquet **à l'usage réel**, pas seulement à
+l'import — la ligne `import google.generativeai as genai` est dans le corps de
+`_stream_gemini`/`_generate_gemini`, donc l'exception ne se lève qu'au premier tour de
+boucle du générateur, quand la requête est effectivement lancée. Message renvoyé au
+client : `"Package 'google-generativeai' non installé"` (stream) ou
+`"[Erreur: google-generativeai non installé]"` (non-stream) — dans les deux cas une
+phrase, jamais une trace Python. Vérifié pour de vrai (pas seulement en lisant le code) :
+`sys.modules['google.generativeai'] = None` pour simuler l'absence, puis consommation
+réelle du générateur — `RuntimeError` propre côté serveur, `str(exc)` propre côté SSE
+(`modules/chat/router.py` : `logger.exception(...)` en interne, `{"error": str(exc)}` au
+client). Aucun appel réseau n'est fait avant l'échec : l'`ImportError` précède la
+vérification de la clé API.
+
+**Tous les autres fournisseurs cloud (OpenAI, Groq, Cerebras, Mistral, NVIDIA,
+DeepSeek) restent intacts, sur ARM64 comme ailleurs.** Ils passent tous par
+`_OPENAI_COMPAT` (`core/llm.py:63-68`) : un seul client HTTP (le paquet `openai`, lui-même
+posé sur `httpx`), pointé vers l'URL de chacun. Aucun de ces deux paquets ne compile de
+code natif ni ne dépend d'une architecture — la même wheel `py3-none-any` sert x64 et
+ARM64. Rien à vérifier de spécifique à ARM64 ici : c'est HTTP, ça marche partout où
+Python tourne. Ollama (le fournisseur local par défaut) est dans le même cas côté client
+Python (`ollama` — HTTP pur vers un serveur local) ; le binaire serveur Ollama lui-même
+est hors du périmètre de ce document — il n'est pas dans `site-packages`, et son
+existence en build `win-arm64` est une question distincte, à vérifier séparément (`ollama
+--version` sur la machine cible, pas quelque chose que `faire_paquet.py` installe ou
+embarque).
+
+### Non résolu — à mesurer seulement sur du matériel ARM64 réel (§5, §6)
+
+Retirer `grpcio` fait tomber le seul blocage *identifié* du 2026-08-10, mais chromadb et
+le pipeline audio embarquent d'autres extensions natives dont la disponibilité en wheel
+`win_arm64` n'a **jamais été vérifiée**, dans un sens ou dans l'autre :
+
+| Paquet | Rôle | Risque ARM64 |
+|---|---|---|
+| `chromadb_rust_bindings` | index ANN de chromadb (a remplacé `chroma-hnswlib`, §0.2) | binding Rust précompilé — inconnu si publié pour `win_arm64` |
+| `ctranslate2` | moteur d'inférence de `faster-whisper` | historiquement le paquet le plus restrictif en architectures supportées de toute la chaîne |
+| `onnxruntime` | modèles ONNX (embeddings, etc.) | publie des wheels ARM64 sur d'autres OS ; non vérifié pour `win_arm64` précisément |
+| `av` (+ `av.libs`) | décodage audio pour `faster-whisper` | bundle des bibliothèques FFmpeg précompilées — même famille de risque que `ctranslate2` |
+| `numpy` (+ `numpy.libs`) | calcul numérique, dépendance de tout ce qui précède | wheels ARM64 existent largement ailleurs ; à confirmer pour `win_arm64` |
+| `Pillow` | images | même remarque que `numpy` |
+| `piper-tts` | synthèse vocale (`core/runtime.py` — `_LazyEngine piper`) | binding natif, non vérifié |
+
+**La seule façon de trancher est celle déjà actée au §5 : construire *sur* une machine
+ARM64.** Rien dans ce qui a été vérifié ce soir (§0.5, x64 exclusivement) ne permet de
+prédire si `pip install -r requirements-paquet.txt` réussit sur `win_arm64` pour ces sept
+paquets — certains n'ont peut-être aucune wheel publiée et forceraient une compilation
+(donc un besoin de toolchain C/Rust sur le poste de build, que le paquet embeddable ne
+prévoit pas) ou échoueraient purement. C'est exactement le travail de la tâche suivante :
+lancer `tools/faire_paquet.py` pour de vrai sur le poste de sandr (ou une machine ARM64
+empruntée), constater ce qui casse, et documenter le résultat ici — pas dans une nouvelle
+section, en complétant celle-ci.
+
+### Ce qui reste hors de cette vérification, à ne pas confondre avec un point réglé
+
+- Le catalogue de modèles affiché côté proche n'a pas été filtré pour retirer les entrées
+  `gemini:…` d'un paquet où le fournisseur est structurellement indisponible — l'écran
+  Réglages du destinataire (étape D, toujours à faire) reste le bon endroit pour ça.
+- `.env.example` continue de documenter `GEMINI_API_KEY` (il documente toutes les clés
+  cloud possibles, y compris celles qu'un paquet donné ne peut pas honorer) — cohérent
+  avec la décision existante de le laisser partir tel quel (§1, étape B).
+
+### Reporté : le build réel sur ARM64 (décision d'Ilyann, 2026-08-10)
+
+Tout ce qui précède a été vérifié sur x64 uniquement — aucune machine ARM64 n'était
+accessible pendant cette session. Ilyann le fera lui-même, quand il aura accès au poste
+de sandr ou à une machine ARM64 empruntée (§5). L'outillage est prêt côté script, un seul
+piège à éviter :
+
+```powershell
+# URL_EMBEDDABLE (tools/faire_paquet.py) est câblée en dur sur "embed-amd64" — sans
+# --embeddable, le script téléchargerait un runtime x64 et l'exécuterait (mal) sous
+# émulation. Télécharger la release ARM64 à la main, puis :
+python tools\faire_paquet.py --destinataire sandr --modules <à choisir> `
+  --embeddable chemin\vers\python-3.12.10-embed-arm64.zip
+```
+
+Pas de contraintes par défaut la première fois (`--sans-contraintes`) : `tools/contraintes-paquet.txt` fige un arbre résolu sur x64, qui n'a aucune raison de correspondre aux
+wheels disponibles pour `win_arm64` — l'imposer masquerait un échec de résolution
+derrière un message `pip` moins clair. Une fois un premier build ARM64 réussi, en
+générer un fichier de contraintes séparé si la reproductibilité devient nécessaire pour
+cette architecture aussi (le fichier actuel ne prétend documenter que x64).
+
+Ce qu'il faudra constater et noter ici, dans cette section, une fois cet accès obtenu :
+si chacun des sept paquets du tableau ci-dessus s'installe (wheel existante) ou échoue
+(compilation requise ou absente), et si les tests fonctionnels (import chromadb,
+`PersistentClient`, les imports du tableau §0.2) passent une fois le paquet assemblé —
+la même méthode que §0.5, sur la bonne architecture cette fois.
