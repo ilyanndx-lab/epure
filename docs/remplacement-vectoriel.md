@@ -233,6 +233,82 @@ Aucun changement de comportement à cette étape : les trois appelants continuen
 les mêmes formes de retour qu'aujourd'hui, seul le client change. Rien de tout ceci n'est
 codé — c'est l'interface à valider avant l'étape B.
 
+#### Trois points que l'interface ci-dessus laissait implicites
+
+Rien de ce qui suit n'est codé — ce sont des décisions à figer dans l'interface, pas des
+détails d'implémentation à reporter à l'étape B. Les trois affectent la signature ou le
+contrat des méthodes ci-dessus, pas seulement leur corps.
+
+**1. Verrouillage.** Un seul `sqlite3.Connection`, ouvert une fois par
+`VectorStore.__init__`, partagé par toutes les `Collection` (même fichier, une table
+chacune). Le module `sqlite3` de la bibliothèque standard n'autorise pas l'usage
+concurrent d'UNE connexion depuis plusieurs threads — `check_same_thread=False` lève
+seulement la vérification, ça ne rend rien thread-safe. Donc : **un seul
+`threading.RLock`, sur `VectorStore`, partagé par toutes les collections** — pas un
+verrou par collection, parce que la ressource réellement partagée est la connexion, pas
+une table individuelle. `RLock` et non `Lock` : `query()` doit pouvoir réutiliser en
+interne la même logique de filtrage que `get()` sans se bloquer elle-même. Le verrou
+couvre le corps entier de chaque méthode publique de `Collection` — `count`, `upsert`,
+`get`, `query`, `delete` — **lectures comprises**, pas seulement les écritures : sans ça,
+une lecture concurrente à une écriture pourrait voir le cache mémoire du point 2 à moitié
+reconstruit.
+
+Régression assumée, à écrire dans le docstring de `VectorStore` et pas seulement ici :
+chromadb permettait de facto des accès concurrents entre collections indépendantes
+(chacune avait son propre chemin dans le moteur). Ici, une écriture sur `doc_analysis`
+bloque une lecture sur `fiches` pendant sa durée. Sans conséquence mesurable à 170 chunks
+et un seul utilisateur (le verrou est tenu quelques microsecondes), mais c'est une vraie
+limite si le volume ou la concurrence grandissent un jour — à ne pas laisser se découvrir
+en silence.
+
+**2. Invalidation du cache mémoire — celui du nouveau store, pas le LRU existant de
+`core/rag.py`.** Deux caches distincts, à ne pas confondre :
+
+- Le LRU de `core/rag.py` (`self._query_lru`/`self._query_filtered_lru`,
+  `functools.lru_cache`) est **au-dessus** du store et déjà invalidé par l'appelant :
+  `index_file()` appelle `cache_clear()` après chaque `upsert`/`delete`. Ce chantier ne le
+  change pas.
+- Le cache mémoire **par collection**, à l'intérieur du nouveau `VectorStore` (vecteurs
+  numpy + ids + métadonnées, chargés depuis SQLite) — celui que le docstring de
+  `VectorStore` mentionne sans dire quand il est invalidé. C'est celui-ci qui manquait
+  une réponse.
+
+Réponse : toute `upsert()` ou `delete()` sur une `Collection` **invalide entièrement**
+son cache mémoire (mis à `None`), reconstruit paresseusement à la prochaine lecture
+(`count`/`get`/`query`). Pas de mise à jour incrémentale (retirer/ajouter des lignes dans
+le tableau numpy en place) : à 170 chunks au total, relire toute la table SQLite d'une
+collection après une écriture coûte de l'ordre du milliseconde — une mise à jour
+incrémentale économiserait un temps non mesurable au prix d'un bookkeeping id→index qui
+peut driver silencieusement avec le temps. L'invalidation se fait sous le même verrou que
+l'écriture qui la déclenche (point 1) : aucune fenêtre où un lecteur concurrent verrait un
+cache à moitié reconstruit.
+
+**3. `get()`/`delete()` sans filtre (ni `ids` ni `where`).** Vérifié empiriquement sur le
+vrai chromadb, pas supposé :
+
+```
+col.get()     → renvoie TOUT (ids=['1','2','3'] sur une collection à 3 items)
+col.delete()  → ValueError: At least one of ids, where, or where_document must be
+                provided in delete.
+```
+
+`collection.get()` sans filtre renvoyant tout est déjà exploité aujourd'hui —
+`core/rag.py::get_indexed_files` et `core/docanalysis.py::get_loaded_docs` appellent
+`get(include=["metadatas"])` sans `ids` ni `where`, précisément pour tout relire.
+`collection.delete()` sans filtre lève chez chromadb ; aucun appel existant dans les
+trois fichiers n'appelle `delete()` sans argument, donc rien à préserver côté
+comportement observé — mais un filet de sécurité à ne pas perdre en le réécrivant :
+un appel accidentel ne doit jamais vider une collection entière en silence.
+
+Le remplacement adopte exactement cette asymétrie, parce que c'est déjà le comportement
+en vigueur (l'engagement de l'étape A — « aucun changement de comportement » — s'applique
+aussi au cas qui n'est exercé par aucun appelant aujourd'hui, pas seulement à ceux qui le
+sont) :
+- `Collection.get(ids=None, where=None, ...)` : `ids is None and where is None` → renvoie
+  tout.
+- `Collection.delete(ids=None, where=None)` : `ids is None and where is None` → lève
+  `ValueError`, même message que chromadb.
+
 ### Étape B — Implémenter avec le backend retenu
 
 SQLite + numpy, selon l'interface validée à l'étape A (§0, §1). Un test de
