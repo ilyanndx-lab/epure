@@ -48,6 +48,35 @@ cassée.
 usage du RAG documentaire. `sentence-transformers` est donc exclu de
 l'installation, comme `kubernetes` l'est du résultat — 37,8 Mo importés seulement
 par le chemin de déploiement distribué de chromadb, jamais atteint en local.
+
+**4. `google-generativeai` et son arbre transitif ne partent pas** — ni `grpcio`
+ni `opentelemetry-exporter-otlp-proto-grpc`, qui restaient après le retrait de
+`google-generativeai` seul : `chromadb` les déclare comme dépendances directes
+et inconditionnelles (`Requires-Dist: grpcio>=1.58.0`,
+`opentelemetry-exporter-otlp-proto-grpc>=1.2.0`), donc les exclure de
+`requirements.txt` ne suffit pas — `pip` les réinstallerait pour satisfaire
+chromadb. Ils sont donc PURGÉS après installation (`PURGE_DISTRIBUTIONS`),
+comme `kubernetes`, mais par un mécanisme différent : ni l'un ni l'autre ne
+s'installe comme un simple dossier `site-packages/<nom>/` — `grpcio` installe
+`grpc/` (pas `grpcio/`), et `opentelemetry-exporter-otlp-proto-grpc` installe
+sous `opentelemetry/exporter/otlp/proto/grpc/`, un espace de noms partagé avec
+`opentelemetry-exporter-otlp-proto-common` (qui, lui, reste). La purge lit donc
+le `RECORD` du `.dist-info` de chaque distribution pour savoir précisément quels
+fichiers retirer, sans toucher aux dossiers voisins qui appartiennent à d'autres
+paquets.
+
+Reste un piège : `chromadb/telemetry/opentelemetry/__init__.py` importe
+`OTLPSpanExporter` de `opentelemetry.exporter.otlp.proto.grpc.trace_exporter`
+**au niveau module**, donc dès que `chromadb.segment.impl.manager.local` (le
+gestionnaire utilisé par tout client local, `PersistentClient` compris) charge
+— sans le paquet, cet import casse chromadb au démarrage. Il n'est pourtant
+jamais INSTANCIÉ en usage réel : `chroma_otel_granularity` vaut `none` par
+défaut et `otel_init()` retourne avant de construire quoi que ce soit. D'où
+`sitecustomize.py` (posé dans `Lib/site-packages/`, chargé automatiquement par
+`site` au démarrage de l'interpréteur — la même ligne `import site` déjà
+décommentée pour `pip`) : il pré-enregistre un module factice pour ce chemin
+d'import précis, avec une classe `OTLPSpanExporter` qui n'existe que pour être
+importée, jamais pour fonctionner.
 """
 
 from __future__ import annotations
@@ -92,14 +121,50 @@ URL_GET_PIP = "https://bootstrap.pypa.io/pip/get-pip.py"
 #: fichier lui-même, `--contraintes` en pointe un autre.
 CONTRAINTES_DEFAUT = REPO / "tools" / "contraintes-paquet.txt"
 
-#: Exclu de l'installation : tire torch (~2 Go), téléchargé au premier usage du
-#: RAG. Cf. décision 3 du docstring.
-HORS_PAQUET_PIP = ("sentence-transformers",)
+#: Exclus de l'installation : `sentence-transformers` tire torch (~2 Go),
+#: téléchargé au premier usage du RAG. `google-generativeai` tire à lui seul
+#: `googleapiclient` (97,9 Mo — le plus gros poste du paquet) et toute la
+#: chaîne `google-api-core`/`google-auth`/`google-ai-generativelanguage` :
+#: rien d'autre dans `requirements.txt` n'en dépend, donc l'exclure suffit à
+#: faire disparaître tout l'arbre transitif de résolution. Cf. décisions 3 et
+#: 4 du docstring. `grpcio` et `opentelemetry-exporter-otlp-proto-grpc`, eux,
+#: NE PEUVENT PAS être retirés ici : chromadb les déclare en dépendances
+#: directes, donc `pip` les réinstallerait quand même — cf. `PURGE_DISTRIBUTIONS`.
+HORS_PAQUET_PIP = ("sentence-transformers", "google-generativeai")
 
-#: Retiré du `site-packages` APRÈS installation. `pip` lui-même n'a rien à faire
-#: dans le paquet ; `kubernetes` est une dépendance déclarée de chromadb que
-#: seul son chemin distribué importe.
+#: Retiré du `site-packages` APRÈS installation, par simple nom de dossier
+#: sous `site-packages/`. `pip` lui-même n'a rien à faire dans le paquet ;
+#: `kubernetes` est une dépendance déclarée de chromadb que seul son chemin
+#: distribué importe. N'y mettre que des paquets qui s'installent bien comme
+#: UN dossier `site-packages/<nom>/` — sinon cf. `PURGE_DISTRIBUTIONS`.
 PURGE_SITE_PACKAGES = ("pip", "setuptools", "pkg_resources", "kubernetes")
+
+#: Retiré du `site-packages` APRÈS installation, par lecture du `RECORD` de
+#: leur `.dist-info` — nécessaire quand le nom de la distribution PyPI ne
+#: correspond à aucun dossier unique sous `site-packages/` : `grpcio`
+#: installe `grpc/` (pas `grpcio/`), et `opentelemetry-exporter-otlp-proto-grpc`
+#: installe sous `opentelemetry/exporter/otlp/proto/grpc/`, un espace de noms
+#: PARTAGÉ avec `opentelemetry-exporter-otlp-proto-common` (qui reste). Les
+#: deux sont des dépendances directes et inconditionnelles de chromadb
+#: (`Requires-Dist: grpcio>=1.58.0`, `...otlp-proto-grpc>=1.2.0`) : impossible
+#: de les retirer de `requirements.txt`, `pip` les réinstallerait pour
+#: satisfaire chromadb. Cf. décision 4 du docstring et `sitecustomize.py`
+#: (`SITECUSTOMIZE`) pour ce que leur absence casserait sans lui.
+#:
+#: `googleapis-common-protos` s'y ajoute pour une raison différente : retirer
+#: `google-generativeai` de l'installation (via `HORS_PAQUET_PIP`) ne le fait
+#: PAS disparaître, contrairement au reste de sa grappe — mesuré (§0 du
+#: 2026-08-10, deuxième vérification) : `opentelemetry-exporter-otlp-proto-common`
+#: le déclare comme dépendance, et lui reste installé (chromadb en a besoin
+#: pour l'encodage des traces/métriques, y compris hors `-grpc`). Aucun module
+#: installé (chromadb, opentelemetry-*) n'importe pourtant `google.api`,
+#: `google.rpc`, `google.type`, `google.longrunning` ou `google.cloud` — les
+#: sept espaces de noms qu'il pose sous `google/` — en dehors de son propre
+#: code : c'est mort dès que `opentelemetry-exporter-otlp-proto-grpc` (le seul
+#: consommateur réel de `google.rpc.status_pb2` pour les détails d'erreur
+#: gRPC) est lui-même stubé. Rien à stuber ici : sa disparition ne casse rien.
+PURGE_DISTRIBUTIONS = ("grpcio", "opentelemetry-exporter-otlp-proto-grpc",
+                       "googleapis-common-protos")
 
 #: Dossiers de DONNÉES, exclus **à la racine de `backend/` seulement**. Ce sont
 #: les données d'Ilyann : `memory/` contient son token d'API et son profil,
@@ -334,6 +399,7 @@ def preparer_python(destination: Path, embeddable: Path | None,
                         capturer=True)
 
     purges = purger_site_packages(destination, journal)
+    poser_sitecustomize(destination, journal)
     return {"version_python": VERSION_PYTHON, "purges": purges,
             "gel": sorted(gel.splitlines()) if gel else []}
 
@@ -357,6 +423,101 @@ def _exigences_sans_torch(cible: Path) -> Path:
     return cible
 
 
+def _normaliser_nom_distribution(nom: str) -> str:
+    """PEP 503, en gros : deux noms qui ne diffèrent que par `-`/`_`/`.` sont le même."""
+    return nom.lower().replace("_", "-").replace(".", "-")
+
+
+def _dist_info_pour(sp: Path, nom: str) -> Path | None:
+    """Le dossier `<nom>-<version>.dist-info` d'une distribution, par son METADATA.
+
+    Pas par le nom du dossier lui-même : la casse et les séparateurs varient
+    (`opentelemetry_exporter_otlp_proto_grpc-1.42.1.dist-info` pour
+    `opentelemetry-exporter-otlp-proto-grpc`), donc la seule source fiable est
+    le champ `Name:` que `pip` écrit dans `METADATA`.
+    """
+    cible = _normaliser_nom_distribution(nom)
+    for candidat in sp.glob("*.dist-info"):
+        meta = candidat / "METADATA"
+        if not meta.is_file():
+            continue
+        for ligne in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+            if ligne.startswith("Name:"):
+                if _normaliser_nom_distribution(ligne.split(":", 1)[1].strip()) == cible:
+                    return candidat
+                break
+    return None
+
+
+def _purger_distribution(sp: Path, nom: str, journal=print) -> float | None:
+    """Retire une distribution installée en lisant le `RECORD` de son `.dist-info`.
+
+    Nécessaire quand le nom PyPI ne correspond à aucun dossier unique sous
+    `site-packages/` (cf. `PURGE_DISTRIBUTIONS`) : `RECORD` liste le chemin
+    exact de chaque fichier posé par CETTE distribution, y compris quand
+    plusieurs distributions partagent un même espace de noms sur disque. Les
+    dossiers qui restent vides après coup sont retirés ; ceux qui contiennent
+    encore des fichiers d'une distribution voisine (`opentelemetry/exporter/
+    otlp/proto/` après le retrait de `.../grpc/`, toujours occupé par
+    `.../common/`) sont laissés intacts.
+
+    Renvoie ``None`` si la distribution n'était pas installée (pas 0.0, qui
+    signifierait « installée mais ne pesait rien ») — sinon l'appelant ne peut
+    pas distinguer les deux, et un binaire minuscule (ou un test synthétique)
+    disparaîtrait sans que `purger_site_packages` ne le note dans son bilan.
+    """
+    sp = sp.resolve()
+    dist_info = _dist_info_pour(sp, nom)
+    if dist_info is None:
+        return None  # pas installée (ex. --sauter-python, ou déjà purgée)
+
+    record = dist_info / "RECORD"
+    octets = 0.0
+    dossiers_touches: set[Path] = set()
+    if record.is_file():
+        import csv
+
+        # Lu intégralement avant toute suppression : RECORD se liste souvent
+        # lui-même parmi ses entrées, et Windows refuse de retirer un fichier
+        # dont le handle de lecture est encore ouvert.
+        with record.open(encoding="utf-8", newline="") as f:
+            lignes = list(csv.reader(f))
+        for ligne in lignes:
+            if not ligne or not ligne[0]:
+                continue
+            fichier = sp / ligne[0]
+            try:
+                fichier = fichier.resolve()
+                fichier.relative_to(sp)
+            except (OSError, ValueError):
+                continue  # hors de site-packages (script, etc.) — pas notre affaire
+            if fichier.is_file():
+                octets += fichier.stat().st_size
+                fichier.unlink()
+                dossiers_touches.add(fichier.parent)
+
+    shutil.rmtree(dist_info, ignore_errors=True)
+
+    # Nettoyage des dossiers devenus vides, du plus profond au plus proche de
+    # `sp` — jamais `sp` lui-même, et on s'arrête au premier dossier non vide
+    # (un espace de noms partagé avec une distribution qui reste).
+    for dossier in sorted(dossiers_touches, key=lambda p: len(p.parts), reverse=True):
+        courant = dossier
+        while courant != sp and courant.is_relative_to(sp):
+            try:
+                if any(courant.iterdir()):
+                    break
+                courant.rmdir()
+            except OSError:
+                break
+            courant = courant.parent
+
+    mo = round(octets / 1024 / 1024, 1)
+    if mo:
+        journal(f"  purge {nom} (RECORD) : {mo} Mo")
+    return mo
+
+
 def purger_site_packages(racine_python: Path, journal=print) -> dict[str, float]:
     """Retire de `site-packages` ce qui n'a pas à être livré. Renvoie les Mo gagnés."""
     sp = racine_python / "Lib" / "site-packages"
@@ -369,9 +530,62 @@ def purger_site_packages(racine_python: Path, journal=print) -> dict[str, float]
         shutil.rmtree(cible, ignore_errors=True)
         gagne[nom] = round(octets / 1024 / 1024, 1)
         journal(f"  purge {nom}/ : {gagne[nom]} Mo")
+    for nom in PURGE_DISTRIBUTIONS:
+        mo = _purger_distribution(sp, nom, journal)
+        if mo is not None:
+            gagne[nom] = mo
     for cache in list(racine_python.rglob("__pycache__")):
         shutil.rmtree(cache, ignore_errors=True)
     return gagne
+
+
+#: Contenu de `Lib/site-packages/sitecustomize.py` — cf. décision 4 du
+#: docstring du module. `site` l'importe automatiquement à l'amorçage de
+#: l'interpréteur (la même bascule `import site` déjà nécessaire pour `pip`),
+#: donc AVANT que quoi que ce soit d'Épure ou de chromadb n'importe quoi.
+SITECUSTOMIZE = '''"""Posé par tools/faire_paquet.py — ne fait rien sans ce paquet-là.
+
+`chromadb.telemetry.opentelemetry` importe `OTLPSpanExporter` de
+`opentelemetry.exporter.otlp.proto.grpc.trace_exporter` AU NIVEAU MODULE,
+inconditionnellement : dès que `chromadb.segment.impl.manager.local` charge —
+donc pour tout client chromadb local, `PersistentClient` compris — cet import
+s'exécute. Ce paquet n'embarque ni `grpcio` ni
+`opentelemetry-exporter-otlp-proto-grpc` (cf. tools/faire_paquet.py,
+PURGE_DISTRIBUTIONS) : sans ce stub, chromadb casserait au premier import.
+
+La classe n'est pourtant jamais INSTANCIÉE en usage réel : chromadb ne la
+construit que si `chroma_otel_granularity` diffère de "none", et c'est sa
+valeur par défaut. Ce stub existe donc pour être IMPORTÉ, jamais pour
+fonctionner — s'il est un jour réellement appelé, mieux vaut un message clair
+qu'un TypeError sur des arguments grpc absents.
+"""
+import sys as _sys
+import types as _types
+
+_NOM = "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
+if _NOM not in _sys.modules:
+    _stub = _types.ModuleType(_NOM)
+
+    class OTLPSpanExporter:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "OTLPSpanExporter indisponible : ce paquet Épure n'embarque pas "
+                "opentelemetry-exporter-otlp-proto-grpc (cf. tools/faire_paquet.py). "
+                "Le réglage chroma_otel_granularity doit rester 'none'."
+            )
+
+    _stub.OTLPSpanExporter = OTLPSpanExporter
+    _sys.modules[_NOM] = _stub
+'''
+
+
+def poser_sitecustomize(racine_python: Path, journal=print) -> Path:
+    """Écrit `sitecustomize.py` dans `Lib/site-packages/`. Cf. `SITECUSTOMIZE`."""
+    cible = racine_python / "Lib" / "site-packages" / "sitecustomize.py"
+    cible.parent.mkdir(parents=True, exist_ok=True)
+    cible.write_text(SITECUSTOMIZE, encoding="utf-8")
+    journal(f"  {cible.relative_to(racine_python)} posé")
+    return cible
 
 
 def _executer(cmd: list[str], quoi: str, journal=print, capturer: bool = False) -> str:

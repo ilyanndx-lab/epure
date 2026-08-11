@@ -325,6 +325,159 @@ class ExigencesTest(unittest.TestCase):
         self.assertIn("kubernetes", paquet.PURGE_SITE_PACKAGES)
         self.assertNotIn("kubernetes", paquet.HORS_PAQUET_PIP)
 
+    def test_google_generativeai_est_retire_de_l_installation(self):
+        """Décision 4 : contrairement à `kubernetes`, il PEUT être retiré à
+        l'install — rien d'autre dans requirements.txt ne dépend de lui, donc
+        toute sa chaîne transitive (googleapiclient, google-api-core,
+        google-auth, google-ai-generativelanguage…) disparaît avec lui.
+        """
+        self.assertIn("google-generativeai", paquet.HORS_PAQUET_PIP)
+
+    def test_grpcio_et_otel_grpc_sont_des_dependances_directes_de_chromadb_donc_purgees_apres(self):
+        """Contrairement à `google-generativeai`, ceux-là ne peuvent pas être
+        retirés de `requirements.txt` : chromadb les déclare lui-même
+        (`Requires-Dist: grpcio>=1.58.0`, `...otlp-proto-grpc>=1.2.0`), donc
+        `pip` les réinstallerait quand même. D'où `PURGE_DISTRIBUTIONS`, pas
+        `HORS_PAQUET_PIP`.
+        """
+        for nom in ("grpcio", "opentelemetry-exporter-otlp-proto-grpc",
+                    "googleapis-common-protos"):
+            with self.subTest(nom=nom):
+                self.assertIn(nom, paquet.PURGE_DISTRIBUTIONS)
+                self.assertNotIn(nom, paquet.HORS_PAQUET_PIP)
+
+
+class PurgeDistributionsTest(unittest.TestCase):
+    """`_purger_distribution` sur un `site-packages` synthétique.
+
+    Ni `grpcio` ni `opentelemetry-exporter-otlp-proto-grpc` ne s'installent
+    comme un simple dossier `site-packages/<nom>/` (cf. `PURGE_DISTRIBUTIONS`) :
+    `grpcio` pose `grpc/`, et l'exporter OTLP pose
+    `opentelemetry/exporter/otlp/proto/grpc/`, un espace de noms PARTAGÉ avec
+    `opentelemetry-exporter-otlp-proto-common`. Le risque n'est pas de ne rien
+    retirer — c'est de retirer trop, et d'emporter `common/` avec `grpc/`.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="epure-test-purge-")
+        self.sp = Path(self._tmp.name) / "site-packages"
+        self.sp.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _poser_distribution(self, nom_dist, nom_dossier_info, fichiers):
+        """Pose une fausse distribution : ses fichiers + son `.dist-info` avec RECORD."""
+        for relatif, contenu in fichiers.items():
+            chemin = self.sp / relatif
+            chemin.parent.mkdir(parents=True, exist_ok=True)
+            chemin.write_text(contenu, encoding="utf-8")
+        info = self.sp / f"{nom_dossier_info}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {nom_dist}\nVersion: 0\n",
+                                       encoding="utf-8")
+        lignes = [f"{r},," for r in fichiers] + [
+            f"{nom_dossier_info}.dist-info/METADATA,,",
+            f"{nom_dossier_info}.dist-info/RECORD,,",
+        ]
+        (info / "RECORD").write_text("\n".join(lignes) + "\n", encoding="utf-8")
+        return info
+
+    def test_grpcio_retire_grpc_pas_grpcio(self):
+        """Le dossier posé par `grpcio` s'appelle `grpc/`, jamais `grpcio/`."""
+        self._poser_distribution("grpcio", "grpcio-1.80.0", {
+            "grpc/__init__.py": "# grpc",
+            "grpc/_cython/cygrpc.pyd": "binaire",
+        })
+        mo = paquet._purger_distribution(self.sp, "grpcio", journal=lambda *_: None)
+        self.assertIsNotNone(mo, "None signifierait « pas installée » — elle l'était")
+        self.assertFalse((self.sp / "grpc").exists())
+        self.assertEqual(list(self.sp.glob("grpcio-*.dist-info")), [])
+
+    def test_otel_grpc_retire_sans_emporter_le_namespace_partage(self):
+        """`common/` (une autre distribution, dans le même dossier `proto/`) doit survivre."""
+        self._poser_distribution("opentelemetry-exporter-otlp-proto-common",
+                                 "opentelemetry_exporter_otlp_proto_common-1.42.1", {
+            "opentelemetry/exporter/otlp/proto/common/__init__.py": "# common",
+        })
+        self._poser_distribution("opentelemetry-exporter-otlp-proto-grpc",
+                                 "opentelemetry_exporter_otlp_proto_grpc-1.42.1", {
+            "opentelemetry/exporter/otlp/proto/grpc/__init__.py": "# grpc",
+            "opentelemetry/exporter/otlp/proto/grpc/trace_exporter/__init__.py":
+                "class OTLPSpanExporter: ...",
+        })
+
+        paquet._purger_distribution(self.sp, "opentelemetry-exporter-otlp-proto-grpc",
+                                    journal=lambda *_: None)
+
+        self.assertFalse(
+            (self.sp / "opentelemetry" / "exporter" / "otlp" / "proto" / "grpc").exists())
+        commun = self.sp / "opentelemetry" / "exporter" / "otlp" / "proto" / "common"
+        self.assertTrue(commun.is_dir(), "la distribution voisine ne doit pas disparaître")
+        self.assertTrue((commun / "__init__.py").is_file())
+
+    def test_une_distribution_absente_ne_leve_pas(self):
+        """`--sauter-python`, ou une distribution déjà purgée : silence, pas d'erreur."""
+        self.assertIsNone(paquet._purger_distribution(self.sp, "grpcio", journal=lambda *_: None))
+
+    def test_purger_site_packages_couvre_les_deux_mecanismes(self):
+        """Bout en bout : `PURGE_SITE_PACKAGES` (dossier direct) ET
+        `PURGE_DISTRIBUTIONS` (RECORD) sont appliqués par le même appel."""
+        racine = Path(self._tmp.name)
+        sp = racine / "Lib" / "site-packages"
+        (sp / "pip").mkdir(parents=True)
+        (sp / "pip" / "__init__.py").write_text("# pip", encoding="utf-8")
+        self.sp = sp
+        self._poser_distribution("grpcio", "grpcio-1.80.0", {"grpc/__init__.py": "# grpc"})
+
+        gagne = paquet.purger_site_packages(racine, journal=lambda *_: None)
+
+        self.assertFalse((sp / "pip").exists())
+        self.assertFalse((sp / "grpc").exists())
+        self.assertIn("pip", gagne)
+        self.assertIn("grpcio", gagne)
+
+
+class SitecustomizeTest(unittest.TestCase):
+    """`sitecustomize.py` doit exister ET faire exactement ce pour quoi il est posé.
+
+    Le stub existe pour être IMPORTÉ (chromadb en a besoin au chargement),
+    jamais pour fonctionner (chroma_otel_granularity="none" par défaut fait
+    que la classe n'est jamais construite en usage réel) — donc le test qui
+    compte est que l'import réussit et que la classe existe, pas qu'elle
+    marche.
+    """
+
+    def test_pose_un_fichier_qui_stub_exactement_le_bon_chemin_d_import(self):
+        with tempfile.TemporaryDirectory(prefix="epure-test-sitecustomize-") as tmp:
+            racine = Path(tmp)
+            chemin = paquet.poser_sitecustomize(racine, journal=lambda *_: None)
+            self.assertTrue(chemin.is_file())
+            self.assertEqual(chemin, racine / "Lib" / "site-packages" / "sitecustomize.py")
+
+    def test_le_stub_rend_l_import_de_chromadb_possible_sans_grpc(self):
+        """Le test qui compte vraiment : reproduit ce que fait `chromadb.telemetry.opentelemetry`.
+
+        Le poste de dev peut avoir le vrai paquet installé (il l'a, tant que
+        `google-generativeai` n'est pas retiré de `requirements.txt`) — donc on
+        retire d'abord tout module déjà en cache pour ce nom, sinon le test
+        vérifierait la vraie classe et non le stub.
+        """
+        import sys
+        nom = "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
+        original = sys.modules.pop(nom, None)
+        try:
+            namespace: dict = {}
+            exec(compile(paquet.SITECUSTOMIZE, "sitecustomize.py", "exec"), namespace)
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            self.assertTrue(callable(OTLPSpanExporter))
+            with self.assertRaises(RuntimeError):
+                OTLPSpanExporter()
+        finally:
+            sys.modules.pop(nom, None)
+            if original is not None:
+                sys.modules[nom] = original
+
 
 class DrapeauxDeBuildTest(unittest.TestCase):
     """Invariants de forme côté frontend — la suite Python ne lance pas npm.
