@@ -48,6 +48,16 @@ cassée.
 usage du RAG documentaire. `sentence-transformers` est donc exclu de
 l'installation.
 
+⚠️ **Sur Windows ARM64, ce téléchargement doit viser l'index PyTorch et non
+PyPI** : `pip install torch --index-url https://download.pytorch.org/whl/cpu`,
+AVANT `sentence-transformers` (sinon torch se résout depuis PyPI). PyPI ne
+publie que des wheels `win_amd64` pour torch ; l'index PyTorch publie bien
+`torch-2.13.0+cpu-cp312-cp312-win_arm64.whl` — donc cp312, la version embarquée
+ici. Vérifié le 2026-08-13, cf. `backend/requirements.txt`, qui porte la
+consigne là où le destinataire la lira (ce fichier-ci ne part pas dans le
+paquet). Tout le reste de la grappe du premier usage a déjà ce qu'il faut pour
+ARM64 : torch était le seul manquant.
+
 **4. `google-generativeai` et son arbre transitif ne partent pas** — il tire à
 lui seul `googleapiclient` (97,9 Mo) et toute la chaîne
 `google-api-core`/`google-auth`/`google-ai-generativelanguage`. Rien d'autre
@@ -181,6 +191,15 @@ EXCLUS_MOTIFS = ("*.pyc", "*.pyo", "*.log", ".aider.*", "*.onnx", "*.onnx.json")
 #: Code de test et outillage de développement : sans intérêt pour le
 #: destinataire, et `_test_env.py` détourne des chemins.
 EXCLUS_PREFIXES_FICHIERS = ("test_", "integration_", "_test_env")
+
+#: Outils de maintenance à la racine de `backend/`, pour le poste d'Ilyann
+#: uniquement. Ils ne sont ni des tests (les préfixes ci-dessus ne les attrapent
+#: pas) ni du code applicatif : ce sont les scripts uniques du remplacement de
+#: chromadb (`docs/remplacement-vectoriel.md`, étape C). Les livrer serait doublement
+#: faux — ils exigent `chromadb`, qui n'est plus installé nulle part, et ils
+#: parlent d'un ancien index que le destinataire n'a jamais eu. Constatés partis
+#: dans le paquet du 2026-08-13 avant d'être exclus ici.
+EXCLUS_MAINTENANCE = frozenset({"migrer_vectoriel.py", "parite_vectorielle.py"})
 
 #: Fichiers de `core/` que seul l'Atelier utilise et qu'aucun autre module
 #: n'importe. Vérifié : `smoke_runner.py` est lancé en sous-process par
@@ -448,6 +467,8 @@ def doit_exclure(relatif: Path) -> bool:
     if any(p in EXCLUS_PARTOUT for p in parties):
         return True
     if nom in EXCLUS_FICHIERS:
+        return True
+    if len(parties) == 1 and nom in EXCLUS_MAINTENANCE:
         return True
     if any(nom.startswith(p) for p in EXCLUS_PREFIXES_FICHIERS):
         return True

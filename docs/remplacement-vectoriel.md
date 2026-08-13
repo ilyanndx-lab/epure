@@ -610,19 +610,59 @@ derrière le mur, masqués par lui :
   et tombera sur la sdist, qui devrait s'installer sans rien compiler. À confirmer
   empiriquement, pas à déclarer acquis.
 
-À cela s'ajoute, hors paquet : **`torch` ne publie aucune wheel `win_arm64`** (vérifié
-sur la version courante). Il n'est pas embarqué — il s'installe au premier usage du
-RAG (décision 3 de `faire_paquet.py`) — donc il ne bloque pas la CONSTRUCTION, mais il
-bloquerait la recherche documentaire à l'usage. `sentence-transformers` lui-même est
-universel ; c'est torch, dessous, qui ne l'est pas.
+**Correction du 2026-08-13, même jour — cette section a d'abord affirmé le contraire.**
+Il y était écrit que « `torch` ne publie aucune wheel `win_arm64` », et donc que la
+recherche documentaire serait bloquée à l'usage sur ARM64. **C'est faux, et l'erreur
+tient à la source interrogée** : PyPI ne publie effectivement que des wheels
+`win_amd64` pour torch, mais torch n'a jamais distribué ses variantes par PyPI seul.
+Son index — `https://download.pytorch.org/whl/cpu` — publie bien
+`torch-2.13.0+cpu-cp312-cp312-win_arm64.whl`, ainsi que les mêmes pour 2.7 → 2.13 en
+cp311/312/313 : 21 wheels `win_arm64` sur les 1137 listées. Conclure « absent de PyPI »
+donc « inexistant » était un raccourci — exactement le genre de vérification à moitié
+faite que le §0 de ce document a été écrit pour éviter.
 
-**Conséquence pratique, et c'est la seule qui compte : l'essai ARM64 ne doit pas être
-tenté « en s'attendant à ce que ça passe ».** Il échouera, sur `ctranslate2` d'abord.
-Le prochain chantier n'est pas vectoriel, il est vocal — et il pose la même question
-qu'au §0 pour chromadb : `faster-whisper`/`piper-tts` sont-ils proportionnés à ce
-qu'on leur demande, ou peut-on transcrire et synthétiser autrement ? La différence
-avec la soirée d'origine, c'est qu'on le sait avant de construire, pas en marchant
-dessus.
+Aucune version de torch n'est d'ailleurs **épinglée** nulle part : il n'apparaît ni
+dans `backend/requirements.txt` (il arrive en transitif par `sentence-transformers`)
+ni dans `tools/contraintes-paquet.txt` (dont il est absent puisque
+`sentence-transformers` est exclu de l'installation du paquet). La version concernée
+est celle que `pip` résout au premier usage — `torch 2.13.0` aujourd'hui, qui a sa
+wheel ARM64 en cp312, le Python embarqué.
+
+Conséquence appliquée : **sur ARM64, le téléchargement à la demande vise l'index
+PyTorch et non l'index par défaut**, et AVANT `sentence-transformers`, sans quoi torch
+se résout depuis PyPI où il n'y a rien pour cette architecture :
+
+```
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+```
+
+La consigne est portée par `backend/requirements.txt`, et pas seulement par
+`tools/faire_paquet.py` : `tools/` ne part jamais dans le paquet, alors que
+`requirements.txt` y est livré (vérifié dans l'archive) — c'est le seul endroit où le
+destinataire la lira. Verrouillé par `test_paquet.py`.
+
+**Et le reste de la grappe du premier usage a été vérifié dans la foulée**, pour ne pas
+refaire la même moitié de travail : `transformers`, `sympy`, `networkx`, `joblib`,
+`Jinja2`, `huggingface-hub`, `sentence-transformers` sont universels ;
+`scikit-learn`, `scipy`, `safetensors`, `regex`, `tokenizers`, `pillow` publient des
+wheels `win_arm64`. **torch était le seul manquant.** Le RAG — l'objet même de ce
+chantier — est donc entièrement viable sur Windows ARM64.
+
+**Conséquence pratique : l'essai ARM64 ne doit pas être tenté « en s'attendant à ce
+que ça passe ».** Il échouera, sur `ctranslate2` d'abord — mais le périmètre de l'échec
+est désormais cerné, et il est plus étroit qu'annoncé :
+
+- **le stockage vectoriel est réglé** (c'était l'objet du chantier) ;
+- **le RAG à l'usage est réglé aussi**, torch compris, via l'index PyTorch ;
+- **seule la voix bloque** : `ctranslate2` (transcription) et `piper-tts` (synthèse).
+
+Le prochain chantier n'est donc pas vectoriel, il est vocal — et il pose la même
+question qu'au §0 pour chromadb : `faster-whisper`/`piper-tts` sont-ils proportionnés à
+ce qu'on leur demande, ou peut-on transcrire et synthétiser autrement ? À noter que la
+piste de l'index alternatif, qui a sauvé torch, n'existe pas pour `ctranslate2` : il ne
+publie **aucune sdist**, nulle part. La différence avec la soirée d'origine, c'est
+qu'on le sait avant de construire, pas en marchant dessus.
 
 #### Ce qui reste ouvert dans l'étape E
 
@@ -662,10 +702,11 @@ x64 reconstruit à 132,2 Mo. Ce qui reste ouvert :
 - **La construction ARM64 (étape E), et elle échouera** : `ctranslate2` (via
   `faster-whisper`) n'a ni wheel `win_arm64` ni sdist, donc `pip` ne peut pas
   l'installer, même avec un toolchain. `piper-tts` demanderait une compilation C++.
-  `watchdog` devrait passer par sa sdist en Python pur, à confirmer. Et `torch`, hors
-  paquet mais nécessaire au premier usage du RAG, n'a pas non plus de wheel
-  `win_arm64`. **Le mur suivant est la pile vocale, pas le stockage vectoriel** —
-  mesuré paquet par paquet, pas découvert en construisant.
+  `watchdog` devrait passer par sa sdist en Python pur, à confirmer. **Le mur suivant
+  est la pile vocale, et elle seule** — mesuré paquet par paquet, pas découvert en
+  construisant. `torch` a d'abord été compté dans ce lot par erreur : il n'a pas de
+  wheel `win_arm64` sur PyPI mais en a une sur l'index PyTorch, et le RAG est viable
+  sur ARM64 (cf. étape E).
 - **`integration_vector_store.py` n'est pas câblé dans la CI**, et ne peut plus l'être
   tel quel : il compare au vrai `chromadb`, qui n'est plus une dépendance du projet.
   Soit il devient un test manuel assumé (avec `pip install chromadb`), soit il perd son

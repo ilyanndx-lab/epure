@@ -31,6 +31,30 @@ pyyaml==6.0.3
 # autre paquet installé ne les réclame. `onnxruntime` en revanche RESTE —
 # `faster-whisper` et `piper-tts` en dépendent aussi, il n'était pas à chromadb.
 sentence-transformers==5.5.1
+# ⚠️ SUR WINDOWS ARM64 : installer `torch` AVANT cette ligne, et depuis l'index
+# PyTorch, pas depuis PyPI :
+#
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#     pip install -r requirements.txt
+#
+# `torch` n'est pas listé ici (il arrive en transitif par sentence-transformers)
+# et n'est pas embarqué dans le paquet distribué — il se télécharge au premier
+# usage du RAG (tools/faire_paquet.py, décision 3). Or **PyPI ne publie aucune
+# wheel `win_arm64` pour torch** : ses wheels Windows y sont `win_amd64`
+# uniquement. L'index de PyTorch, lui, en publie — vérifié le 2026-08-13 :
+# `torch-2.13.0+cpu-cp312-cp312-win_arm64.whl` (et les mêmes pour 2.7 → 2.13,
+# cp311/312/313). Sans ce détour, `pip install -r requirements.txt` échoue sur
+# ARM64 en résolvant torch, alors que la wheel existe.
+#
+# L'ORDRE compte : installer sentence-transformers d'abord ferait résoudre torch
+# depuis PyPI, où il n'y a rien pour cette architecture. Torch d'abord, depuis le
+# bon index, et la ligne ci-dessus le trouve déjà satisfait.
+#
+# Sur x64 il n'y a rien à faire : PyPI suffit. Vérifié aussi que tout le RESTE de
+# ce que le RAG télécharge au premier usage est bon pour ARM64 — transformers,
+# sympy, networkx, joblib, Jinja2, huggingface-hub (universels), scikit-learn,
+# scipy, safetensors, regex, tokenizers, pillow (wheels win_arm64 publiées).
+# torch était le seul manquant.
 # Requis par core/vector_store.py (docs/remplacement-vectoriel.md). Arrivait jusqu'ici en
 # transitif (pandas) : à déclarer puisqu'on en dépend directement — même raison
 # que python-multipart/httpx ci-dessus.

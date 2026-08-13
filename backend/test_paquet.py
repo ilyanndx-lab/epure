@@ -345,6 +345,35 @@ class ExigencesTest(unittest.TestCase):
         self.assertFalse(hasattr(paquet, "SITECUSTOMIZE"))
         self.assertFalse(hasattr(paquet, "poser_sitecustomize"))
 
+    def test_les_scripts_de_migration_ne_partent_pas(self):
+        """Ils exigent `chromadb`, qui n'est plus installé, et parlent d'un ancien
+        index que le destinataire n'a jamais eu.
+
+        Constaté en inspectant le paquet du 2026-08-13 : ils étaient bien partis.
+        Les préfixes `test_`/`integration_` ne les attrapent pas — un script de
+        maintenance ne se signale par aucune convention de nom, d'où la liste
+        explicite. Vérifié aussi qu'ils ne sont exclus qu'à la RACINE : un module
+        qui s'appellerait `modules/x/migrer_vectoriel.py` doit partir normalement.
+        """
+        for nom in ("migrer_vectoriel.py", "parite_vectorielle.py"):
+            with self.subTest(nom=nom):
+                self.assertTrue(paquet.doit_exclure(Path(nom)))
+                self.assertFalse(paquet.doit_exclure(Path("modules") / "chat" / nom))
+
+    def test_l_index_arm64_de_torch_est_indique_au_destinataire(self):
+        """`requirements.txt` est livré au destinataire (vérifié dans le paquet) et
+        c'est le seul endroit où il lira quoi faire.
+
+        PyPI ne publie aucune wheel `win_arm64` pour torch, l'index PyTorch si :
+        sans cette consigne, `pip install -r requirements.txt` échoue sur ARM64
+        alors que la wheel existe. La consigne doit rester DANS ce fichier — la
+        mettre seulement dans `tools/faire_paquet.py` ne servirait à rien,
+        puisque `tools/` ne part jamais dans le paquet.
+        """
+        texte = (Path(paquet.BACKEND) / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("download.pytorch.org/whl/cpu", texte)
+        self.assertIn("win_arm64", texte)
+
     def test_le_store_vectoriel_est_exclu_du_paquet(self):
         """`vector_db/` contient le TEXTE des fiches et PDF indexés, pas seulement
         des vecteurs : il est aussi sensible que `history/` ou `doc_uploads/`.
