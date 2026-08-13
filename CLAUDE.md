@@ -73,15 +73,22 @@ python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER
 python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
 python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
-python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
+python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
+python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
 ```
+
+`integration_vector_store.py` exige un `pip install chromadb`, qui n'est plus une
+dépendance du projet : il compare le store actuel à celui qu'il a remplacé. C'est
+sa raison d'être et non un oubli — il ne peut pas se passer des deux côtés de la
+comparaison. Même chose pour `parite_vectorielle.py` et `migrer_vectoriel.py`,
+qui lisent l'ancien index (§3.4).
 
 **Un nouveau `backend/test_*.py` est pris en compte sans toucher au workflow** :
 la CI tourne en `unittest discover` depuis le commit `7e3bf8c`. Ce n'est plus une
 liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
 tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
 l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
-torch et chromadb et tourne dans le job `integration`, manuel).
+torch et sentence-transformers et tourne dans le job `integration`, manuel).
 
 ### Écart de version Python — piège actif
 
@@ -212,7 +219,30 @@ Aucune base de données côté application. Deux stockages :
   **`core/jsonstore.py` — IMPÉRATIF : jamais de `json.load`/`json.dump` direct.**
   Lecture en `utf-8-sig` (un BOM posé par PowerShell 5.1 rendait la mémoire de
   session invisible, puis le fichier était écrasé), écriture en `utf-8` sans BOM.
-- **ChromaDB** sous `backend/chroma_db/` pour le RAG et l'historique sémantique.
+- **`core/vector_store.py`** (SQLite + numpy, cosinus par force brute) sous
+  `backend/vector_db/` — `resolve_vector_dir()`, `$EPURE_VECTOR_DIR` — pour les
+  trois collections vectorielles : `fiches` (RAG), `doc_analysis`, `history`.
+  **IMPÉRATIF : un seul store, construit par `core/runtime.py` et INJECTÉ aux
+  trois moteurs.** Ne pas en instancier un second, ni retourner aux attributs
+  privés `rag._client`/`rag._ef` qui portaient ce partage avant : c'est ce qui
+  rendait possible de brancher `core/rag.py` sur un nouveau stockage en laissant
+  `core/docanalysis.py` et `core/history.py` sur l'ancien sans que rien ne le
+  signale.
+
+  **IMPÉRATIF : `sentence_transformers` s'importe DANS `VectorStore.__init__`,
+  jamais en tête de `core/vector_store.py`.** Mesuré : 17,4 s et torch chargé au
+  seul import du module. Comme `core/rag.py` l'importe et que `core/runtime.py`
+  importe `core/rag.py`, un import en tête de fichier se paie au démarrage
+  d'uvicorn — l'incident exact que `_LazyEngine` corrige (§3.2), réintroduit par
+  la bande. **La paresse du proxy ne couvre que la CONSTRUCTION des moteurs,
+  jamais l'import de leurs dépendances.**
+
+  chromadb a été retiré le 2026-08-13 (`docs/remplacement-vectoriel.md`) : aucune
+  wheel Windows ARM64, et une grappe — `grpcio`, `kubernetes`, `opentelemetry-*` —
+  qu'il déclarait en dépendances directes, donc impossible à écarter tant qu'il
+  restait. `backend/chroma_db/` peut encore exister sur le disque : c'est
+  l'ancien index, gardé le temps d'un usage réel du nouveau (étape C.4), et non
+  une seconde base vivante.
 
 ### 3.5 Chemins
 
@@ -491,7 +521,7 @@ l'incident qui justifie le design. C'est la convention la plus précieuse du
 dépôt : elle rend le code relisible après trois semaines d'absence. La respecter.
 
 **Ne jamais committer** : `backend/.env`, `backend/memory/*.json`,
-`backend/history/`, `backend/chroma_db/`, `backend/doc_uploads/`,
+`backend/history/`, `backend/chroma_db/`, `backend/vector_db/`, `backend/doc_uploads/`,
 `backend/modules/_backups/`, `*.log`, `.aider.*`.
 
 ---

@@ -304,7 +304,7 @@ class ExigencesTest(unittest.TestCase):
         # Retiré en commentaire et non supprimé : sinon la prochaine relecture du
         # fichier dérivé ne dit pas pourquoi il diffère de requirements.txt.
         self.assertIn("RETIRÉ DU PAQUET", texte)
-        for garde in ("fastapi", "chromadb", "faster-whisper", "piper-tts"):
+        for garde in ("fastapi", "numpy", "faster-whisper", "piper-tts"):
             with self.subTest(paquet_garde=garde):
                 self.assertTrue(any(l.lower().startswith(garde) for l in lignes_actives))
 
@@ -315,168 +315,92 @@ class ExigencesTest(unittest.TestCase):
         self.assertIn("starlette", texte)
         self.assertGreater(sum(1 for l in texte.splitlines() if l.lstrip().startswith("#")), 10)
 
-    def test_kubernetes_est_purge_du_resultat_et_non_de_l_installation(self):
-        """Il n'est pas retirable par pip : c'est une dépendance de chromadb.
-
-        Mesuré (§0) : importé seulement par
-        `chromadb/segment/impl/distributed/segment_directory.py`, jamais chargé par
-        un `PersistentClient` — le seul client que le dépôt construise.
-        """
-        self.assertIn("kubernetes", paquet.PURGE_SITE_PACKAGES)
-        self.assertNotIn("kubernetes", paquet.HORS_PAQUET_PIP)
-
     def test_google_generativeai_est_retire_de_l_installation(self):
-        """Décision 4 : contrairement à `kubernetes`, il PEUT être retiré à
-        l'install — rien d'autre dans requirements.txt ne dépend de lui, donc
+        """Décision 4 : rien d'autre dans requirements.txt ne dépend de lui, donc
         toute sa chaîne transitive (googleapiclient, google-api-core,
         google-auth, google-ai-generativelanguage…) disparaît avec lui.
         """
         self.assertIn("google-generativeai", paquet.HORS_PAQUET_PIP)
 
-    def test_grpcio_et_otel_grpc_sont_des_dependances_directes_de_chromadb_donc_purgees_apres(self):
-        """Contrairement à `google-generativeai`, ceux-là ne peuvent pas être
-        retirés de `requirements.txt` : chromadb les déclare lui-même
-        (`Requires-Dist: grpcio>=1.58.0`, `...otlp-proto-grpc>=1.2.0`), donc
-        `pip` les réinstallerait quand même. D'où `PURGE_DISTRIBUTIONS`, pas
-        `HORS_PAQUET_PIP`.
+    def test_chromadb_et_sa_grappe_ne_sont_plus_installes_ni_purges(self):
+        """Le retrait de chromadb (`docs/remplacement-vectoriel.md`, étape D) doit
+        se voir aux DEUX bouts, sinon il n'est pas fait.
+
+        Côté installation : plus aucune ligne active de `requirements.txt` ne le
+        nomme. Côté paquet : plus aucune entrée de purge ne le vise — ni
+        `kubernetes` (dépendance déclarée de chromadb), ni `grpcio` ou
+        l'exporter OTLP, qui avaient exigé un second mécanisme de purge entier
+        et un `sitecustomize.py` pour être contenus.
+
+        Ce test échouerait aussi si quelqu'un remettait chromadb sans rétablir
+        ces contournements — ce qui est le bon sens de l'échec : c'est le paquet
+        qui casserait, silencieusement, à l'import.
         """
-        for nom in ("grpcio", "opentelemetry-exporter-otlp-proto-grpc",
-                    "googleapis-common-protos"):
-            with self.subTest(nom=nom):
-                self.assertIn(nom, paquet.PURGE_DISTRIBUTIONS)
-                self.assertNotIn(nom, paquet.HORS_PAQUET_PIP)
+        exigences = (Path(paquet.BACKEND) / "requirements.txt").read_text(encoding="utf-8")
+        actives = [l for l in exigences.splitlines()
+                   if l.strip() and not l.lstrip().startswith("#")]
+        self.assertFalse([l for l in actives if l.lower().startswith("chromadb")])
+        self.assertNotIn("kubernetes", paquet.PURGE_SITE_PACKAGES)
+        self.assertFalse(hasattr(paquet, "PURGE_DISTRIBUTIONS"))
+        self.assertFalse(hasattr(paquet, "SITECUSTOMIZE"))
+        self.assertFalse(hasattr(paquet, "poser_sitecustomize"))
+
+    def test_le_store_vectoriel_est_exclu_du_paquet(self):
+        """`vector_db/` contient le TEXTE des fiches et PDF indexés, pas seulement
+        des vecteurs : il est aussi sensible que `history/` ou `doc_uploads/`.
+
+        Il a remplacé `chroma_db/` sous un NOM NEUF — exactement la situation où
+        une liste d'exclusion se fait distancer par le code sans que rien ne le
+        signale, et où le paquet part avec les documents de son auteur.
+        """
+        self.assertIn("vector_db", paquet.EXCLUS_RACINE)
+        self.assertIn("chroma_db", paquet.EXCLUS_RACINE)
 
 
-class PurgeDistributionsTest(unittest.TestCase):
-    """`_purger_distribution` sur un `site-packages` synthétique.
+class PurgeSitePackagesTest(unittest.TestCase):
+    """Le seul mécanisme de purge qui subsiste : par nom de dossier.
 
-    Ni `grpcio` ni `opentelemetry-exporter-otlp-proto-grpc` ne s'installent
-    comme un simple dossier `site-packages/<nom>/` (cf. `PURGE_DISTRIBUTIONS`) :
-    `grpcio` pose `grpc/`, et l'exporter OTLP pose
-    `opentelemetry/exporter/otlp/proto/grpc/`, un espace de noms PARTAGÉ avec
-    `opentelemetry-exporter-otlp-proto-common`. Le risque n'est pas de ne rien
-    retirer — c'est de retirer trop, et d'emporter `common/` avec `grpc/`.
+    Il y en avait deux. Le second (`_purger_distribution`, par lecture du
+    `RECORD` d'un `.dist-info`) existait parce que `grpcio` et
+    `opentelemetry-exporter-otlp-proto-grpc` ne s'installent pas comme un simple
+    dossier `site-packages/<nom>/` et qu'aucun des deux ne pouvait être retiré à
+    l'installation — chromadb les déclarait en dépendances directes. Retiré avec
+    chromadb (`docs/remplacement-vectoriel.md`, étape D) : plus rien à purger de
+    cette façon, donc plus de mécanisme, donc plus de tests. Ce fichier rétrécit
+    avec le script qu'il surveille, au lieu de garder en vie des tests qui
+    passeraient encore parfaitement sur du code que personne n'appelle.
     """
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory(prefix="epure-test-purge-")
-        self.sp = Path(self._tmp.name) / "site-packages"
-        self.sp.mkdir()
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def _poser_distribution(self, nom_dist, nom_dossier_info, fichiers):
-        """Pose une fausse distribution : ses fichiers + son `.dist-info` avec RECORD."""
-        for relatif, contenu in fichiers.items():
-            chemin = self.sp / relatif
-            chemin.parent.mkdir(parents=True, exist_ok=True)
-            chemin.write_text(contenu, encoding="utf-8")
-        info = self.sp / f"{nom_dossier_info}.dist-info"
-        info.mkdir()
-        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {nom_dist}\nVersion: 0\n",
-                                       encoding="utf-8")
-        lignes = [f"{r},," for r in fichiers] + [
-            f"{nom_dossier_info}.dist-info/METADATA,,",
-            f"{nom_dossier_info}.dist-info/RECORD,,",
-        ]
-        (info / "RECORD").write_text("\n".join(lignes) + "\n", encoding="utf-8")
-        return info
-
-    def test_grpcio_retire_grpc_pas_grpcio(self):
-        """Le dossier posé par `grpcio` s'appelle `grpc/`, jamais `grpcio/`."""
-        self._poser_distribution("grpcio", "grpcio-1.80.0", {
-            "grpc/__init__.py": "# grpc",
-            "grpc/_cython/cygrpc.pyd": "binaire",
-        })
-        mo = paquet._purger_distribution(self.sp, "grpcio", journal=lambda *_: None)
-        self.assertIsNotNone(mo, "None signifierait « pas installée » — elle l'était")
-        self.assertFalse((self.sp / "grpc").exists())
-        self.assertEqual(list(self.sp.glob("grpcio-*.dist-info")), [])
-
-    def test_otel_grpc_retire_sans_emporter_le_namespace_partage(self):
-        """`common/` (une autre distribution, dans le même dossier `proto/`) doit survivre."""
-        self._poser_distribution("opentelemetry-exporter-otlp-proto-common",
-                                 "opentelemetry_exporter_otlp_proto_common-1.42.1", {
-            "opentelemetry/exporter/otlp/proto/common/__init__.py": "# common",
-        })
-        self._poser_distribution("opentelemetry-exporter-otlp-proto-grpc",
-                                 "opentelemetry_exporter_otlp_proto_grpc-1.42.1", {
-            "opentelemetry/exporter/otlp/proto/grpc/__init__.py": "# grpc",
-            "opentelemetry/exporter/otlp/proto/grpc/trace_exporter/__init__.py":
-                "class OTLPSpanExporter: ...",
-        })
-
-        paquet._purger_distribution(self.sp, "opentelemetry-exporter-otlp-proto-grpc",
-                                    journal=lambda *_: None)
-
-        self.assertFalse(
-            (self.sp / "opentelemetry" / "exporter" / "otlp" / "proto" / "grpc").exists())
-        commun = self.sp / "opentelemetry" / "exporter" / "otlp" / "proto" / "common"
-        self.assertTrue(commun.is_dir(), "la distribution voisine ne doit pas disparaître")
-        self.assertTrue((commun / "__init__.py").is_file())
-
-    def test_une_distribution_absente_ne_leve_pas(self):
-        """`--sauter-python`, ou une distribution déjà purgée : silence, pas d'erreur."""
-        self.assertIsNone(paquet._purger_distribution(self.sp, "grpcio", journal=lambda *_: None))
-
-    def test_purger_site_packages_couvre_les_deux_mecanismes(self):
-        """Bout en bout : `PURGE_SITE_PACKAGES` (dossier direct) ET
-        `PURGE_DISTRIBUTIONS` (RECORD) sont appliqués par le même appel."""
-        racine = Path(self._tmp.name)
-        sp = racine / "Lib" / "site-packages"
-        (sp / "pip").mkdir(parents=True)
-        (sp / "pip" / "__init__.py").write_text("# pip", encoding="utf-8")
-        self.sp = sp
-        self._poser_distribution("grpcio", "grpcio-1.80.0", {"grpc/__init__.py": "# grpc"})
-
-        gagne = paquet.purger_site_packages(racine, journal=lambda *_: None)
-
-        self.assertFalse((sp / "pip").exists())
-        self.assertFalse((sp / "grpc").exists())
-        self.assertIn("pip", gagne)
-        self.assertIn("grpcio", gagne)
-
-
-class SitecustomizeTest(unittest.TestCase):
-    """`sitecustomize.py` doit exister ET faire exactement ce pour quoi il est posé.
-
-    Le stub existe pour être IMPORTÉ (chromadb en a besoin au chargement),
-    jamais pour fonctionner (chroma_otel_granularity="none" par défaut fait
-    que la classe n'est jamais construite en usage réel) — donc le test qui
-    compte est que l'import réussit et que la classe existe, pas qu'elle
-    marche.
-    """
-
-    def test_pose_un_fichier_qui_stub_exactement_le_bon_chemin_d_import(self):
-        with tempfile.TemporaryDirectory(prefix="epure-test-sitecustomize-") as tmp:
+    def test_retire_les_dossiers_listes_et_signale_ce_qu_il_a_gagne(self):
+        with tempfile.TemporaryDirectory(prefix="epure-test-purge-") as tmp:
             racine = Path(tmp)
-            chemin = paquet.poser_sitecustomize(racine, journal=lambda *_: None)
-            self.assertTrue(chemin.is_file())
-            self.assertEqual(chemin, racine / "Lib" / "site-packages" / "sitecustomize.py")
+            sp = racine / "Lib" / "site-packages"
+            sp.mkdir(parents=True)
+            (sp / "pip").mkdir()
+            (sp / "pip" / "__init__.py").write_text("# pip", encoding="utf-8")
+            garde = sp / "fastapi"
+            garde.mkdir()
+            (garde / "__init__.py").write_text("# fastapi", encoding="utf-8")
 
-    def test_le_stub_rend_l_import_de_chromadb_possible_sans_grpc(self):
-        """Le test qui compte vraiment : reproduit ce que fait `chromadb.telemetry.opentelemetry`.
+            gagne = paquet.purger_site_packages(racine, journal=lambda *_: None)
 
-        Le poste de dev peut avoir le vrai paquet installé (il l'a, tant que
-        `google-generativeai` n'est pas retiré de `requirements.txt`) — donc on
-        retire d'abord tout module déjà en cache pour ce nom, sinon le test
-        vérifierait la vraie classe et non le stub.
+            # Dans le `with` : hors du bloc, le dossier temporaire entier est
+            # supprimé, donc `assertFalse(...exists())` passerait sans rien
+            # prouver et `assertTrue(...)` sur ce qui devait SURVIVRE échouerait.
+            self.assertFalse((sp / "pip").exists())
+            self.assertIn("pip", gagne)
+            # Ce qui n'est pas listé reste : une purge trop large est le vrai risque.
+            self.assertTrue((garde / "__init__.py").exists())
+
+    def test_un_dossier_absent_ne_leve_pas(self):
+        """`setuptools`/`pkg_resources` ne sont pas toujours présents selon la
+        version de `get-pip.py` : leur absence n'est pas une erreur de build.
         """
-        import sys
-        nom = "opentelemetry.exporter.otlp.proto.grpc.trace_exporter"
-        original = sys.modules.pop(nom, None)
-        try:
-            namespace: dict = {}
-            exec(compile(paquet.SITECUSTOMIZE, "sitecustomize.py", "exec"), namespace)
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            self.assertTrue(callable(OTLPSpanExporter))
-            with self.assertRaises(RuntimeError):
-                OTLPSpanExporter()
-        finally:
-            sys.modules.pop(nom, None)
-            if original is not None:
-                sys.modules[nom] = original
+        with tempfile.TemporaryDirectory(prefix="epure-test-purge-") as tmp:
+            racine = Path(tmp)
+            (racine / "Lib" / "site-packages").mkdir(parents=True)
+            gagne = paquet.purger_site_packages(racine, journal=lambda *_: None)
+        self.assertEqual(gagne, {})
 
 
 class DrapeauxDeBuildTest(unittest.TestCase):

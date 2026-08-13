@@ -16,15 +16,23 @@ uvicorn==0.48.0
 # une image qui ne démarrait pas.
 python-multipart==0.0.29
 # Requis par fastapi.testclient.TestClient (test_auth_surface.py). Arrivait
-# jusqu'ici en transitif (chromadb, ollama, openai) : à déclarer puisqu'on en
-# dépend directement.
+# jusqu'ici en transitif (ollama, openai) : à déclarer puisqu'on en dépend
+# directement.
 httpx==0.28.1
 ollama==0.6.2
 pyyaml==6.0.3
-chromadb==1.5.9
+# `chromadb` était ici. Retiré le 2026-08-13, remplacé par `core/vector_store.py`
+# (SQLite + numpy) — cf. docs/remplacement-vectoriel.md, étape D. Son retrait
+# emporte toute une grappe qu'il déclarait en dépendances directes et
+# inconditionnelles, donc impossible à écarter tant qu'il restait : `grpcio`,
+# `kubernetes`, `opentelemetry-exporter-otlp-proto-grpc` (et de proche en proche
+# `googleapis-common-protos`, tout `opentelemetry-*`, `pypika`, `mmh3`). Mesuré
+# par carte de dépendances inverse avant de toucher à quoi que ce soit : aucun
+# autre paquet installé ne les réclame. `onnxruntime` en revanche RESTE —
+# `faster-whisper` et `piper-tts` en dépendent aussi, il n'était pas à chromadb.
 sentence-transformers==5.5.1
 # Requis par core/vector_store.py (docs/remplacement-vectoriel.md). Arrivait jusqu'ici en
-# transitif (chromadb, pandas) : à déclarer puisqu'on en dépend directement — même raison
+# transitif (pandas) : à déclarer puisqu'on en dépend directement — même raison
 # que python-multipart/httpx ci-dessus.
 numpy==2.5.2
 pypdf==6.12.2

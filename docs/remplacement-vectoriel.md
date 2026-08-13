@@ -482,15 +482,81 @@ Supprimer `chroma_db/` maintenant échangerait une garantie contre 24 Mo.
 
 C'est le seul point de l'étape C qui reste ouvert, et c'est Ilyann qui le ferme.
 
-### Étape D — Retirer chromadb et sa grappe
+### Étape D — Retirer chromadb et sa grappe — **faite le 2026-08-13**
 
-`chromadb`, `grpcio`, `opentelemetry-exporter-otlp-proto-grpc`, et tout le mécanisme
-construit ce soir pour les contourner (`sitecustomize.py`, `PURGE_DISTRIBUTIONS`,
-les exclusions ciblées dans `faire_paquet.py`). Si le nouveau backend n'a besoin d'aucun
-de ces contournements, les faire disparaître simplifie le script au lieu de l'alourdir.
-Les tests de `test_paquet.py` qui ciblaient spécifiquement ce mécanisme
-(`ExigencesTest`, `PurgeDistributionsTest`, `SitecustomizeTest`) sont à retirer ou
-réécrire pour la nouvelle réalité — pas à laisser comme code mort.
+**Mesuré avant de retirer quoi que ce soit**, par carte de dépendances inverse sur
+l'environnement installé (qui déclare quoi comme dépendance, marqueurs évalués) —
+parce que « ces paquets ne servaient qu'à chromadb » était jusque-là une conviction,
+pas un fait :
+
+| Paquet | Réclamé par | Sort du paquet ? |
+|---|---|---|
+| `grpcio` | `chromadb`, `grpcio-status`, `otlp-proto-grpc` | oui |
+| `kubernetes` | `chromadb` | oui |
+| `opentelemetry-exporter-otlp-proto-grpc` | `chromadb` | oui |
+| `googleapis-common-protos` | `google-api-core`, `grpcio-status`, `otlp-proto-grpc` | oui |
+| `pypika`, `mmh3` | `chromadb` | oui |
+| `opentelemetry-api`/`-sdk` | `chromadb` + la chaîne OTLP | oui |
+| **`onnxruntime`** | `chromadb`, **`faster-whisper`, `piper-tts`** | **NON — reste** |
+
+`onnxruntime` est la raison d'être de ce tableau : il était dans la grappe de
+chromadb et on aurait pu le retirer avec le reste, mais la voix en dépend
+aussi. Une purge « par ressemblance » aurait cassé la synthèse vocale dans le
+paquet, sans erreur au build.
+
+Retirés en conséquence :
+
+- `chromadb==1.5.9` de `backend/requirements.txt` ;
+- `kubernetes` de `PURGE_SITE_PACKAGES` ;
+- **`PURGE_DISTRIBUTIONS` en entier**, avec ses trois fonctions
+  (`_purger_distribution`, `_dist_info_pour`, `_normaliser_nom_distribution`) —
+  la purge par lecture des `RECORD` de `.dist-info` n'existait que parce que
+  `grpcio` pose `grpc/` et l'exporter OTLP un espace de noms partagé ;
+- **`SITECUSTOMIZE` et `poser_sitecustomize`** — le stub d'`OTLPSpanExporter` sans
+  lequel `import chromadb` cassait une fois ses propres dépendances purgées ;
+- dans `test_paquet.py` : `PurgeDistributionsTest` et `SitecustomizeTest`
+  (supprimées, leur cible n'existe plus) et trois tests d'`ExigencesTest`. Une
+  `PurgeSitePackagesTest` les remplace pour le seul mécanisme qui subsiste.
+
+Le script de paquet **rétrécit** — trois couches de contournement en moins, empilées
+au fil d'une soirée où chacune exposait la suivante. C'est la démonstration que le
+remplacement traitait la cause et non le symptôme.
+
+**Deux ajouts, pas seulement des retraits** :
+
+- `vector_db` entre dans `EXCLUS_RACINE`. **Le point le plus dangereux de l'étape** :
+  le nouveau store contient le TEXTE des fiches et des PDF indexés, pas seulement des
+  vecteurs. Remplacer un stockage sans étendre la liste d'exclusion aurait livré au
+  destinataire les documents d'Ilyann, dans un fichier au nom neuf que personne ne
+  surveillait, sans la moindre erreur au build. `chroma_db` y reste tant que l'ancien
+  index existe (C.4) : une entrée d'exclusion sans dossier correspondant ne coûte
+  rien, contrairement à une entrée de purge.
+- Deux tests neufs : l'un vérifie que le retrait se voit aux deux bouts (plus de
+  `chromadb` actif dans `requirements.txt`, plus aucune entrée de purge qui le vise,
+  `PURGE_DISTRIBUTIONS`/`SITECUSTOMIZE` absents du module) ; l'autre que
+  `vector_db` et `chroma_db` sont bien exclus du paquet.
+
+Répercuté ailleurs : `ci.yml` (le job rapide installe `numpy` au lieu de `chromadb` —
+c'est `core/vector_store.py`, importé par `core/rag.py`, qui en dépend, et il
+n'importe `sentence_transformers` que dans son `__init__`, donc torch reste hors du
+job), `docker-compose.yml` (volume `vector_db/`), `CLAUDE.md` §3.4 et §9.
+
+**Un test a échoué en étant écrit, et le détail vaut d'être noté** : les assertions
+de `PurgeSitePackagesTest` étaient placées APRÈS la sortie du bloc
+`with TemporaryDirectory()`. Le dossier entier étant alors supprimé, l'assertion
+« `pip/` a bien disparu » passait par vacuité et celle sur ce qui devait SURVIVRE
+échouait. Un test de suppression écrit après le nettoyage ne teste rien — il ne l'a
+signalé ici que parce qu'il vérifiait aussi une survivance.
+
+**Non fait, et volontairement reporté à l'étape E : `tools/contraintes-paquet.txt`.**
+Il liste encore `chromadb`, `grpcio`, `kubernetes` et toute la chaîne OTLP. Son
+en-tête dit comment le régénérer — construire un paquet, lire `python.gel` dans le
+`PAQUET.json` produit — et interdit de l'éditer ligne à ligne, parce que c'est un
+`pip freeze` et non une liste de souhaits. Le corriger à la main donnerait un fichier
+qui décrit un environnement que personne n'a installé. Sans effet en attendant : un
+fichier de contraintes ne fait qu'épingler des versions **si** le paquet est
+installé, il n'en installe aucun — plus rien ne tire chromadb, donc plus rien n'y
+touche.
 
 ### Étape E — Reconstruire et remesurer
 
