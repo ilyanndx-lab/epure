@@ -15,11 +15,22 @@ _BATCH_SIZE = 100
 
 
 class DocAnalysisEngine:
-    def __init__(self, chroma_client, embedding_function, llm):
+    """Analyse de documents PDF chargés à la demande (collection « doc_analysis »).
+
+    Reçoit le ``VectorStore`` partagé (cf. ``core/runtime.py``) au lieu du couple
+    ``chroma_client``/``embedding_function`` qu'il allait chercher dans les
+    attributs privés de ``RAGEngine``. Le partage était déjà réel — les trois
+    collections vivaient dans un seul ``PersistentClient`` — mais il passait par
+    ``rag._client``, ce qui le rendait invisible et fragile. Le store est
+    maintenant un paramètre, donc une dépendance déclarée.
+
+    La fonction d'embedding n'est plus un argument : elle appartient au store,
+    qui la partage entre ses collections (cf. ``core/vector_store.py``).
+    """
+
+    def __init__(self, store, llm):
         self._llm = llm
-        self._col = chroma_client.get_or_create_collection(
-            "doc_analysis", embedding_function=embedding_function
-        )
+        self._col = store.collection("doc_analysis")
 
     def _make_doc_id(self, path: str) -> str:
         try:

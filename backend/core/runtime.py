@@ -68,7 +68,9 @@ from core.memory import MemoryEngine
 from core.models import ModelsRegistry
 from core.orchestrator import OrchestratorEngine
 from core.quota_tracker import QuotaTracker
+from core.paths import resolve_vector_dir
 from core.rag import RAGEngine
+from core.vector_store import VectorStore
 from core.voice import PiperEngine, WhisperEngine
 
 logger = logging.getLogger(__name__)
@@ -123,16 +125,35 @@ orchestrator = OrchestratorEngine(llm)
 # RIEN, /health compris) tant que ce n'était pas fini → l'app restait figée sur
 # « Chargement… ». On le rend paresseux ; un thread de préchauffage le construit
 # en tâche de fond pendant qu'uvicorn sert déjà.
-rag = _LazyEngine(RAGEngine, "RAG (embeddings, torch + sentence-transformers)")
-# docanalysis/history accèdent à rag._client / rag._ef → eux aussi paresseux
-# (sinon ils forceraient la construction de RAG à l'import).
+# Store vectoriel partagé par les TROIS collections (`fiches`, `doc_analysis`,
+# `history`). C'est lui qui porte le modèle d'embedding, donc lui qui coûte les
+# 30 s à 2 min de chargement — d'où le `_LazyEngine` : le construire à l'import
+# rendrait la paresse de `rag` sans objet, puisque le poids a simplement changé
+# de propriétaire en quittant chromadb.
+#
+# Ce qui change vraiment ici : jusqu'à présent `docanalysis` et `history_engine`
+# récupéraient le client et la fonction d'embedding dans `rag._client`/`rag._ef`,
+# deux attributs PRIVÉS de `RAGEngine`. Le partage existait donc déjà, mais sous
+# une forme que rien ne signalait — et brancher un nouveau stockage sur
+# `core/rag.py` seul aurait laissé les deux autres sur chromadb sans que rien ne
+# proteste. Le store est désormais un objet nommé, passé explicitement aux trois.
+vector_store = _LazyEngine(
+    lambda: VectorStore(resolve_vector_dir()),
+    "Store vectoriel (embeddings, torch + sentence-transformers)",
+)
+rag = _LazyEngine(
+    lambda: RAGEngine(store=vector_store),
+    "RAG (embeddings, torch + sentence-transformers)",
+)
+# docanalysis/history partagent le même store → paresseux eux aussi (sinon ils
+# forceraient son chargement, donc celui du modèle, à l'import).
 docanalysis = _LazyEngine(
-    lambda: DocAnalysisEngine(chroma_client=rag._client, embedding_function=rag._ef, llm=llm),
+    lambda: DocAnalysisEngine(store=vector_store, llm=llm),
     "Analyse de documents",
 )
 admin_engine = AdminEngine(llm, rag)  # ne stocke que la référence (proxy)
 history_engine = _LazyEngine(
-    lambda: HistoryEngine(llm, rag._client, rag._ef),
+    lambda: HistoryEngine(llm, vector_store),
     "Historique des conversations",
 )
 consolidation_engine = ConsolidationEngine(llm, memory, history_engine)

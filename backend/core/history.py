@@ -13,12 +13,15 @@ _INDEX_FILE = _HISTORY_DIR / "conversations.json"
 
 
 class HistoryEngine:
-    def __init__(self, llm, chroma_client, ef):
+    def __init__(self, llm, store):
+        """``store`` : le ``VectorStore`` partagé (cf. ``core/runtime.py``), qui
+        remplace le couple ``chroma_client``/``ef`` pris dans les attributs
+        privés de ``RAGEngine``. Seul des trois appelants à supprimer par ``ids``
+        et à ne jamais filtrer par ``where``.
+        """
         self._llm = llm
         _HISTORY_DIR.mkdir(exist_ok=True)
-        self._col = chroma_client.get_or_create_collection(
-            "history", embedding_function=ef
-        )
+        self._col = store.collection("history")
 
     # ── Index helpers ─────────────────────────────────────────────────────────
 

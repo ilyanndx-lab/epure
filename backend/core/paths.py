@@ -150,6 +150,34 @@ def resolve_web_dir() -> Path:
     return base.resolve()
 
 
+def resolve_vector_dir() -> Path:
+    """Dossier du store vectoriel qui remplace ``backend/chroma_db/``.
+
+    Priorité : ``$EPURE_VECTOR_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/vector_db``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Pourquoi un dossier NEUF et pas ``chroma_db/`` réutilisé : la migration
+    (``migrer_vectoriel.py``) doit pouvoir écrire le nouveau store pendant que
+    l'ancien reste intact et interrogeable, puisque la comparaison de parité les
+    fait tourner **côte à côte** sur les mêmes données. Écrire dans le dossier
+    source rendrait impossible de revenir en arrière — et le plan
+    (``docs/remplacement-vectoriel.md``, étape C) interdit explicitement de
+    supprimer ``chroma_db/`` avant d'avoir fait tourner l'application réelle sur
+    le nouveau store.
+
+    Pourquoi c'est surchargeable : c'est ce qui rend la comparaison de parité et
+    les tests reproductibles ailleurs que sur le vrai dossier de l'utilisateur.
+    L'ancien chemin ne l'était pas — ``RAGEngine`` le calculait en
+    ``dirname(config.yaml)/chroma_db``, donc un test qui aurait construit le
+    moteur aurait écrit dans l'index réel.
+    """
+    env = os.environ.get("EPURE_VECTOR_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "vector_db")
+    return base.resolve()
+
+
 def resolve_data_dir() -> Path:
     """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
 

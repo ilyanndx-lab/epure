@@ -357,12 +357,130 @@ sur `VectorStore` — ce document valide l'implémentation, pas son intégration
 reste le stockage réellement utilisé par l'application tant que ce branchement n'est pas
 fait (§6).
 
-### Étape C — Migration des données existantes
+### Étape C — Migration des données existantes — **faite le 2026-08-13, sauf le délai final**
 
-Un script qui lit le `chroma_db/` actuel via l'ancien client et réécrit dans le nouveau
-format. Vérification obligatoire avant de supprimer quoi que ce soit : comparer les
-résultats d'une même requête sur les deux stockages, sur les vraies données d'Ilyann.
-Ne jamais supprimer l'ancien `chroma_db/` avant cette comparaison.
+Quatre temps, dans cet ordre strict, dont **le dernier n'est pas terminable en une
+session** (cf. C.4).
+
+#### C.1 — `migrer_vectoriel.py` : 170/170 chunks
+
+Lit `backend/chroma_db/` via le vrai `chromadb.PersistentClient` et réécrit dans
+`VectorStore`. Les trois collections passent, aux effectifs exacts du recensement
+du §0.4 : `fiches` 122, `doc_analysis` 34, `history` 14.
+
+Deux décisions prises sur mesure plutôt que par défaut :
+
+- **Les documents sont ré-embeddés, pas recopiés.** Recopier les vecteurs déjà
+  calculés par chromadb semblait l'option évidente. Mesuré avant de choisir : les
+  vecteurs stockés par chromadb ont une norme de **1,000000** (donc déjà
+  normalisés — ce qui confirme au passage la formule `1 - cos` du §0.3 par une
+  seconde voie) et coïncident avec ce que `VectorStore._embed` recalcule à
+  **1,5e-8 près**, du bruit de float32. Les deux options étant équivalentes en
+  sortie, le ré-embedding gagne parce qu'il n'utilise que l'API publique validée
+  et surtout parce qu'il rend le store **homogène** : ce qu'il contient est ce
+  qu'il écrirait lui-même en réindexant. Des vecteurs importés d'un autre moteur
+  auraient changé en silence à la première ré-indexation.
+- **Toutes les collections trouvées sont migrées, pas les trois attendues.** Une
+  liste en dur transformerait une quatrième collection oubliée en perte de
+  données silencieuse.
+
+La destination est `resolve_vector_dir()` (`$EPURE_VECTOR_DIR`, défaut
+`<backend>/vector_db`), **un dossier neuf** : la source doit rester intacte et
+interrogeable, puisque C.2 fait tourner les deux côte à côte. L'ancien chemin
+n'était pas surchargeable du tout — `RAGEngine` le calculait en
+`dirname(config.yaml)/chroma_db`, donc un test qui aurait construit ce moteur
+aurait écrit dans l'index réel.
+
+#### C.2 — `parite_vectorielle.py` : 340 comparaisons, 0 écart
+
+Sur les **vraies** données, pas un jeu de test — c'est ce qui distingue ce script
+de `integration_vector_store.py`, qui compare les deux moteurs sur des données
+fabriquées. Les requêtes sont extraites du corpus lui-même (morceaux de vrais
+chunks, choisis à pas déterministe) plus quatre questions génériques en français :
+une requête tirée d'un document indexé a une réponse exacte à distance ~0, et
+toute divergence d'ordre saute aux yeux au lieu de se diluer. Vérifié pour chaque
+collection, sur le profil d'appel de son propriétaire : `count()`, `get()` total,
+contenu id par id, `query()` sans filtre, `$in` et égalité sur `source` (`fiches`),
+`doc_id` (`doc_analysis`), `get(ids=…)` (`history`), et le rejet du `where` à deux
+clés — **mêmes ids, dans le même ordre, mêmes documents, mêmes métadonnées, mêmes
+distances à 1e-5 près, mêmes rejets.**
+
+Deux pièges rencontrés en écrivant ce script, tous deux dans le comparateur et non
+dans le moteur — à ne pas reperdre, parce qu'ils fabriquent de faux écarts
+crédibles :
+
+- **`get()` ne garantit aucun ordre de lignes, et l'ordre des CLÉS d'un dict
+  diffère entre les deux stockages** (chromadb le reconstruit depuis ses colonnes,
+  `VectorStore` le relit d'un JSON). Trier des métadonnées sur leur `repr`
+  mélange les deux : `{'a': 1, 'b': 2}` et `{'b': 2, 'a': 1}` sont égaux pour
+  Python mais donnent des chaînes différentes, donc un tri différent, donc un
+  écart signalé sur des données identiques. C'est exactement ce qui s'est produit
+  au premier passage — 2 « écarts » sur 340, tous deux imaginaires. D'où
+  `_canonique()` : tri par `json.dumps(sort_keys=True)`, comparaison des dicts.
+- **La console Windows est en cp1252** : un `→` dans le rapport fait tomber le
+  script sur un `UnicodeEncodeError` — dans `migrer_vectoriel.py`, ça se produisait
+  APRÈS l'écriture d'une partie des données. Les deux scripts reconfigurent donc
+  leurs flux en UTF-8. Sur une plateforme primaire Windows, un script de migration
+  ne doit pas pouvoir échouer sur son propre affichage.
+
+**Ce qui n'est délibérément PAS vérifié sur les données réelles : `delete()` sans
+filtre.** C'est bien un point de parité (§1, point 3), mais le vérifier consiste à
+appeler une suppression non filtrée sur les 170 chunks d'Ilyann. Tout l'intérêt du
+test est que l'appel lève — s'il ne levait pas, c'est-à-dire précisément dans le
+cas qu'il cherche à détecter, il viderait la collection. Un test dont le mode
+d'échec est de détruire les données qu'il protège n'a pas sa place ici : il est
+fait sur du jeté par `integration_vector_store.py`.
+
+#### C.3 — Branchement des trois moteurs
+
+`core/rag.py`, `core/docanalysis.py`, `core/history.py` prennent un `VectorStore`
+**injecté** ; `core/runtime.py` en construit un seul et le donne aux trois. Fin de
+`rag._client`/`rag._ef` : le partage existait déjà, mais par deux attributs privés
+d'un moteur qui n'avait pas vocation à être un point de partage — et brancher
+`core/rag.py` seul aurait laissé les deux autres sur chromadb sans que rien ne
+proteste. Les signatures d'appel n'ont pas bougé (`upsert`, `get`, `query`,
+`delete` sont appelés en arguments **nommés** partout), donc aucun corps de méthode
+des trois moteurs n'a changé.
+
+**Piège majeur découvert au branchement, à ne surtout pas rejouer : l'import de
+`sentence_transformers` doit rester LOCAL à `VectorStore.__init__`.** En tête de
+`core/vector_store.py`, il coûte **17,4 s et tire torch — mesuré**. Or
+`core/rag.py` importe ce module et `core/runtime.py` importe `core/rag.py` : cet
+import se paierait donc à l'import de `core.runtime`, c'est-à-dire au démarrage
+d'uvicorn, qui ne répondrait plus à rien — `/health` compris — pendant tout ce
+temps. C'est très exactement l'incident que `_LazyEngine` existe pour corriger
+(§3.2 de `CLAUDE.md`), réintroduit par la bande : **la paresse du proxy ne protège
+que la CONSTRUCTION des moteurs, jamais l'import de leurs dépendances.** chromadb
+masquait le problème en n'important `sentence_transformers` qu'à l'instanciation
+de sa fonction d'embedding ; rendre l'embedding explicite rend cet import
+explicite aussi. Vérifié après correction : `import core.runtime` = 3,4 s, torch
+non importé, store non construit.
+
+Vérifications du branchement : les 332 tests de `unittest discover` passent, les 15
+de `integration_vector_store.py` aussi, et les trois moteurs répondent sur les
+vraies données migrées via leurs API publiques (`get_indexed_files` → 10 fichiers,
+`query`/`query_filtered` → contexte non vide, `get_loaded_docs` → 2 documents,
+`search` → scores cohérents, `search_history` → conversations pertinentes).
+
+`_test_env.py` détourne désormais `EPURE_VECTOR_DIR` sur un temporaire vide, pour
+la première des deux raisons de `MODELS_DIR` (un test qui construirait `RAGEngine`
+par accident écrirait dans le vrai index) et non pour la seconde (l'index est
+dérivé et reconstructible, donc hors de `REAL_DIRS`).
+
+#### C.4 — Le délai avant suppression — **NON TERMINÉ, et volontairement**
+
+`backend/chroma_db/` est **intact** (24 Mo, rien n'y a été écrit ni supprimé). Une
+copie de sûreté a été prise avant le premier accès en lecture.
+
+Ce temps n'est pas une tâche mais une **attente** : il demande qu'Épure tourne
+pour de bon sur le nouveau store, sur plusieurs sessions réelles — indexation de
+nouvelles fiches, chargement d'un PDF dans Docs, sauvegarde et recherche de
+conversations — avant que l'ancien index soit supprimé. Aucune batterie de tests ne
+remplace ça : la parité prouve que les deux stockages répondent pareil aux appels
+qu'on a su formuler, pas qu'aucun chemin de code encore inexploré ne casse.
+Supprimer `chroma_db/` maintenant échangerait une garantie contre 24 Mo.
+
+C'est le seul point de l'étape C qui reste ouvert, et c'est Ilyann qui le ferme.
 
 ### Étape D — Retirer chromadb et sa grappe
 

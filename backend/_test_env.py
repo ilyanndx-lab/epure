@@ -202,6 +202,19 @@ MODELS_DIR = _installer_vide("EPURE_MODELS_DIR", "models")
 #: construit le front entre deux exécutions.
 WEB_DIR = _installer_vide("EPURE_WEB_DIR", "web")
 
+#: Store vectoriel (core/vector_store.py) — temporaire VIDE, et absent de
+#: REAL_DIRS, pour les deux mêmes raisons distinctes que MODELS_DIR :
+#:
+#:   * détourné, parce qu'un test qui construirait `RAGEngine` par accident
+#:     écrirait dans le VRAI index de l'utilisateur — ce qui était structurellement
+#:     impossible à éviter avant, l'ancien chemin étant calculé en
+#:     `dirname(config.yaml)/chroma_db` sans aucune surcharge possible ;
+#:   * non surveillé, parce que c'est un index DÉRIVÉ, reconstructible en
+#:     réindexant les fichiers surveillés — pas une donnée utilisateur. Le
+#:     surveiller ferait tomber le garde-fou sur une réindexation légitime, qui
+#:     ne prouve rien sur la propreté de `backend/memory/`.
+VECTOR_DIR = _installer_vide("EPURE_VECTOR_DIR", "vecteurs")
+
 def _rebrancher_package_modules(cible: Path) -> None:
     """Fait résoudre ``import modules.<id>.…`` depuis l'arbre TEMPORAIRE.
 
