@@ -124,7 +124,26 @@ export default function App() {
         setSpeakingText(null)
         audioRef.current = null
       }
-      audio.play()
+      // `play()` rend une Promise, et c'est tout l'enjeu : non attendue, son rejet
+      // ne passe PAS par le `catch` ci-dessous (on est déjà sorti du `try` quand
+      // elle se règle). Il partait donc en unhandled rejection, et surtout
+      // `speakingText` restait posé — l'UI montrait un message en train d'être lu
+      // pour toujours, sans qu'aucun son ne sorte et sans rien dans les logs.
+      //
+      // `err.name` est journalisé explicitement parce que c'est lui qui tranche :
+      // `NotAllowedError` = blocage d'autoplay par le navigateur (il faut un geste
+      // utilisateur), `NotSupportedError` = le blob n'est pas un audio décodable
+      // (donc un problème côté backend, pas côté navigateur), `AbortError` = une
+      // autre lecture a démarré entre-temps. Les trois demandent des correctifs
+      // opposés, et le message seul ne les distingue pas.
+      audio.play().catch((err: unknown) => {
+        const nom = err instanceof Error ? err.name : typeof err
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`Erreur TTS (play) — ${nom} : ${message}`, err)
+        URL.revokeObjectURL(url)
+        setSpeakingText(null)
+        audioRef.current = null
+      })
     } catch (err) {
       console.error('Erreur TTS:', err)
       setSpeakingText(null)
