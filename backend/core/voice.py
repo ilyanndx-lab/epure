@@ -29,11 +29,66 @@ from core.paths import resolve_models_dir
 logger = logging.getLogger(__name__)
 
 
+class VoiceModelUnavailable(RuntimeError):
+    """La voix est indisponible — paquet absent, modèle non récupérable.
+
+    Type dédié — et non un `RuntimeError` nu — pour que les endpoints distinguent
+    « la voix est indisponible, dis-le calmement » (503, message lisible, log en
+    warning) d'une vraie panne (500, trace de pile). Sans cette distinction, une
+    machine hors ligne renvoie un 500 qui se lit comme un bug d'Épure.
+
+    Levé par les DEUX moteurs, et déclaré avant eux pour que ça se voie :
+    `PiperEngine` pour la synthèse, `WhisperEngine` pour la transcription. La
+    transcription ne le faisait pas — l'asymétrie a vécu jusqu'au 2026-08-13.
+    """
+
+
 class WhisperEngine:
+    """Transcription vocale (faster-whisper), modèle chargé à la demande.
+
+    Comme `PiperEngine`, construit au premier usage via le `_LazyEngine` de
+    `core.runtime` — jamais au démarrage : `WhisperModel` télécharge son modèle
+    depuis HuggingFace et son import tire `ctranslate2`.
+    """
+
     def __init__(self, model_size: str = "small", language: str = "fr"):
-        from faster_whisper import WhisperModel
+        # L'import est DANS le try, exactement comme `PiperEngine._load` : sans
+        # faster-whisper installé, la transcription est indisponible — un état
+        # PRÉVU, pas un plantage. Il ne l'était pas ici, et l'asymétrie se voyait
+        # à l'usage : une synthèse sans piper-tts répondait 503 avec un message
+        # lisible, une transcription sans faster-whisper laissait remonter un
+        # `ImportError` nu jusqu'au `except Exception` de l'endpoint — donc un
+        # 500 « Erreur transcription » et une trace de pile complète dans les
+        # logs pour une dépendance simplement absente.
+        #
+        # Ce n'est pas un cas théorique : `ctranslate2`, dont dépend
+        # faster-whisper, ne publie aucune wheel `win_arm64` ni aucune sdist
+        # (docs/remplacement-vectoriel.md, étape E). Sur Windows ARM64, ce paquet
+        # est donc absent par construction, et c'est cette branche qui répond.
+        #
+        # Le chargement du modèle est dans le même try, pour la même raison que
+        # chez Piper : hors ligne, un premier usage échoue à récupérer le modèle,
+        # et « la voix n'est pas disponible » reste la bonne réponse — pas une
+        # panne d'Épure.
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            # Message SANS préfixe « Transcription indisponible » : l'endpoint en
+            # ajoute déjà un en journalisant (`Transcription vocale indisponible :
+            # %s`), et le doubler donnait une ligne qui se répétait elle-même.
+            # Même forme que les messages de `PiperEngine`, qui décrivent la
+            # cause et laissent le contexte à l'appelant.
+            raise VoiceModelUnavailable(
+                "Le paquet 'faster-whisper' n'est pas installé."
+            ) from exc
+
         logger.info("Chargement du modèle Whisper : %s", model_size)
-        self._model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        try:
+            self._model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        except Exception as exc:
+            raise VoiceModelUnavailable(
+                f"Modèle de transcription illisible ({model_size}) : {exc}"
+            ) from exc
         self._language = language
         logger.info("Modèle Whisper prêt")
 
@@ -53,16 +108,6 @@ class WhisperEngine:
             raise
         finally:
             os.unlink(tmp_path)
-
-
-class VoiceModelUnavailable(RuntimeError):
-    """Le modèle de synthèse est absent et n'a pas pu être récupéré.
-
-    Type dédié — et non un `RuntimeError` nu — pour que l'endpoint distingue
-    « la voix est indisponible, dis-le calmement » d'une vraie panne de
-    synthèse. Sans cette distinction, une machine hors ligne renvoie un 500
-    « Erreur synthèse vocale » qui se lit comme un bug d'Épure.
-    """
 
 
 class PiperEngine:

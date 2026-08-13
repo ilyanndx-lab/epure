@@ -30,6 +30,7 @@ Usage :
     python test_models_dir.py
 """
 
+import contextlib
 import hashlib
 import io
 import os
@@ -301,6 +302,100 @@ class DegradationTest(_DossierModeles):
             piper._engine,
             "un échec de construction ne doit pas être mis en cache par _LazyEngine",
         )
+
+
+class TranscriptionIndisponibleTest(_DossierModeles):
+    """La transcription doit se dégrader comme la synthèse, pas autrement.
+
+    L'asymétrie a vécu : `PiperEngine._load` enveloppait son import dans un
+    `try` et levait `VoiceModelUnavailable` (503, message lisible, log en
+    warning), tandis que `WhisperEngine.__init__` faisait un
+    `from faster_whisper import WhisperModel` nu. Une dépendance simplement
+    absente produisait donc un `ImportError` remonté jusqu'au `except Exception`
+    de l'endpoint : 500 « Erreur transcription » et une trace de pile complète
+    dans les logs, pour un état parfaitement prévu.
+
+    Ce n'est pas un cas d'école : `ctranslate2`, dont dépend faster-whisper, n'a
+    ni wheel `win_arm64` ni sdist (docs/remplacement-vectoriel.md, étape E) —
+    sur Windows ARM64 le paquet est absent par construction.
+
+    L'absence est simulée en posant `None` dans `sys.modules`, ce qui fait lever
+    l'import à `faster_whisper` sans toucher à l'environnement réel (le paquet
+    est bel et bien installé sur le poste qui exécute ces tests).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = _client()
+        cls.headers = {"Authorization": f"Bearer {get_api_token()}"}
+
+    @contextlib.contextmanager
+    def _sans_faster_whisper(self):
+        original = sys.modules.get("faster_whisper", "absent")
+        sys.modules["faster_whisper"] = None      # → ImportError à l'import
+        try:
+            yield
+        finally:
+            if original == "absent":
+                sys.modules.pop("faster_whisper", None)
+            else:
+                sys.modules["faster_whisper"] = original
+
+    def test_le_moteur_leve_voice_model_unavailable_et_pas_import_error(self):
+        with self._sans_faster_whisper():
+            with self.assertRaises(VoiceModelUnavailable) as ctx:
+                core_voice.WhisperEngine()
+        self.assertIn("faster-whisper", str(ctx.exception))
+
+    def test_transcription_indisponible_repond_503_avec_un_message(self):
+        from core.runtime import whisper
+        self.assertIsNone(
+            whisper._engine,
+            "prérequis : la transcription n'a pas encore été construite",
+        )
+        with self._sans_faster_whisper():
+            res = self.client.post(
+                "/voice/transcribe",
+                files={"audio": ("a.webm", b"pas vraiment de l'audio", "audio/webm")},
+                headers=self.headers,
+            )
+        self.assertEqual(res.status_code, 503, res.text)
+        detail = res.json()["detail"]
+        self.assertIn("faster-whisper", detail)
+        # Le message générique serait un aveu que la branche dédiée n'existe plus.
+        self.assertNotEqual(detail, "Erreur transcription")
+
+    def test_aucune_trace_de_pile_dans_les_logs(self):
+        """Une dépendance absente se journalise en warning, pas en exception.
+
+        C'est la moitié la moins visible de la garde, et celle qui se perdrait
+        en premier : le code répondrait toujours 503 tout en déversant une trace
+        complète à chaque tentative.
+        """
+        with self._sans_faster_whisper():
+            with self.assertLogs("modules.settings.router", level="WARNING") as journal:
+                self.client.post(
+                    "/voice/transcribe",
+                    files={"audio": ("a.webm", b"x", "audio/webm")},
+                    headers=self.headers,
+                )
+        self.assertTrue(any(r.levelname == "WARNING" for r in journal.records))
+        self.assertFalse(
+            any(r.exc_info for r in journal.records),
+            "aucun enregistrement ne doit porter d'exc_info (trace de pile)",
+        )
+
+    def test_le_reste_de_l_app_repond_normalement(self):
+        with self._sans_faster_whisper():
+            self.client.post(
+                "/voice/transcribe",
+                files={"audio": ("a.webm", b"x", "audio/webm")},
+                headers=self.headers,
+            )
+            for chemin in ("/health", "/modules", "/instance/config"):
+                with self.subTest(chemin=chemin):
+                    res = self.client.get(chemin, headers=self.headers)
+                    self.assertEqual(res.status_code, 200, res.text)
 
 
 if __name__ == "__main__":

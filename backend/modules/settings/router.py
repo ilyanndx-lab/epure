@@ -69,6 +69,18 @@ async def voice_transcribe(audio: UploadFile = File(...)):
         # lambda : le 1er appel construit le modèle (lazy) DANS l'executor, sans
         # bloquer la boucle d'événements.
         text = await loop.run_in_executor(None, lambda: whisper.transcribe(audio_bytes))
+    except VoiceModelUnavailable as exc:
+        # Même traitement que /voice/synthesize, et pour la même raison : dans une
+        # app local-first la voix est optionnelle, son indisponibilité est un état
+        # prévu, pas une panne. Le message part tel quel — il dit si le paquet
+        # faster-whisper manque ou si le modèle n'a pas pu être récupéré, et on ne
+        # peut rien faire d'un « Erreur transcription » nu.
+        #
+        # `logger.warning` et non `logger.exception` : une dépendance absente
+        # n'est pas un incident à tracer sur une pile complète. C'est ce que
+        # faisait la branche générique ci-dessous, faute que cette branche existe.
+        logger.warning("Transcription vocale indisponible : %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
         logger.exception("Erreur transcription /voice/transcribe")
         raise HTTPException(status_code=500, detail="Erreur transcription")
