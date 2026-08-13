@@ -23,6 +23,10 @@ ollama==0.6.2
 pyyaml==6.0.3
 chromadb==1.5.9
 sentence-transformers==5.5.1
+# Requis par core/vector_store.py (docs/remplacement-vectoriel.md). Arrivait jusqu'ici en
+# transitif (chromadb, pandas) : à déclarer puisqu'on en dépend directement — même raison
+# que python-multipart/httpx ci-dessus.
+numpy==2.5.2
 pypdf==6.12.2
 watchdog==6.0.0
 faster-whisper==1.2.1
