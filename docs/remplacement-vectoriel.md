@@ -87,12 +87,23 @@ le code, est un peu plus large que celle de `core/rag.py` :
 | | `where` utilisés | `include` demandés | `delete` par |
 |---|---|---|---|
 | `core/rag.py` (« fiches ») | égalité, `$in` | `[]`, `["metadatas"]` | `where` |
-| `core/docanalysis.py` (« doc_analysis ») | égalité, **AND multi-clés** (`{"doc_id":…, "chunk_index":0}`) | `[]`, `["documents"]`, `["documents","metadatas"]`, `["metadatas"]` | `where` |
+| `core/docanalysis.py` (« doc_analysis ») | égalité, `$in`, et un AND à deux clés qui **rate déjà silencieusement** (§1, étape B) | `[]`, `["documents"]`, `["documents","metadatas"]`, `["metadatas"]` | `where` |
 | `core/history.py` (« history ») | — (jamais de `where`) | `["documents","metadatas"]` | **`ids`**, pas `where` |
 
 `core/docanalysis.py:145-153` est le seul des trois à lire `results["distances"]` — pour
 calculer un score affiché (`1.0 - distance`). Aucun autre appelant ne le fait aujourd'hui,
 mais rien ne doit empêcher de le faire.
+
+**Correction faite en écrivant le test de non-régression de l'étape B, à ne pas reperdre
+ici :** cette ligne disait initialement « AND multi-clés » comme une capacité à honorer —
+lu dans le code (`core/docanalysis.py:51-52` appelle bien
+`get(where={"doc_id": doc_id, "chunk_index": 0})`), jamais exécuté contre le vrai
+chromadb. Exécuté : `validate_where` de chromadb 1.5.9 rejette tout `where` de plus d'une
+clé (`ValueError: Expected where to have exactly one operator`) — l'appel lève, et
+`core/docanalysis.py` l'entoure déjà d'un `except Exception: pass`, donc `apercu` reste
+vide en silence. Un bug préexistant, indépendant de ce chantier. `core/vector_store.py`
+reproduit exactement ce rejet plutôt que de faire réussir cet appel : le comportement
+observable ne doit pas changer, y compris le bug.
 
 Aucune section de ce document ne mentionnait `core/docanalysis.py` ni `core/history.py`
 avant cette vérification. Une abstraction qui ne couvrirait que `core/rag.py` laisserait
@@ -194,12 +205,15 @@ class Collection:
 
     def get(self, ids: list[str] | None = None, where: dict | None = None,
             include: list[str] = ("documents", "metadatas")) -> dict:
-        """`ids` et `where` sont exclusifs, comme chez chromadb. `where` doit couvrir
-        les trois formes mesurées en §0.3 : égalité (`{"champ": valeur}`), `$in`
-        (`{"champ": {"$in": [...]}}`), et AND implicite entre plusieurs clés
-        (`{"doc_id": x, "chunk_index": 0}` — `core/docanalysis.py`). `include=[]` doit
-        rester utilisable pour ne récupérer QUE les ids (compter sans relire les
-        documents, cf. `core/rag.py::_do_query_filtered` et
+        """`ids` et `where` sont exclusifs, comme chez chromadb. `where` accepte
+        exactement UNE clé — égalité (`{"champ": valeur}`) ou `$in`
+        (`{"champ": {"$in": [...]}}`) — comme le vrai chromadb, qui rejette tout `where`
+        à plus d'une clé (`validate_where` : `len(where) != 1`). `core/docanalysis.py`
+        appelle bien `get(where={"doc_id": x, "chunk_index": 0})`, mais cet appel lève
+        déjà chez chromadb aujourd'hui — absorbé par son propre `except Exception: pass`
+        (constaté à l'étape B, pas ici : corrigé rétroactivement dans ce paragraphe).
+        `include=[]` doit rester utilisable pour ne récupérer QUE les ids (compter sans
+        relire les documents, cf. `core/rag.py::_do_query_filtered` et
         `core/docanalysis.py::load_document_streaming`).
         Renvoie un dict à listes PLATES (`{"ids": [...], "documents": [...], ...}`) —
         même forme que chromadb pour `get()`, pour ne rien réécrire côté appelants
@@ -309,12 +323,39 @@ sont) :
 - `Collection.delete(ids=None, where=None)` : `ids is None and where is None` → lève
   `ValueError`, même message que chromadb.
 
-### Étape B — Implémenter avec le backend retenu
+### Étape B — Implémenter avec le backend retenu — **faite le 2026-08-13**
 
-SQLite + numpy, selon l'interface validée à l'étape A (§0, §1). Un test de
-non-régression : les mêmes requêtes sur les mêmes documents renvoient les mêmes
-résultats (ou un ordre équivalent) qu'avec `chromadb` aujourd'hui, pour les trois
-collections — pas seulement `fiches`.
+SQLite + numpy, selon l'interface validée à l'étape A (§0, §1) : `core/vector_store.py`
+(`VectorStore`, `Collection`). Non-régression vérifiée avec `integration_vector_store.py`
+(15 tests) contre le vrai `chromadb`, sur les trois profils d'appel réels — `fiches`,
+`doc_analysis`, `history` — pas seulement `fiches` : mêmes documents, mêmes requêtes,
+mêmes ids en sortie dans le même ordre, mêmes distances (`assertAlmostEqual`), même
+comportement de `get()`/`delete()` sans filtre. Concurrence vérifiée séparément : deux
+threads qui `upsert`/`query` en boucle (200 itérations) sur la même collection, contrôle
+d'intégrité déterministe de l'état final (pas seulement « aucune exception ») — le verrou
+tient.
+
+Une découverte faite en écrivant ce test, à ne pas laisser dans l'angle mort : la ligne
+« AND multi-clés » du tableau au §0.3 était fausse — `core/docanalysis.py:51-52` appelle
+bien `get(where={"doc_id": doc_id, "chunk_index": 0})`, mais le vrai chromadb (1.5.9)
+rejette tout `where` de plus d'une clé (`validate_where`), et cet appel lève déjà
+aujourd'hui, absorbé par un `except Exception: pass` préexistant — `apercu` reste vide en
+silence, indépendamment de ce chantier. `core/vector_store.py` reproduit ce rejet plutôt
+que de le corriger : non-régression veut dire préserver le bug aussi, pas seulement les
+fonctionnalités qui marchent. §0.3 et l'interface de l'étape A sont corrigées en
+conséquence.
+
+Nommé `integration_` et non `test_` comme `integration_modules_mount.py` : charge un
+vrai `chromadb.PersistentClient` ET un vrai modèle `sentence-transformers` pour la
+comparaison — lent, hors de `unittest discover -p 'test_*.py'`. Lancé manuellement
+(`python integration_vector_store.py`), pas encore câblé dans le job `integration` de la
+CI — à faire si ce fichier doit devenir un garde-fou permanent plutôt qu'une vérification
+ponctuelle.
+
+**Pas encore fait** : brancher `core/rag.py`, `core/docanalysis.py`, `core/history.py`
+sur `VectorStore` — ce document valide l'implémentation, pas son intégration. `chromadb`
+reste le stockage réellement utilisé par l'application tant que ce branchement n'est pas
+fait (§6).
 
 ### Étape C — Migration des données existantes
 
@@ -352,14 +393,26 @@ pas meilleur — une amélioration est un chantier séparé, à ne pas mélanger
 
 ## §6 — Ce qui n'a pas été vérifié
 
-Les deux premiers points de cette liste ont été mesurés le 2026-08-11 (§0) et sont
-retirés d'ici — `sqlite-vec` n'a pas de wheel `win_arm64` (écarté), `numpy` en a une pour
-la version épinglée, le volume réel est de 170 chunks sur trois collections. Ce qui
-reste :
+Les points précédents de cette liste ont été mesurés (§0 le 2026-08-11, étape B le
+2026-08-13) et sont retirés d'ici — `sqlite-vec` n'a pas de wheel `win_arm64` (écarté),
+`numpy` en a une pour la version épinglée, le volume réel est de 170 chunks sur trois
+collections, l'interface a été implémentée (`core/vector_store.py`) et testée en
+non-régression contre le vrai chromadb sur les trois profils d'appel. Ce qui reste :
 
-- **Le temps de requête réel en recherche par force brute.** « De l'ordre du
-  milliseconde » (§1, étape A) est une estimation à 170 vecteurs de petite dimension
-  (`all-MiniLM-L6-v2` : 384 dimensions), pas un chiffre mesuré sur ce dépôt. À vérifier à
-  l'étape B, une fois l'implémentation écrite — pas avant, ça n'aurait rien à mesurer.
-- **L'interface proposée en étape A n'est pas encore validée par Ilyann.** Rien après ce
-  point ne doit être codé tant que ce n'est pas fait.
+- **`core/rag.py`, `core/docanalysis.py`, `core/history.py` n'ont pas encore été
+  branchés sur `core/vector_store.py`.** Ce document décrit et teste l'implémentation,
+  pas son intégration — `core/runtime.py:129-136` construit toujours
+  `DocAnalysisEngine`/`HistoryEngine` avec `rag._client`/`rag._ef` (chromadb), et
+  `RAGEngine` construit toujours son propre `chromadb.PersistentClient`. C'est la suite
+  de l'étape B, pas encore faite.
+- **Temps de requête réel : mesuré, pas juste estimé — et la borne dominante n'est pas
+  celle qu'on attendait.** ~47 ms/appel à `query()` sur 170 vecteurs (cache mémoire
+  chaud, `all-MiniLM-L6-v2` = 384 dimensions), ~92 ms pour un cycle
+  `upsert(1) + query()` cache froid. Le calcul cosinus lui-même (170 produits scalaires
+  sur 384 dimensions) est bien de l'ordre du dixième de milliseconde comme prévu — c'est
+  l'inférence du modèle d'embedding sur le TEXTE de la requête qui domine le temps total.
+  Pas une régression : chromadb passe par exactement le même modèle
+  (`SentenceTransformerEmbeddingFunction`) pour embedder ses propres requêtes, donc ce
+  coût existe déjà aujourd'hui, indépendamment du stockage.
+- **Migration des données réelles (étape C) et retrait de chromadb (étape D)** ne sont
+  pas commencés.
