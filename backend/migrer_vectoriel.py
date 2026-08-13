@@ -8,6 +8,11 @@
     python migrer_vectoriel.py              # migre vers le dossier par défaut
     python migrer_vectoriel.py --dest /tmp/essai   # ailleurs, pour un essai
 
+**Exige `pip install chromadb`, qui n'est plus une dépendance du projet** (retiré à
+l'étape D). Ce n'est pas un oubli : ce script ne peut pas se passer du moteur qu'il
+migre, et il est destiné à ne tourner qu'une fois. Le garder installé dans
+`requirements.txt` pour lui seul annulerait tout l'intérêt du remplacement.
+
 **N'écrit jamais dans la source.** L'ancien ``chroma_db/`` doit rester intact et
 interrogeable après coup : la comparaison de parité (``parite_vectorielle.py``)
 fait tourner les deux stockages côte à côte sur les mêmes requêtes, et le plan

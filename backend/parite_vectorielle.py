@@ -9,6 +9,10 @@ supprimé avant que ce script sorte en 0.
     cd backend
     python parite_vectorielle.py
 
+Exige `pip install chromadb`, qui n'est plus une dépendance du projet (retiré à
+l'étape D) : comparer deux stockages demande d'avoir les deux. Même remarque que
+`migrer_vectoriel.py`.
+
 Ce que ce script est, et n'est pas :
 
 - **Il n'est pas** ``integration_vector_store.py``. Celui-là compare les deux

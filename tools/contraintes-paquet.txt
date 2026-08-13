@@ -1,146 +1,94 @@
-# Contraintes de reproductibilité pour tools/faire_paquet.py — étape B.
+# Contraintes de reproductibilité pour tools/faire_paquet.py.
 #
 # `pip freeze` du site-packages Python 3.12 embeddable qui a produit et vérifié
-# le paquet du 2026-08-10 (`docs/distribution-empaquetee.md` §0.3, 159,4 Mo
-# zippé). Généré, pas écrit à la main : ne pas éditer une ligne isolément.
+# le paquet du 2026-08-13 (132,2 Mo zippé). Généré, pas écrit à la main : ne pas
+# éditer une ligne isolément.
 #
-# Régénéré le 2026-08-10 (deuxième build de la journée) : `google-generativeai`
-# est passé de `requirements.txt` à `HORS_PAQUET_PIP`, et son retrait fait
-# disparaître toute sa grappe transitive de CE fichier — `grpcio-status`,
-# `proto-plus`, `google-ai-generativelanguage`, `google-api-core`,
-# `google-auth`, `google-api-python-client` (`googleapiclient`, 97,9 Mo, le
-# plus gros poste du paquet précédent). `grpcio`, `opentelemetry-exporter-
-# otlp-proto-grpc` et `googleapis-common-protos` restent listés ci-dessous
-# bien qu'absents du paquet livré : chromadb les déclare en dépendances
-# directes et inconditionnelles, donc `pip` les installe quand même pour le
-# satisfaire — ils sont purgés APRÈS coup (`PURGE_DISTRIBUTIONS`), lecture du
-# `RECORD` de leur `.dist-info` puisqu'aucun des deux ne s'installe comme un
-# simple dossier `site-packages/<nom>/`. Un `sitecustomize.py` posé dans le
-# paquet stub l'unique import que leur absence casserait
-# (`chromadb.telemetry.opentelemetry` importe `OTLPSpanExporter` au niveau
-# module, jamais instancié en usage réel — `chroma_otel_granularity="none"`
-# par défaut). Vérifié pour de vrai sur ce Python embeddable : `PersistentClient`
-# et `EphemeralClient` fonctionnent (add/query/count), et — contrôle négatif —
-# retirer `sitecustomize.py` fait effectivement casser `import chromadb`.
+# Régénéré le 2026-08-13 après le retrait de `chromadb`
+# (`docs/remplacement-vectoriel.md`, étape D). **52 paquets contre 101** dans la
+# version précédente : 49 partis, aucun arrivé — c'est la moitié de l'arbre
+# transitif qui disparaît avec UNE seule dépendance directe, ce qui dit assez
+# quelle place `chromadb` tenait pour ce qu'on lui demandait. Outre lui-même :
+# `grpcio`, `kubernetes`, `googleapis-common-protos`, les six `opentelemetry-*`,
+# `pypika`, `mmh3`, `bcrypt`, `orjson`, `overrides`, `pybase64`, `tenacity`,
+# `typer`/`rich`/`pygments`/`markdown-it-py`/`mdurl`/`shellingham` (son interface
+# en ligne de commande), `jsonschema` et sa grappe, `aiohttp` et la sienne,
+# `requests`/`urllib3`/`oauthlib` (tirés par `kubernetes`), `websockets`,
+# `watchfiles`, `build`/`pyproject_hooks`.
+#
+# Ce que ce fichier ne contient plus non plus, et c'est le vrai changement : la
+# distinction entre « installé » et « livré ». Les versions précédentes listaient
+# `grpcio`, `opentelemetry-exporter-otlp-proto-grpc`, `googleapis-common-protos`
+# et `kubernetes` tout en précisant qu'ils étaient purgés APRÈS installation —
+# chromadb les déclarant en dépendances directes et inconditionnelles, `pip` les
+# installait quoi qu'on veuille. Ils ne sont plus installés du tout, donc plus
+# purgés, donc plus mentionnés. Seuls `pip` et `setuptools` restent purgés (le
+# destinataire n'installe rien) et apparaissent encore ci-dessous.
+#
+# `onnxruntime` reste, et ce n'est pas un résidu : `faster-whisper` et `piper-tts`
+# en dépendent tous les deux. `numpy` reste et devient structurel — c'est le
+# moteur de calcul de `core/vector_store.py`.
 #
 # Pourquoi ce fichier existe : `backend/requirements.txt` épingle les paquets
-# directs, mais son résolveur reste libre sur l'arbre transitif. Mesuré :
-# installer `google-generativeai==0.8.6` rétrograde `protobuf` 7.35.1 → 5.29.6
-# et fait reculer le résolveur d'une quinzaine de versions de
-# `grpcio-status` — rien ne casse (22 imports sur 22 passent), mais deux
-# constructions à deux dates ne donnent pas le même paquet. `pip install -c
-# tools/contraintes-paquet.txt` fige l'arbre entier au lieu de le laisser
-# dériver avec ce qui est publié sur PyPI entre deux builds.
+# directs, mais son résolveur reste libre sur l'arbre transitif. `pip install -c
+# tools/contraintes-paquet.txt` fige l'arbre entier au lieu de le laisser dériver
+# avec ce qui est publié sur PyPI entre deux constructions.
 #
-# `pip`, `setuptools`, `kubernetes`, `grpcio`, `opentelemetry-exporter-otlp-
-# proto-grpc` et `googleapis-common-protos` apparaissent alors qu'ils sont
-# retirés du paquet après coup (`PURGE_SITE_PACKAGES` / `PURGE_DISTRIBUTIONS`) :
-# ce fichier fixe ce qui a été INSTALLÉ, la purge reste une étape séparée.
-#
-# Régénération : reconstruire un paquet avec `--sans-contraintes` implicite
-# (n'importe passer aucun `--contraintes`), lire `python.gel` dans le
-# `PAQUET.json` de l'archive produite, et remplacer ce fichier en entier.
-# Vaut la peine quand `backend/requirements.txt` change une version directe,
-# ou pour rattraper volontairement des correctifs de sécurité transitifs.
+# Régénération : reconstruire un paquet avec `--sans-contraintes`, lire
+# `python.gel` dans le `PAQUET.json` de l'archive produite, et remplacer ce
+# fichier en entier. Vaut la peine quand `backend/requirements.txt` change une
+# version directe, ou pour rattraper volontairement des correctifs de sécurité
+# transitifs.
 
-PyPika==0.51.1
-PyYAML==6.0.3
-Pygments==2.20.0
-aiohappyeyeballs==2.7.1
-aiohttp==3.14.3
-aiosignal==1.4.0
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
-attrs==26.1.0
-av==18.0.0
-bcrypt==5.0.0
-build==1.5.0
+av==18.1.0
 certifi==2026.7.22
-charset-normalizer==3.4.9
-chromadb==1.5.9
 click==8.4.2
 colorama==0.4.6
 ctranslate2==4.8.1
 distro==1.9.0
-durationpy==0.10
 fastapi==0.136.3
 faster-whisper==1.2.1
-filelock==3.32.2
+filelock==3.32.3
 flatbuffers==25.12.19
-frozenlist==1.8.0
 fsspec==2026.7.0
-googleapis-common-protos==1.75.1
-grpcio==1.83.0
 h11==0.16.0
 hf-xet==1.6.0
 httpcore==1.0.9
-httptools==0.8.0
 httpx==0.28.1
 huggingface_hub==1.27.0
 idna==3.18
-importlib_resources==7.1.0
 jiter==0.16.0
-jsonschema-specifications==2025.9.1
-jsonschema==4.26.0
-kubernetes==36.0.3
 lxml==6.1.1
-markdown-it-py==4.2.0
-mdurl==0.1.2
-mmh3==5.2.1
-multidict==6.7.1
 numpy==2.5.2
-oauthlib==3.3.1
 ollama==0.6.2
 onnxruntime==1.28.0
 openai==2.38.0
-opentelemetry-api==1.44.0
-opentelemetry-exporter-otlp-proto-common==1.44.0
-opentelemetry-exporter-otlp-proto-grpc==1.44.0
-opentelemetry-proto==1.44.0
-opentelemetry-sdk==1.44.0
-opentelemetry-semantic-conventions==0.65b0
-orjson==3.11.9
-overrides==7.7.0
 packaging==26.3
 pandas==3.0.3
 pathvalidate==3.3.1
 pillow==12.2.0
 piper-tts==1.4.2
-propcache==0.5.2
 protobuf==7.35.1
-pybase64==1.5.0
-pydantic-settings==2.15.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 pypdf==6.12.2
-pyproject_hooks==1.2.0
 pystray==0.19.5
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.2.2
 python-multipart==0.0.29
-referencing==0.37.0
-requests-oauthlib==2.0.0
-requests==2.34.2
-rich==15.0.0
-rpds-py==2026.6.3
+PyYAML==6.0.3
 setuptools==84.0.0
-shellingham==1.5.4
 six==1.17.0
 sniffio==1.3.1
 starlette==1.2.0
-tenacity==9.1.4
 tokenizers==0.23.1
 tqdm==4.70.0
-typer==0.27.1
-typing-inspection==0.4.3
+typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzdata==2026.3
-urllib3==2.7.0
 uvicorn==0.48.0
 watchdog==6.0.0
-watchfiles==1.2.0
-websocket-client==1.9.0
-websockets==17.0.1
-yarl==1.24.5

@@ -558,12 +558,82 @@ fichier de contraintes ne fait qu'épingler des versions **si** le paquet est
 installé, il n'en installe aucun — plus rien ne tire chromadb, donc plus rien n'y
 touche.
 
-### Étape E — Reconstruire et remesurer
+### Étape E — Reconstruire et remesurer — **x64 fait le 2026-08-13 ; ARM64 : voir ci-dessous**
 
-Nouveau poids du paquet x64, suite de tests complète, puis **seulement à ce stade** un
-nouvel essai de construction ARM64 — sur la machine de sandr ou une autre, avec
-l'attente que ça passe directement puisque les wheels auront été vérifiées au §0, pas
-découvertes en marchant dessus.
+#### Le paquet x64 : 132,2 Mo, contre 159,4 Mo
+
+Construit avec `--sans-contraintes` pour régénérer le gel, comme le prescrit l'en-tête
+de `tools/contraintes-paquet.txt`. **−27,2 Mo (−17 %)**, et surtout **52 paquets
+installés contre 101** : 49 partis, aucun arrivé. La moitié de l'arbre transitif
+disparaissait avec une seule dépendance directe.
+
+Purges restantes : `pip` (10,1 Mo) et `setuptools` (5,1 Mo). Plus rien d'autre — les
+entrées `kubernetes`, `grpcio`, `opentelemetry-exporter-otlp-proto-grpc` et
+`googleapis-common-protos` n'ont pas été « désactivées », elles n'ont plus d'objet.
+
+Vérifié dans l'interpréteur embarqué du paquet, pas seulement au build : `import main`
+passe en 13,8 s, monte 71 routes et 4 modules, sert l'interface statique — **sans
+torch et sans chromadb chargés**, avec `core.vector_store` importable et numpy 2.5.2
+présent. Le gel confirme le tableau de l'étape D par une seconde voie : ni `chromadb`,
+ni `grpcio`, ni `kubernetes`, ni `opentelemetry-*`, ni `pypika`, ni `mmh3` — et
+`onnxruntime==1.28.0` toujours là, comme prévu, pour la voix.
+
+#### ARM64 : l'attente de cette étape était fausse, et il vaut mieux le savoir ici
+
+Ce document annonçait un essai ARM64 « avec l'attente que ça passe directement
+puisque les wheels auront été vérifiées au §0 ». **Cette attente ne tient pas**, et
+la vérifier coûtait une requête PyPI par paquet plutôt qu'un déplacement jusqu'à une
+machine ARM64. Les 52 paquets du nouveau gel, classés par ce qu'ils publient :
+
+| | Nombre | Verdict ARM64 |
+|---|---|---|
+| Wheel universelle (`py3-none-any`) | 38 | indifférents à l'architecture |
+| Wheel `win_arm64` publiée | 11 | `numpy`, `pandas`, `onnxruntime`, `lxml`, `pillow`, `tokenizers`, `pydantic_core`, `PyYAML`, `av`, `hf-xet`, `jiter` |
+| **Sans wheel `win_arm64`** | **3** | **détaillés ci-dessous** |
+
+**Le mur chromadb est bien tombé** : 49 des 52 paquets restants sont propres pour
+ARM64, et tout ce que ce chantier a retiré l'était par construction. Mais trois
+paquets restent, et ils n'ont rien à voir avec le stockage vectoriel — ils étaient
+derrière le mur, masqués par lui :
+
+- **`ctranslate2==4.8.1` — blocage dur.** Aucune wheel `win_arm64` **et aucune sdist
+  du tout** : `pip` ne peut pas l'installer sur cette architecture, même avec un
+  toolchain complet, faute de source publiée. C'est une dépendance de
+  `faster-whisper` (transcription vocale). Rien ne se contourne côté build.
+- **`piper-tts==1.4.2`** — extension compilée (`cp39-abi3-win_amd64`), mais une sdist
+  existe : constructible en théorie, au prix d'un toolchain C++ sur la machine cible,
+  c'est-à-dire exactement le piège que ce chantier voulait quitter.
+- **`watchdog==6.0.0`** — cas le plus favorable, à ne pas confondre avec les deux
+  autres : ses wheels Windows sont `py3-none-win32/win_amd64/win_ia64`, donc **du
+  Python pur simplement étiqueté par plateforme** (l'extension C de watchdog n'existe
+  que pour FSEvents, sur macOS). Sur ARM64, `pip` ne fera correspondre aucune wheel
+  et tombera sur la sdist, qui devrait s'installer sans rien compiler. À confirmer
+  empiriquement, pas à déclarer acquis.
+
+À cela s'ajoute, hors paquet : **`torch` ne publie aucune wheel `win_arm64`** (vérifié
+sur la version courante). Il n'est pas embarqué — il s'installe au premier usage du
+RAG (décision 3 de `faire_paquet.py`) — donc il ne bloque pas la CONSTRUCTION, mais il
+bloquerait la recherche documentaire à l'usage. `sentence-transformers` lui-même est
+universel ; c'est torch, dessous, qui ne l'est pas.
+
+**Conséquence pratique, et c'est la seule qui compte : l'essai ARM64 ne doit pas être
+tenté « en s'attendant à ce que ça passe ».** Il échouera, sur `ctranslate2` d'abord.
+Le prochain chantier n'est pas vectoriel, il est vocal — et il pose la même question
+qu'au §0 pour chromadb : `faster-whisper`/`piper-tts` sont-ils proportionnés à ce
+qu'on leur demande, ou peut-on transcrire et synthétiser autrement ? La différence
+avec la soirée d'origine, c'est qu'on le sait avant de construire, pas en marchant
+dessus.
+
+#### Ce qui reste ouvert dans l'étape E
+
+- L'essai de construction ARM64 lui-même, sur la machine de sandr ou une autre : il
+  demande du matériel ARM64, et l'analyse ci-dessus dit qu'il échouera tant que la
+  pile vocale n'aura pas été traitée. Le faire quand même a une valeur — confirmer
+  que `ctranslate2` est bien le premier point d'arrêt et que `watchdog` passe par sa
+  sdist — mais pas celle qui était espérée.
+- La suite de tests complète passe (328 tests, plus les 15 de
+  `integration_vector_store.py`), mais elle tourne en 3.14 sur le poste et en 3.12 en
+  CI ; le paquet, lui, embarque 3.12 et n'exécute pas la suite.
 
 ---
 
@@ -577,26 +647,36 @@ pas meilleur — une amélioration est un chantier séparé, à ne pas mélanger
 
 ## §6 — Ce qui n'a pas été vérifié
 
-Les points précédents de cette liste ont été mesurés (§0 le 2026-08-11, étape B le
-2026-08-13) et sont retirés d'ici — `sqlite-vec` n'a pas de wheel `win_arm64` (écarté),
-`numpy` en a une pour la version épinglée, le volume réel est de 170 chunks sur trois
-collections, l'interface a été implémentée (`core/vector_store.py`) et testée en
-non-régression contre le vrai chromadb sur les trois profils d'appel. Ce qui reste :
+Les points mesurés depuis (§0 le 2026-08-11, étapes B à E le 2026-08-13) sont retirés
+d'ici : `sqlite-vec` écarté faute de wheel `win_arm64`, volume réel de 170 chunks,
+interface implémentée et testée en non-régression, données migrées et parité confirmée
+sur les vraies données, trois moteurs branchés, chromadb et sa grappe retirés, paquet
+x64 reconstruit à 132,2 Mo. Ce qui reste ouvert :
 
-- **`core/rag.py`, `core/docanalysis.py`, `core/history.py` n'ont pas encore été
-  branchés sur `core/vector_store.py`.** Ce document décrit et teste l'implémentation,
-  pas son intégration — `core/runtime.py:129-136` construit toujours
-  `DocAnalysisEngine`/`HistoryEngine` avec `rag._client`/`rag._ef` (chromadb), et
-  `RAGEngine` construit toujours son propre `chromadb.PersistentClient`. C'est la suite
-  de l'étape B, pas encore faite.
-- **Temps de requête réel : mesuré, pas juste estimé — et la borne dominante n'est pas
-  celle qu'on attendait.** ~47 ms/appel à `query()` sur 170 vecteurs (cache mémoire
-  chaud, `all-MiniLM-L6-v2` = 384 dimensions), ~92 ms pour un cycle
-  `upsert(1) + query()` cache froid. Le calcul cosinus lui-même (170 produits scalaires
-  sur 384 dimensions) est bien de l'ordre du dixième de milliseconde comme prévu — c'est
-  l'inférence du modèle d'embedding sur le TEXTE de la requête qui domine le temps total.
-  Pas une régression : chromadb passe par exactement le même modèle
-  (`SentenceTransformerEmbeddingFunction`) pour embedder ses propres requêtes, donc ce
-  coût existe déjà aujourd'hui, indépendamment du stockage.
-- **Migration des données réelles (étape C) et retrait de chromadb (étape D)** ne sont
-  pas commencés.
+- **Le délai d'usage réel avant suppression de `backend/chroma_db/` (étape C.4).**
+  C'est le seul point de l'étape C non fermé, et c'est une attente, pas une tâche :
+  il demande qu'Épure tourne pour de bon sur le nouveau store — indexation de fiches,
+  chargement d'un PDF, sauvegarde et recherche de conversations — sur plusieurs
+  sessions. La parité prouve que les deux stockages répondent pareil aux appels qu'on
+  a su formuler, pas qu'aucun chemin de code encore inexploré ne casse.
+- **La construction ARM64 (étape E), et elle échouera** : `ctranslate2` (via
+  `faster-whisper`) n'a ni wheel `win_arm64` ni sdist, donc `pip` ne peut pas
+  l'installer, même avec un toolchain. `piper-tts` demanderait une compilation C++.
+  `watchdog` devrait passer par sa sdist en Python pur, à confirmer. Et `torch`, hors
+  paquet mais nécessaire au premier usage du RAG, n'a pas non plus de wheel
+  `win_arm64`. **Le mur suivant est la pile vocale, pas le stockage vectoriel** —
+  mesuré paquet par paquet, pas découvert en construisant.
+- **`integration_vector_store.py` n'est pas câblé dans la CI**, et ne peut plus l'être
+  tel quel : il compare au vrai `chromadb`, qui n'est plus une dépendance du projet.
+  Soit il devient un test manuel assumé (avec `pip install chromadb`), soit il perd son
+  côté comparatif pour ne garder que les invariants de `VectorStore` seul. Non tranché.
+- **Temps de requête : mesuré (~47 ms/appel `query()` cache chaud, ~92 ms pour
+  `upsert(1) + query()` cache froid), mais jamais sous charge réelle prolongée.** La
+  borne dominante n'est pas le cosinus (170 produits scalaires sur 384 dimensions, de
+  l'ordre du dixième de milliseconde) mais l'inférence du modèle d'embedding sur le
+  texte de la requête — un coût qui existait déjà avec chromadb, qui passait par le
+  même modèle.
+- **La régression de concurrence assumée à l'étape A n'a pas été observée en usage
+  réel** : un seul verrou sérialise désormais les trois collections, là où chromadb
+  les traitait indépendamment. Sans conséquence mesurable à 170 chunks et un
+  utilisateur, mais c'est une limite qui ne se verra qu'en grandissant.
