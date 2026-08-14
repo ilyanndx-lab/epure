@@ -139,6 +139,7 @@ export interface ModuleBarProps {
   onTranscribed?: (text: string) => void
   ttsEnabled?: boolean
   onTtsToggle?: () => void
+  synthesizingText?: string | null
   speakingText?: string | null
   effort?: EffortLevel
   onEffortChange?: (e: EffortLevel) => void
@@ -156,6 +157,7 @@ export default function ModuleBar({
   onTranscribed,
   ttsEnabled,
   onTtsToggle,
+  synthesizingText,
   speakingText,
   effort = 'direct',
   onEffortChange,
@@ -609,7 +611,13 @@ export default function ModuleBar({
             {onTtsToggle && (
               <div className="flex items-center gap-2">
                 <Toggle checked={!!ttsEnabled} onChange={onTtsToggle} label="Lecture auto" />
-                <span className="text-xs text-secondary">{speakingText ? 'lecture...' : 'lecture auto'}</span>
+                {/* Trois états distincts, et l'ordre compte : la synthèse précède
+                    toujours la lecture. Annoncer « lecture... » pendant une synthèse
+                    de 49 s (mesuré sur un message long) donnait une interface qui
+                    prétend jouer un son qu'on n'entend pas. */}
+                <span className="text-xs text-secondary">
+                  {synthesizingText ? 'synthèse...' : speakingText ? 'lecture...' : 'lecture auto'}
+                </span>
               </div>
             )}
             <div className="flex items-center gap-2">

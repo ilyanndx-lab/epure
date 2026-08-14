@@ -19,6 +19,7 @@ interface KholleProps {
   onAssistantDone?: (text: string) => void
   playSpeech?: (text: string) => void
   stopSpeech?: () => void
+  synthesizingText?: string | null
   speakingText?: string | null
   ttsEnabled?: boolean
   onTtsToggle?: () => void
@@ -26,7 +27,7 @@ interface KholleProps {
 
 const basename = (path: string) => path.split(/[/\\]/).pop() ?? path
 
-export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speakingText, ttsEnabled, onTtsToggle }: KholleProps) {
+export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, synthesizingText, speakingText, ttsEnabled, onTtsToggle }: KholleProps) {
   // Config state
   const [mode, setMode] = usePersistentState<Mode>('epure.kholle.mode', 'generate')
   const [indexedFiles, setIndexedFiles] = useState<string[]>([])
@@ -304,6 +305,7 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speaki
           onTranscribed={(t) => setQuestionText(prev => prev + t)}
           ttsEnabled={ttsEnabled}
           onTtsToggle={onTtsToggle}
+          synthesizingText={synthesizingText}
           speakingText={speakingText}
         />
         <div className="border-t border-line px-8 py-4">
@@ -366,20 +368,31 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speaki
                 </div>
               )}
               {correctionDone && playSpeech && (
+                /* Trois états : la synthèse peut durer des dizaines de secondes,
+                   afficher « lire » pendant ce temps laisse croire que le clic
+                   s'est perdu. Cf. App.tsx (synthesizingText). */
                 <button
                   onClick={() =>
-                    speakingText === correction ? stopSpeech?.() : playSpeech(correction)
+                    synthesizingText === correction || speakingText === correction
+                      ? stopSpeech?.()
+                      : playSpeech(correction)
                   }
                   className={`mt-3 inline-flex items-center gap-1.5 text-xs transition-colors duration-150 ${
-                    speakingText === correction
+                    synthesizingText === correction || speakingText === correction
                       ? 'text-accent2 hover:text-accent2-hover'
                       : 'text-muted hover:text-secondary'
                   }`}
-                  title={speakingText === correction ? 'Arrêter' : 'Lire la correction'}
+                  title={
+                    synthesizingText === correction
+                      ? 'Synthèse en cours — cliquer pour abandonner'
+                      : speakingText === correction ? 'Arrêter' : 'Lire la correction'
+                  }
                 >
-                  {speakingText === correction
-                    ? <><Square size={12} fill="currentColor" /> arrêter</>
-                    : <><Play size={12} /> lire</>}
+                  {synthesizingText === correction
+                    ? <><Loader2 size={12} className="animate-spin" /> synthèse…</>
+                    : speakingText === correction
+                      ? <><Square size={12} fill="currentColor" /> arrêter</>
+                      : <><Play size={12} /> lire</>}
                 </button>
               )}
             </>
@@ -404,6 +417,7 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, speaki
           onTranscribed={(t) => setAnswer(prev => prev + t)}
           ttsEnabled={ttsEnabled}
           onTtsToggle={onTtsToggle}
+          synthesizingText={synthesizingText}
           speakingText={speakingText}
         />
         {/* Input */}

@@ -28,6 +28,18 @@ export default function App() {
   // module. On n'ajoute jamais, on ne retire pas → pas d'interruption.
   const [mountedIds, setMountedIds] = useState<string[]>([activeModule])
   const [ttsEnabled, setTtsEnabled] = useState(false)
+  // DEUX états, pas un. `speakingText` servait aux deux et était posé dès AVANT
+  // le fetch : sur un message long l'interface annonçait « lecture... » pendant
+  // toute la synthèse. Mesuré côté backend sur le vrai moteur Piper : 0,3 s pour
+  // 26 caractères, 14 s pour 3 700, 49 s pour 12 400. L'utilisateur voyait donc
+  // une lecture en cours sans entendre quoi que ce soit — ce qui se lit comme une
+  // panne et pousse à recliquer, déclenchant une deuxième synthèse aussi longue.
+  //
+  // `synthesizingText` : de l'envoi de la requête jusqu'au DÉBUT RÉEL de la
+  // lecture (ou l'erreur). `speakingText` : seulement quand le navigateur a
+  // effectivement commencé à jouer l'audio. Les deux ne sont jamais posés
+  // ensemble.
+  const [synthesizingText, setSynthesizingText] = useState<string | null>(null)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
   // Zoom par module : la prop CSS `zoom` reflue le layout (Chromium/Electron) →
   // le contenu agrandi devient scrollable au lieu d'être coupé. Persisté et borné.
@@ -40,11 +52,25 @@ export default function App() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
+  // Numéro de la demande vocale courante. Une synthèse dure des dizaines de
+  // secondes (mesuré) : pendant ce temps l'utilisateur peut cliquer « arrêter »
+  // ou lancer la lecture d'un AUTRE message. Sans ce compteur, la réponse de la
+  // requête abandonnée finit par arriver et rallume l'audio et l'état d'un texte
+  // que plus personne n'attend — d'autant plus visible maintenant que « synthèse »
+  // et « lecture » sont distincts. Chaque appel prend un numéro ; à chaque étape
+  // asynchrone il vérifie qu'il est encore le dernier, sinon il se retire.
+  const demandeVocale = useRef(0)
+
   const stopSpeech = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
     }
+    // Les deux : « arrêter » doit aussi annuler l'affichage d'une synthèse en
+    // cours, sinon le bouton stop laisse l'interface sur « synthèse... » pour un
+    // audio qui n'arrivera jamais.
+    demandeVocale.current += 1   // invalide la requête en vol (cf. playSpeech)
+    setSynthesizingText(null)
     setSpeakingText(null)
   }, [])
 
@@ -89,7 +115,13 @@ export default function App() {
       audioRef.current.pause()
       audioRef.current = null
     }
-    setSpeakingText(text)
+    // Synthèse, PAS lecture : rien n'a encore été joué, et ça peut durer une
+    // minute. `speakingText` ne sera posé qu'au démarrage réel de l'audio.
+    const demande = demandeVocale.current + 1
+    demandeVocale.current = demande
+    const estCourante = () => demandeVocale.current === demande
+    setSynthesizingText(text)
+    setSpeakingText(null)
     try {
       const res = await apiFetch(`${API}/voice/synthesize`, {
         method: 'POST',
@@ -112,6 +144,9 @@ export default function App() {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const blob = await res.blob()
+      // Arrêté ou remplacé pendant la synthèse : on ne joue rien et on ne touche
+      // à aucun état — celui affiché appartient désormais à une autre demande.
+      if (!estCourante()) return
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audioRef.current = audio
@@ -121,8 +156,18 @@ export default function App() {
         audioRef.current = null
       }
       audio.onerror = () => {
+        URL.revokeObjectURL(url)
+        setSynthesizingText(null)
         setSpeakingText(null)
         audioRef.current = null
+      }
+      // LE point de bascule : `playing` est le seul signal qui dise « le
+      // navigateur émet du son maintenant ». C'est donc ici — et nulle part
+      // avant — que « synthèse » devient « lecture ».
+      audio.onplaying = () => {
+        if (!estCourante()) return
+        setSynthesizingText(null)
+        setSpeakingText(text)
       }
       // `play()` rend une Promise, et c'est tout l'enjeu : non attendue, son rejet
       // ne passe PAS par le `catch` ci-dessous (on est déjà sorti du `try` quand
@@ -141,11 +186,18 @@ export default function App() {
         const message = err instanceof Error ? err.message : String(err)
         console.error(`Erreur TTS (play) — ${nom} : ${message}`, err)
         URL.revokeObjectURL(url)
-        setSpeakingText(null)
         audioRef.current = null
+        if (!estCourante()) return
+        // Les DEUX : le rejet arrive avant tout `playing`, donc c'est l'état
+        // « synthèse » qui est encore affiché — le laisser posé rendrait
+        // l'interface définitivement bloquée sur un travail terminé en échec.
+        setSynthesizingText(null)
+        setSpeakingText(null)
       })
     } catch (err) {
       console.error('Erreur TTS:', err)
+      if (!estCourante()) return
+      setSynthesizingText(null)
       setSpeakingText(null)
     }
   }, [confirmerModeleVocal])
@@ -186,6 +238,7 @@ export default function App() {
     onAssistantDone,
     playSpeech,
     stopSpeech,
+    synthesizingText,
     speakingText,
     onNavigate: setActiveModule,
     ttsEnabled,

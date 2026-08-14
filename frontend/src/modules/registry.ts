@@ -21,6 +21,9 @@ export interface SharedModuleProps {
   onAssistantDone?: (text: string) => void
   playSpeech?: (text: string) => void
   stopSpeech?: () => void
+  /** Texte dont la synthèse est en cours — aucun son n'est encore émis. */
+  synthesizingText?: string | null
+  /** Texte effectivement en cours de lecture (le navigateur émet du son). */
   speakingText?: string | null
   onNavigate?: (module: string) => void
   ttsEnabled?: boolean
