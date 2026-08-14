@@ -57,15 +57,35 @@ class DocAnalysisEngine:
                 n_chunks = len(existing["ids"])
                 reader = pypdf.PdfReader(path)
                 n_pages = len(reader.pages)
+                # Aperçu du document déjà en cache : son PREMIER chunk.
+                #
+                # Ce `where` à deux clés est un ET, et il fonctionne — ce qui n'a pas
+                # toujours été vrai. chromadb rejetait tout `where` de plus d'une clé,
+                # donc cet appel levait à chaque fois, et le `except Exception: pass`
+                # qui l'entourait rendait la panne invisible : `apercu` restait vide
+                # sans que rien ne le signale, y compris en relisant ce code.
+                # `core/vector_store.py` implémente désormais le ET réel.
+                #
+                # L'exception est toujours attrapée — un aperçu manquant ne doit pas
+                # faire échouer le chargement du document, qui lui a réussi — mais
+                # elle est JOURNALISÉE : après cette correction, une erreur ici n'est
+                # plus un état connu, c'est une vraie anomalie.
                 apercu = ""
                 try:
                     first = self._col.get(
                         where={"doc_id": doc_id, "chunk_index": 0},
                         include=["documents"],
                     )
-                    apercu = (first.get("documents") or [""])[0][:300]
+                    documents = first.get("documents") or []
+                    if documents:
+                        apercu = documents[0][:300]
+                    else:
+                        logger.warning(
+                            "Aperçu vide : aucun chunk d'index 0 pour le document %s "
+                            "(%d chunk(s) indexés)", doc_id, n_chunks,
+                        )
                 except Exception:
-                    pass
+                    logger.exception("Erreur récupération de l'aperçu du document %s", doc_id)
                 yield {
                     "type": "done",
                     "doc": {

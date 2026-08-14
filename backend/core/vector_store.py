@@ -79,34 +79,50 @@ def _safe_table(name: str) -> str:
 
 
 def _valider_where(where: dict, ou: str) -> None:
-    """Le vrai chromadb (1.5.9) rejette tout `where` à plus d'une clé — `validate_where`
-    lève avant même de chercher : ``len(where) != 1`` → `ValueError`. Ce n'est PAS un
-    choix de ce module : `core/docanalysis.py::load_document_streaming` appelle bien
-    ``get(where={"doc_id": doc_id, "chunk_index": 0})`` (une intention de AND que le
-    nom de la variable suggère), mais get un `ValueError` de chromadb à l'exécution,
-    silencieusement absorbé par son propre `except Exception: pass` — `apercu` reste
-    vide. Mesuré en écrivant le test de non-régression (§1, étape B), pas supposé en
-    lisant le code : la description initiale de l'interface (§0.3/étape A du plan)
-    disait « AND implicite entre plusieurs clés », ce qui était faux. Reproduire ce
-    rejet ici, plutôt que de laisser cet appel réussir, est ce qui fait de ce module un
-    remplacement fidèle et non une correction silencieuse d'un bug indépendant.
+    """Un `where` doit porter au moins une condition.
+
+    **Historique, parce que ce code a dit le contraire pendant tout le remplacement
+    de chromadb.** Le vrai chromadb (1.5.9) rejetait tout `where` à plus d'une clé
+    (`validate_where` : ``len(where) != 1`` → `ValueError`), et ce module
+    reproduisait fidèlement ce rejet — y compris pour l'appel
+    ``get(where={"doc_id": doc_id, "chunk_index": 0})`` de
+    `core/docanalysis.py::load_document_streaming`, dont l'intention de AND était
+    manifeste mais qui levait déjà chez chromadb, silencieusement absorbé par un
+    `except Exception: pass`. C'était délibéré : le plan
+    (`docs/remplacement-vectoriel.md` §5) limitait le chantier au remplacement du
+    stockage, et « non-régression » voulait dire préserver le bug avec le reste.
+
+    Ce périmètre est clos. chromadb a été retiré, `VectorStore` est du code d'Épure,
+    et il n'y a plus aucune raison de faire échouer une requête que ce module sait
+    parfaitement satisfaire : **plusieurs clés sont désormais combinées par ET**.
+    La contrainte qui reste est la seule qui protège de quelque chose — un `where`
+    vide, qui ne filtre rien et signale presque sûrement un bug d'appelant.
+    ``get()``/``delete()`` sans `where` du tout gardent leur sémantique propre
+    (tout / refus), documentée sur leurs méthodes.
     """
-    if len(where) != 1:
-        raise ValueError(f"Expected where to have exactly one operator, got {where} in {ou}.")
+    if not where:
+        raise ValueError(f"where vide dans {ou} — utiliser get() sans where pour tout lire.")
 
 
 def _matches(metadata: dict, where: dict) -> bool:
-    """Une seule clé (`_valider_where` l'impose) : égalité ou `$in` — les deux seules
-    formes réellement exercées par `core/rag.py`/`core/docanalysis.py`/`core/history.py`.
+    """Toutes les conditions doivent tenir (ET), chacune en égalité ou `$in`.
 
-    Filtrage en Python sur les métadonnées déjà en mémoire, pas en SQL : à 170 lignes au
-    total par collection, traduire `where` en clauses SQL sur du JSON n'apporterait rien.
+    Point unique du filtrage : `get()`, `query()` et `delete()` passent tous les
+    trois par ici, donc le ET multi-clés vaut pour les trois sans duplication — il
+    n'y avait rien à changer ailleurs.
+
+    Filtrage en Python sur les métadonnées déjà en mémoire, pas en SQL : à 170 lignes
+    au total par collection, traduire `where` en clauses SQL sur du JSON n'apporterait
+    rien.
     """
-    ((champ, condition),) = where.items()
-    valeur = metadata.get(champ)
-    if isinstance(condition, dict) and "$in" in condition:
-        return valeur in condition["$in"]
-    return valeur == condition
+    for champ, condition in where.items():
+        valeur = metadata.get(champ)
+        if isinstance(condition, dict) and "$in" in condition:
+            if valeur not in condition["$in"]:
+                return False
+        elif valeur != condition:
+            return False
+    return True
 
 
 class VectorStore:

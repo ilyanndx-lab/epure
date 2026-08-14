@@ -168,21 +168,43 @@ class DocAnalysisTest(_Profil):
         )
         self._upsert_both(ids, docs, metadatas)
 
-    def test_where_a_deux_cles_leve_dans_les_deux_a_l_identique(self):
-        """`core/docanalysis.py::load_document_streaming` appelle bien
-        `get(where={"doc_id": doc_id, "chunk_index": 0})` — un AND à deux clés que le
-        VRAI chromadb (1.5.9) rejette (`validate_where` : `len(where) != 1`). L'appel
-        est déjà entouré d'un `except Exception: pass` dans le code existant : c'est un
-        bug préexistant, indépendant de cette migration, qui laisse `apercu` vide
-        aujourd'hui. Le non-régression ici n'est PAS « ça doit marcher » — c'est que le
-        nouveau store échoue de la MÊME façon que l'ancien, pour que ce bug reste
-        exactement aussi présent (ou absent) après la migration qu'avant elle.
+    def test_where_a_deux_cles_diverge_volontairement_de_chromadb(self):
+        """Le seul écart ASSUMÉ entre les deux moteurs, et il est postérieur à la
+        migration.
+
+        Pendant tout le remplacement, ce test affirmait l'inverse : les deux devaient
+        lever pareil, parce que chromadb rejette tout `where` à plus d'une clé
+        (`validate_where` : `len(where) != 1`) et que « non-régression » incluait de
+        préserver ce bug — `core/docanalysis.py::load_document_streaming` appelle
+        `get(where={"doc_id": …, "chunk_index": 0})` et laissait `apercu` vide en
+        silence.
+
+        chromadb retiré, ce périmètre est clos : `VectorStore` combine désormais les
+        clés par ET. On garde la comparaison pour DOCUMENTER la divergence plutôt que
+        de la supprimer — c'est le seul endroit où le remplacement fait sciemment
+        mieux que l'original, et le lire ici évite qu'on le reprenne un jour pour une
+        régression.
         """
         where = {"doc_id": "docA", "chunk_index": 0}
         with self.assertRaises(ValueError):
             self.chroma_col.get(where=where, include=["documents"])
-        with self.assertRaises(ValueError):
-            self.store_col.get(where=where, include=["documents"])
+
+        res = self.store_col.get(where=where, include=["documents", "metadatas"])
+        self.assertEqual(len(res["ids"]), 1, "un seul chunk porte (docA, 0)")
+        self.assertEqual(res["metadatas"][0]["doc_id"], "docA")
+        self.assertEqual(res["metadatas"][0]["chunk_index"], 0)
+        self.assertTrue(res["documents"][0], "le document ne doit pas être vide")
+
+    def test_where_a_deux_cles_est_bien_un_ET_pas_un_OU(self):
+        """Une combinaison impossible ne doit rien renvoyer.
+
+        Sans cette moitié-là, une implémentation qui ignorerait la seconde clé (ou
+        qui ferait un OU) passerait le test précédent sans qu'on le voie.
+        """
+        res = self.store_col.get(
+            where={"doc_id": "docA", "chunk_index": 9999}, include=["documents"],
+        )
+        self.assertEqual(res["ids"], [])
 
     def test_query_avec_distances_et_where(self):
         rc = self.chroma_col.query(

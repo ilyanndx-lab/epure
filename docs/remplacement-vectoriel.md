@@ -87,7 +87,7 @@ le code, est un peu plus large que celle de `core/rag.py` :
 | | `where` utilisés | `include` demandés | `delete` par |
 |---|---|---|---|
 | `core/rag.py` (« fiches ») | égalité, `$in` | `[]`, `["metadatas"]` | `where` |
-| `core/docanalysis.py` (« doc_analysis ») | égalité, `$in`, et un AND à deux clés qui **rate déjà silencieusement** (§1, étape B) | `[]`, `["documents"]`, `["documents","metadatas"]`, `["metadatas"]` | `where` |
+| `core/docanalysis.py` (« doc_analysis ») | égalité, `$in`, et un AND à deux clés — qui ratait silencieusement, **corrigé depuis** (étape F) | `[]`, `["documents"]`, `["documents","metadatas"]`, `["metadatas"]` | `where` |
 | `core/history.py` (« history ») | — (jamais de `where`) | `["documents","metadatas"]` | **`ids`**, pas `where` |
 
 `core/docanalysis.py:145-153` est le seul des trois à lire `results["distances"]` — pour
@@ -675,6 +675,50 @@ qu'on le sait avant de construire, pas en marchant dessus.
   `integration_vector_store.py`), mais elle tourne en 3.14 sur le poste et en 3.12 en
   CI ; le paquet, lui, embarque 3.12 et n'exécute pas la suite.
 
+
+### Étape F — Le AND multi-clés, une fois le périmètre clos — **faite le 2026-08-14**
+
+Post-chantier, et c'est la raison d'être de cette étape : tant que `chromadb` était
+là, reproduire son rejet des `where` à plusieurs clés était la seule position
+tenable (§5 : remplacement de stockage, pas amélioration). `chromadb` retiré à
+l'étape D, `core/vector_store.py` est du code d'Épure, et faire échouer une requête
+qu'il sait satisfaire n'avait plus de justification — seulement une origine.
+
+**`_valider_where` n'impose plus qu'une chose : un `where` non vide.**
+`_matches` combine désormais toutes les clés par ET (égalité ou `$in`, librement
+mélangés). Rien à changer dans `get()`/`query()`/`delete()` : les trois partagent
+ces deux fonctions, le mécanisme n'était pas dupliqué.
+
+`get()`/`delete()` **sans** `where` gardent leur sémantique propre (tout lire / lever) :
+c'est le `where` **vide** qui est refusé, parce qu'il signale un appelant qui croit
+filtrer alors qu'il ne filtre rien.
+
+**Le `except Exception: pass` de `core/docanalysis.py` est levé aussi**, et ça compte
+autant que le reste : il n'avalait pas seulement le `ValueError` attendu, il avalait
+*tout*. L'exception est toujours attrapée — un aperçu manquant ne doit pas faire
+échouer le chargement d'un document qui, lui, a réussi — mais elle est journalisée,
+et une collection vide de chunk 0 laisse un `warning`. Après correction, une erreur à
+cet endroit n'est plus un état connu.
+
+**Preuve empirique, et contre-épreuve.** `test_docanalysis_apercu.py` (9 tests) fait
+tourner le vrai `load_document_streaming` et lit l'aperçu de l'événement `done` :
+non vide, et issu du chunk 0, pas d'un autre. Le filtre est testé séparément — ET et
+non OU, clés suivantes non ignorées, `$in` combinable avec une égalité. Puis la
+contre-épreuve, sans laquelle un test de non-régression ne prouve rien : en
+réinjectant la règle de chromadb (`len(where) != 1`), le test d'aperçu **échoue avec
+`apercu == ''`** — exactement le symptôme d'origine. Deux assertions ont d'ailleurs
+dû être renforcées parce qu'elles passaient par vacuité sur une chaîne vide.
+
+Aucun modèle d'embedding n'est chargé : le test double la collection et délègue le
+filtrage aux **vraies** fonctions du store. Un `VectorStore` réel construirait
+`sentence-transformers` (17 s, torch), que le job rapide de la CI n'installe pas —
+c'est ce qui distingue ce `test_` de `integration_vector_store.py`.
+
+`integration_vector_store.py` est mis à jour plutôt que vidé : son test affirmait que
+les deux moteurs devaient lever à l'identique. Il documente maintenant la divergence
+assumée — chromadb lève, `VectorStore` renvoie le bon chunk — pour qu'on ne la
+reprenne pas un jour pour une régression.
+
 ---
 
 ## §5 — Hors périmètre
@@ -682,6 +726,13 @@ qu'on le sait avant de construire, pas en marchant dessus.
 **Améliorer la qualité de la recherche documentaire.** C'est un remplacement de
 stockage, pas une refonte du RAG. Le comportement de recherche doit rester équivalent,
 pas meilleur — une amélioration est un chantier séparé, à ne pas mélanger avec celui-ci.
+
+> **Levé le 2026-08-14, pour un point précis et une fois le remplacement terminé**
+> (étape F) : le AND multi-clés de `where`. Ce n'est pas une entorse rétroactive —
+> la règle ci-dessus a tenu pendant tout le chantier, et c'est elle qui a fait
+> reproduire le bug plutôt que le corriger en chemin. Elle a cessé de s'appliquer
+> quand `chromadb` a disparu : il n'y avait plus de « comportement d'origine » à
+> préserver, seulement notre propre code qui refusait ce qu'il savait faire.
 
 ---
 
@@ -709,6 +760,9 @@ x64 reconstruit à 132,2 Mo. Ce qui reste ouvert :
   sur ARM64 (cf. étape E).
 - **`integration_vector_store.py` n'est pas câblé dans la CI**, et ne peut plus l'être
   tel quel : il compare au vrai `chromadb`, qui n'est plus une dépendance du projet.
+  Depuis l'étape F, il porte en plus la seule divergence assumée entre les deux
+  moteurs (le AND multi-clés) — dont la partie qui compte est, elle, couverte par
+  `test_docanalysis_apercu.py`, qui tourne en CI sans chromadb ni torch.
   Soit il devient un test manuel assumé (avec `pip install chromadb`), soit il perd son
   côté comparatif pour ne garder que les invariants de `VectorStore` seul. Non tranché.
 - **Temps de requête : mesuré (~47 ms/appel `query()` cache chaud, ~92 ms pour
