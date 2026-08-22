@@ -8,6 +8,7 @@ import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
 import { API, apiFetch } from '../api'
 import { useModules } from '../modules'
+import { useVoix } from '../voix'
 import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
 
 // Curated model recommendations per module (IDs morts retirés —
@@ -139,6 +140,7 @@ export interface ModuleBarProps {
   onTranscribed?: (text: string) => void
   ttsEnabled?: boolean
   onTtsToggle?: () => void
+  synthesizingText?: string | null
   speakingText?: string | null
   effort?: EffortLevel
   onEffortChange?: (e: EffortLevel) => void
@@ -156,6 +158,7 @@ export default function ModuleBar({
   onTranscribed,
   ttsEnabled,
   onTtsToggle,
+  synthesizingText,
   speakingText,
   effort = 'direct',
   onEffortChange,
@@ -164,6 +167,14 @@ export default function ModuleBar({
 }: ModuleBarProps) {
   // Modules installés : source des commandes `/` du panneau Compétences.
   const modules = useModules()
+  // Le micro se décide ICI et pas chez les appelants. `showMic` dit « ce module
+  // veut un micro » ; la capacité dit « cette machine en a un ». Le filtre est
+  // dans le composant partagé pour qu'un module ajouté plus tard — un module
+  // généré par l'Atelier, qui ne sait rien de tout ça — hérite du bon
+  // comportement sans une ligne à écrire. Sur ARM64, où faster-whisper n'est pas
+  // installé (cf. voix.ts), un micro affiché ne rend qu'un 503 par appui.
+  const voix = useVoix()
+  const micDisponible = !!showMic && voix.transcription
   const [activePanel, setActivePanel] = useState<Panel>(null)
   const [showFullModelList, setShowFullModelList] = useState(false)
 
@@ -609,7 +620,13 @@ export default function ModuleBar({
             {onTtsToggle && (
               <div className="flex items-center gap-2">
                 <Toggle checked={!!ttsEnabled} onChange={onTtsToggle} label="Lecture auto" />
-                <span className="text-xs text-secondary">{speakingText ? 'lecture...' : 'lecture auto'}</span>
+                {/* Trois états distincts, et l'ordre compte : la synthèse précède
+                    toujours la lecture. Annoncer « lecture... » pendant une synthèse
+                    de 49 s (mesuré sur un message long) donnait une interface qui
+                    prétend jouer un son qu'on n'entend pas. */}
+                <span className="text-xs text-secondary">
+                  {synthesizingText ? 'synthèse...' : speakingText ? 'lecture...' : 'lecture auto'}
+                </span>
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -822,7 +839,7 @@ export default function ModuleBar({
           </button>
         )}
 
-        {showMic && (
+        {micDisponible && (
           <button
             onPointerDown={handleMicDown}
             onPointerUp={handleMicUp}

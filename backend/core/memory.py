@@ -1,8 +1,4 @@
-import concurrent.futures
-import json
 import logging
-import re
-from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -35,29 +31,18 @@ _CONTEXT_DEFAULT = {
     "session_instruction": "",
 }
 
-_VALID_SECTIONS = {"lacunes", "forces", "style", "sessions_récentes", "aucune"}
-_CACHE_MAXSIZE = 20
-_context_cache: OrderedDict = OrderedDict()
-
-
-def _cache_get(key: str):
-    if key not in _context_cache:
-        return None
-    _context_cache.move_to_end(key)
-    return _context_cache[key]
-
-
-def _cache_set(key: str, value: list) -> None:
-    if key in _context_cache:
-        _context_cache.move_to_end(key)
-    else:
-        if len(_context_cache) >= _CACHE_MAXSIZE:
-            _context_cache.popitem(last=False)
-    _context_cache[key] = value
+# Le cache LRU des sections retenues (clé : `message[:100]`) a disparu avec
+# l'appel LLM qu'il servait à amortir : `retrieve_relevant_context` ne dépend plus
+# du message, il n'y a donc plus rien à mémoriser.
 
 
 class MemoryEngine:
     def __init__(self, llm=None):
+        # Plus aucun appel LLM sur le chemin d'un message depuis
+        # `retrieve_relevant_context` (cf. sa docstring). L'argument reste au
+        # contrat du constructeur — `core/runtime.py` l'injecte — pour un futur
+        # usage HORS chemin critique ; s'en servir à chaque message est
+        # précisément l'incident qui a été corrigé.
         self._llm = llm
         # Résolu à la CONSTRUCTION du moteur, pas à l'import du module :
         # cf. core.paths.resolve_data_dir.
@@ -199,71 +184,43 @@ class MemoryEngine:
         return available
 
     def retrieve_relevant_context(self, message: str) -> list[str]:
+        """Sections de profil à injecter — lues sur le disque, sans aucun appel LLM.
+
+        Cette fonction demandait au modèle LOCAL (Ollama, modèle par défaut de
+        l'instance) quelles sections étaient pertinentes, sous un garde-fou
+        ``future.result(timeout=2.0)``. Mesuré sur `epure_tray.log` : **30 appels,
+        30 retombées sur le fallback, zéro sélection jamais utilisée.** Le coût,
+        lui, était réel et payé à CHAQUE message — y compris quand le modèle actif
+        est un fournisseur cloud, qui n'a rien à voir avec Ollama :
+
+        - 2,000 s fermes de latence, le timeout étant toujours atteint ;
+        - et un appel qui n'était pas annulé pour autant : ``shutdown(wait=False)``
+          ne tue pas le thread, resté bloqué dans ``ollama_client.chat()`` avec son
+          read-timeout de 300 s (`core/llm.py`), donc Ollama continuait de charger
+          le modèle. Mesuré à froid — modèle non résident, ce qui est le cas dès
+          5 min d'inactivité (`keep_alive` par défaut) : 13,8 s dont 10,2 s de
+          chargement, soit ~12 s de lecture disque de 4,7 Go en concurrence avec la
+          requête cloud qui suivait. À chaud le même appel prend 1,0 s et réussit :
+          la panne était donc invisible en usage soutenu et systématique après une
+          pause. C'est très exactement le symptôme « le premier message depuis un
+          moment est lent, même en cloud ».
+
+        Ce que cette sélection arbitrait : 28 tokens de prompt — mesuré sur le
+        `memory/profile.json` réel avec la métrique du code lui-même
+        (``len(result.split())``, celle qui écrit ``~N tokens`` dans le log) : 45
+        pour le profil complet, 17 pour le fallback ``['style']``. Deux secondes et
+        un chargement de modèle pour choisir 28 tokens n'est pas défendable — on injecte
+        donc toutes les sections qui ont des données. Déterministe, sans réseau, et
+        sans cache à invalider (le résultat ne dépend plus du message).
+
+        Reste ouvert : ``sessions_récentes`` est la seule section non bornée (les
+        erreurs des 5 dernières sessions). Elle est vide aujourd'hui ; si elle
+        grossit, ce qu'il faudra est une troncature, pas un LLM.
         """
-        Ask the local LLM (timeout 2s) which profile sections are relevant.
-        Returns section names to inject. Falls back to ['style'] on any failure.
-        """
-        # Short-circuit: very short messages never need profile context
+        # Seuil historique : un message très court n'a rien à personnaliser.
         if len(message.strip()) < 20:
-            logger.debug("Memory retrieve: message court (%d chars) → aucune section", len(message.strip()))
             return []
-
-        cache_key = message[:100]
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            logger.debug("Memory retrieve: cache hit → %s", cached)
-            return cached
-
-        available = self._available_sections()
-        if not available:
-            _cache_set(cache_key, [])
-            return []
-
-        if not self._llm:
-            # No LLM available — inject everything (legacy)
-            _cache_set(cache_key, available)
-            return available
-
-        sections_str = ", ".join(available)
-        prompt = (
-            f"Message : {message[:200]}\n"
-            f"Sections de profil disponibles : {sections_str}\n"
-            "Quelles sections sont pertinentes pour adapter la réponse à ce message ?\n"
-            'Réponds UNIQUEMENT avec une liste JSON, par exemple : ["lacunes", "style"] ou ["aucune"]'
-        )
-
-        fallback = ["style"] if "style" in available else []
-
-        def _call():
-            return self._llm.generate([{"role": "user", "content": prompt}])
-
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_call)
-        try:
-            raw = future.result(timeout=2.0)
-            match = re.search(r'\[.*?\]', raw, re.DOTALL)
-            if not match:
-                raise ValueError(f"Pas de JSON array dans la réponse: {raw[:80]!r}")
-            sections = json.loads(match.group())
-            if not isinstance(sections, list):
-                raise ValueError("La réponse n'est pas une liste")
-            result = [s for s in sections if s in _VALID_SECTIONS and s != "aucune"]
-            # Only keep sections that actually have data
-            result = [s for s in result if s in available]
-            _cache_set(cache_key, result)
-            estimated = len(" ".join(result))
-            logger.info("Memory retrieve: %r → %s (~%d chars clés)", message[:40], result, estimated)
-            return result
-        except concurrent.futures.TimeoutError:
-            logger.info("Memory retrieve: timeout (>2s) → fallback %s", fallback)
-            _cache_set(cache_key, fallback)
-            return fallback
-        except Exception:
-            logger.exception("Memory retrieve: erreur → fallback %s", fallback)
-            _cache_set(cache_key, fallback)
-            return fallback
-        finally:
-            executor.shutdown(wait=False)
+        return self._available_sections()
 
     # ── System prompt builder ──────────────────────────────────────────────
 

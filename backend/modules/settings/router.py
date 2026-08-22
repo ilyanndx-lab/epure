@@ -44,7 +44,7 @@ from core.runtime import (
     usage_tracker,
     whisper,
 )
-from core.voice import VoiceModelUnavailable, etat_modele_vocal
+from core.voice import VoiceModelUnavailable, capacites_vocales, etat_modele_vocal
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,30 @@ class SynthesizeRequest(BaseModel):
     voice: str = "fr_FR-upmc-medium"
 
 
+@router.get("/voice/capabilities")
+async def voice_capabilities():
+    """Disponibilité de la transcription et de la synthèse, avant tout clic.
+
+    Même rôle que `key_ok` pour les fournisseurs cloud dans `main.py` : l'interface
+    doit pouvoir MASQUER un contrôle plutôt que l'afficher pour qu'il échoue. Sur
+    Windows ARM64 la voix est déclarée indisponible (décision du 2026-08-22,
+    `docs/remplacement-vectoriel.md`) — les paquets ne sont pas installés, et un
+    micro affiché n'y rend qu'un 503 à chaque appui.
+
+    Endpoint distinct de `/models` — où vit la disponibilité des fournisseurs
+    cloud — et pas par goût de la symétrie : `/models` interroge quatre API
+    distantes (`core/models.py`, timeout 4 s chacune). Faire dépendre l'affichage
+    d'un bouton micro d'un aller-retour réseau serait payer une question de
+    réseau pour une réponse qui est sur le disque local.
+
+    Distinct aussi de `/voice/model`, qui répond d'une autre question : celui-là
+    dit si le modèle de 76 Mo est là, celui-ci si le code capable de le lire
+    existe. Un paquet absent ne s'installe pas en cliquant ; un modèle manquant,
+    si.
+    """
+    return capacites_vocales()
+
+
 @router.post("/voice/transcribe")
 async def voice_transcribe(audio: UploadFile = File(...)):
     audio_bytes = await audio.read()
@@ -69,6 +93,18 @@ async def voice_transcribe(audio: UploadFile = File(...)):
         # lambda : le 1er appel construit le modèle (lazy) DANS l'executor, sans
         # bloquer la boucle d'événements.
         text = await loop.run_in_executor(None, lambda: whisper.transcribe(audio_bytes))
+    except VoiceModelUnavailable as exc:
+        # Même traitement que /voice/synthesize, et pour la même raison : dans une
+        # app local-first la voix est optionnelle, son indisponibilité est un état
+        # prévu, pas une panne. Le message part tel quel — il dit si le paquet
+        # faster-whisper manque ou si le modèle n'a pas pu être récupéré, et on ne
+        # peut rien faire d'un « Erreur transcription » nu.
+        #
+        # `logger.warning` et non `logger.exception` : une dépendance absente
+        # n'est pas un incident à tracer sur une pile complète. C'est ce que
+        # faisait la branche générique ci-dessous, faute que cette branche existe.
+        logger.warning("Transcription vocale indisponible : %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
         logger.exception("Erreur transcription /voice/transcribe")
         raise HTTPException(status_code=500, detail="Erreur transcription")

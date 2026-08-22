@@ -3,6 +3,7 @@ import { Settings as SettingsIcon, Hammer } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { ThemeToggle } from './ui'
 import { API, apiFetch } from '../api'
+import { ATELIER_PRESENT } from '../atelier'
 import { useInstanceConfig } from '../instance'
 import { useModules, resolveIcon, orderedModules } from '../modules'
 
@@ -91,12 +92,14 @@ export default function Sidebar({ activeModule, onModuleChange }: SidebarProps) 
       </nav>
 
       <div className="px-2 pb-2 border-t border-line pt-2 space-y-0.5">
-        <NavItem
-          active={activeModule === 'workshop'}
-          label="Atelier"
-          icon={Hammer}
-          onClick={() => onModuleChange('workshop')}
-        />
+        {ATELIER_PRESENT && (
+          <NavItem
+            active={activeModule === 'workshop'}
+            label="Atelier"
+            icon={Hammer}
+            onClick={() => onModuleChange('workshop')}
+          />
+        )}
         <NavItem
           active={activeModule === 'settings'}
           label={settingsModule?.nom ?? 'Profil'}

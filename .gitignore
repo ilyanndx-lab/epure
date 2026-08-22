@@ -21,8 +21,14 @@ env/
 .env.*
 !.env.example
 
-# ChromaDB data
+# ChromaDB data — ancien index, conservé le temps de la migration (étape C/D de
+# docs/remplacement-vectoriel.md), remplacé par vector_db/ ci-dessous.
 backend/chroma_db/
+
+# Store vectoriel (core/vector_store.py) — défaut de EPURE_VECTOR_DIR.
+# Index dérivé, reconstructible en réindexant les fichiers surveillés, et propre
+# à chaque utilisateur : rien à versionner.
+backend/vector_db/
 
 # Modèles de synthèse vocale (Piper) — cache, pas du code.
 # Le fr_FR-upmc-medium.onnx pèse 76 Mo ; versionné, il faisait à lui seul 71 Mo
@@ -113,3 +119,6 @@ workspace/
 # taskkill sur le port 11434). Remplacé par `python epure_tray.py`. Ignoré pour
 # que la copie locale de ce poste ne revienne pas par un `git add`.
 start.ps1
+
+# Paquets assemblés par tools/faire_paquet.py — artefacts de build, jamais versionnés
+dist-paquets/

@@ -30,6 +30,7 @@ Usage :
     python test_models_dir.py
 """
 
+import contextlib
 import hashlib
 import io
 import os
@@ -98,6 +99,30 @@ def _reseau_coupe(*_a, **_kw):
     raise urllib.error.URLError("getaddrinfo failed (simulé)")
 
 
+def _piper_installe():
+    """Fait croire au moteur que `piper-tts` est présent.
+
+    Depuis le 2026-08-22, `PiperEngine.__init__` refuse de se construire — donc
+    de télécharger 76 Mo — quand le paquet est absent (voix déclarée indisponible
+    sur ARM64, `docs/remplacement-vectoriel.md`). Or les tests de ce fichier
+    portent sur le TÉLÉCHARGEMENT, l'INTÉGRITÉ et la DÉGRADATION SANS RÉSEAU, pas
+    sur la présence du paquet : ils neutralisent déjà `_load` pour exactement la
+    même raison. La présence du paquet devient une précondition, et une
+    précondition se déclare.
+
+    Et ça n'est pas une précaution théorique : le paquet n'est **pas** installé
+    dans le job backend de la CI (jeu de dépendances minimal, cf.
+    `.github/workflows/ci.yml`). Sans ce mock, ces tests passent sur le poste
+    d'Ilyann — où piper-tts est installé — et échouent en CI. C'est l'écart
+    local/CI contre lequel CLAUDE.md §2 met en garde, et il a été payé une fois
+    ici : le premier jet du garde-fou a fait tomber le job backend.
+
+    L'absence du paquet, elle, est testée pour de vrai — dans
+    `test_voice_indisponible.py`, avec le paquet réellement rendu inimportable.
+    """
+    return mock.patch.object(PiperEngine, "_verifier_paquet", lambda self: None)
+
+
 class _DossierModeles(unittest.TestCase):
     """Pose EPURE_MODELS_DIR sur un neuf, APRÈS les imports ci-dessus."""
 
@@ -149,6 +174,7 @@ class ResolutionTest(_DossierModeles):
         contenus = {f"{VOIX}.onnx": b"faux modele", f"{VOIX}.onnx.json": b"{}"}
         with mock.patch.object(core_voice.urllib.request, "urlopen", _servir(contenus)), \
              mock.patch.object(PiperEngine, "_SHA256", {}), \
+             _piper_installe(), \
              mock.patch.object(PiperEngine, "_load", lambda self: object()):
             moteur = PiperEngine(voice=VOIX)
         self.assertEqual(moteur._models_dir, self.tmp)
@@ -168,6 +194,7 @@ class IntegriteTest(_DossierModeles):
         with mock.patch.object(core_voice.urllib.request, "urlopen",
                                _servir({f"{VOIX}.onnx": onnx, f"{VOIX}.onnx.json": cfg})), \
              mock.patch.object(PiperEngine, "_SHA256", empreintes), \
+             _piper_installe(), \
              mock.patch.object(PiperEngine, "_load", lambda self: object()):
             PiperEngine(voice=VOIX)
         self.assertEqual((self.tmp / f"{VOIX}.onnx").read_bytes(), onnx)
@@ -177,7 +204,8 @@ class IntegriteTest(_DossierModeles):
         faux = {f"{VOIX}.onnx": b"contenu altere", f"{VOIX}.onnx.json": b"{}"}
         empreintes = {f"{VOIX}.onnx": "0" * 64, f"{VOIX}.onnx.json": "0" * 64}
         with mock.patch.object(core_voice.urllib.request, "urlopen", _servir(faux)), \
-             mock.patch.object(PiperEngine, "_SHA256", empreintes):
+             mock.patch.object(PiperEngine, "_SHA256", empreintes), \
+             _piper_installe():
             with self.assertRaises(VoiceModelUnavailable) as ctx:
                 PiperEngine(voice=VOIX)
         self.assertIn("mpreinte", str(ctx.exception))
@@ -188,7 +216,8 @@ class IntegriteTest(_DossierModeles):
 
     def test_rien_ne_survit_a_une_coupure(self):
         """Ni la cible, ni le `.part` : sinon la panne devient définitive."""
-        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe):
+        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe), \
+             _piper_installe():
             with self.assertRaises(VoiceModelUnavailable):
                 PiperEngine(voice=VOIX)
         restes = sorted(p.name for p in self.tmp.iterdir())
@@ -202,6 +231,7 @@ class IntegriteTest(_DossierModeles):
         with mock.patch.object(core_voice.urllib.request, "urlopen",
                                _servir({f"{VOIX}.onnx": onnx, f"{VOIX}.onnx.json": cfg})), \
              mock.patch.object(PiperEngine, "_SHA256", empreintes), \
+             _piper_installe(), \
              mock.patch.object(PiperEngine, "_load", lambda self: object()):
             PiperEngine(voice=VOIX)
         self.assertEqual((self.tmp / f"{VOIX}.onnx").read_bytes(), onnx)
@@ -215,6 +245,7 @@ class IntegriteTest(_DossierModeles):
             raise AssertionError("le modèle est déjà là : aucun appel réseau attendu")
 
         with mock.patch.object(core_voice.urllib.request, "urlopen", interdit), \
+             _piper_installe(), \
              mock.patch.object(PiperEngine, "_load", lambda self: object()):
             PiperEngine(voice=VOIX)
 
@@ -222,7 +253,8 @@ class IntegriteTest(_DossierModeles):
         def interdit(*_a, **_kw):
             raise AssertionError("un nom de voix invalide ne doit rien télécharger")
 
-        with mock.patch.object(core_voice.urllib.request, "urlopen", interdit):
+        with mock.patch.object(core_voice.urllib.request, "urlopen", interdit), \
+             _piper_installe():
             for mauvais in ("frFR-upmc-medium", "fr_FR-upmc", "", "../../evil"):
                 with self.subTest(voix=mauvais), self.assertRaises(VoiceModelUnavailable):
                     PiperEngine(voice=mauvais)
@@ -260,7 +292,12 @@ class DegradationTest(_DossierModeles):
         cls.headers = {"Authorization": f"Bearer {get_api_token()}"}
 
     def test_synthese_indisponible_repond_503_avec_un_message(self):
-        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe):
+        # `_piper_installe` : le sujet ici est la coupure RÉSEAU, donc le message
+        # attendu parle du modèle. Sans ce mock, en CI (pas de piper-tts) le
+        # refus arriverait plus tôt et parlerait du paquet — même 503, autre
+        # cause, et le test ne vérifierait plus ce qu'il annonce.
+        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe), \
+             _piper_installe():
             res = self.client.post("/voice/synthesize", json={"text": "bonjour"},
                                    headers=self.headers)
         self.assertEqual(res.status_code, 503, res.text)
@@ -269,7 +306,8 @@ class DegradationTest(_DossierModeles):
         self.assertNotEqual(detail, "Erreur synthèse vocale")
 
     def test_le_reste_de_l_app_repond_normalement(self):
-        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe):
+        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe), \
+             _piper_installe():
             self.client.post("/voice/synthesize", json={"text": "bonjour"},
                              headers=self.headers)
             for chemin in ("/health", "/modules", "/instance/config"):
@@ -294,13 +332,108 @@ class DegradationTest(_DossierModeles):
             piper._engine,
             "prérequis : la voix n'a pas encore été construite dans ce process",
         )
-        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe):
+        with mock.patch.object(core_voice.urllib.request, "urlopen", _reseau_coupe), \
+             _piper_installe():
             with self.assertRaises(VoiceModelUnavailable):
                 piper.synthesize("bonjour")
         self.assertIsNone(
             piper._engine,
             "un échec de construction ne doit pas être mis en cache par _LazyEngine",
         )
+
+
+class TranscriptionIndisponibleTest(_DossierModeles):
+    """La transcription doit se dégrader comme la synthèse, pas autrement.
+
+    L'asymétrie a vécu : `PiperEngine._load` enveloppait son import dans un
+    `try` et levait `VoiceModelUnavailable` (503, message lisible, log en
+    warning), tandis que `WhisperEngine.__init__` faisait un
+    `from faster_whisper import WhisperModel` nu. Une dépendance simplement
+    absente produisait donc un `ImportError` remonté jusqu'au `except Exception`
+    de l'endpoint : 500 « Erreur transcription » et une trace de pile complète
+    dans les logs, pour un état parfaitement prévu.
+
+    Ce n'est pas un cas d'école : `ctranslate2`, dont dépend faster-whisper, n'a
+    ni wheel `win_arm64` ni sdist (docs/remplacement-vectoriel.md, étape E) —
+    sur Windows ARM64 le paquet est absent par construction.
+
+    L'absence est simulée en posant `None` dans `sys.modules`, ce qui fait lever
+    l'import à `faster_whisper` sans toucher à l'environnement réel (le paquet
+    est bel et bien installé sur le poste qui exécute ces tests).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = _client()
+        cls.headers = {"Authorization": f"Bearer {get_api_token()}"}
+
+    @contextlib.contextmanager
+    def _sans_faster_whisper(self):
+        original = sys.modules.get("faster_whisper", "absent")
+        sys.modules["faster_whisper"] = None      # → ImportError à l'import
+        try:
+            yield
+        finally:
+            if original == "absent":
+                sys.modules.pop("faster_whisper", None)
+            else:
+                sys.modules["faster_whisper"] = original
+
+    def test_le_moteur_leve_voice_model_unavailable_et_pas_import_error(self):
+        with self._sans_faster_whisper():
+            with self.assertRaises(VoiceModelUnavailable) as ctx:
+                core_voice.WhisperEngine()
+        self.assertIn("faster-whisper", str(ctx.exception))
+
+    def test_transcription_indisponible_repond_503_avec_un_message(self):
+        from core.runtime import whisper
+        self.assertIsNone(
+            whisper._engine,
+            "prérequis : la transcription n'a pas encore été construite",
+        )
+        with self._sans_faster_whisper():
+            res = self.client.post(
+                "/voice/transcribe",
+                files={"audio": ("a.webm", b"pas vraiment de l'audio", "audio/webm")},
+                headers=self.headers,
+            )
+        self.assertEqual(res.status_code, 503, res.text)
+        detail = res.json()["detail"]
+        self.assertIn("faster-whisper", detail)
+        # Le message générique serait un aveu que la branche dédiée n'existe plus.
+        self.assertNotEqual(detail, "Erreur transcription")
+
+    def test_aucune_trace_de_pile_dans_les_logs(self):
+        """Une dépendance absente se journalise en warning, pas en exception.
+
+        C'est la moitié la moins visible de la garde, et celle qui se perdrait
+        en premier : le code répondrait toujours 503 tout en déversant une trace
+        complète à chaque tentative.
+        """
+        with self._sans_faster_whisper():
+            with self.assertLogs("modules.settings.router", level="WARNING") as journal:
+                self.client.post(
+                    "/voice/transcribe",
+                    files={"audio": ("a.webm", b"x", "audio/webm")},
+                    headers=self.headers,
+                )
+        self.assertTrue(any(r.levelname == "WARNING" for r in journal.records))
+        self.assertFalse(
+            any(r.exc_info for r in journal.records),
+            "aucun enregistrement ne doit porter d'exc_info (trace de pile)",
+        )
+
+    def test_le_reste_de_l_app_repond_normalement(self):
+        with self._sans_faster_whisper():
+            self.client.post(
+                "/voice/transcribe",
+                files={"audio": ("a.webm", b"x", "audio/webm")},
+                headers=self.headers,
+            )
+            for chemin in ("/health", "/modules", "/instance/config"):
+                with self.subTest(chemin=chemin):
+                    res = self.client.get(chemin, headers=self.headers)
+                    self.assertEqual(res.status_code, 200, res.text)
 
 
 if __name__ == "__main__":

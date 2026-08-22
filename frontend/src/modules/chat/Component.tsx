@@ -50,6 +50,7 @@ interface ChatProps {
   onAssistantDone?: (text: string) => void
   playSpeech?: (text: string) => void
   stopSpeech?: () => void
+  synthesizingText?: string | null
   speakingText?: string | null
   // `string` et non une union fermée : l'union nommait `kholle` et
   // `flashcards`, deux modules du CATALOGUE, dans le type d'un composant du
@@ -143,6 +144,7 @@ export default function Chat({
   onAssistantDone,
   playSpeech,
   stopSpeech,
+  synthesizingText,
   speakingText,
   onNavigate,
   ttsEnabled,
@@ -720,17 +722,36 @@ export default function Chat({
               )}
               {msg.role === 'assistant' && playSpeech && (
                 <div className="mt-2 flex">
+{/* Trois états. Le bouton restait sur « Lire » pendant toute la
+                      synthèse — jusqu'à 49 s sur un message long : rien ne
+                      signalait que le clic avait été pris en compte, et recliquer
+                      lançait une deuxième synthèse aussi longue. L'icône reste
+                      cliquable pendant la synthèse pour pouvoir l'abandonner. */}
                   <button
-                    onClick={() => speakingText === msg.content ? stopSpeech?.() : playSpeech(msg.content)}
+                    onClick={() =>
+                      synthesizingText === msg.content || speakingText === msg.content
+                        ? stopSpeech?.()
+                        : playSpeech(msg.content)
+                    }
                     className={`transition-colors duration-150
                       [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover:opacity-100
                       [@media(pointer:coarse)]:opacity-100
-                      ${speakingText === msg.content
+                      ${synthesizingText === msg.content || speakingText === msg.content
                         ? 'text-accent2 hover:text-accent2-hover'
                         : 'text-muted hover:text-secondary'}`}
-                    title={speakingText === msg.content ? 'Arrêter' : 'Lire'}
+                    title={
+                      synthesizingText === msg.content
+                        ? 'Synthèse en cours — cliquer pour abandonner'
+                        : speakingText === msg.content
+                          ? 'Arrêter'
+                          : 'Lire'
+                    }
                   >
-                    {speakingText === msg.content ? <Square size={13} fill="currentColor" /> : <Play size={13} />}
+                    {synthesizingText === msg.content
+                      ? <Loader2 size={13} className="animate-spin" />
+                      : speakingText === msg.content
+                        ? <Square size={13} fill="currentColor" />
+                        : <Play size={13} />}
                   </button>
                 </div>
               )}
@@ -755,6 +776,7 @@ export default function Chat({
         onTranscribed={(t) => setInput(prev => prev + t)}
         ttsEnabled={ttsEnabled}
         onTtsToggle={onTtsToggle}
+        synthesizingText={synthesizingText}
         speakingText={speakingText}
         effort={effort}
         onEffortChange={setEffort}

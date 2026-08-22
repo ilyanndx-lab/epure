@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { AlertTriangle, RefreshCw, Hammer } from 'lucide-react'
+import { ATELIER_PRESENT } from '../atelier'
 import { Button } from './ui'
 
 interface Props {
@@ -58,7 +59,8 @@ export default class ModuleErrorBoundary extends Component<Props, State> {
           </div>
           <p className="text-xs text-secondary">
             Son interface contient une erreur et n'a pas pu s'afficher. Rien d'autre n'est
-            cassé — vous pouvez réessayer ou demander à l'atelier de corriger l'erreur.
+            cassé — vous pouvez réessayer
+            {ATELIER_PRESENT ? " ou demander à l'atelier de corriger l'erreur." : '.'}
           </p>
           <pre className="text-xs font-mono text-error/90 bg-[#100e0a] border border-line rounded-sm p-3 max-h-48 overflow-auto whitespace-pre-wrap">
             {error.name}: {error.message}
@@ -73,7 +75,7 @@ export default class ModuleErrorBoundary extends Component<Props, State> {
             >
               Réessayer
             </Button>
-            {onNavigate && (
+            {ATELIER_PRESENT && onNavigate && (
               <Button
                 variant="ghost"
                 size="sm"

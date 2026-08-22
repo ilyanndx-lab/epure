@@ -6,12 +6,13 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 import pypdf
 import yaml
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+from core.paths import resolve_vector_dir
+from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,27 @@ SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.png',
 
 
 class RAGEngine:
-    def __init__(self, config_path: str = "config.yaml"):
+    """Indexation et recherche dans les fiches surveillées.
+
+    Le stockage est ``core.vector_store.VectorStore`` (SQLite + numpy) depuis le
+    remplacement de chromadb — cf. ``docs/remplacement-vectoriel.md``. Deux
+    conséquences sur cette classe, au-delà du changement de bibliothèque :
+
+    - **Le store est INJECTÉ, plus construit ici.** ``DocAnalysisEngine`` et
+      ``HistoryEngine`` travaillent sur deux autres collections du même store et
+      allaient jusqu'ici le chercher dans ``rag._client``/``rag._ef`` — deux
+      attributs privés d'un moteur qui n'avait aucune vocation à être un point
+      de partage. Le partage est désormais explicite : ``core/runtime.py``
+      construit un store et le donne aux trois. Le défaut (``store=None`` → en
+      construire un) sert aux scripts et aux tests qui n'instancient que le RAG ;
+      en production il n'est jamais pris.
+    - **Le chemin vient de ``resolve_vector_dir()``**, plus de
+      ``dirname(config.yaml)/chroma_db``. L'ancien calcul rendait l'index
+      impossible à détourner : un test qui aurait construit ce moteur aurait
+      écrit dans l'index réel de l'utilisateur (cf. ``core/paths.py``).
+    """
+
+    def __init__(self, config_path: str = "config.yaml", store: VectorStore | None = None):
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
         rag_cfg = cfg.get("rag", {})
@@ -27,14 +48,8 @@ class RAGEngine:
         self._chunk_overlap = rag_cfg.get("chunk_overlap", 50)
         self._n_results = rag_cfg.get("n_results", 3)
 
-        db_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "chroma_db")
-        self._client = chromadb.PersistentClient(path=db_path)
-        self._ef = SentenceTransformerEmbeddingFunction(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
-        )
-        self._col = self._client.get_or_create_collection(
-            "fiches", embedding_function=self._ef
-        )
+        self._store = store if store is not None else VectorStore(resolve_vector_dir())
+        self._col = self._store.collection("fiches")
 
         # Per-instance LRU caches — cleared on index_file to avoid stale results
         self._query_lru = functools.lru_cache(maxsize=50)(self._do_query)

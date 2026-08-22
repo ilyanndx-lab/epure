@@ -69,22 +69,56 @@ python test_safe_path.py          # confinement de chemin du codeagent
 python test_jsonstore.py          # lecture/écriture JSON (BOM)
 python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
+python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
+python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
+python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
+python test_voice_indisponible.py # voix absente proprement (paquet, pas modèle) — ARM64
+python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
-python integration_modules_mount.py  # LOURD : core.runtime (torch, chromadb)
+python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
+python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
 ```
+
+`integration_vector_store.py` exige un `pip install chromadb`, qui n'est plus une
+dépendance du projet : il compare le store actuel à celui qu'il a remplacé. C'est
+sa raison d'être et non un oubli — il ne peut pas se passer des deux côtés de la
+comparaison. Même chose pour `parite_vectorielle.py` et `migrer_vectoriel.py`,
+qui lisent l'ancien index (§3.4).
 
 **Un nouveau `backend/test_*.py` est pris en compte sans toucher au workflow** :
 la CI tourne en `unittest discover` depuis le commit `7e3bf8c`. Ce n'est plus une
 liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
 tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
 l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
-torch et chromadb et tourne dans le job `integration`, manuel).
+torch et sentence-transformers et tourne dans le job `integration`, manuel).
 
 ### Écart de version Python — piège actif
 
 Les `.pyc` locaux sont en `cpython-314` (Python 3.14) ; la CI tourne en **3.12**
 (`ci.yml`). Du code qui marche en local peut casser en CI. Si tu utilises une
 syntaxe récente, vérifie sa disponibilité en 3.12.
+
+### Écart de DÉPENDANCES local/CI — le même piège, moins connu
+
+Le job `backend` de la CI n'installe pas `requirements.txt` mais un **jeu
+minimal** (l'en-tête de `ci.yml` le justifie ligne par ligne) : ni `torch`, ni
+`sentence-transformers`, ni **`faster-whisper`, ni `piper-tts`**. Sur le poste
+d'Ilyann tout est installé. Un test qui touche un moteur vocal ou vectoriel peut
+donc passer en local et échouer en CI **sans une ligne de syntaxe récente** — et
+c'est arrivé : un garde-fou « refuser si `piper-tts` est absent » a fait tomber
+sept tests de `test_models_dir.py`, qui neutralisaient `_load` mais pas la
+présence du paquet. Cause suivante enchaînée : une assertion d'ÉGALITÉ sur la
+liste des paquets manquants, vraie avec un seul absent, fausse avec deux.
+
+Deux réflexes :
+
+- une assertion sur ce qui est *installé* se formule en **inclusion**, pas en
+  égalité, ou se garde par un `if _module_present(...)` ;
+- avant de pousser un changement qui touche ces moteurs, rejouer la suite avec
+  les paquets bloqués — un `sys.meta_path` qui lève `ImportError` sur
+  `piper` / `faster_whisper` / `ctranslate2` / `sentence_transformers` reproduit
+  la condition en une vingtaine de lignes, et c'est ce qui a attrapé le second
+  échec avant la CI plutôt qu'après.
 
 ---
 
@@ -209,7 +243,30 @@ Aucune base de données côté application. Deux stockages :
   **`core/jsonstore.py` — IMPÉRATIF : jamais de `json.load`/`json.dump` direct.**
   Lecture en `utf-8-sig` (un BOM posé par PowerShell 5.1 rendait la mémoire de
   session invisible, puis le fichier était écrasé), écriture en `utf-8` sans BOM.
-- **ChromaDB** sous `backend/chroma_db/` pour le RAG et l'historique sémantique.
+- **`core/vector_store.py`** (SQLite + numpy, cosinus par force brute) sous
+  `backend/vector_db/` — `resolve_vector_dir()`, `$EPURE_VECTOR_DIR` — pour les
+  trois collections vectorielles : `fiches` (RAG), `doc_analysis`, `history`.
+  **IMPÉRATIF : un seul store, construit par `core/runtime.py` et INJECTÉ aux
+  trois moteurs.** Ne pas en instancier un second, ni retourner aux attributs
+  privés `rag._client`/`rag._ef` qui portaient ce partage avant : c'est ce qui
+  rendait possible de brancher `core/rag.py` sur un nouveau stockage en laissant
+  `core/docanalysis.py` et `core/history.py` sur l'ancien sans que rien ne le
+  signale.
+
+  **IMPÉRATIF : `sentence_transformers` s'importe DANS `VectorStore.__init__`,
+  jamais en tête de `core/vector_store.py`.** Mesuré : 17,4 s et torch chargé au
+  seul import du module. Comme `core/rag.py` l'importe et que `core/runtime.py`
+  importe `core/rag.py`, un import en tête de fichier se paie au démarrage
+  d'uvicorn — l'incident exact que `_LazyEngine` corrige (§3.2), réintroduit par
+  la bande. **La paresse du proxy ne couvre que la CONSTRUCTION des moteurs,
+  jamais l'import de leurs dépendances.**
+
+  chromadb a été retiré le 2026-08-13 (`docs/remplacement-vectoriel.md`) : aucune
+  wheel Windows ARM64, et une grappe — `grpcio`, `kubernetes`, `opentelemetry-*` —
+  qu'il déclarait en dépendances directes, donc impossible à écarter tant qu'il
+  restait. `backend/chroma_db/` peut encore exister sur le disque : c'est
+  l'ancien index, gardé le temps d'un usage réel du nouveau (étape C.4), et non
+  une seconde base vivante.
 
 ### 3.5 Chemins
 
@@ -224,6 +281,14 @@ Aucune base de données côté application. Deux stockages :
   s'en déduit par `.parent` : une seule variable pour les deux, sinon un
   `generated/` détourné sous un parent resté en place ferait chercher le
   composant d'un module core dans un arbre et son composant généré dans un autre.
+- `resolve_web_dir()` — `$EPURE_WEB_DIR`, sinon `<repo>/frontend/dist`. Frontend
+  **construit** que FastAPI sert lui-même dans le paquet distribué
+  (`docs/distribution-empaquetee.md` étape A). Le service est **éteint** si le
+  dossier n'a pas d'`index.html` : c'est le mode développement, où Vite sert
+  l'interface. Surchargeable non pour protéger des données mais pour rendre la
+  suite **déterministe** — sans ça son comportement dépendrait de la présence
+  d'un `npm run build` sur le poste, et un test de l'interface servie passerait
+  en local pour échouer en CI.
 - `resolve_models_dir()` — `$EPURE_MODELS_DIR`, sinon `<backend>/piper_models`.
   **C'est un cache de modèles, pas des données utilisateur**, et la distinction
   a des conséquences. Le `.onnx` de Piper (76 Mo) y est téléchargé au premier
@@ -254,14 +319,18 @@ Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchor
 statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
 
 Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
-ces imports. `backend/_test_env.py` pose les **quatre** variables sur des
+ces imports. `backend/_test_env.py` pose les **cinq** variables sur des
 temporaires uniques pour la session — `backend/modules/` et
 `frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
 voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
-testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR` est le seul posé sur
-un temporaire **vide** : copier 76 Mo de modèle vocal n'aurait aucun sens, et
-aucun test ne le lit — il est détourné pour qu'un test qui construirait
-`PiperEngine` par accident ne tire pas 76 Mo dans le cache réel.
+testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR` et `EPURE_WEB_DIR`
+sont posés sur des temporaires **vides**, pour deux raisons distinctes : copier
+76 Mo de modèle vocal n'aurait aucun sens et aucun test ne le lit (détourné
+seulement pour qu'un test construisant `PiperEngine` par accident ne tire pas
+76 Mo dans le cache réel) ; `frontend/dist/` est vidé pour le **déterminisme** —
+`main._register_web` ne monte l'interface que s'il y trouve un `index.html`, donc
+sur le vrai chemin la suite se comporterait différemment selon que le front a été
+construit sur le poste. `test_web_statique.py` fabrique son propre `dist/`.
 
 **IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
 découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
@@ -353,6 +422,27 @@ Trois moteurs de génération, diagnostiqués dans Réglages › Atelier :
 
 Un moteur `aider` existe également (mode architect, conversation Plan/Construire).
 
+**L'Atelier est désactivable, pour le paquet distribué** (`docs/distribution-empaquetee.md`
+étape B) — **désactivable, pas supprimable**. Deux interrupteurs, à poser ensemble
+(`tools/faire_paquet.py` le fait) mais indépendants :
+
+| Interrupteur | Effet |
+|---|---|
+| `EPURE_ATELIER=0` | 404 sur `/workshop*`, `/settings/test/*`, `/settings/gateway/*`, et fermeture de `/ws/workshop` avant `accept()`. Le 404 est posé **avant** le contrôle de token : un 401 révélerait que la route existe. |
+| `VITE_ATELIER=0` | l'Atelier sort du **bundle**, pas seulement de l'écran. |
+
+**IMPÉRATIF — ne pas supprimer `core/module_workshop.py` ni `core/module_validate.py`
+d'un paquet.** `core/catalogue.py` importe sept symboles du premier, qui importe le second
+au niveau module : les retirer casse `POST /settings/catalogue/{id}/install` et
+`DELETE /settings/modules/{id}`, c'est-à-dire l'écran Réglages du destinataire, pas
+l'Atelier.
+
+Côté frontend, `src/atelier.ts` doit rester une **comparaison directe**
+(`import.meta.env.VITE_ATELIER !== '0'`). Un `?.trim()` la rend non pliable par rolldown,
+la branche morte reste atteignable, et un `Workshop-*.js` de 26,1 ko **contenant le code de
+l'Atelier** part quand même dans le paquet — orphelin, mais sur le disque et lisible.
+Verrouillé par `test_paquet.py`.
+
 **IMPÉRATIF : ne jamais ajouter de règle à la denylist de `core/module_validate.py`
 en croyant renforcer la sécurité.** C'est une denylist AST sur des noms exacts :
 elle est contournable par construction (alias de builtin, `Subscript`, dunder,
@@ -385,7 +475,16 @@ Règles :
 - **IMPÉRATIF : aucun `shell=True`.** `subprocess.Popen(["binaire", arg1, ...])`,
   toujours en liste. Une entrée utilisateur ne doit jamais atteindre un shell.
 - **IMPÉRATIF : le token d'API ne sort jamais** — ni de `GET /instance/config`
-  (le bloc `auth` est retiré), ni des logs, ni d'un message d'erreur.
+  (le bloc `auth` est retiré), ni des logs, ni d'un message d'erreur. La partie
+  « logs » n'était pas tenue et ne pouvait pas se voir en relisant Épure : la
+  ligne fuyante est écrite par **uvicorn**, qui journalise le chemin avec sa
+  query (`"WebSocket /ws/chat?token=…" [accepted]`), et le token du WebSocket
+  voyage en query param faute d'en-tête possible sur `new WebSocket()`. Tenu
+  désormais par `core/logs.py`, un filtre de logging posé sur `uvicorn.access`,
+  `uvicorn.error` et la racine — ces deux loggers ont leurs propres handlers et
+  `propagate = False`, donc **il faut les nommer**, un filtre sur la racine ne
+  les voit pas. Vérifié par `test_logs_secrets.py`, qui affirme aussi que
+  `main` l'installe (sinon le module resterait parfait et jamais appelé).
 - Un chemin venant du client est **toujours** `Path(...).name` ou confiné par
   `resolve()` + `is_relative_to()`. Jamais concaténé tel quel.
 - Comparaison de token : `hmac.compare_digest` (`core/auth.py`), jamais `==`.
@@ -418,6 +517,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | `uvicorn --reload` sous Windows | Instable. Restreint à `--reload-dir core` dans `epure_tray.py`, désactivable par `EPURE_RELOAD=0`. |
 | Rechargement intempestif de la page en pleine revue Atelier | Les dossiers `_*` sont exclus du glob de `registry.ts`. Ne pas « nettoyer » ce filtre. |
 | Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
+| Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---
@@ -446,7 +546,7 @@ l'incident qui justifie le design. C'est la convention la plus précieuse du
 dépôt : elle rend le code relisible après trois semaines d'absence. La respecter.
 
 **Ne jamais committer** : `backend/.env`, `backend/memory/*.json`,
-`backend/history/`, `backend/chroma_db/`, `backend/doc_uploads/`,
+`backend/history/`, `backend/chroma_db/`, `backend/vector_db/`, `backend/doc_uploads/`,
 `backend/modules/_backups/`, `*.log`, `.aider.*`.
 
 ---

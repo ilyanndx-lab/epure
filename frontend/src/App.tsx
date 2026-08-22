@@ -7,6 +7,8 @@ import { useModules, orderedModules } from './modules'
 import { getModuleDef, type SharedModuleProps } from './modules/registry'
 import { usePersistentState } from './usePersistentState'
 import { API, apiFetch, ensureToken, setToken } from './api'
+import { ATELIER_PRESENT } from './atelier'
+import { useVoix } from './voix'
 
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
@@ -14,6 +16,10 @@ export interface StepConfig { role: string; model: string }
 export default function App() {
   const config = useInstanceConfig()
   const modules = useModules()
+  // Capacités vocales de CETTE machine. Sur un paquet ARM64 les paquets vocaux ne
+  // sont pas installés (cf. voix.ts) : les contrôles doivent disparaître, pas
+  // échouer au clic.
+  const voix = useVoix()
   // Appairage : auto via /pair (localhost). 'forbidden' = accès distant →
   // écran de saisie du code ; 'unreachable' traité comme ok (l'UX « backend
   // injoignable » existante s'applique, apiFetch ré-appairera au retour).
@@ -27,6 +33,18 @@ export default function App() {
   // module. On n'ajoute jamais, on ne retire pas → pas d'interruption.
   const [mountedIds, setMountedIds] = useState<string[]>([activeModule])
   const [ttsEnabled, setTtsEnabled] = useState(false)
+  // DEUX états, pas un. `speakingText` servait aux deux et était posé dès AVANT
+  // le fetch : sur un message long l'interface annonçait « lecture... » pendant
+  // toute la synthèse. Mesuré côté backend sur le vrai moteur Piper : 0,3 s pour
+  // 26 caractères, 14 s pour 3 700, 49 s pour 12 400. L'utilisateur voyait donc
+  // une lecture en cours sans entendre quoi que ce soit — ce qui se lit comme une
+  // panne et pousse à recliquer, déclenchant une deuxième synthèse aussi longue.
+  //
+  // `synthesizingText` : de l'envoi de la requête jusqu'au DÉBUT RÉEL de la
+  // lecture (ou l'erreur). `speakingText` : seulement quand le navigateur a
+  // effectivement commencé à jouer l'audio. Les deux ne sont jamais posés
+  // ensemble.
+  const [synthesizingText, setSynthesizingText] = useState<string | null>(null)
   const [speakingText, setSpeakingText] = useState<string | null>(null)
   // Zoom par module : la prop CSS `zoom` reflue le layout (Chromium/Electron) →
   // le contenu agrandi devient scrollable au lieu d'être coupé. Persisté et borné.
@@ -39,11 +57,25 @@ export default function App() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
+  // Numéro de la demande vocale courante. Une synthèse dure des dizaines de
+  // secondes (mesuré) : pendant ce temps l'utilisateur peut cliquer « arrêter »
+  // ou lancer la lecture d'un AUTRE message. Sans ce compteur, la réponse de la
+  // requête abandonnée finit par arriver et rallume l'audio et l'état d'un texte
+  // que plus personne n'attend — d'autant plus visible maintenant que « synthèse »
+  // et « lecture » sont distincts. Chaque appel prend un numéro ; à chaque étape
+  // asynchrone il vérifie qu'il est encore le dernier, sinon il se retire.
+  const demandeVocale = useRef(0)
+
   const stopSpeech = useCallback(() => {
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current = null
     }
+    // Les deux : « arrêter » doit aussi annuler l'affichage d'une synthèse en
+    // cours, sinon le bouton stop laisse l'interface sur « synthèse... » pour un
+    // audio qui n'arrivera jamais.
+    demandeVocale.current += 1   // invalide la requête en vol (cf. playSpeech)
+    setSynthesizingText(null)
     setSpeakingText(null)
   }, [])
 
@@ -88,7 +120,13 @@ export default function App() {
       audioRef.current.pause()
       audioRef.current = null
     }
-    setSpeakingText(text)
+    // Synthèse, PAS lecture : rien n'a encore été joué, et ça peut durer une
+    // minute. `speakingText` ne sera posé qu'au démarrage réel de l'audio.
+    const demande = demandeVocale.current + 1
+    demandeVocale.current = demande
+    const estCourante = () => demandeVocale.current === demande
+    setSynthesizingText(text)
+    setSpeakingText(null)
     try {
       const res = await apiFetch(`${API}/voice/synthesize`, {
         method: 'POST',
@@ -111,6 +149,9 @@ export default function App() {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const blob = await res.blob()
+      // Arrêté ou remplacé pendant la synthèse : on ne joue rien et on ne touche
+      // à aucun état — celui affiché appartient désormais à une autre demande.
+      if (!estCourante()) return
       const url = URL.createObjectURL(blob)
       const audio = new Audio(url)
       audioRef.current = audio
@@ -120,28 +161,72 @@ export default function App() {
         audioRef.current = null
       }
       audio.onerror = () => {
+        URL.revokeObjectURL(url)
+        setSynthesizingText(null)
         setSpeakingText(null)
         audioRef.current = null
       }
-      audio.play()
+      // LE point de bascule : `playing` est le seul signal qui dise « le
+      // navigateur émet du son maintenant ». C'est donc ici — et nulle part
+      // avant — que « synthèse » devient « lecture ».
+      audio.onplaying = () => {
+        if (!estCourante()) return
+        setSynthesizingText(null)
+        setSpeakingText(text)
+      }
+      // `play()` rend une Promise, et c'est tout l'enjeu : non attendue, son rejet
+      // ne passe PAS par le `catch` ci-dessous (on est déjà sorti du `try` quand
+      // elle se règle). Il partait donc en unhandled rejection, et surtout
+      // `speakingText` restait posé — l'UI montrait un message en train d'être lu
+      // pour toujours, sans qu'aucun son ne sorte et sans rien dans les logs.
+      //
+      // `err.name` est journalisé explicitement parce que c'est lui qui tranche :
+      // `NotAllowedError` = blocage d'autoplay par le navigateur (il faut un geste
+      // utilisateur), `NotSupportedError` = le blob n'est pas un audio décodable
+      // (donc un problème côté backend, pas côté navigateur), `AbortError` = une
+      // autre lecture a démarré entre-temps. Les trois demandent des correctifs
+      // opposés, et le message seul ne les distingue pas.
+      audio.play().catch((err: unknown) => {
+        const nom = err instanceof Error ? err.name : typeof err
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(`Erreur TTS (play) — ${nom} : ${message}`, err)
+        URL.revokeObjectURL(url)
+        audioRef.current = null
+        if (!estCourante()) return
+        // Les DEUX : le rejet arrive avant tout `playing`, donc c'est l'état
+        // « synthèse » qui est encore affiché — le laisser posé rendrait
+        // l'interface définitivement bloquée sur un travail terminé en échec.
+        setSynthesizingText(null)
+        setSpeakingText(null)
+      })
     } catch (err) {
       console.error('Erreur TTS:', err)
+      if (!estCourante()) return
+      setSynthesizingText(null)
       setSpeakingText(null)
     }
   }, [confirmerModeleVocal])
 
   const onAssistantDone = useCallback(
     (text: string) => {
-      if (ttsEnabled) playSpeech(text)
+      // `voix.synthese` en plus de `ttsEnabled` : la lecture auto est déclenchée
+      // par le backend qui finit de répondre, pas par un clic. Si la capacité
+      // disparaît (paquet absent) alors que l'état était resté à `true`, personne
+      // ne serait là pour l'empêcher.
+      if (ttsEnabled && voix.synthese) playSpeech(text)
     },
-    [ttsEnabled, playSpeech]
+    [ttsEnabled, voix.synthese, playSpeech]
   )
 
   // Modules réellement accessibles (settings toujours inclus).
   // orderedModules et non un `includes` sur modules_activés : une liste VIDE
   // signifie « tous les modules installés » (cf. sa docstring), pas « aucun ».
   const ordre = orderedModules(modules, config.modules_activés)
-  const visibleIds = new Set<string>(['settings', 'workshop', ...ordre.map(m => m.id)])
+  const visibleIds = new Set<string>([
+    'settings',
+    ...(ATELIER_PRESENT ? ['workshop'] : []),
+    ...ordre.map(m => m.id),
+  ])
 
   // Si le module courant devient inaccessible, bascule vers le premier visible.
   useEffect(() => {
@@ -158,14 +243,21 @@ export default function App() {
   }, [activeModule])
 
   // Props partagées passées à tout module rendu.
+  //
+  // `playSpeech` et `onTtsToggle` sont OMIS quand la synthèse est indisponible, et
+  // ça suffit à faire disparaître les contrôles : les composants les gardent déjà
+  // derrière un `playSpeech && …` / `onTtsToggle && …` (chat, kholle, ModuleBar).
+  // Couper à la source plutôt qu'ajouter une condition par bouton — un module
+  // ajouté plus tard hérite du bon comportement sans rien savoir de la voix.
   const sharedProps: SharedModuleProps = {
     onAssistantDone,
-    playSpeech,
+    playSpeech: voix.synthese ? playSpeech : undefined,
     stopSpeech,
+    synthesizingText,
     speakingText,
     onNavigate: setActiveModule,
-    ttsEnabled,
-    onTtsToggle: () => setTtsEnabled(v => !v),
+    ttsEnabled: voix.synthese ? ttsEnabled : false,
+    onTtsToggle: voix.synthese ? () => setTtsEnabled(v => !v) : undefined,
   }
 
   const activeHasInterface = !!getModuleDef(activeModule)

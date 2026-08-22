@@ -27,7 +27,7 @@ services:
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
     volumes:
       - ./data:/data                                   # fiches PDF (EPURE_FICHES_DIR)
-      - ./backend/chroma_db:/app/backend/chroma_db     # index vectoriel persistant
+      - ./backend/vector_db:/app/backend/vector_db     # index vectoriel persistant (core/vector_store.py)
       - ./backend/memory:/app/backend/memory           # état applicatif (quotas, logs)
       - hf_cache:/models                               # modèles HuggingFace mis en cache
     extra_hosts:
