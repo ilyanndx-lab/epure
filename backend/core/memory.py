@@ -205,9 +205,11 @@ class MemoryEngine:
           pause. C'est très exactement le symptôme « le premier message depuis un
           moment est lent, même en cloud ».
 
-        Ce que cette sélection arbitrait : ~50 tokens de prompt (profil complet
-        ≈ 70 tokens, fallback ``['style']`` 17). Deux secondes et un chargement de
-        modèle pour choisir 50 tokens n'est pas un compromis défendable — on injecte
+        Ce que cette sélection arbitrait : 28 tokens de prompt — mesuré sur le
+        `memory/profile.json` réel avec la métrique du code lui-même
+        (``len(result.split())``, celle qui écrit ``~N tokens`` dans le log) : 45
+        pour le profil complet, 17 pour le fallback ``['style']``. Deux secondes et
+        un chargement de modèle pour choisir 28 tokens n'est pas défendable — on injecte
         donc toutes les sections qui ont des données. Déterministe, sans réseau, et
         sans cache à invalider (le résultat ne dépend plus du message).
 
