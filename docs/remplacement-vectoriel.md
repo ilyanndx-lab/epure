@@ -664,13 +664,48 @@ piste de l'index alternatif, qui a sauvé torch, n'existe pas pour `ctranslate2`
 publie **aucune sdist**, nulle part. La différence avec la soirée d'origine, c'est
 qu'on le sait avant de construire, pas en marchant dessus.
 
+#### La voix est déclarée indisponible sur ARM64 — décision du 2026-08-22
+
+Le « prochain chantier vocal » annoncé ci-dessus n'aura pas lieu sous cette forme.
+**La voix est déclarée indisponible sur Windows ARM64, et aucune compilation n'est
+tentée sur la machine cible.** Ce n'est pas un report : c'est une réponse à la
+question que le paragraphe précédent posait.
+
+Pourquoi ce sens-là :
+
+- Le blocage est à l'**installation**, pas à l'usage. `ctranslate2` ne publie ni
+  wheel `win_arm64` ni sdist : `pip install -r requirements.txt` échoue avant que
+  le backend ait la moindre chance de démarrer. Ce n'est donc pas une capacité
+  dégradée qu'on pourrait laisser échouer proprement au clic — c'est un paquet
+  qui empêche le paquet entier de s'installer.
+- La seule voie restante pour `piper-tts` serait sa sdist, donc **un toolchain
+  C++ à installer sur la machine du destinataire**. C'est exactement ce que le §0
+  de ce document a refusé pour `chromadb` (« retombe dans le piège que ce chantier
+  cherche à éviter ») et pour `sqlite-vec` au §0.1. Refuser là et accepter ici
+  aurait été incohérent — et l'incohérence se paierait chez quelqu'un d'autre, sur
+  une machine qu'on ne peut pas déboguer.
+- `ctranslate2` n'a pas d'issue du tout, même en acceptant de compiler. Une
+  décision qui ne sauve qu'une capacité sur deux ne vaut pas son prix.
+
+Ce qui a été fait pour que ce soit une absence propre et non une amputation :
+
+| Couche | Traitement |
+|---|---|
+| **Paquet** | `tools/faire_paquet.py --arch arm64` retire `faster-whisper` et `piper-tts` des exigences installées (`HORS_PAQUET_PIP_ARM64`). Le x64 n'est pas touché. `--arch` choisit aussi le zip embeddable (`embed-arm64`), et `PAQUET.json` porte `arch` et `voix`. |
+| **Backend** | `WhisperEngine`/`PiperEngine` lèvent `VoiceModelUnavailable` quand le **paquet** manque, pas seulement le modèle → 503 lisible. `PiperEngine` vérifie désormais le paquet **avant** de télécharger les 76 Mo du modèle : l'ordre inverse tirait 76 Mo pour un moteur qui ne peut pas se construire. |
+| **Statut** | `core/voice.py::capacites_vocales()` détecte la présence des paquets par `importlib.util.find_spec` — jamais par un import, qui chargerait onnxruntime et des bibliothèques natives pour répondre à une question de disque. Exposé par `GET /voice/capabilities`. |
+| **Interface** | Micro et lecture à voix haute sont **masqués** quand la capacité est absente (`frontend/src/voix.ts`), comme un fournisseur cloud sans clé. Un contrôle qu'on sait voué au 503 ne s'affiche pas. |
+
+Périmètre inchangé pour tout le reste : sur ARM64, RAG, stockage vectoriel, chat,
+modules et Atelier fonctionnent. **Seule la voix manque, et elle se voit manquer.**
+
 #### Ce qui reste ouvert dans l'étape E
 
-- L'essai de construction ARM64 lui-même, sur la machine de sandr ou une autre : il
-  demande du matériel ARM64, et l'analyse ci-dessus dit qu'il échouera tant que la
-  pile vocale n'aura pas été traitée. Le faire quand même a une valeur — confirmer
-  que `ctranslate2` est bien le premier point d'arrêt et que `watchdog` passe par sa
-  sdist — mais pas celle qui était espérée.
+- L'essai de construction ARM64 lui-même, sur la machine de sandr ou une autre.
+  L'analyse ci-dessus disait qu'il échouerait sur `ctranslate2` ; avec
+  `--arch arm64` cette cause-là est retirée de l'installation, donc l'essai
+  redevient informatif — il dira ce qui bloque *après* la voix, notamment si
+  `watchdog` passe bien par sa sdist. Il demande toujours du matériel ARM64.
 - La suite de tests complète passe (328 tests, plus les 15 de
   `integration_vector_store.py`), mais elle tourne en 3.14 sur le poste et en 3.12 en
   CI ; le paquet, lui, embarque 3.12 et n'exécute pas la suite.

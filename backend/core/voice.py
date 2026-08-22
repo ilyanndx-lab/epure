@@ -15,6 +15,7 @@ hors ligne démarre normalement et tout le reste de l'app fonctionne.
 """
 
 import hashlib
+import importlib.util
 import io
 import logging
 import os
@@ -27,6 +28,88 @@ from pathlib import Path
 from core.paths import resolve_models_dir
 
 logger = logging.getLogger(__name__)
+
+
+#: Modules Python dont dépend chaque capacité vocale, avec le paquet PyPI qui les
+#: fournit — pour que le diagnostic NOMME ce qui manque au lieu de dire
+#: « indisponible ». Les deux noms diffèrent (`faster_whisper` s'installe par
+#: `faster-whisper`, `piper` par `piper-tts`) : chercher le paquet au lieu du
+#: module ne trouverait rien.
+#:
+#: `ctranslate2` est listé bien que `faster-whisper` le déclare : c'est LUI le
+#: point d'arrêt réel sur Windows ARM64 — aucune wheel `win_arm64`, aucune sdist
+#: (docs/remplacement-vectoriel.md, étape E). Un environnement où
+#: `faster-whisper` serait présent sans lui existe (installation partielle,
+#: purge manuelle) et n'a rien d'un cas d'école ; ne tester que le premier
+#: rendrait une capacité annoncée disponible qui échoue à l'import.
+_DEPENDANCES_VOCALES: dict[str, tuple[tuple[str, str], ...]] = {
+    "transcription": (("faster_whisper", "faster-whisper"), ("ctranslate2", "ctranslate2")),
+    "synthèse": (("piper", "piper-tts"),),
+}
+
+#: Résultat mémorisé : les paquets installés ne changent pas pendant la vie du
+#: process, et cette fonction est appelée à chaque affichage de l'interface.
+_capacites: dict | None = None
+
+
+def _module_present(nom: str) -> bool:
+    """Le module est-il importable, SANS l'importer ?
+
+    `importlib.util.find_spec` et non un `import` dans un `try` : importer, c'est
+    exécuter. `faster_whisper` tire `ctranslate2` (bibliothèque native) et `piper`
+    charge onnxruntime — pour répondre à une question qui ne demande que de
+    regarder si le module existe sur le disque. Le coût d'un import « juste pour
+    savoir » a déjà été payé une fois dans ce dépôt, et cher :
+    `sentence_transformers` en tête de `core/vector_store.py` valait 17,4 s et
+    torch chargé au démarrage (CLAUDE.md §3.4).
+
+    `find_spec` peut lever et pas seulement renvoyer None — `ModuleNotFoundError`
+    si un paquet parent manque, `ValueError` sur une entrée de `sys.modules`
+    abîmée. Un diagnostic ne doit jamais être la cause de la panne qu'il cherche.
+    """
+    try:
+        return importlib.util.find_spec(nom) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def capacites_vocales(rafraichir: bool = False) -> dict:
+    """Disponibilité de chaque capacité vocale, par simple présence des paquets.
+
+    Répond AVANT que l'utilisateur clique, pour que l'interface masque un contrôle
+    au lieu de l'offrir puis d'échouer — même traitement que les fournisseurs
+    cloud sans clé configurée (`key_ok` dans `main.py`). Ce n'est pas du confort :
+    sur Windows ARM64 la voix est déclarée indisponible (décision du 2026-08-22,
+    `docs/remplacement-vectoriel.md`), les deux paquets ne sont pas installés du
+    tout, et un micro affiché n'y produirait qu'un 503 à chaque appui.
+
+    Ce que cette fonction NE dit pas : que la voix va marcher. Le modèle Piper
+    peut manquer et le réseau être coupé (cf. :func:`etat_modele_vocal`, question
+    distincte et posée séparément). Elle répond à « le code existe-t-il sur cette
+    machine », qui est le seul verdict définitif — un paquet absent ne s'installe
+    pas en cliquant.
+    """
+    global _capacites
+    if _capacites is not None and not rafraichir:
+        return _capacites
+    resultat: dict[str, dict] = {}
+    for capacite, dependances in _DEPENDANCES_VOCALES.items():
+        manquants = [paquet for module, paquet in dependances if not _module_present(module)]
+        resultat[capacite] = {
+            "disponible": not manquants,
+            "manquants": manquants,
+            "raison": (
+                "" if not manquants
+                else f"paquet(s) non installé(s) : {', '.join(manquants)}"
+            ),
+        }
+    _capacites = resultat
+    logger.info(
+        "Capacités vocales — transcription : %s, synthèse : %s",
+        "oui" if resultat["transcription"]["disponible"] else resultat["transcription"]["raison"],
+        "oui" if resultat["synthèse"]["disponible"] else resultat["synthèse"]["raison"],
+    )
+    return resultat
 
 
 class VoiceModelUnavailable(RuntimeError):
@@ -175,6 +258,15 @@ class PiperEngine:
         self._models_dir.mkdir(parents=True, exist_ok=True)
         self._onnx = self._models_dir / f"{voice}.onnx"
         self._config = self._models_dir / f"{voice}.onnx.json"
+        # Le paquet AVANT le modèle, et l'ordre est tout l'intérêt. `_load` levait
+        # déjà `VoiceModelUnavailable` quand piper-tts manque — mais il tourne
+        # APRÈS `_ensure_model`, donc après 76 Mo téléchargés pour un moteur qui
+        # ne peut pas se construire. Sur Windows ARM64, où le paquet est absent
+        # par construction (aucune wheel `win_arm64`, décision du 2026-08-22),
+        # c'était 76 Mo tirés à chaque tentative de synthèse, sur la connexion du
+        # destinataire, pour finir sur le même 503.
+        if not _module_present("piper"):
+            raise VoiceModelUnavailable("Le paquet 'piper-tts' n'est pas installé.")
         self._ensure_model()
         self._piper_voice = self._load()
         logger.info("Modèle Piper prêt : %s", voice)

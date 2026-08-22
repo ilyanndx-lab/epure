@@ -64,6 +64,28 @@ lui seul `googleapiclient` (97,9 Mo) et toute la chaîne
 n'en dépend, donc l'exclure de l'installation (`HORS_PAQUET_PIP`) suffit à faire
 disparaître tout l'arbre.
 
+**5. Sur ARM64, la voix ne part pas — décision du 2026-08-22.** `--arch arm64`
+retire `faster-whisper` et `piper-tts` de l'installation (`HORS_PAQUET_PIP_ARM64`,
+qui explique pourquoi ces deux-là et pas d'autres). Ce n'est pas une optimisation
+de taille : **sans cette exclusion le paquet ARM64 n'est pas installable du
+tout.** `ctranslate2`, dont dépend `faster-whisper`, ne publie aucune wheel
+`win_arm64` ni aucune sdist — `pip install -r requirements.txt` échoue avant
+que le backend ait la moindre chance de démarrer. Le blocage est à
+l'installation, pas à l'usage, et c'est ce qui le rend non contournable côté
+code.
+
+L'alternative écartée : compiler `piper-tts` depuis sa sdist sur la machine
+cible, ce qui demande un toolchain C++ chez le destinataire — exactement ce que
+`docs/remplacement-vectoriel.md` a refusé pour `chromadb`. Refuser là et
+accepter ici aurait été incohérent.
+
+Ce que le backend en fait : `core/voice.py::capacites_vocales()` détecte
+l'absence des paquets (par `find_spec`, sans les importer), `GET
+/voice/capabilities` l'expose, et l'interface masque micro et lecture à voix
+haute. Un paquet sans voix est donc une instance cohérente, pas une instance
+amputée — et `PAQUET.json` porte `arch` et `voix` pour que ça se lise sans
+deviner.
+
 **Ce qui n'est plus ici, et pourquoi c'est la vraie nouvelle.** Ce docstring a
 longtemps décrit un second mécanisme, bien plus lourd, pour contenir la grappe de
 `chromadb` : une purge par lecture des `RECORD` de `.dist-info`
@@ -92,6 +114,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -119,8 +142,30 @@ CATALOGUE = REPO / "modules-catalogue"
 #: Python visé — aligné sur `docs/installeur.md` étape B et sur la CI (3.12).
 #: Dernière 3.12 à avoir une release binaire Windows, donc un zip embeddable.
 VERSION_PYTHON = "3.12.10"
-URL_EMBEDDABLE = "https://www.python.org/ftp/python/{v}/python-{v}-embed-amd64.zip"
+
+#: Architectures cibles. `amd64` reste le défaut : c'est celle du poste de build
+#: d'Ilyann (`platform.machine()` → AMD64) et celle de tous les paquets produits
+#: jusqu'ici. `arm64` existe parce que la cible sandr en est une, et parce que
+#: l'architecture change ce qui s'INSTALLE (cf. `HORS_PAQUET_PIP_ARM64`), pas
+#: seulement l'exécutable Python.
+ARCHS = ("amd64", "arm64")
+
+#: python.org publie bien les deux zips embeddables — vérifié par requête HEAD
+#: réelle le 2026-08-22, pas supposé :
+#:   python-3.12.10-embed-amd64.zip → 200, 11 133 606 o
+#:   python-3.12.10-embed-arm64.zip → 200, 10 413 299 o
+URL_EMBEDDABLE = "https://www.python.org/ftp/python/{v}/python-{v}-embed-{arch}.zip"
 URL_GET_PIP = "https://bootstrap.pypa.io/pip/get-pip.py"
+
+
+def arch_hote() -> str:
+    """Architecture du poste de build, pour servir de défaut à `--arch`.
+
+    Appelée et non figée dans une constante : c'est la règle du dépôt pour tout ce
+    qui dépend de l'environnement (cf. `core/paths.py`), et ça rend la fonction
+    testable sans monkey-patcher un global.
+    """
+    return "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
 
 #: `pip freeze` du paquet du 2026-08-10 (§0.3 de `docs/distribution-empaquetee.md`) —
 #: fige l'arbre transitif, que `requirements.txt` seul laisse dériver (mesuré :
@@ -137,6 +182,34 @@ CONTRAINTES_DEFAUT = REPO / "tools" / "contraintes-paquet.txt"
 #: faire disparaître tout l'arbre transitif de résolution. Cf. décisions 3 et
 #: 4 du docstring.
 HORS_PAQUET_PIP = ("sentence-transformers", "google-generativeai")
+
+#: Exclus **de l'installation ARM64 seulement** : la voix y est déclarée
+#: indisponible (décision du 2026-08-22, `docs/remplacement-vectoriel.md`). Le x64
+#: n'est pas touché.
+#:
+#: Ces deux-là précisément, et pas une liste au jugé — chacun a été vérifié sur
+#: ce qu'il PUBLIE (étape E du même document, mesurée le 2026-08-13) :
+#:
+#: - **`faster-whisper`** : le paquet lui-même est du Python pur, mais il dépend
+#:   de **`ctranslate2`**, qui ne publie AUCUNE wheel `win_arm64` **et aucune
+#:   sdist**. Rien à compiler même en acceptant de compiler : il n'y a pas de
+#:   source sur PyPI. C'est le blocage dur, et il est à l'INSTALLATION.
+#: - **`piper-tts`** : extension compilée publiée en `cp39-abi3-win_amd64`
+#:   seulement. Une sdist existe, donc `pip` la tenterait — c'est-à-dire un
+#:   toolchain C++ à installer sur la machine du destinataire, exactement ce que
+#:   ce chantier a écarté pour `chromadb` (§0 du plan). Décision prise : on
+#:   n'essaie pas.
+#:
+#: Ce qui n'est PAS ici et qui pourrait surprendre : **`onnxruntime` reste**. On
+#: pourrait croire qu'il part avec la voix, mais il publie une wheel `win_arm64`
+#: et rien n'oblige à l'écarter. **`torch` non plus** : sa wheel `win_arm64`
+#: existe sur l'index PyTorch (cf. décision 3) — l'écarter par confusion coûterait
+#: le RAG, qui marche parfaitement sur ARM64.
+#:
+#: Le point à retenir si cette liste doit changer un jour : le critère est
+#: « pip échoue-t-il à INSTALLER, ou exige-t-il un compilateur sur la machine
+#: cible ? ». Pas « est-ce que ça a l'air lié à la voix ? ».
+HORS_PAQUET_PIP_ARM64 = ("faster-whisper", "piper-tts")
 
 #: Retiré du `site-packages` APRÈS installation, par simple nom de dossier
 #: sous `site-packages/`. `pip` et ses compagnons n'ont rien à faire dans le
@@ -350,18 +423,25 @@ def _telecharger(url: str, cible: Path, journal=print) -> Path:
 
 
 def preparer_python(destination: Path, embeddable: Path | None,
-                    contraintes: Path | None, journal=print) -> dict:
+                    contraintes: Path | None, journal=print,
+                    arch: str = "amd64") -> dict:
     """Runtime embeddable + dépendances, dans `destination`.
 
     Trois gestes que le Python embeddable impose et qui ne se devinent pas :
     décommenter `import site` dans `python312._pth` (sinon `site-packages` est
     ignoré et `pip` reste introuvable), amener `pip` par `get-pip.py` (il n'est
     pas embarqué), et purger ce qui n'a pas à partir.
+
+    `arch` choisit le zip embeddable ET les exigences installées. Les deux
+    ensemble, jamais séparément : un runtime ARM64 avec les exigences x64 échoue
+    au `pip install`, l'inverse produit un paquet qui ne démarre pas chez le
+    destinataire. C'est le genre d'écart qui ne se voit qu'à l'ouverture.
     """
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="epure-paquet-py-") as tmp:
         zip_py = Path(embeddable) if embeddable else _telecharger(
-            URL_EMBEDDABLE.format(v=VERSION_PYTHON), Path(tmp) / "embed.zip", journal)
+            URL_EMBEDDABLE.format(v=VERSION_PYTHON, arch=arch),
+            Path(tmp) / "embed.zip", journal)
         if not zip_py.is_file():
             raise ErreurPaquet(f"embeddable introuvable : {zip_py}")
         journal(f"  extraction {zip_py.name}")
@@ -387,7 +467,10 @@ def preparer_python(destination: Path, embeddable: Path | None,
         _executer([str(python), str(get_pip), "--no-warn-script-location"],
                   "get-pip.py", journal)
 
-        exigences = _exigences_sans_torch(Path(tmp) / "requirements-paquet.txt")
+        exigences = _exigences_du_paquet(Path(tmp) / "requirements-paquet.txt", arch)
+        if arch == "arm64":
+            journal("  ARM64 : voix retirée de l'installation "
+                    f"({', '.join(HORS_PAQUET_PIP_ARM64)})")
         cmd = [str(python), "-m", "pip", "install", "--no-warn-script-location",
                "--disable-pip-version-check", "-r", str(exigences)]
         if contraintes:
@@ -401,23 +484,53 @@ def preparer_python(destination: Path, embeddable: Path | None,
                         capturer=True)
 
     purges = purger_site_packages(destination, journal)
-    return {"version_python": VERSION_PYTHON, "purges": purges,
+    return {"version_python": VERSION_PYTHON, "arch": arch, "purges": purges,
+            # Ce que le destinataire N'A PAS, écrit noir sur blanc dans PAQUET.json.
+            # Un paquet sans voix doit se reconnaître à son manifeste : sinon le
+            # premier micro absent se lit comme une interface cassée.
+            "voix": arch != "arm64",
             "gel": sorted(gel.splitlines()) if gel else []}
 
 
-def _exigences_sans_torch(cible: Path) -> Path:
-    """`backend/requirements.txt` moins les paquets hors paquet.
+def _exigences_du_paquet(cible: Path, arch: str = "amd64") -> Path:
+    """`backend/requirements.txt` moins les paquets hors paquet, selon l'architecture.
+
+    Anciennement `_exigences_sans_torch` : le nom a cessé d'être vrai quand la
+    fonction s'est mise à retirer aussi les paquets vocaux sur ARM64. Un nom qui
+    décrit une seule de deux exclusions fait chercher la seconde ailleurs.
+
+    Deux motifs d'exclusion, et ils ne disent pas la même chose au lecteur du
+    fichier produit :
+
+    - `HORS_PAQUET_PIP` (toutes architectures) — reporté au premier usage, donc
+      **récupérable** : `sentence-transformers` s'installera quand le destinataire
+      utilisera le RAG.
+    - `HORS_PAQUET_PIP_ARM64` (ARM64 seulement) — **définitif** : il n'existe rien
+      à installer pour cette architecture, ni maintenant ni plus tard.
+
+    D'où deux commentaires distincts dans le fichier généré, et pas un seul
+    « RETIRÉ » indifférencié : le destinataire qui relit ses exigences doit pouvoir
+    distinguer « ça viendra » de « ça ne viendra pas ».
 
     Filtrage ligne par ligne en gardant les commentaires : ils portent
     l'explication de chaque épinglage, et un fichier d'exigences dérivé qui les
     perd devient un fichier qu'on ne sait plus relire.
     """
+    if arch not in ARCHS:
+        raise ErreurPaquet(f"architecture inconnue : {arch!r} (attendu {' ou '.join(ARCHS)})")
     lignes = (BACKEND / "requirements.txt").read_text(encoding="utf-8").splitlines()
     gardees = []
     for ligne in lignes:
         nom = ligne.split("==")[0].split(">=")[0].strip().lower()
-        if nom and not ligne.lstrip().startswith("#") and nom in HORS_PAQUET_PIP:
+        est_exigence = bool(nom) and not ligne.lstrip().startswith("#")
+        if est_exigence and nom in HORS_PAQUET_PIP:
             gardees.append(f"# RETIRÉ DU PAQUET (installé au premier usage) : {ligne}")
+            continue
+        if est_exigence and arch == "arm64" and nom in HORS_PAQUET_PIP_ARM64:
+            gardees.append(
+                f"# RETIRÉ DU PAQUET ARM64 (voix indisponible sur cette "
+                f"architecture — aucune wheel win_arm64) : {ligne}"
+            )
             continue
         gardees.append(ligne)
     cible.write_text("\n".join(gardees) + "\n", encoding="utf-8")
@@ -525,7 +638,7 @@ def installer_modules(cible_modules: Path, manifestes: list[dict], journal=print
 # ── Assemblage ───────────────────────────────────────────────────────────────
 
 def assembler(staging: Path, dist: Path, manifestes: list[dict],
-              runtime: dict | None, journal=print) -> dict:
+              runtime: dict | None, journal=print, arch: str = "amd64") -> dict:
     """Compose l'arborescence du paquet dans `staging`."""
     app = staging / "app"
     copier_backend(app / "backend", journal)
@@ -540,6 +653,11 @@ def assembler(staging: Path, dist: Path, manifestes: list[dict],
         "modules": [{"id": m["id"], "nom": m.get("nom"), "version": m.get("version")}
                     for m in manifestes],
         "atelier": False,
+        # Au premier niveau et pas seulement dans `python` : avec
+        # `--sauter-python` il n'y a pas de bloc runtime, et l'architecture visée
+        # reste l'information la plus utile du manifeste.
+        "arch": arch,
+        "voix": arch != "arm64",
         "frontend": {"VITE_API_URL": "/", "VITE_ATELIER": "0"},
         "python": runtime or {"non_installe": True},
     }
@@ -582,6 +700,10 @@ def main(argv=None) -> int:
                         "régénérer un nouveau après un changement de requirements.txt")
     p.add_argument("--horodatage", default="",
                    help="suffixe de l'archive ; défaut : aucun (nom stable)")
+    p.add_argument("--arch", choices=ARCHS, default=arch_hote(),
+                   help="architecture de la MACHINE CIBLE ; défaut : celle de ce "
+                        f"poste ({arch_hote()}). En arm64, la voix "
+                        "(faster-whisper, piper-tts) est retirée de l'installation.")
     p.add_argument("--sauter-python", action="store_true",
                    help="n'installe pas le runtime (paquet incomplet, pour essai)")
     p.add_argument("--lister-modules", action="store_true",
@@ -601,7 +723,14 @@ def main(argv=None) -> int:
     demandes = [m.strip() for m in args.modules.split(",") if m.strip()]
     try:
         manifestes = valider_modules(demandes)
-        print(f"Paquet pour « {args.destinataire} » — modules : {demandes or '∅'}")
+        print(f"Paquet pour « {args.destinataire} » — modules : {demandes or '∅'} "
+              f"— cible : {args.arch}")
+        if args.arch != arch_hote():
+            # Averti, pas refusé : le zip embeddable et les wheels viennent de
+            # PyPI, pas du poste, donc un build croisé produit une archive
+            # correcte. Ce qui n'est PAS vérifiable ainsi, c'est qu'elle démarre.
+            print(f"  ⚠ build croisé (ce poste est en {arch_hote()}) — "
+                  f"l'archive est correcte mais non testable ici")
 
         print("Frontend :")
         dist = construire_frontend(demandes)
@@ -614,12 +743,12 @@ def main(argv=None) -> int:
             if not args.sauter_python:
                 print("Runtime Python :")
                 runtime = preparer_python(staging / "python", args.embeddable,
-                                          args.contraintes)
+                                          args.contraintes, arch=args.arch)
             else:
                 print("Runtime Python : SAUTÉ (--sauter-python) — paquet incomplet")
 
             print("Assemblage :")
-            infos = assembler(staging, dist, manifestes, runtime)
+            infos = assembler(staging, dist, manifestes, runtime, arch=args.arch)
             infos["destinataire"] = args.destinataire
             (staging / "PAQUET.json").write_text(
                 json.dumps(infos, ensure_ascii=False, indent=2), encoding="utf-8")

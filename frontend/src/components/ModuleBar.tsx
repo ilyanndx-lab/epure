@@ -8,6 +8,7 @@ import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
 import { API, apiFetch } from '../api'
 import { useModules } from '../modules'
+import { useVoix } from '../voix'
 import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
 
 // Curated model recommendations per module (IDs morts retirés —
@@ -166,6 +167,14 @@ export default function ModuleBar({
 }: ModuleBarProps) {
   // Modules installés : source des commandes `/` du panneau Compétences.
   const modules = useModules()
+  // Le micro se décide ICI et pas chez les appelants. `showMic` dit « ce module
+  // veut un micro » ; la capacité dit « cette machine en a un ». Le filtre est
+  // dans le composant partagé pour qu'un module ajouté plus tard — un module
+  // généré par l'Atelier, qui ne sait rien de tout ça — hérite du bon
+  // comportement sans une ligne à écrire. Sur ARM64, où faster-whisper n'est pas
+  // installé (cf. voix.ts), un micro affiché ne rend qu'un 503 par appui.
+  const voix = useVoix()
+  const micDisponible = !!showMic && voix.transcription
   const [activePanel, setActivePanel] = useState<Panel>(null)
   const [showFullModelList, setShowFullModelList] = useState(false)
 
@@ -830,7 +839,7 @@ export default function ModuleBar({
           </button>
         )}
 
-        {showMic && (
+        {micDisponible && (
           <button
             onPointerDown={handleMicDown}
             onPointerUp={handleMicUp}

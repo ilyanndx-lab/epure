@@ -291,10 +291,20 @@ class GeneratedRestreintTest(unittest.TestCase):
         self.assertIn("interrompu", str(ctx.exception))
 
 
+def _exigences(arch: str = "amd64") -> tuple[str, list[str]]:
+    """Texte du requirements généré et ses lignes ACTIVES (hors commentaires)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        texte = paquet._exigences_du_paquet(
+            Path(tmp) / "req.txt", arch).read_text(encoding="utf-8")
+    actives = [l for l in texte.splitlines()
+               if l.strip() and not l.lstrip().startswith("#")]
+    return texte, actives
+
+
 class ExigencesTest(unittest.TestCase):
     def test_sentence_transformers_est_retire_mais_reste_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cible = paquet._exigences_sans_torch(Path(tmp) / "req.txt")
+            cible = paquet._exigences_du_paquet(Path(tmp) / "req.txt")
             texte = cible.read_text(encoding="utf-8")
         lignes_actives = [l for l in texte.splitlines()
                          if l.strip() and not l.lstrip().startswith("#")]
@@ -311,7 +321,7 @@ class ExigencesTest(unittest.TestCase):
     def test_les_commentaires_de_requirements_sont_conserves(self):
         """Ils portent la raison de chaque épinglage (cf. requirements.txt)."""
         with tempfile.TemporaryDirectory() as tmp:
-            texte = paquet._exigences_sans_torch(Path(tmp) / "req.txt").read_text(encoding="utf-8")
+            texte = paquet._exigences_du_paquet(Path(tmp) / "req.txt").read_text(encoding="utf-8")
         self.assertIn("starlette", texte)
         self.assertGreater(sum(1 for l in texte.splitlines() if l.lstrip().startswith("#")), 10)
 
@@ -359,6 +369,87 @@ class ExigencesTest(unittest.TestCase):
             with self.subTest(nom=nom):
                 self.assertTrue(paquet.doit_exclure(Path(nom)))
                 self.assertFalse(paquet.doit_exclure(Path("modules") / "chat" / nom))
+
+    def test_la_voix_est_retiree_du_paquet_arm64_et_seulement_la(self):
+        """Décision du 2026-08-22 : voix déclarée indisponible sur Windows ARM64.
+
+        Le blocage est à l'INSTALLATION, pas à l'usage : `ctranslate2` (dont dépend
+        `faster-whisper`) ne publie aucune wheel `win_arm64` ni aucune sdist, donc
+        `pip install -r requirements.txt` échoue avant que le backend démarre.
+
+        Le « et seulement là » est la moitié qui compte. Deux façons de se tromper,
+        toutes les deux vérifiées ici : retirer trop peu (le paquet ARM64 ne
+        s'installe pas), ou retirer trop — `onnxruntime` et `torch` ont l'air liés
+        à la voix mais ont tous les deux leur wheel ARM64, et les écarter coûterait
+        le RAG, qui marche parfaitement sur cette architecture.
+        """
+        _, actives = _exigences("arm64")
+        for retire in paquet.HORS_PAQUET_PIP_ARM64:
+            with self.subTest(retire=retire):
+                self.assertFalse(
+                    any(l.lower().startswith(retire) for l in actives),
+                    f"{retire} serait installé sur ARM64 — pip échouerait")
+        for garde in ("fastapi", "numpy", "onnxruntime", "pypdf", "openai"):
+            with self.subTest(arm64_garde=garde):
+                # onnxruntime n'est PAS dans requirements.txt (transitif) : ne le
+                # tester que s'il y est, sinon ce test affirmerait autre chose.
+                if any(l.lower().startswith(garde) for l in _exigences("amd64")[1]):
+                    self.assertTrue(any(l.lower().startswith(garde) for l in actives))
+
+    def test_le_paquet_x64_garde_la_voix(self):
+        """Le pendant strict : l'exclusion ne doit pas fuir vers l'architecture
+        par défaut. C'est le paquet que reçoit tout le monde sauf sandr.
+        """
+        _, actives = _exigences("amd64")
+        for garde in paquet.HORS_PAQUET_PIP_ARM64:
+            with self.subTest(x64_garde=garde):
+                self.assertTrue(
+                    any(l.lower().startswith(garde) for l in actives),
+                    f"{garde} a disparu du paquet x64 — la voix y est supportée")
+
+    def test_l_exclusion_arm64_est_annoncee_comme_definitive(self):
+        """Les deux motifs de retrait ne se lisent pas pareil, et le fichier livré
+        doit le dire : `sentence-transformers` est reporté (« au premier usage »),
+        la voix ARM64 est définitive. Un unique « RETIRÉ » laisserait le
+        destinataire attendre une installation qui n'arrivera jamais.
+        """
+        texte, _ = _exigences("arm64")
+        self.assertIn("RETIRÉ DU PAQUET ARM64", texte)
+        self.assertIn("win_arm64", texte)
+        self.assertIn("installé au premier usage", texte)   # l'autre motif, intact
+
+    def test_une_architecture_inconnue_est_refusee(self):
+        """Un `--arch` fantaisiste ne doit pas produire un paquet x64 en silence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(paquet.ErreurPaquet):
+                paquet._exigences_du_paquet(Path(tmp) / "req.txt", "i386")
+
+    def test_l_arch_choisit_aussi_le_runtime_embeddable(self):
+        """Exigences ARM64 + Python x64 = un paquet qui ne démarre pas chez le
+        destinataire. Les deux suivent la même variable, ou aucune des deux.
+        """
+        for arch in paquet.ARCHS:
+            with self.subTest(arch=arch):
+                url = paquet.URL_EMBEDDABLE.format(v=paquet.VERSION_PYTHON, arch=arch)
+                self.assertIn(f"embed-{arch}.zip", url)
+
+    def test_l_arch_du_paquet_est_ecrite_dans_le_manifeste(self):
+        """`PAQUET.json` doit dire ce que le destinataire n'a pas.
+
+        Sans ça, un micro absent se lit comme une interface cassée — et personne,
+        six mois plus tard, ne saura si ce paquet-là avait la voix.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp) / "dist"
+            dist.mkdir()
+            (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+            for arch, voix in (("arm64", False), ("amd64", True)):
+                with self.subTest(arch=arch):
+                    staging = Path(tmp) / f"staging-{arch}"
+                    infos = paquet.assembler(staging, dist, [], None,
+                                             journal=lambda *_: None, arch=arch)
+                    self.assertEqual(infos["arch"], arch)
+                    self.assertIs(infos["voix"], voix)
 
     def test_l_index_arm64_de_torch_est_indique_au_destinataire(self):
         """`requirements.txt` est livré au destinataire (vérifié dans le paquet) et

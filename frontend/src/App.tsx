@@ -8,6 +8,7 @@ import { getModuleDef, type SharedModuleProps } from './modules/registry'
 import { usePersistentState } from './usePersistentState'
 import { API, apiFetch, ensureToken, setToken } from './api'
 import { ATELIER_PRESENT } from './atelier'
+import { useVoix } from './voix'
 
 export type EffortLevel = 'direct' | 'low' | 'medium' | 'high' | 'adaptive'
 export interface StepConfig { role: string; model: string }
@@ -15,6 +16,10 @@ export interface StepConfig { role: string; model: string }
 export default function App() {
   const config = useInstanceConfig()
   const modules = useModules()
+  // Capacités vocales de CETTE machine. Sur un paquet ARM64 les paquets vocaux ne
+  // sont pas installés (cf. voix.ts) : les contrôles doivent disparaître, pas
+  // échouer au clic.
+  const voix = useVoix()
   // Appairage : auto via /pair (localhost). 'forbidden' = accès distant →
   // écran de saisie du code ; 'unreachable' traité comme ok (l'UX « backend
   // injoignable » existante s'applique, apiFetch ré-appairera au retour).
@@ -204,9 +209,13 @@ export default function App() {
 
   const onAssistantDone = useCallback(
     (text: string) => {
-      if (ttsEnabled) playSpeech(text)
+      // `voix.synthese` en plus de `ttsEnabled` : la lecture auto est déclenchée
+      // par le backend qui finit de répondre, pas par un clic. Si la capacité
+      // disparaît (paquet absent) alors que l'état était resté à `true`, personne
+      // ne serait là pour l'empêcher.
+      if (ttsEnabled && voix.synthese) playSpeech(text)
     },
-    [ttsEnabled, playSpeech]
+    [ttsEnabled, voix.synthese, playSpeech]
   )
 
   // Modules réellement accessibles (settings toujours inclus).
@@ -234,15 +243,21 @@ export default function App() {
   }, [activeModule])
 
   // Props partagées passées à tout module rendu.
+  //
+  // `playSpeech` et `onTtsToggle` sont OMIS quand la synthèse est indisponible, et
+  // ça suffit à faire disparaître les contrôles : les composants les gardent déjà
+  // derrière un `playSpeech && …` / `onTtsToggle && …` (chat, kholle, ModuleBar).
+  // Couper à la source plutôt qu'ajouter une condition par bouton — un module
+  // ajouté plus tard hérite du bon comportement sans rien savoir de la voix.
   const sharedProps: SharedModuleProps = {
     onAssistantDone,
-    playSpeech,
+    playSpeech: voix.synthese ? playSpeech : undefined,
     stopSpeech,
     synthesizingText,
     speakingText,
     onNavigate: setActiveModule,
-    ttsEnabled,
-    onTtsToggle: () => setTtsEnabled(v => !v),
+    ttsEnabled: voix.synthese ? ttsEnabled : false,
+    onTtsToggle: voix.synthese ? () => setTtsEnabled(v => !v) : undefined,
   }
 
   const activeHasInterface = !!getModuleDef(activeModule)
