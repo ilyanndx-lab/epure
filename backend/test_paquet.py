@@ -630,14 +630,127 @@ class AssemblageTest(unittest.TestCase):
         self.assertEqual(list(self.staging.rglob("modules-catalogue")), [])
 
     def test_aucune_donnee_ni_env_dans_le_staging_complet(self):
-        """Le contrôle de bout en bout, sur l'arborescence réellement zippée."""
+        """Le contrôle de bout en bout, sur l'arborescence réellement zippée.
+
+        Deux `.env` sont désormais attendus dans le paquet et aucun ne vient du
+        disque d'Ilyann : `.env.example` (copié, sans valeur — vérifié par
+        :meth:`test_l_exemple_de_env_part_bien_et_ne_contient_aucune_valeur`) et
+        `app/backend/.env` (ÉCRIT à partir de :data:`ENV_PAQUET`). Les deux sont
+        donc exemptés **par chemin exact**, jamais par motif : un `.env` ailleurs
+        dans l'arbre reste une fuite, et c'est la seule forme de cette liste qui
+        garde le test capable de dire non.
+        """
         paquet.assembler(self.staging, self.dist, [], None, journal=lambda *_: None)
+        attendus = {"app/backend/.env", "app/backend/.env.example"}
         fuites = [p.relative_to(self.staging).as_posix()
                   for p in self.staging.rglob("*") if p.is_file()
-                  and p.name != ".env.example"
+                  and p.relative_to(self.staging).as_posix() not in attendus
                   and (p.name.startswith(".env") or p.suffix in (".log", ".pyc")
                        or p.name.startswith(("test_", "integration_", "_test_env")))]
         self.assertEqual(fuites, [])
+
+    def test_le_env_du_paquet_eteint_vraiment_l_atelier(self):
+        """Le `.env` livré porte la ligne, et c'est ce qui coupe les routes.
+
+        `VITE_ATELIER=0` sort l'Atelier du bundle donc de l'écran ; les ROUTES,
+        elles, dépendent d'`EPURE_ATELIER`, que `main.py` lit avec **`"1"` pour
+        défaut**. Le paquet n'ayant aucun lanceur, personne ne posait la variable :
+        l'Atelier d'un paquet livré était invisible et joignable en HTTP.
+        """
+        paquet.assembler(self.staging, self.dist, [], None, journal=lambda *_: None)
+        env = self.staging / "app" / "backend" / ".env"
+        self.assertTrue(env.is_file(), "aucun .env écrit dans le paquet")
+        lignes = [l.strip() for l in env.read_text(encoding="utf-8").splitlines()]
+        self.assertIn("EPURE_ATELIER=0", lignes)
+
+    def test_le_env_du_paquet_ne_contient_aucune_valeur_secrete(self):
+        """Il porte le même nom que le `.env` d'Ilyann : il ne doit rien porter d'autre.
+
+        `EXCLUS_FICHIERS` interdit de le COPIER ; ici on en ÉCRIT un. Les deux
+        gestes coexistent tant que le contenu écrit reste connu et vide de secrets
+        — donc ce test, qui refuse toute affectation non vide autre que celle
+        qu'on a voulue.
+        """
+        paquet.assembler(self.staging, self.dist, [], None, journal=lambda *_: None)
+        env = self.staging / "app" / "backend" / ".env"
+        affectations = {}
+        for ligne in env.read_text(encoding="utf-8").splitlines():
+            nu = ligne.strip()
+            if nu and not nu.startswith("#") and "=" in nu:
+                cle, _, valeur = nu.partition("=")
+                affectations[cle.strip()] = valeur.strip()
+        self.assertEqual(affectations, {"EPURE_ATELIER": "0"},
+                         "le .env du paquet ne doit porter QUE l'extinction de "
+                         "l'Atelier — toute autre valeur est soit un secret, soit "
+                         "un réglage que le destinataire n'a pas choisi")
+
+    def test_le_manifeste_lit_l_etat_reel_au_lieu_de_l_affirmer(self):
+        """`PAQUET.json` doit CONSTATER l'état, pas le déclarer.
+
+        Le test qui compte : on efface le `.env` derrière `assembler()` et on
+        vérifie que la règle relit `True`. Avec l'ancien `"atelier": False` en dur,
+        un paquet sans extinction effective se serait décrit comme éteint — c'est
+        exactement l'écart qui a existé, et une assertion sur le seul cas nominal
+        ne l'aurait pas vu.
+        """
+        infos = paquet.assembler(self.staging, self.dist, [], None,
+                                 journal=lambda *_: None)
+        env = self.staging / "app" / "backend" / ".env"
+        self.assertFalse(infos["atelier"])
+        self.assertFalse(paquet.atelier_actif_selon(env))
+
+        env.unlink()
+        self.assertTrue(paquet.atelier_actif_selon(env),
+                        "un .env absent doit rendre True (le défaut de main.py) : "
+                        "ne jamais rendre une absence rassurante")
+
+    def test_le_manifeste_suit_le_env_meme_quand_il_n_eteint_rien(self):
+        """Le seul test que `"atelier": False` en dur ne peut pas passer.
+
+        Mesuré : remettre la constante en dur laissait les 43 autres tests verts,
+        y compris celui d'au-dessus — parce qu'il n'affirme `False` que dans le cas
+        nominal, où les deux écritures coïncident. Tant qu'aucun test ne fait
+        DIVERGER le fichier et le manifeste, « constater » et « déclarer » sont
+        indiscernables, et c'est la déclaration qui finit par mentir.
+
+        On force donc un `.env` qui n'éteint rien : le manifeste doit le dire.
+        """
+        d_origine = paquet.ENV_PAQUET
+        paquet.ENV_PAQUET = "# rien ici n'éteint l'Atelier\n"
+        try:
+            infos = paquet.assembler(self.staging, self.dist, [], None,
+                                     journal=lambda *_: None)
+        finally:
+            paquet.ENV_PAQUET = d_origine
+        self.assertTrue(
+            infos["atelier"],
+            "PAQUET.json annonce l'Atelier éteint alors que le .env livré ne "
+            "l'éteint pas — le champ est déclaré, pas mesuré",
+        )
+
+    def test_la_regle_de_lecture_est_bien_celle_de_main_py(self):
+        """Même défaut, mêmes cas limites que `main.py:_ATELIER_ACTIF`.
+
+        Si l'une des deux dérive, `PAQUET.json` décrira une instance qui n'est pas
+        celle qui démarre — le mode de panne précis qu'on corrige ici.
+        """
+        source = (_REPO / "backend" / "main.py").read_text(encoding="utf-8")
+        self.assertIn('os.environ.get("EPURE_ATELIER", "1").strip() != "0"', source,
+                      "la règle de main.py a changé : aligner atelier_actif_selon()")
+
+        env = self.staging / "env-test"
+        for contenu, actif in [
+            ("EPURE_ATELIER=0\n", False),
+            ("EPURE_ATELIER= 0 \n", False),      # dotenv strippe, main.py aussi
+            ('EPURE_ATELIER="0"\n', False),      # guillemets : dotenv les retire
+            ("EPURE_ATELIER=1\n", True),
+            ("# EPURE_ATELIER=0\n", True),       # commenté = non posé
+            ("", True),                          # vide = défaut de main.py
+            ("AUTRE=0\n", True),
+        ]:
+            with self.subTest(contenu=contenu):
+                env.write_text(contenu, encoding="utf-8")
+                self.assertEqual(paquet.atelier_actif_selon(env), actif)
 
 
 if __name__ == "__main__":

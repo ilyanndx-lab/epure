@@ -482,6 +482,100 @@ Ce qui n'est pas mesuré : si le blocage se reproduit sur une machine **jamais**
 ces fichiers (ici, `pip` venait de les écrire, et le poste avait déjà vu ce genre de DLL).
 À vérifier sur la machine du premier destinataire.
 
+#### Trois écarts découverts en écrivant la procédure d'installation (2026-08-22)
+
+Relecture du chemin réel du destinataire, code en main, avant d'écrire l'installeur.
+Trois choses que le paquet ne faisait pas alors que le plan et les docstrings les
+donnaient pour acquises. Elles sont ici et pas dans un fil de discussion parce que
+chacune se lit comme réglée tant qu'on ne suit pas la commande jusqu'au bout.
+
+##### Écart 5 — l'Atelier restait joignable — **corrigé par ce commit**
+
+`VITE_ATELIER=0` sort l'Atelier du **bundle**, donc de l'écran. Les **routes**
+(`/workshop*`, `/ws/workshop`, `/settings/test/`, `/settings/gateway/`) dépendent d'une
+autre bascule, lue au démarrage :
+
+```python
+_ATELIER_ACTIF = os.environ.get("EPURE_ATELIER", "1").strip() != "0"   # main.py
+```
+
+Défaut **`"1"`**. Or `assembler()` n'écrivait que `PAQUET.json`, le paquet ne contient
+aucun lanceur, et rien ne posait la variable. Dans tout paquet livré jusqu'ici, l'Atelier
+était donc **invisible et joignable en HTTP** — un `curl` sur `/workshop/status` répondait.
+Aggravant : `PAQUET.json` portait `"atelier": false` **en dur**, une métadonnée exacte sur
+l'intention de celui qui assemble et fausse sur l'instance qui démarre.
+
+Corrigé en écrivant `app/backend/.env` avec `EPURE_ATELIER=0` (`ENV_PAQUET`,
+`ecrire_env()`), et en **relisant ce fichier** pour renseigner `PAQUET.json`
+(`atelier_actif_selon()`), qui rejoue la règle de `main.py` au lieu de la supposer.
+
+Un `.env` plutôt qu'un lanceur : `core/paths.py` fait `load_dotenv(_BACKEND_DIR/".env")`
+à l'import et `main.py` importe `core.admin` — donc `core.paths` — **avant** de lire
+`EPURE_ATELIER`. Le fichier est honoré quelle que soit la façon dont uvicorn est lancé ;
+un lanceur ne couvrirait que sa propre invocation. Il n'y a par ailleurs pas de conflit
+avec `EXCLUS_FICHIERS`, qui interdit de **copier** le `.env` d'Ilyann : on n'en copie
+aucun, on en **écrit** un dont le contenu est connu et sans secret.
+
+Ce qu'il a fallu pour que les tests sachent dire non : `backend/test_paquet.py` vérifie la
+ligne, refuse toute autre affectation dans le fichier livré, et surtout fait **diverger**
+le `.env` et le manifeste (`ENV_PAQUET` monkeypatché sur un contenu qui n'éteint rien →
+`PAQUET.json` doit annoncer `true`). Mesuré : sans ce dernier test, remettre
+`"atelier": False` en dur laissait les 43 autres verts — dans le cas nominal, « constater »
+et « déclarer » sont indiscernables.
+
+##### Écart 2 — rien ne télécharge torch au premier usage — **ouvert**
+
+Décision 3 du docstring de `tools/faire_paquet.py` dit que `torch` « s'installe au premier
+usage du RAG ». **Aucun chemin de code ne fait ça.** `VectorStore.__init__` fait
+
+```python
+from sentence_transformers import SentenceTransformer   # core/vector_store.py
+```
+
+et lève un `ImportError` s'il manque ; aucun appel à `pip` n'existe côté application. Le
+premier document chargé produit donc une **erreur**, pas un téléchargement. Au démarrage,
+`_warmup` échoue proprement (`Préchauffage RAG échoué` en trace, attrapée), l'app sert le
+reste : la dégradation est correcte, c'est bien l'installation qui n'a jamais été écrite.
+
+##### Écart 3 — et `pip` est purgé, donc le rattrapage manuel n'est pas trivial — **ouvert**
+
+`PURGE_SITE_PACKAGES = ("pip", "setuptools", "pkg_resources")` : `python.exe -m pip` n'existe
+pas chez le destinataire. Le rattrapage de l'écart 2 demande donc d'abord de **rebootstrapper
+pip** :
+
+```powershell
+curl.exe -o get-pip.py https://bootstrap.pypa.io/pip/get-pip.py
+.\python\python.exe get-pip.py --no-warn-script-location
+.\python\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+.\python\python.exe -m pip install sentence-transformers==5.5.1
+```
+
+L'ordre est critique sur ARM64 (§7) : torch d'abord et depuis l'index PyTorch, faute de
+wheel `win_arm64` sur PyPI. Les deux exclusions se composaient sans que personne ne l'ait
+décidé — `HORS_PAQUET_PIP` reporte torch au premier usage, `PURGE_SITE_PACKAGES` retire
+l'outil qui seul pourrait l'installer. Chacune est défendable isolément ; leur produit ne
+l'est pas.
+
+##### Décision produit à trancher — après le premier test réel sur ARM64
+
+Les écarts 2 et 3 sont **le même écart** et se tranchent ensemble. Deux options, et il
+n'y a pas d'urgence à choisir : la procédure manuelle ci-dessus fonctionne et est
+documentée.
+
+1. **Garder le manuel.** Le RAG documentaire reste une capacité qu'on active à deux, une
+   fois, à l'installation. Coût : une session d'accompagnement par destinataire. Honnête
+   tant que le paquet vise une poignée de proches.
+2. **Installer torch automatiquement au premier usage du RAG** — chantier séparé, qui
+   suppose de **garder `pip` dans le paquet** au lieu de le purger, et d'écrire dans
+   l'application la logique d'installation (index PyTorch selon l'architecture, ordre
+   torch → sentence-transformers, ~2 Go, progression visible, reprise après coupure,
+   et le refus propre si le réseau manque).
+
+Ne pas trancher avant le **premier test réel sur machine ARM64** : c'est lui qui dira si
+le rattrapage manuel passe en pratique, et si `get-pip.py` sur un Python embeddable ARM64
+se comporte comme sur x64. Choisir l'option 2 avant cette mesure, ce serait écrire une
+installation automatique pour un chemin qu'on n'a jamais parcouru une fois.
+
 ### Étape D — Réglages du proche : catalogue restreint
 
 L'écran Réglages n'affiche et ne permet d'activer/désactiver que les modules présents

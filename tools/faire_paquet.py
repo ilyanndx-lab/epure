@@ -14,6 +14,7 @@ Ce qu'il produit, sous `--sortie` (défaut `dist-paquets/`) :
     epure-<destinataire>-<horodatage>.zip
       python/                  runtime embeddable 3.12 + site-packages
       app/backend/             le code, sans les données ni l'Atelier
+      app/backend/.env         ÉCRIT ici (jamais copié) — éteint l'Atelier
       app/backend/modules/<id> les modules choisis, déjà installés
       app/frontend/dist/       l'interface construite en mode paquet
       PAQUET.json              ce qui a été mis dedans, et avec quoi
@@ -280,6 +281,82 @@ EXCLUS_MAINTENANCE = frozenset({"migrer_vectoriel.py", "parite_vectorielle.py"})
 #: §7). `module_validate.py` n'est PAS ici — `module_workshop` l'importe au
 #: niveau module, donc le retirer casserait `catalogue.py`.
 EXCLUS_CORE_ATELIER = frozenset({"smoke_runner.py", "module_worker.py"})
+
+#: Contenu du `.env` écrit DANS le paquet — le seul fichier de configuration que
+#: le destinataire reçoit pré-rempli.
+#:
+#: Pourquoi il existe : `VITE_ATELIER=0` sort l'Atelier du BUNDLE, donc de
+#: l'écran, mais les ROUTES backend (`/workshop*`, `/ws/workshop`,
+#: `/settings/test/`, `/settings/gateway/`) sont gouvernées par une variable
+#: d'environnement lue au démarrage — `main.py` : ``os.environ.get(
+#: "EPURE_ATELIER", "1")``, donc **actif par défaut**. Le paquet ne contenant
+#: aucun lanceur, personne ne posait cette variable : jusqu'à ce commit,
+#: l'Atelier d'un paquet livré était invisible et pourtant **joignable en HTTP**.
+#: `PAQUET.json` affirmait `"atelier": false` — une métadonnée exacte sur
+#: l'intention et fausse sur l'état réel de l'instance.
+#:
+#: Pourquoi un `.env` et pas un lanceur : `core/paths.py` fait
+#: ``load_dotenv(_BACKEND_DIR / ".env")`` à l'import, et `main.py` importe
+#: `core.admin` (donc `core.paths`) AVANT de lire `EPURE_ATELIER`. Le fichier est
+#: donc honoré quelle que soit la façon dont uvicorn est lancé — raccourci,
+#: service, ligne de commande tapée à la main. Un lanceur ne couvrirait que sa
+#: propre invocation.
+#:
+#: ⚠️ Ce fichier porte le même nom que celui d'Ilyann, qui contient toutes ses
+#: clés d'API cloud et que `EXCLUS_FICHIERS` interdit de copier. Les deux règles
+#: coexistent parce qu'elles parlent de deux gestes différents : **on ne copie
+#: jamais**, on **écrit** un contenu connu, sans valeur secrète, entièrement
+#: visible ci-dessous. `backend/test_paquet.py` tient les deux bouts.
+#:
+#: `PUT /settings/api-keys` (`dotenv_set_key`) ajoutera les clés du destinataire à
+#: la suite de ce fichier : le pré-remplir ne lui coûte rien.
+ENV_PAQUET = """# Épure — configuration de cette instance.
+#
+# Écrit par tools/faire_paquet.py à l'assemblage du paquet. Vos clés d'API
+# s'ajoutent ici automatiquement quand vous les saisissez dans Réglages ; vous
+# pouvez aussi les écrire à la main (cf. .env.example, à côté de ce fichier).
+
+# L'Atelier (génération de modules par un LLM) n'est pas livré dans ce paquet.
+# Cette ligne coupe ses routes côté serveur ; l'écran, lui, est absent du bundle.
+# Ne pas la retirer : sans elle les routes redeviennent joignables alors que
+# l'interface qui va avec n'existe pas.
+EPURE_ATELIER=0
+"""
+
+
+def atelier_actif_selon(env: Path) -> bool:
+    """L'Atelier serait-il actif dans une instance démarrée avec ce `.env` ?
+
+    Rejoue la règle de `main.py` (``os.environ.get("EPURE_ATELIER", "1").strip()
+    != "0"``) sur le fichier **réellement écrit**, plutôt que de la supposer.
+
+    C'est ce qui fait de `PAQUET.json` un constat et non une déclaration : la
+    version précédente écrivait `"atelier": False` en dur, ce qui restait vrai sur
+    le papier pendant que les routes répondaient. Une métadonnée qui affirme un
+    état sans le mesurer finit par le décrire faux, et c'est arrivé ici.
+
+    Absent ou non renseigné → `True`, comme le défaut de `main.py` : ne jamais
+    rendre une absence rassurante.
+    """
+    if not env.is_file():
+        return True
+    for ligne in env.read_text(encoding="utf-8").splitlines():
+        nu = ligne.strip()
+        if not nu or nu.startswith("#") or "=" not in nu:
+            continue
+        cle, _, valeur = nu.partition("=")
+        if cle.strip() == "EPURE_ATELIER":
+            return valeur.strip().strip("'\"") != "0"
+    return True
+
+
+def ecrire_env(cible_backend: Path, journal=print) -> Path:
+    """Pose :data:`ENV_PAQUET` dans `app/backend/.env`. Cf. son commentaire."""
+    env = cible_backend / ".env"
+    env.write_text(ENV_PAQUET, encoding="utf-8")
+    journal("  .env : Atelier éteint côté serveur (EPURE_ATELIER=0)")
+    return env
+
 
 
 class ErreurPaquet(RuntimeError):
@@ -642,6 +719,7 @@ def assembler(staging: Path, dist: Path, manifestes: list[dict],
     """Compose l'arborescence du paquet dans `staging`."""
     app = staging / "app"
     copier_backend(app / "backend", journal)
+    env = ecrire_env(app / "backend", journal)
     installer_modules(app / "backend" / "modules", manifestes, journal)
 
     web = app / "frontend" / "dist"
@@ -652,7 +730,11 @@ def assembler(staging: Path, dist: Path, manifestes: list[dict],
     infos = {
         "modules": [{"id": m["id"], "nom": m.get("nom"), "version": m.get("version")}
                     for m in manifestes],
-        "atelier": False,
+        # RELU sur le `.env` qu'on vient d'écrire, jamais écrit en dur : ce champ
+        # doit décrire l'instance que le destinataire va démarrer, pas l'intention
+        # de celui qui assemble. En dur, il est resté `False` pendant que les
+        # routes de l'Atelier répondaient — cf. le commentaire d'`ENV_PAQUET`.
+        "atelier": atelier_actif_selon(env),
         # Au premier niveau et pas seulement dans `python` : avec
         # `--sauter-python` il n'y a pas de bloc runtime, et l'architecture visée
         # reste l'information la plus utile du manifeste.
