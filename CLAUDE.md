@@ -71,6 +71,7 @@ python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_web_search.py         # recherche web, HTTP mocké
 python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
 python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
+python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
 python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
@@ -493,6 +494,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | `uvicorn --reload` sous Windows | Instable. Restreint à `--reload-dir core` dans `epure_tray.py`, désactivable par `EPURE_RELOAD=0`. |
 | Rechargement intempestif de la page en pleine revue Atelier | Les dossiers `_*` sont exclus du glob de `registry.ts`. Ne pas « nettoyer » ce filtre. |
 | Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
+| Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---
