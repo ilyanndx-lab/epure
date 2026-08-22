@@ -97,11 +97,20 @@ class CapacitesTest(unittest.TestCase):
         """C'est LE cas ARM64 : `faster-whisper` est du Python pur et
         s'installerait, `ctranslate2` non. Ne tester que le premier annoncerait
         une capacité disponible qui échoue à l'import.
+
+        L'assertion est une INCLUSION et non une égalité : dans le job backend de
+        la CI aucun des deux n'est installé, donc `manquants` en porte deux. Une
+        égalité passerait sur le poste d'Ilyann et échouerait en CI — c'est
+        exactement l'écart contre lequel CLAUDE.md §2 met en garde, et il a été
+        payé une fois sur ce lot. L'égalité n'est vérifiée que là où elle a un
+        sens, c'est-à-dire quand `faster_whisper` est réellement importable.
         """
         with paquet_absent("ctranslate2"):
             caps = capacites_vocales()
         self.assertFalse(caps["transcription"]["disponible"])
-        self.assertEqual(caps["transcription"]["manquants"], ["ctranslate2"])
+        self.assertIn("ctranslate2", caps["transcription"]["manquants"])
+        if voice._module_present("faster_whisper"):
+            self.assertEqual(caps["transcription"]["manquants"], ["ctranslate2"])
 
     def test_la_detection_n_importe_pas_les_modules(self):
         """`find_spec`, pas `import`. Un diagnostic ne doit pas charger onnxruntime

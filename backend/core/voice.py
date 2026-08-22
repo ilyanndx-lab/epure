@@ -258,18 +258,31 @@ class PiperEngine:
         self._models_dir.mkdir(parents=True, exist_ok=True)
         self._onnx = self._models_dir / f"{voice}.onnx"
         self._config = self._models_dir / f"{voice}.onnx.json"
-        # Le paquet AVANT le modèle, et l'ordre est tout l'intérêt. `_load` levait
-        # déjà `VoiceModelUnavailable` quand piper-tts manque — mais il tourne
-        # APRÈS `_ensure_model`, donc après 76 Mo téléchargés pour un moteur qui
-        # ne peut pas se construire. Sur Windows ARM64, où le paquet est absent
-        # par construction (aucune wheel `win_arm64`, décision du 2026-08-22),
-        # c'était 76 Mo tirés à chaque tentative de synthèse, sur la connexion du
-        # destinataire, pour finir sur le même 503.
-        if not _module_present("piper"):
-            raise VoiceModelUnavailable("Le paquet 'piper-tts' n'est pas installé.")
+        self._verifier_paquet()
         self._ensure_model()
         self._piper_voice = self._load()
         logger.info("Modèle Piper prêt : %s", voice)
+
+    def _verifier_paquet(self) -> None:
+        """Refuse tout de suite si `piper-tts` n'est pas installé.
+
+        Appelée AVANT `_ensure_model`, et l'ordre est tout l'intérêt. `_load`
+        levait déjà `VoiceModelUnavailable` quand le paquet manque — mais il
+        tourne APRÈS le téléchargement, donc après 76 Mo tirés pour un moteur qui
+        ne peut pas se construire. Sur Windows ARM64, où le paquet est absent par
+        construction (aucune wheel `win_arm64`, décision du 2026-08-22), c'était
+        76 Mo à chaque tentative de synthèse, sur la connexion du destinataire,
+        pour finir sur le même 503.
+
+        Méthode et non un test en ligne dans `__init__` : ça en fait un joint
+        nommé, que les tests du TÉLÉCHARGEMENT peuvent neutraliser explicitement
+        (`test_models_dir.py::_piper_installe`) comme ils neutralisent déjà
+        `_load`. Sans ce joint, ces tests-là ne passeraient que sur une machine où
+        piper-tts est installé — pas dans la CI, dont le jeu de dépendances est
+        minimal.
+        """
+        if not _module_present("piper"):
+            raise VoiceModelUnavailable("Le paquet 'piper-tts' n'est pas installé.")
 
     # ── Récupération du modèle ───────────────────────────────────────────────
 

@@ -98,6 +98,28 @@ Les `.pyc` locaux sont en `cpython-314` (Python 3.14) ; la CI tourne en **3.12**
 (`ci.yml`). Du code qui marche en local peut casser en CI. Si tu utilises une
 syntaxe récente, vérifie sa disponibilité en 3.12.
 
+### Écart de DÉPENDANCES local/CI — le même piège, moins connu
+
+Le job `backend` de la CI n'installe pas `requirements.txt` mais un **jeu
+minimal** (l'en-tête de `ci.yml` le justifie ligne par ligne) : ni `torch`, ni
+`sentence-transformers`, ni **`faster-whisper`, ni `piper-tts`**. Sur le poste
+d'Ilyann tout est installé. Un test qui touche un moteur vocal ou vectoriel peut
+donc passer en local et échouer en CI **sans une ligne de syntaxe récente** — et
+c'est arrivé : un garde-fou « refuser si `piper-tts` est absent » a fait tomber
+sept tests de `test_models_dir.py`, qui neutralisaient `_load` mais pas la
+présence du paquet. Cause suivante enchaînée : une assertion d'ÉGALITÉ sur la
+liste des paquets manquants, vraie avec un seul absent, fausse avec deux.
+
+Deux réflexes :
+
+- une assertion sur ce qui est *installé* se formule en **inclusion**, pas en
+  égalité, ou se garde par un `if _module_present(...)` ;
+- avant de pousser un changement qui touche ces moteurs, rejouer la suite avec
+  les paquets bloqués — un `sys.meta_path` qui lève `ImportError` sur
+  `piper` / `faster_whisper` / `ctranslate2` / `sentence_transformers` reproduit
+  la condition en une vingtaine de lignes, et c'est ce qui a attrapé le second
+  échec avant la CI plutôt qu'après.
+
 ---
 
 ## 3. Architecture backend
