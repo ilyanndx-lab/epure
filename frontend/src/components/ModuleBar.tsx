@@ -198,6 +198,12 @@ export default function ModuleBar({
   const [localModels, setLocalModels] = useState<ModelInfo[]>([])
   const [localNpuModels, setLocalNpuModels] = useState<ModelInfo[]>([])
   const [cloudCategories, setCloudCategories] = useState<CloudCategories>({ rapide: [], puissant: [], long_contexte: [] })
+  // Quelles clés d'API sont posées, d'après `GET /models`. Un fournisseur sans
+  // clé ne renvoie plus aucun modèle : ses entrées ne sont pas grisées, elles
+  // n'existent pas. Cette carte sert donc uniquement aux recommandations curées
+  // ci-dessous, qui nomment des IDs en dur et ne peuvent pas se déduire d'une
+  // liste où le modèle est absent.
+  const [fournisseurs, setFournisseurs] = useState<Record<string, boolean>>({})
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b')
 
   // Preset state (for effort panel)
@@ -278,10 +284,11 @@ export default function ModuleBar({
     if (showModel) {
       apiFetch(`${API}/models`)
         .then(r => r.json())
-        .then((d: { local: ModelInfo[]; local_npu?: ModelInfo[]; cloud: CloudCategories }) => {
+        .then((d: { local: ModelInfo[]; local_npu?: ModelInfo[]; cloud: CloudCategories; fournisseurs?: Record<string, boolean> }) => {
           setLocalModels(d.local ?? [])
           setLocalNpuModels(d.local_npu ?? [])
           setCloudCategories(d.cloud ?? { rapide: [], puissant: [], long_contexte: [] })
+          setFournisseurs(d.fournisseurs ?? {})
         })
         .catch(() => {})
     }
@@ -681,7 +688,18 @@ export default function ModuleBar({
       {showModel && activePanel === 'model' && (() => {
         const allCloud = [...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
         const hasModels = localModels.length > 0 || localNpuModels.length > 0 || allCloud.length > 0
-        const curatedRecs = MODULE_RECOMMENDATIONS[module] ?? []
+        // Une recommandation dont le fournisseur n'a pas de clé disparaît, comme
+        // le modèle lui-même. Sans ce filtre elle retomberait sur la branche
+        // « inconnu du catalogue » (HelpCircle, cliquable) — le backend ne la
+        // liste plus, donc `info` est undefined : l'interface proposerait de
+        // sélectionner un modèle qui ne peut que répondre en erreur. Le test
+        // porte sur l'appartenance à la carte et non sur `!== false` : les
+        // préfixes locaux (`flm:`, `qwen2.5-coder:7b`) n'y figurent pas et
+        // doivent passer.
+        const curatedRecs = (MODULE_RECOMMENDATIONS[module] ?? []).filter(rec => {
+          const fournisseur = rec.id.split(':')[0]
+          return !(fournisseur in fournisseurs) || fournisseurs[fournisseur]
+        })
 
         // Item de la liste complète — disponibilité pilotée par /models
         const modelRow = (m: ModelInfo, dot: string, tag?: string, tagCls?: string) => {
@@ -702,7 +720,7 @@ export default function ModuleBar({
             </button>
           )
           return m.disponible ? row : (
-            <Tooltip key={m.id} content="indisponible : clé ou catalogue" side="top">
+            <Tooltip key={m.id} content="indisponible : absent du serveur ou du catalogue du fournisseur" side="top">
               {row}
             </Tooltip>
           )
@@ -748,7 +766,7 @@ export default function ModuleBar({
                         </button>
                       )
                       return info && !info.disponible ? (
-                        <Tooltip key={rec.id} content="indisponible : clé ou catalogue" side="top">
+                        <Tooltip key={rec.id} content="indisponible : absent du serveur ou du catalogue du fournisseur" side="top">
                           {row}
                         </Tooltip>
                       ) : row

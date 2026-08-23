@@ -328,11 +328,28 @@ async def list_models():
             return False
         return key_ok.get(m["provider"], False)
 
+    # Un fournisseur sans clé ne rend AUCUN modèle : ses modèles ne sont pas
+    # listés du tout, au lieu d'être listés grisés. Sans clé, l'entrée n'apprend
+    # rien à qui n'a pas l'intention d'en poser une, et elle occupait l'essentiel
+    # du sélecteur du chat — six fournisseurs de modèles morts au-dessus des
+    # modèles locaux qui, eux, marchent. Même parti pris que le catalogue de
+    # modules non livré (`GET /settings/catalogue` renvoie une liste vide et le
+    # bouton n'apparaît pas) : l'incapacité est silencieuse plutôt qu'affichée.
+    #
+    # Ce qui RESTE listé et grisé : un modèle dont la clé est bien là mais que le
+    # /v1/models du fournisseur ne connaît plus (`_disponible is False`). Celui-là
+    # est un diagnostic — ID retiré du catalogue amont — et se voit dans Réglages.
+    # `disponible: False` sur un modèle cloud a donc désormais UNE seule cause.
+    #
+    # Les clés se posent dans Réglages, qui lit `GET /settings/api-keys` et
+    # `/settings/provider-models` : cet écran ne dépend pas de la liste ci-dessous
+    # et continue de montrer les six fournisseurs, avec ou sans clé.
     cloud: dict[str, list] = {}
     for cat, models in catalog.items():
         cloud[cat] = [
             {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": _cloud_dispo(m)}
             for m in models
+            if key_ok.get(m["provider"], False)
         ]
 
     # Recommendations: first available model per usage (based on _usages metadata)
@@ -360,7 +377,19 @@ async def list_models():
     elif key_ok.get("groq", False):
         recommandations["Conversation instantanée"] = "groq:llama-3.1-8b-instant"
 
-    return {"local": local, "local_npu": local_npu, "cloud": cloud, "recommandations": recommandations}
+    # `fournisseurs` : quelles clés sont posées. Le frontend en a besoin pour ses
+    # recommandations curées (ModuleBar.MODULE_RECOMMENDATIONS), qui nomment des
+    # IDs en dur : sans cette carte, un modèle absent de `cloud` parce que sa clé
+    # manque serait indistinguable d'un modèle absent du catalogue amont, et
+    # l'interface le proposerait comme « inconnu, tentons » — un clic vers une
+    # erreur. Ne porte aucun secret : six booléens, pas les clés.
+    return {
+        "local": local,
+        "local_npu": local_npu,
+        "cloud": cloud,
+        "fournisseurs": key_ok,
+        "recommandations": recommandations,
+    }
 
 
 # ---------------------------------------------------------------------------
