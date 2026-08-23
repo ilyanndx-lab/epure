@@ -548,7 +548,12 @@ Ce que « le reste » couvre exactement, d'après l'archive réellement produite
    et ajoute la ligne si elle manque : sans elle, `main.py` reprend son défaut
    (`"1"`, donc **actif**) et les routes `/workshop*` redeviennent joignables alors
    que l'écran est absent du bundle. C'est l'écart 5, mais sur le chemin de la mise à
-   jour, où personne ne l'avait cherché.
+   jour, où personne ne l'avait cherché. Et s'il n'y en a **aucun** — ni dans
+   l'archive ni sur le disque — l'installeur en crée un : `faire_paquet.py` n'écrit
+   ce fichier que depuis le 2026-08-22, donc l'archive déjà produite pour sandr n'en
+   contient pas, et sans cette branche l'Atelier serait joignable ou non selon le
+   millésime du zip. Un invariant de sécurité ne doit pas dépendre de l'âge de
+   l'archive.
 2. **`app/frontend/dist` est vidé avant recopie.** C'est le seul dossier purement
    généré dont les noms de fichiers changent à chaque build (`index-<hash>.js`) :
    une simple superposition les empilerait à chaque mise à jour, sans que rien ne le

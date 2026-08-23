@@ -527,6 +527,30 @@ class AtelierEteintTest(_ScenarioInstallation):
         cls.resultat = cls._installer(
             _fabriquer_archive(cls.tmp / "epure-v2.zip", "v2", "BBBB"))
 
+    def test_un_paquet_sans_env_en_recoit_un(self):
+        """Une archive assemblée avant le 2026-08-22 n'en contient pas.
+
+        `faire_paquet.py` n'écrit ce `.env` que depuis cette date : celle déjà
+        produite pour sandr n'en a aucun. Sans cette branche, l'Atelier serait
+        joignable ou non selon le millésime du zip qu'on installe — un invariant
+        de sécurité ne doit pas dépendre de l'âge de l'archive.
+        """
+        with tempfile.TemporaryDirectory(prefix="epure-test-sansenv-") as tmp:
+            tmp = Path(tmp)
+            archive = tmp / "epure-vieux.zip"
+            entrees = {k: v for k, v in _entrees("vieux", "AAAA").items()
+                       if k != "app/backend/.env"}
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+                for nom, contenu in entrees.items():
+                    z.writestr(nom, contenu)
+            cible = tmp / "install"
+            r = self._installer(archive, cible=cible)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            env = cible / "app/backend/.env"
+            self.assertTrue(env.is_file(), ".env non créé pour une archive qui n'en a pas")
+            self.assertRegex(env.read_text(encoding="ascii"),
+                             r"(?m)^\s*EPURE_ATELIER\s*=\s*0\s*$")
+
     def test_la_ligne_manquante_est_remise(self):
         self.assertEqual(self.resultat.returncode, 0, self.resultat.stdout)
         env = (self.cible / "app/backend/.env").read_text(encoding="utf-8")

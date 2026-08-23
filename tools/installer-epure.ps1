@@ -426,10 +426,32 @@ function Garder-Atelier-Eteint {
     .env sans cette ligne rend donc les routes /workshop* joignables alors que
     l'ecran est absent du bundle -- l'ecart 5 de l'etape C, exactement, mais sur
     le chemin de la mise a jour ou personne ne l'avait cherche.
+
+    Et le fichier est CREE s'il n'existe pas du tout. Ce cas n'est pas theorique :
+    faire_paquet.py n'ecrit ce .env que depuis le 2026-08-22, donc toute archive
+    assemblee avant -- celle deja produite pour sandr, par exemple -- n'en contient
+    aucun. Sans cette branche, l'installeur laisserait l'Atelier joignable selon
+    l'age du zip qu'on lui donne. Un invariant de securite ne doit pas dependre du
+    millesime de l'archive.
     #>
     param([string]$Racine)
     $env_fichier = Join-Path $Racine 'app\backend\.env'
-    if (-not (Test-Path -LiteralPath $env_fichier)) { return }
+    if (-not (Test-Path -LiteralPath $env_fichier)) {
+        Set-Content -LiteralPath $env_fichier -Encoding ascii -Value @(
+            '# Epure -- configuration de cette instance.',
+            '#',
+            '# Ecrit par installer-epure.ps1 : cette archive ne contenait pas de .env',
+            '# (paquet assemble avant le 2026-08-22). Vos cles d API viendront',
+            "# s'ajouter ici quand vous les saisirez dans Reglages.",
+            '',
+            "# L'Atelier n'est pas livre dans ce paquet : cette ligne coupe ses",
+            '# routes cote serveur. Ne pas la retirer -- sans elle elles',
+            "# redeviennent joignables alors que l'ecran qui va avec n'existe pas.",
+            'EPURE_ATELIER=0'
+        )
+        Alerte '.env absent de l archive -- cree avec EPURE_ATELIER=0'
+        return
+    }
     $contenu = Get-Content -LiteralPath $env_fichier -Raw -ErrorAction SilentlyContinue
     if ($contenu -match '(?m)^\s*EPURE_ATELIER\s*=\s*0\s*$') { return }
     $ajout = @(
