@@ -54,7 +54,7 @@ le proche.
 | §0 — les quatre vérifications | **faites**, résultats ci-dessous. Aucune n'invalide l'approche |
 | A — frontend construit servi par FastAPI | **faite** — `src/api.ts` corrigé, `main._register_web`, `core.paths.resolve_web_dir`, `test_web_statique.py` (10 tests). Vérifiée dans un vrai navigateur, profil neuf |
 | B — script de constitution du paquet | **faite** — `tools/faire_paquet.py`, hors de ce qui est livré ; `backend/test_paquet.py` (35 tests) tient les règles d'exclusion, dont la purge de `grpcio`/`opentelemetry-exporter-otlp-proto-grpc`/`googleapis-common-protos` (§0.5) |
-| C — installeur minimal | à faire |
+| C — installeur minimal | **faite le 2026-08-23** — `tools/installer-epure.ps1` + `tools/Installer-Epure.cmd`, copiés à côté de l'archive à chaque assemblage ; lanceur (`Epure.cmd` + `demarrer.py`) et raccourci Bureau générés ; réinstallation = mise à jour, vérifiée à l'exécution. `backend/test_installeur.py` (28 tests). **Sans** installation d'Ollama : voir « ce qui n'est pas fait » |
 | D — Réglages du proche : catalogue restreint | à faire — déjà partiellement acquis, cf. fin du §0 |
 | E — documentation | à faire |
 
@@ -430,13 +430,190 @@ Trois défauts trouvés par ces tests avant tout usage :
   « aucune clé ne part » alors qu'il n'y avait aucune clé. Le test vérifie donc d'abord que
   `backend/.env` existe, et se déclare `skip` sinon (cas de la CI).
 
-### Étape C — Installeur minimal pour le proche
+### Étape C — Installeur minimal pour le proche — **faite le 2026-08-23**
 
-Dézippe l'archive, installe Ollama s'il est absent, tire le modèle, pose un raccourci
-Bureau. Plus de détection Python/Node/git.
+`tools/installer-epure.ps1` + `tools/Installer-Epure.cmd`. Le destinataire reçoit
+**trois fichiers dans un même dossier** et double-clique le `.cmd` :
 
-Vérification : sur une machine où rien n'est installé, mesurer le temps et le nombre
-d'étapes réellement franchies sans intervention manuelle.
+```
+epure-<destinataire>.zip     l'archive produite par tools/faire_paquet.py
+installer-epure.ps1          la logique
+Installer-Epure.cmd          ce qu'il double-clique
+```
+
+Les deux fichiers d'installation sont désormais **copiés à côté de l'archive à chaque
+assemblage** (`faire_paquet.poser_installeur`). Ce n'est pas une commodité : « à
+joindre au moment de l'envoi » est exactement la classe d'oubli qui a fait que le
+lanceur du paquet, pourtant écrit à la main plusieurs fois, n'a existé dans **aucun**
+paquet assemblé jusqu'ici. Un fichier qu'il faut penser à produire est un fichier qui
+manque.
+
+#### Pourquoi PowerShell, et pourquoi deux fichiers
+
+PowerShell 5.1 est livré avec Windows 10 et 11 : c'est la seule chose dont on soit
+sûr qu'elle est déjà là. Un `.exe` demanderait un toolchain au build et se ferait
+arrêter par SmartScreen faute de signature — le même problème que celui décrit plus
+bas pour les `.pyd`, mais sur le premier fichier que le destinataire doit lancer. Un
+`.cmd` seul ne sait ni dézipper ni poser un raccourci.
+
+Le `.cmd` d'amorçage existe pour deux raisons distinctes, et il faut les deux : un
+`.ps1` double-cliqué **s'ouvre dans le Bloc-notes** au lieu de s'exécuter, et
+l'ExecutionPolicy par défaut **refuse** un script non signé venu d'internet.
+`-ExecutionPolicy Bypass` ne change rien sur la machine : l'option ne vaut que pour ce
+processus.
+
+#### Où ça s'installe, et pourquoi pas ailleurs
+
+`%LOCALAPPDATA%\Epure` par défaut (`-Cible` pour en changer). Bureau et Documents
+sont **redirigés vers OneDrive** sur beaucoup de postes — vérifié sur celui-ci :
+`[Environment]::GetFolderPath('Desktop')` rend `<profil>\OneDrive\Desktop`. Une
+installation là-dedans se ferait synchroniser : 132 Mo et 7 410 fichiers dont un
+`python.exe`, avec des verrous de fichiers pendant l'exécution et des copies « (2) »
+à la moindre réinstallation. `LOCALAPPDATA` n'est jamais redirigé et ne demande aucun
+droit administrateur.
+
+#### Le lanceur, généré et non plus écrit à la main
+
+Deux fichiers, régénérés à chaque installation (ce ne sont pas des données) :
+
+| Fichier | Rôle |
+|---|---|
+| `Epure.cmd` | une ligne : `start "" python\pythonw.exe demarrer.py`. Rend le lanceur double-cliquable depuis l'explorateur. |
+| `demarrer.py` | tout ce qui se raisonne : attendre le port, ouvrir le navigateur, journaliser. |
+
+`pythonw.exe` et non `python.exe` : pythonw appartient au sous-système GUI, il n'a
+pas de console. **Et tout découle de là** — `sys.stdout` et `sys.stderr` valent
+`None`, donc un simple `print()` lèverait `AttributeError` et une traceback
+n'existerait nulle part. `demarrer.py` redirige donc les deux flux vers `epure.log`
+dès sa première ligne utile, et passe `log_config=None` à uvicorn pour qu'il
+n'installe pas ses propres handlers sur un stdout absent : ses loggers remontent
+alors à la racine, donc dans le même fichier. Le filtre de `core/logs.py`, posé par
+`main.py` sur `uvicorn.access`, continue de masquer le token qui voyage en query
+param des WebSockets.
+
+Le port (8000, loopback) est testé **avant** de démarrer uvicorn, par `GET /health`
+et pas par un simple `connect` : avec un raccourci sur le Bureau, double-lancer est
+le cas normal, et deux uvicorn sur le même port donnent une erreur de bind
+invisible. Si Épure répond déjà, on ouvre seulement le navigateur. Le test porte sur
+`/health` parce que le port 8000 est banal — conclure « Épure tourne » parce que
+quelque chose écoute ouvrirait le navigateur sur le programme de quelqu'un d'autre.
+
+Le raccourci du Bureau (`Épure.lnk`) vise **`pythonw.exe` directement**, pas
+`Epure.cmd` : un raccourci vers un `.cmd` ouvre une console le temps du `start`, donc
+un clignotement noir à chaque lancement.
+
+#### Réinstallation : la règle, et pourquoi elle est correcte
+
+**On écrit tout ce que l'archive contient, on ne supprime jamais rien d'autre.**
+
+Cette règle suffit, et elle est correcte pour une raison qui n'est pas dans
+l'installeur : l'archive **ne contient aucune donnée du destinataire**.
+`tools/faire_paquet.py` exclut `memory/`, `history/`, `vector_db/`, `chroma_db/`,
+`doc_uploads/` et `piper_models/` à la racine de `backend/` (`EXCLUS_RACINE`) ainsi
+que le `.env` (`EXCLUS_FICHIERS`), et `backend/test_paquet.py` le vérifie à chaque
+commit. Les données survivent donc parce qu'elles sont **absentes de l'archive**, pas
+parce qu'une liste de protection les nomme — ce qui est la seule forme de garantie
+qui ne se périme pas quand on ajoute un dossier de données.
+
+Ce que « le reste » couvre exactement, d'après l'archive réellement produite
+(mesuré sur `dist-paquets/epure-sandr.zip`, 7 410 entrées) :
+
+| Dans l'archive → **écrasé** | Contenu réel |
+|---|---|
+| `PAQUET.json` | 1 fichier : destinataire, modules, arch, voix, gel des versions |
+| `app/backend/` | 41 fichiers : `main.py`, `core/*.py` (25), `modules/<id>/{manifest.json,router.py}`, `config.yaml`, `requirements.txt`, `.env`, `.env.example`, `Dockerfile`, `.dockerignore` |
+| `app/frontend/dist/` | 144 fichiers : `index.html` + `_assets/` (JS/CSS horodatés par un hash) |
+| `python/` | 7 224 fichiers : runtime embeddable 3.12 + `Lib/site-packages` |
+
+| Hors archive → **jamais touché** | Pourquoi |
+|---|---|
+| `app/backend/memory/` | profil, config d'instance, token d'API, contexte de session |
+| `app/backend/history/` | conversations |
+| `app/backend/vector_db/` | index vectoriel — **et le texte** des fiches et PDF indexés |
+| `app/backend/chroma_db/` | ancien index, s'il existe encore |
+| `app/backend/doc_uploads/` | PDF déposés dans l'interface |
+| `app/backend/piper_models/` | `.onnx` de la voix, 76 Mo téléchargés au premier usage |
+| `app/workspace/` | `resolve_workspace()` → `<racine>/workspace`, et `app/` tient le rôle de racine |
+| `app/data/fiches/` | `resolve_fiches_dir()` → `<racine>/data/fiches` : les fiches du destinataire |
+| tout le reste | y compris un `torch` installé à la main dans `python/Lib/site-packages` |
+
+**Deux exceptions**, toutes deux volontaires :
+
+1. **`app/backend/.env` est dans l'archive** (`faire_paquet.py` l'écrit pour éteindre
+   l'Atelier côté serveur, cf. écart 5 plus bas) **et** c'est le fichier où
+   `PUT /settings/api-keys` écrit les clés du destinataire. L'écraser lui coûterait
+   toutes ses clés — et « installer la mise à jour » est précisément le geste après
+   lequel personne ne va vérifier ses clés. Il n'est donc écrit que s'il est absent.
+   S'il existe, l'installeur vérifie seulement qu'il porte encore `EPURE_ATELIER=0`
+   et ajoute la ligne si elle manque : sans elle, `main.py` reprend son défaut
+   (`"1"`, donc **actif**) et les routes `/workshop*` redeviennent joignables alors
+   que l'écran est absent du bundle. C'est l'écart 5, mais sur le chemin de la mise à
+   jour, où personne ne l'avait cherché.
+2. **`app/frontend/dist` est vidé avant recopie.** C'est le seul dossier purement
+   généré dont les noms de fichiers changent à chaque build (`index-<hash>.js`) :
+   une simple superposition les empilerait à chaque mise à jour, sans que rien ne le
+   signale puisque `index.html` ne référence que le dernier. `python/` est aussi
+   généré mais n'est **pas** traité ainsi — le destinataire peut y avoir installé
+   `torch` à la main (~2 Go, cf. écart 3), et le vider le lui ferait retélécharger.
+
+**La promesse est vérifiée à l'exécution, pas seulement documentée.** L'installeur
+prend un instantané (taille + date) de tout fichier présent sous les emplacements
+ci-dessus **avant** de déployer, et le recompare **après**. Un seul fichier modifié
+ou disparu et il s'arrête sur un message rouge nommant les fichiers. Taille et date
+plutôt qu'un hash : un `vector_db` peut peser des centaines de Mo, et ce qu'on
+cherche est un écrasement, pas une corruption d'octets. `EXCLUS_RACINE` et la liste
+surveillée sont tenues alignées par `backend/test_installeur.py` — ajouter un dossier
+de données sans le déclarer à l'installeur ne casserait rien de visible, ça cesserait
+juste de le surveiller.
+
+L'ordre compte, et un test l'a montré tout de suite : la vérification porte sur le
+**déploiement**, donc elle passe **avant** la remise de `EPURE_ATELIER=0`. Dans le
+premier jet elle passait après, et le garde-fou échouait sur son propre travail —
+« 1 fichier de données touché : `.env` ».
+
+**Limite déclarée** : une mise à jour **ajoute et remplace, elle ne retire pas**. Un
+fichier retiré du paquet entre deux versions (`migrer_vectoriel.py`, sorti par
+`EXCLUS_MAINTENANCE`) reste sur le disque du destinataire, inerte. Aucune règle ne
+distingue de façon sûre « fichier retiré du paquet » de « fichier ajouté par le
+destinataire », et se tromper dans ce sens-là coûte des données. Affirmé par un test,
+pour que ce soit une décision et non une surprise.
+
+#### Ce que l'installeur refuse plutôt que de deviner
+
+- **Une archive qui n'est pas un paquet Épure** (pas de `PAQUET.json`, pas de
+  `app/backend/main.py`) : refus avant d'écrire un seul octet. Sans ce contrôle,
+  n'importe quel zip posé à côté du script se déverserait dans
+  `%LOCALAPPDATA%\Epure` et l'installation aurait l'air réussie.
+- **Plusieurs `epure-*.zip` dans le dossier** : refus avec la liste. Installer la
+  mauvaise version est invisible jusqu'au premier bug qu'on cherchera dans le code.
+- **Une instance en cours d'exécution** (détectée par `GET /health`) : refus, parce
+  que les fichiers sont verrouillés et qu'une copie à moitié écrite est pire qu'une
+  copie refusée.
+- **Une entrée d'archive qui sortirait du dossier d'installation** (zip slip). Le
+  confinement se fait par canonicalisation puis comparaison **avec le séparateur
+  final** — sans lui, un dossier frère `<racine>-autre` passerait pour un enfant de
+  `<racine>`. Même règle que `core/paths.py` (CLAUDE.md §3.5). L'archive vient de
+  notre propre script, mais un extracteur qui fait confiance à ses entrées est un
+  extracteur cassé le jour où elle vient d'ailleurs.
+
+#### Ce qui n'est pas fait, et qu'il ne faut pas croire fait
+
+Le plan de cette étape prévoyait aussi « installe Ollama s'il est absent, tire le
+modèle ». **Ce n'est pas dans l'installeur.** Ces deux actions demandent plusieurs Go
+de téléchargement et, selon le chemin choisi, des droits administrateur ; elles n'ont
+rien à voir avec le paquet, et un installeur qui les tente devient un installeur qui
+échoue au milieu. Épure démarre et sert son interface sans Ollama : les modèles
+locaux sont annoncés indisponibles, ce qui est un état cohérent — et depuis le
+2026-08-23 les modèles cloud sans clé n'apparaissent tout simplement pas. Le
+destinataire installe Ollama lui-même s'il veut du local, ce qui est un choix
+séparé.
+
+Non fait non plus : la mesure demandée par le plan — *sur une machine où rien n'est
+installé, le temps et le nombre d'étapes réellement franchies*. Elle attend le
+premier vrai destinataire. Ce qui est mesuré ici, c'est le comportement de
+l'installeur sur ce poste, en première installation comme en mise à jour
+(`backend/test_installeur.py`, 28 tests, dont 21 qui lancent vraiment PowerShell sur
+une archive fabriquée).
 
 #### Échauffement Smart App Control — à traiter ici, pas ailleurs
 
@@ -477,6 +654,25 @@ Aucun correctif par le code. Trois options, à trancher à l'étape C et pas ava
    retente sur échec, pour que le blocage tombe pendant l'installation (où l'attente est
    attendue) plutôt qu'au premier usage.
 3. **Signer les binaires** — la seule vraie solution, hors budget.
+
+**Tranché le 2026-08-23 : option 2, doublée de l'option 1.** L'installeur importe une
+fois chaque extension compilée du paquet (`numpy`, `sqlite3`, `pydantic_core`,
+`tokenizers`, `onnxruntime`, `lxml`, et `av`/`ctranslate2` quand la voix est livrée),
+juste après la copie. En cas d'échec il attend 20 s et retente une fois ; si ça
+échoue encore, il l'écrit noir sur blanc et dit de relancer dans quelques minutes.
+Trois raisons de choisir ainsi plutôt que l'option 1 seule :
+
+- le blocage tombe **pendant l'installation**, là où l'attente est attendue, et non
+  au premier lancement où l'application a l'air cassée ;
+- la liste des modules est décidée par `find_spec`, pas par une supposition
+  d'architecture : le paquet ARM64 n'a ni `av` ni `ctranslate2`, et un import qui
+  échoue parce que le module est absent n'est pas un blocage de stratégie ;
+- l'échec reste **visible** dans `installation.log`, ce que l'option 1 seule ne
+  garantissait pas — c'était sa faiblesse : un message d'avertissement lu trois
+  semaines plus tôt ne diagnostique rien.
+
+L'option 3 reste la seule vraie solution et reste hors budget. `-SansEchauffement`
+existe pour les tests, qui n'ont aucune DLL à charger.
 
 Ce qui n'est pas mesuré : si le blocage se reproduit sur une machine **jamais** exposée à
 ces fichiers (ici, `pip` venait de les écrire, et le poste avait déjà vu ce genre de DLL).

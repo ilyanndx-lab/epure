@@ -9,8 +9,15 @@ dépôt complet, et d'une architecture identique à celle de la cible.
 
     python tools/faire_paquet.py --destinataire sandr --modules flashcards,reviseur
 
-Ce qu'il produit, sous `--sortie` (défaut `dist-paquets/`) :
+Ce qu'il produit, sous `--sortie` (défaut `dist-paquets/`) — **trois fichiers,
+pas un**, et c'est le sujet de l'étape C : une archive qu'il faut dézipper à la
+main, dont il faut deviner l'emplacement et pour laquelle il faut écrire un
+lanceur, n'est pas un logiciel livrable. Les deux fichiers d'installation sont
+donc copiés ici à chaque assemblage, pour qu'oublier de les joindre devienne
+impossible :
 
+    Installer-Epure.cmd        ce que le destinataire double-clique
+    installer-epure.ps1        la logique (dézippe, lanceur, raccourci, mise à jour)
     epure-<destinataire>-<horodatage>.zip
       python/                  runtime embeddable 3.12 + site-packages
       app/backend/             le code, sans les données ni l'Atelier
@@ -746,6 +753,38 @@ def assembler(staging: Path, dist: Path, manifestes: list[dict],
     return infos
 
 
+#: Les deux fichiers d'installation, copiés À CÔTÉ de l'archive et jamais dedans
+#: — on ne dézippe pas avec un outil qui est dans le zip. Ils viennent de
+#: `tools/`, qui ne part pas dans le paquet : ce sont donc les deux seuls fichiers
+#: de ce dossier que le destinataire voie un jour.
+#:
+#: Copiés à chaque assemblage plutôt que « à joindre au moment de l'envoi » :
+#: c'est exactement la classe d'oubli que l'étape C corrige. Le lanceur du paquet
+#: était lui aussi « à écrire à la main », et il n'a donc existé dans aucun paquet
+#: assemblé jusqu'ici.
+INSTALLEUR = ("Installer-Epure.cmd", "installer-epure.ps1")
+
+
+def poser_installeur(sortie: Path, journal=print) -> list[Path]:
+    """Copie l'installeur à côté de l'archive. Écrase : ce n'est pas une donnée.
+
+    Un paquet livré sans son installeur ramène le destinataire à la ligne de
+    commande, c'est-à-dire au problème que tout ce chantier existe pour
+    supprimer.
+    """
+    sortie.mkdir(parents=True, exist_ok=True)
+    poses = []
+    for nom in INSTALLEUR:
+        source = REPO / "tools" / nom
+        if not source.is_file():
+            raise ErreurPaquet(f"installeur introuvable : {source}")
+        cible = sortie / nom
+        shutil.copy2(source, cible)
+        poses.append(cible)
+    journal(f"  installeur : {', '.join(INSTALLEUR)}")
+    return poses
+
+
 def zipper(staging: Path, archive: Path, journal=print) -> float:
     archive.parent.mkdir(parents=True, exist_ok=True)
     if archive.exists():
@@ -839,7 +878,14 @@ def main(argv=None) -> int:
             archive = args.sortie / f"epure-{args.destinataire}{suffixe}.zip"
             print("Archive :")
             zipper(staging, archive)
+            poser_installeur(args.sortie)
             print(f"\nFait : {archive}")
+            # Le paquet et son installeur voyagent ENSEMBLE ou pas du tout :
+            # le .cmd cherche le .ps1 à côté de lui et le zip à côté du .ps1.
+            print("À envoyer ensemble, dans un même dossier :")
+            for nom in (archive.name, *INSTALLEUR):
+                print(f"  {args.sortie / nom}")
+            print("Le destinataire double-clique Installer-Epure.cmd.")
     except ErreurPaquet as exc:
         print(f"\nÉCHEC : {exc}", file=sys.stderr)
         return 1

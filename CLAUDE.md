@@ -74,6 +74,7 @@ python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
 python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
 python test_voice_indisponible.py # voix absente proprement (paquet, pas modèle) — ARM64
 python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
+python test_installeur.py         # installeur du paquet : mise à jour sans perte de données
 python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/* mort (§8)
 python test_models_cloud_sans_cle.py # un fournisseur sans clé ne rend aucun modèle
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
