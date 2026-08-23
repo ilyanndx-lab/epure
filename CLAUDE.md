@@ -74,6 +74,7 @@ python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
 python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
 python test_voice_indisponible.py # voix absente proprement (paquet, pas modèle) — ARM64
 python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
+python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/* mort (§8)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
 python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
@@ -264,9 +265,14 @@ Aucune base de données côté application. Deux stockages :
   chromadb a été retiré le 2026-08-13 (`docs/remplacement-vectoriel.md`) : aucune
   wheel Windows ARM64, et une grappe — `grpcio`, `kubernetes`, `opentelemetry-*` —
   qu'il déclarait en dépendances directes, donc impossible à écarter tant qu'il
-  restait. `backend/chroma_db/` peut encore exister sur le disque : c'est
-  l'ancien index, gardé le temps d'un usage réel du nouveau (étape C.4), et non
-  une seconde base vivante.
+  restait. **Son extra, lui, avait été oublié** : `uvicorn[standard]` emportait la
+  seule implémentation WebSocket de l'arbre, et tout `/ws/*` est mort dans un
+  paquet livré dix jours plus tard — cf. §8 et la séquelle en fin d'étape D du
+  document. Une carte de dépendances inverse doit inclure les extras.
+
+  `backend/chroma_db/` peut encore exister sur le disque : c'est l'ancien index,
+  gardé le temps d'un usage réel du nouveau (étape C.4), et non une seconde base
+  vivante.
 
 ### 3.5 Chemins
 
@@ -518,6 +524,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | Rechargement intempestif de la page en pleine revue Atelier | Les dossiers `_*` sont exclus du glob de `registry.ts`. Ne pas « nettoyer » ce filtre. |
 | Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
 | Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
+| Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---

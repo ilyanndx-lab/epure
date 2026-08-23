@@ -558,6 +558,51 @@ fichier de contraintes ne fait qu'épingler des versions **si** le paquet est
 installé, il n'en installe aucun — plus rien ne tire chromadb, donc plus rien n'y
 touche.
 
+#### Séquelle découverte le 2026-08-23 : `websockets` n'était pas du poids mort
+
+Le tableau de dépendances inverse ci-dessus a bien fait son travail sur ce qu'il
+regardait — les dépendances **directes** de `chromadb`. Il n'a pas regardé son
+extra : `chromadb` déclarait `uvicorn[standard]>=0.18.3`, et l'extra `standard`
+tire `websockets>=10.4`, `httptools`, `watchfiles`, `uvloop` (hors Windows).
+C'était la **seule implémentation WebSocket de l'arbre**, et `uvicorn` seul ne
+sait pas parler WebSocket : sans `websockets` ni `wsproto`,
+`AutoWebSocketsProtocol` vaut `None`, la requête d'upgrade n'est pas promue et se
+fait servir comme un GET HTTP ordinaire.
+
+Coût réel, chez un destinataire : « `No supported WebSocket library detected` » au
+démarrage, puis **401 sur `/ws/chat`** — le token du WebSocket voyage en query
+param faute d'en-tête possible sur `new WebSocket()`, donc sur le chemin HTTP
+c'est `_require_api_token` qui répond, et il ne lit que `Authorization: Bearer`.
+Chat, Atelier et dictée passent tous par là. Reproduit ici, vrai serveur, vraie
+upgrade : `HTTP/1.1 101 Switching Protocols` avec `wsproto` seul, `HTTP/1.1 200
+OK` plus les deux WARNING sans aucune implémentation.
+
+**Le trou n'était pas propre à ARM64**, où il a été observé. Carte de dépendances
+inverse sur le poste de dev (x64) : plus rien d'installé ne réclame `websockets`
+— `openai` ne le déclare que sous son extra `realtime`, jamais installé. Il n'y
+survit qu'en orphelin de l'époque chromadb, et c'est précisément pourquoi le
+poste de dev ne pouvait pas voir le bug. Un `pip install -r requirements.txt`
+neuf n'installait aucune implémentation WebSocket, sur aucune architecture,
+depuis le 2026-08-13.
+
+Corrigé par `wsproto==1.3.2` déclaré dans `backend/requirements.txt` et dans
+`tools/contraintes-paquet.txt` : Python pur (wheel `py3-none-any`, aucun `.pyd`),
+donc pas de question de wheel `win_arm64` — celle qui a déjà coûté `chromadb`
+lui-même et la voix sur ARM64 — et zéro transitif nouveau, `h11` étant déjà là
+par `uvicorn`. `websockets` aurait convenu fonctionnellement mais embarque un
+module d'accélération compilé : aucune raison d'aller vérifier sa disponibilité
+ARM64 pour un besoin que le Python pur couvre.
+
+**Ce que ça dit de la méthode, et c'est le vrai enseignement de cette étape** :
+une carte de dépendances inverse doit inclure les **extras**, et un paquet qui
+disparaît avec son porteur n'est pas pour autant du poids mort. Les trois autres
+départs du même extra (`httptools`, `watchfiles`, `uvloop`) l'étaient ; celui-là
+non, et rien à la lecture ne les distinguait. `backend/test_websocket_dependance.py`
+tient désormais la déclaration, parce qu'aucun `TestClient` ne pouvait attraper
+ça : `fastapi.testclient` parle ASGI en mémoire, sans serveur HTTP, donc sans
+jamais demander d'upgrade à uvicorn — `test_auth_surface.py` teste `/ws/chat` et
+restait vert pendant que le paquet livré ne servait aucun WebSocket.
+
 ### Étape E — Reconstruire et remesurer — **x64 fait le 2026-08-13 ; ARM64 : voir ci-dessous**
 
 #### Le paquet x64 : 132,2 Mo, contre 159,4 Mo

@@ -10,6 +10,45 @@ fastapi==0.136.3
 # `fastapi` qui porte la limite, pas `starlette`.
 starlette==1.2.0
 uvicorn==0.48.0
+# Implémentation WebSocket d'uvicorn — sans elle, TOUT `/ws/*` est mort.
+# `uvicorn` seul ne sait pas parler WebSocket : il ne le sait que si `websockets`
+# ou `wsproto` est importable (`uvicorn/protocols/websockets/auto.py`, testé dans
+# cet ordre). Sinon `_should_upgrade()` renvoie False, la requête d'upgrade est
+# servie comme un GET HTTP ordinaire — et comme le token du WebSocket voyage en
+# query param faute d'en-tête possible sur `new WebSocket()` (CLAUDE.md §3.6),
+# c'est `_require_api_token`, qui ne lit que `Authorization: Bearer`, qui répond.
+# Symptôme observé chez un destinataire : « WARNING: No supported WebSocket
+# library detected » au démarrage, puis 401 sur /ws/chat. Le chat, l'Atelier et
+# la voix passent tous par là : le paquet démarrait sans rien servir.
+#
+# CAUSE, et non symptôme : la ligne n'a jamais existé. `chromadb` déclarait
+# `uvicorn[standard]>=0.18.3`, dont l'extra `standard` tire `websockets>=10.4` —
+# l'implémentation arrivait donc en transitif, par une dépendance qui n'avait
+# rien à voir avec les WebSockets. Son retrait le 2026-08-13
+# (docs/remplacement-vectoriel.md) l'a emportée avec la grappe :
+# `tools/contraintes-paquet.txt` la liste noir sur blanc parmi les 49 départs, à
+# côté de `watchfiles` — et `httptools`, du même extra, est parti dans le même
+# lot. Ces deux-là étaient bien du poids mort. Celle-ci ne l'était pas, et rien
+# ne les distinguait.
+#
+# LE TROU N'EST PAS PROPRE À ARM64. Vérifié par carte de dépendances inverse sur
+# le poste de dev (x64) : plus rien d'installé ne réclame `websockets` — `openai`
+# ne le déclare que sous son extra `realtime`, jamais installé. Il n'y survit
+# qu'en orphelin de l'époque chromadb, ce qui est exactement pourquoi le poste de
+# dev ne pouvait pas voir le bug. Un `pip install -r requirements.txt` neuf
+# n'installait aucune implémentation WebSocket, sur AUCUNE architecture.
+#
+# `wsproto` ET NON `websockets` : `wsproto` est du Python pur (wheel
+# `wsproto-1.3.2-py3-none-any.whl`, pas un `.pyd` dedans), donc aucune question
+# de wheel `win_arm64` à vérifier — la question qui a déjà coûté `chromadb`
+# (aucune wheel ARM64) et la voix sur ARM64 (`ctranslate2`, ni wheel ni sdist,
+# cf. tools/faire_paquet.py). `websockets` embarque un module d'accélération
+# compilé ; sa disponibilité ARM64 n'est pas confirmée, et il n'y a pas de raison
+# d'aller la vérifier pour un besoin que le Python pur couvre. Coût transitif :
+# ZÉRO — `wsproto` ne demande que `h11<1,>=0.16.0`, déjà dans l'arbre puisque
+# `uvicorn` en dépend directement.
+# Verrouillé par backend/test_websocket_dependance.py.
+wsproto==1.3.2
 # Requis par les endpoints à UploadFile/File(...) : FastAPI lève à l'import du
 # router si le paquet manque. Il était présent par hasard sur le poste de dev,
 # jamais déclaré — `pip install -r requirements.txt` seul (Docker) produisait

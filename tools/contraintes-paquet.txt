@@ -5,7 +5,7 @@
 # éditer une ligne isolément.
 #
 # Régénéré le 2026-08-13 après le retrait de `chromadb`
-# (`docs/remplacement-vectoriel.md`, étape D). **52 paquets contre 101** dans la
+# (`docs/remplacement-vectoriel.md`, étape D). **53 paquets contre 101** dans la
 # version précédente : 49 partis, aucun arrivé — c'est la moitié de l'arbre
 # transitif qui disparaît avec UNE seule dépendance directe, ce qui dit assez
 # quelle place `chromadb` tenait pour ce qu'on lui demandait. Outre lui-même :
@@ -15,6 +15,22 @@
 # en ligne de commande), `jsonschema` et sa grappe, `aiohttp` et la sienne,
 # `requests`/`urllib3`/`oauthlib` (tirés par `kubernetes`), `websockets`,
 # `watchfiles`, `build`/`pyproject_hooks`.
+#
+# ⚠️ `websockets` était dans ces 49 départs et n'aurait pas dû l'être : c'était la
+# seule implémentation WebSocket de l'arbre, arrivée par l'`uvicorn[standard]` que
+# `chromadb` déclarait. Son départ a coûté tout `/ws/*` chez un destinataire
+# (« No supported WebSocket library detected » au démarrage, puis 401 sur
+# /ws/chat, la requête d'upgrade étant retombée en GET HTTP). Remplacée le
+# 2026-08-23 par `wsproto`, déclarée directement dans `backend/requirements.txt`
+# — Python pur, donc pas de wheel d'architecture à vérifier, et pas un seul
+# transitif nouveau puisque `h11` est déjà là. `wsproto` est donc le 53e paquet
+# ci-dessous, ajouté à la main plutôt que par régénération : le reste de la liste
+# est bien le `pip freeze` du 2026-08-13.
+#
+# La leçon est dans ce fichier même : une grappe transitive ne se lit pas comme du
+# poids mort du seul fait qu'elle disparaît avec son porteur. `watchfiles` et
+# `httptools`, du même extra, l'étaient. Celle-là non, et rien ne les
+# distinguait.
 #
 # Ce que ce fichier ne contient plus non plus, et c'est le vrai changement : la
 # distinction entre « installé » et « livré ». Les versions précédentes listaient
@@ -92,3 +108,4 @@ typing_extensions==4.16.0
 tzdata==2026.3
 uvicorn==0.48.0
 watchdog==6.0.0
+wsproto==1.3.2

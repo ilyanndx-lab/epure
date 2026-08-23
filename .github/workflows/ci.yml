@@ -7,8 +7,9 @@
 #              sans toucher à ce fichier.
 #              Les deps ne sont pas minimales : plusieurs tests montent la vraie
 #              app (TestClient), donc importent main.py — d'où numpy/ollama/
-#              pypdf/watchdog/python-multipart. C'est exactement l'ensemble des
-#              imports de niveau module de main.py, mesuré, et il n'inclut PAS
+#              pypdf/watchdog/python-multipart. C'est l'ensemble des imports de
+#              niveau module de main.py, mesuré — à UNE exception près, `wsproto`,
+#              justifiée au-dessus de l'étape — et il n'inclut PAS
 #              torch/sentence-transformers (le préchauffage RAG de core.runtime
 #              tourne dans un thread et échoue proprement). `numpy` remplace
 #              `chromadb` depuis le remplacement du store vectoriel : c'est
@@ -70,11 +71,18 @@ jobs:
       # fastapi/starlette épinglés sur requirements.txt — voir en-tête. Ne pas
       # « rafraîchir » ces deux versions ici : elles ne se montent qu'avec
       # requirements.txt, et seulement après docs/limite-demontage.md.
+      # `wsproto` sort du périmètre « imports de niveau module de main.py » : ce
+      # n'en est pas un, et rien ici ne l'importe. Il est là pour que
+      # `test_websocket_dependance.py` VÉRIFIE au lieu de se sauter — c'est
+      # l'implémentation WebSocket d'uvicorn, dont l'absence a coûté tout
+      # `/ws/*` dans un paquet livré. Le laisser hors de cette liste rendrait le
+      # garde-fou vert par vacuité, exactement ce que ce dépôt a déjà payé avec
+      # `tsc --noEmit` plus bas. Python pur, 25 ko, aucun transitif nouveau.
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
           pip install fastapi==0.136.3 starlette==1.2.0
           pydantic pyyaml python-dotenv
-          httpx python-multipart numpy ollama pypdf watchdog uvicorn
+          httpx python-multipart numpy ollama pypdf watchdog uvicorn wsproto
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
         # Les tests forcent HF_HUB_OFFLINE=1 et neutralisent les sondes
