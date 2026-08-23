@@ -60,6 +60,10 @@ from core.admin import AdminEngine
 from core.codeagent import CodeAgent, WORKSPACE as _CODE_WORKSPACE
 from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
+from core.embedding_install import (
+    paquets_manquants as paquets_embedding_manquants,
+    pile_presente as pile_embedding_presente,
+)
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.instance import fiches_watch_paths
@@ -266,9 +270,32 @@ def _warmup() -> None:
     met les dossiers de fiches sous surveillance. Lancé dès l'import mais SANS
     bloquer : uvicorn peut binder et répondre (/health, etc.) pendant ce temps.
     La 1re requête RAG ne paie alors pas le coût de chargement si le warmup a fini.
+
+    **Ne préchauffe PAS quand la pile d'embedding est absente**, et cette
+    condition n'est pas une optimisation. Depuis que `VectorStore.__init__`
+    déclenche l'installation de torch + sentence-transformers au lieu de lever
+    (`core/embedding_install.py`), résoudre le RAG ici lancerait ~2 Go de
+    téléchargement au DÉMARRAGE, sur la connexion du destinataire d'un paquet,
+    avant qu'il ait ouvert quoi que ce soit — y compris s'il ne se sert jamais de
+    la recherche documentaire. L'installation part au premier appel qui a
+    réellement besoin du moteur (`GET /rag/files` à l'ouverture d'un module qui
+    offre le contexte documentaire), jamais au boot.
+
+    `apply_fiches_watch()` reste appelé dans les deux cas : la surveillance des
+    dossiers de fiches passe par `rag.watch`, qui résoudra le proxy et déclenchera
+    l'installation — mais seulement si l'instance a réellement des dossiers
+    configurés, ce qui est déjà un usage revendiqué de la recherche documentaire.
     """
     try:
-        rag._resolve()
+        if pile_embedding_presente():
+            rag._resolve()
+        else:
+            logger.info(
+                "Pile d'embedding absente (%s) — pas de préchauffage RAG : "
+                "l'installation partira au premier usage réel de la recherche "
+                "documentaire, pas au démarrage.",
+                ", ".join(paquets_embedding_manquants()),
+            )
     except Exception:
         logger.exception("Préchauffage RAG échoué")
     apply_fiches_watch()

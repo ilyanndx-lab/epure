@@ -616,6 +616,13 @@ Purges restantes : `pip` (10,1 Mo) et `setuptools` (5,1 Mo). Plus rien d'autre �
 entrées `kubernetes`, `grpcio`, `opentelemetry-exporter-otlp-proto-grpc` et
 `googleapis-common-protos` n'ont pas été « désactivées », elles n'ont plus d'objet.
 
+> **Ces deux dernières purges ont été abandonnées le 2026-08-23** : l'application
+> installe elle-même sa pile d'embedding et lui faut donc un `pip` fonctionnel (cf.
+> plus bas dans cette étape, et `docs/distribution-empaquetee.md`, « écarts 2 et 3 »).
+> `PURGE_SITE_PACKAGES` est vide. Le paquet x64 devrait donc repasser à ≈ 147,4 Mo —
+> **arithmétique, pas mesure** : il n'a pas été reconstruit depuis. 15,2 Mo contre les
+> ~2 Go que ces 15 Mo servent à installer : le calcul ne se discute pas.
+
 Vérifié dans l'interpréteur embarqué du paquet, pas seulement au build : `import main`
 passe en 13,8 s, monte 71 routes et 4 modules, sert l'interface statique — **sans
 torch et sans chromadb chargés**, avec `core.vector_store` importable et numpy 2.5.2
@@ -744,6 +751,57 @@ Ce qui a été fait pour que ce soit une absence propre et non une amputation :
 Périmètre inchangé pour tout le reste : sur ARM64, RAG, stockage vectoriel, chat,
 modules et Atelier fonctionnent. **Seule la voix manque, et elle se voit manquer.**
 
+#### Le RAG était viable sur ARM64 et injoignable dans le paquet — corrigé le 2026-08-23
+
+Cette étape a conclu, mesure à l'appui, que « **le RAG à l'usage est réglé aussi**, torch
+compris, via l'index PyTorch ». C'était vrai de la disponibilité des wheels et faux de
+l'application : **aucun chemin de code ne lançait ce `pip install`.** La consigne vivait
+dans `backend/requirements.txt` et dans le docstring de `tools/faire_paquet.py`
+(« s'installe au premier usage du RAG »), c'est-à-dire dans de la prose que seul un humain
+pouvait exécuter. `VectorStore.__init__` importait `sentence_transformers` et laissait
+remonter l'`ImportError`.
+
+Coût réel, mesuré dans un paquet livré : `GET /rag/files` répondait
+`500 {"detail": "Erreur interne du serveur", "type": "ImportError"}`, à chaque appel, pour
+toujours. Le panneau fichiers du module Docs y était mort d'avance — et comme
+`PURGE_SITE_PACKAGES` retirait `pip`, le rattrapage demandait de rebootstrapper `pip` par
+`get-pip.py` avant même de pouvoir installer quoi que ce soit. Ces deux points sont les
+« écarts 2 et 3 » de `docs/distribution-empaquetee.md`, où le détail de la correction est
+consigné ; **les deux sont résolus**, et la procédure manuelle qui y figurait est retirée
+plutôt qu'archivée.
+
+Ce que ça change ici, dans le périmètre de ce document :
+
+- **L'ordre et l'index sont désormais du code**, pas une consigne.
+  `core.embedding_install.commandes_installation()` produit
+  `pip install torch --index-url https://download.pytorch.org/whl/cpu` puis
+  `pip install sentence-transformers==5.5.1`, et `backend/test_embedding_install.py`
+  vérifie l'ordre, l'index et l'absence de `shell=True`. C'est le seul invariant de ce
+  chantier dont l'erreur ne se serait vue **que** sur une machine ARM64, faute de wheel
+  `win_arm64` pour torch sur PyPI (mesuré plus haut dans cette étape) : le mettre sous
+  test était donc la conséquence directe de ce qui a été appris ici.
+- **`sentence_transformers` reste importé DANS `VectorStore.__init__`** (§3.4 de
+  CLAUDE.md, 17,4 s et torch chargé si on remonte l'import en tête de fichier). Ce qui
+  change, c'est ce qui précède l'import : `exiger_pile()`, qui lance l'installation en
+  tâche de fond et lève `EmbeddingIndisponible` — traduite en **503 avec un état**
+  (`absent` / `en_cours` / `prêt` / `échec` + une `cause` qui distingue « pas de réseau »
+  d'un vrai échec de `pip`) au lieu d'un 500 opaque. L'interface annonce « préparation du
+  moteur de recherche documentaire, environ 2 Go, connexion réseau nécessaire » et se
+  remplit toute seule.
+- **Rien ne se télécharge au démarrage** : `_warmup` ne préchauffe plus le RAG quand la
+  pile manque, sinon un premier lancement tirerait 2 Go sans qu'on lui ait rien demandé.
+- **`EPURE_EMBEDDING_AUTOINSTALL=0`** coupe le mécanisme, et `backend/_test_env.py` le pose
+  pour toute la suite : le job `backend` de la CI n'installe ni torch ni
+  sentence-transformers — exactement la configuration d'un paquet livré — donc sans cette
+  variable le premier test touchant le RAG téléchargerait 2 Go sur le runner.
+
+**Ce que cet épisode dit de la méthode**, et c'est le même enseignement que la séquelle
+`websockets` de l'étape D : ce document vérifie très bien ce qui est *publié* (wheels,
+architectures, dépendances) et beaucoup moins bien ce qui est *exécuté*. « La wheel existe
+donc l'installation marchera » est du même ordre que « le paquet disparaît avec son porteur
+donc il était mort ». Les deux fois, la vérification manquante était un essai, pas une
+requête.
+
 #### Ce qui reste ouvert dans l'étape E
 
 - L'essai de construction ARM64 lui-même, sur la machine de sandr ou une autre.
@@ -838,6 +896,15 @@ x64 reconstruit à 132,2 Mo. Ce qui reste ouvert :
   construisant. `torch` a d'abord été compté dans ce lot par erreur : il n'a pas de
   wheel `win_arm64` sur PyPI mais en a une sur l'index PyTorch, et le RAG est viable
   sur ARM64 (cf. étape E).
+- **L'installation de la pile d'embedding par l'application n'a jamais tourné pour de
+  vrai** — ni sur x64 ni sur ARM64. Elle est écrite et testée
+  (`test_embedding_install.py`, `pip` doublé), donc l'ordre des commandes, l'index, la
+  garde de concurrence et les trois causes d'échec sont couverts ; ce qui n'est pas
+  vérifié, c'est le seul geste qu'aucun double ne peut simuler : `pip install torch`
+  depuis le Python embeddable du paquet, sur une vraie connexion, jusqu'au bout des
+  ~2 Go. Ce qui reste incertain là-dedans se nomme : le temps réel (le message annonce
+  « quelques minutes »), le comportement d'une coupure au milieu (`pip` reprend-il, ou
+  faut-il vider son cache ?), et la place disque nécessaire, jamais mesurée.
 - **`integration_vector_store.py` n'est pas câblé dans la CI**, et ne peut plus l'être
   tel quel : il compare au vrai `chromadb`, qui n'est plus une dépendance du projet.
   Depuis l'étape F, il porte en plus la seule divergence assumée entre les deux

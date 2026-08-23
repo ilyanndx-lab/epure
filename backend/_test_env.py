@@ -215,6 +215,28 @@ WEB_DIR = _installer_vide("EPURE_WEB_DIR", "web")
 #:     ne prouve rien sur la propreté de `backend/memory/`.
 VECTOR_DIR = _installer_vide("EPURE_VECTOR_DIR", "vecteurs")
 
+#: **Aucun test n'a le droit de lancer un `pip install` de 2 Go.**
+#:
+#: `core/embedding_install.py` installe torch + sentence-transformers à la demande
+#: quand la pile manque — c'est la correction des « écarts 2 et 3 » de
+#: `docs/distribution-empaquetee.md`. Or le job `backend` de la CI tourne
+#: précisément dans cette configuration : son jeu de dépendances minimal
+#: n'installe ni torch ni sentence-transformers (cf. l'en-tête de `ci.yml`), donc
+#: `pile_presente()` y est faux. Sans cette ligne, le premier test qui touche une
+#: route du RAG lancerait 2 Go de téléchargement sur le runner, puis un second
+#: process de pip par la même occasion.
+#:
+#: Posée ici et non dans chaque fichier de test : la protection ne vaut que si
+#: elle couvre aussi les tests qui n'ont pas conscience de toucher au RAG — c'est
+#: exactement ce qui rend un garde-fou utile plutôt que décoratif. Un test qui
+#: veut éprouver l'installation elle-même remet la variable à `1` pour sa durée
+#: (`test_embedding_install.py`).
+#:
+#: `setdefault` : la CI ou un lanceur peut vouloir imposer autre chose, et deux
+#: imports de ce module ne doivent pas se contredire.
+os.environ.setdefault("EPURE_EMBEDDING_AUTOINSTALL", "0")
+
+
 def _rebrancher_package_modules(cible: Path) -> None:
     """Fait résoudre ``import modules.<id>.…`` depuis l'arbre TEMPORAIRE.
 

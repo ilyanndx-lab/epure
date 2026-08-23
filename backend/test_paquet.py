@@ -478,7 +478,8 @@ class ExigencesTest(unittest.TestCase):
 
 
 class PurgeSitePackagesTest(unittest.TestCase):
-    """Le seul mécanisme de purge qui subsiste : par nom de dossier.
+    """Le seul mécanisme de purge qui subsiste : par nom de dossier — et il ne
+    vise plus rien.
 
     Il y en avait deux. Le second (`_purger_distribution`, par lecture du
     `RECORD` d'un `.dist-info`) existait parce que `grpcio` et
@@ -489,33 +490,99 @@ class PurgeSitePackagesTest(unittest.TestCase):
     cette façon, donc plus de mécanisme, donc plus de tests. Ce fichier rétrécit
     avec le script qu'il surveille, au lieu de garder en vie des tests qui
     passeraient encore parfaitement sur du code que personne n'appelle.
+
+    Le premier, lui, a perdu sa cible le 2026-08-23 : `pip` et `setuptools`
+    restent dans le paquet, parce que l'application installe elle-même sa pile
+    d'embedding au premier usage de la recherche documentaire
+    (`backend/core/embedding_install.py`). Ce qui est testé ici a donc changé de
+    nature — ce n'est plus « la purge fait bien son travail » mais **« la purge
+    ne remange pas `pip` »**, qui est l'invariant dont la violation rendrait la
+    recherche documentaire irréparable chez le destinataire.
     """
 
+    def test_pip_et_setuptools_ne_sont_pas_purges(self):
+        """L'invariant qui compte, et le seul que la relecture ne garantit pas.
+
+        Remettre `"pip"` dans cette liste recasserait exactement l'écart 3 de
+        `docs/distribution-empaquetee.md` : `HORS_PAQUET_PIP` reporte
+        l'installation de `sentence-transformers` au premier usage, et purger
+        `pip` retire l'outil qui seul peut la faire. Le paquet se construirait
+        sans une erreur, et la panne n'apparaîtrait qu'à l'ouverture du panneau
+        fichiers, chez quelqu'un d'autre.
+
+        Le test porte sur la LISTE et non sur un paquet construit : la suite ne
+        construit aucun paquet (plusieurs minutes de `pip install`), et c'est la
+        liste qui décide.
+        """
+        for nom in ("pip", "setuptools", "pkg_resources"):
+            self.assertNotIn(nom, paquet.PURGE_SITE_PACKAGES)
+        # Vide aujourd'hui. L'assertion suivante n'est pas un doublon : elle dit
+        # qu'aucun AUTRE paquet n'y a été glissé sans passer par cette relecture.
+        self.assertEqual(paquet.PURGE_SITE_PACKAGES, ())
+
     def test_retire_les_dossiers_listes_et_signale_ce_qu_il_a_gagne(self):
+        """Le mécanisme lui-même, sur une liste posée par le test.
+
+        La liste réelle étant vide, l'éprouver telle quelle ne testerait plus
+        rien. On la remplace le temps du test : la mécanique reste en place pour
+        qu'un besoin futur ait où s'écrire, et elle doit rester correcte.
+        """
+        original = paquet.PURGE_SITE_PACKAGES
+        paquet.PURGE_SITE_PACKAGES = ("un_paquet_a_purger",)
+        try:
+            with tempfile.TemporaryDirectory(prefix="epure-test-purge-") as tmp:
+                racine = Path(tmp)
+                sp = racine / "Lib" / "site-packages"
+                sp.mkdir(parents=True)
+                (sp / "un_paquet_a_purger").mkdir()
+                (sp / "un_paquet_a_purger" / "__init__.py").write_text("# x", encoding="utf-8")
+                garde = sp / "fastapi"
+                garde.mkdir()
+                (garde / "__init__.py").write_text("# fastapi", encoding="utf-8")
+
+                gagne = paquet.purger_site_packages(racine, journal=lambda *_: None)
+
+                # Dans le `with` : hors du bloc, le dossier temporaire entier est
+                # supprimé, donc `assertFalse(...exists())` passerait sans rien
+                # prouver et `assertTrue(...)` sur ce qui devait SURVIVRE échouerait.
+                self.assertFalse((sp / "un_paquet_a_purger").exists())
+                self.assertIn("un_paquet_a_purger", gagne)
+                # Ce qui n'est pas listé reste : une purge trop large est le vrai risque.
+                self.assertTrue((garde / "__init__.py").exists())
+        finally:
+            paquet.PURGE_SITE_PACKAGES = original
+
+    def test_pip_survit_a_la_purge_reelle(self):
+        """Contre-épreuve, sur la liste RÉELLE : `pip/` est toujours là après.
+
+        Le test précédent passe sur une liste fabriquée, donc il resterait vert si
+        quelqu'un remettait `pip` dans la vraie. Celui-ci joue la purge telle
+        qu'elle partira dans le paquet, sur un `site-packages` qui contient `pip`,
+        et vérifie qu'il en ressort. C'est aussi ce qui rendrait visible un
+        `purger_site_packages` qui se mettrait à purger par un autre chemin que la
+        liste.
+        """
         with tempfile.TemporaryDirectory(prefix="epure-test-purge-") as tmp:
             racine = Path(tmp)
             sp = racine / "Lib" / "site-packages"
             sp.mkdir(parents=True)
-            (sp / "pip").mkdir()
-            (sp / "pip" / "__init__.py").write_text("# pip", encoding="utf-8")
-            garde = sp / "fastapi"
-            garde.mkdir()
-            (garde / "__init__.py").write_text("# fastapi", encoding="utf-8")
+            for nom in ("pip", "setuptools", "pkg_resources"):
+                (sp / nom).mkdir()
+                (sp / nom / "__init__.py").write_text(f"# {nom}", encoding="utf-8")
+            cache = sp / "pip" / "__pycache__"
+            cache.mkdir()
+            (cache / "x.cpython-312.pyc").write_bytes(b"\x00")
 
             gagne = paquet.purger_site_packages(racine, journal=lambda *_: None)
 
-            # Dans le `with` : hors du bloc, le dossier temporaire entier est
-            # supprimé, donc `assertFalse(...exists())` passerait sans rien
-            # prouver et `assertTrue(...)` sur ce qui devait SURVIVRE échouerait.
-            self.assertFalse((sp / "pip").exists())
-            self.assertIn("pip", gagne)
-            # Ce qui n'est pas listé reste : une purge trop large est le vrai risque.
-            self.assertTrue((garde / "__init__.py").exists())
+            self.assertEqual(gagne, {})
+            for nom in ("pip", "setuptools", "pkg_resources"):
+                self.assertTrue((sp / nom / "__init__.py").is_file(), nom)
+            # Le geste qui reste : les `__pycache__` partent, eux.
+            self.assertFalse(cache.exists())
 
     def test_un_dossier_absent_ne_leve_pas(self):
-        """`setuptools`/`pkg_resources` ne sont pas toujours présents selon la
-        version de `get-pip.py` : leur absence n'est pas une erreur de build.
-        """
+        """Un `site-packages` sans rien à purger n'est pas une erreur de build."""
         with tempfile.TemporaryDirectory(prefix="epure-test-purge-") as tmp:
             racine = Path(tmp)
             (racine / "Lib" / "site-packages").mkdir(parents=True)

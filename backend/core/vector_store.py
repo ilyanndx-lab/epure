@@ -59,7 +59,12 @@ from pathlib import Path
 
 import numpy as np
 
+from core.embedding_install import exiger_pile
+
 # `sentence_transformers` n'est PAS importé ici : cf. `VectorStore.__init__`.
+# `core.embedding_install`, lui, l'est — il ne tire que `core.paths` et
+# `core.jsonstore`, et sa raison d'être est justement de ne RIEN importer de
+# lourd pour répondre à « la pile d'embedding est-elle là ? ».
 
 _TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -151,6 +156,20 @@ class VectorStore:
         # d'embedding. Rendre l'embedding explicite (le but de ce module) rend
         # donc cet import explicite aussi — et le seul endroit correct pour le
         # payer est ici, où le modèle est réellement chargé.
+        #
+        # AVANT l'import, et c'est le second incident que cette ligne porte :
+        # dans un paquet livré, `sentence-transformers` n'est PAS installé
+        # (`HORS_PAQUET_PIP` l'exclut, il tire 2 Go de torch). L'import levait
+        # donc un `ImportError` nu, qui remontait au gestionnaire générique de
+        # `main.py` — `500 {"detail": "Erreur interne du serveur", "type":
+        # "ImportError"}` — et tuait le panneau fichiers du module Docs à chaque
+        # ouverture, définitivement. `exiger_pile()` transforme cet état en ce
+        # qu'il est vraiment : une installation qui n'a pas encore eu lieu. Elle
+        # lance `pip` dans un thread et lève `EmbeddingIndisponible`, que les
+        # endpoints traduisent en 503 lisible avec l'état d'avancement.
+        # Cf. `core/embedding_install.py` et docs/distribution-empaquetee.md
+        # (« écarts 2 et 3 »).
+        exiger_pile()
         from sentence_transformers import SentenceTransformer
 
         self._dir = Path(path)

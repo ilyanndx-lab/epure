@@ -8,6 +8,7 @@ import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
 import { API, apiFetch } from '../api'
 import { useModules } from '../modules'
+import { chargerRecherche, relancerRecherche, useRecherche } from '../recherche'
 import { useVoix } from '../voix'
 import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
 
@@ -126,11 +127,17 @@ const PROVIDER_TEXT: Record<string, string> = {
  * suivant, sur un `.length` — et dans un bundle minifié la trace ne nomme même
  * pas la ligne.
  *
- * C'est l'incident : `GET /rag/files` répond 500 dans un paquet livré
+ * C'est l'incident : `GET /rag/files` répondait 500 dans un paquet livré
  * (`sentence-transformers` en est exclu, et le premier accès au moteur RAG
  * l'importe), `availableFiles` passait à `undefined`, et l'ouverture du panneau
  * fichiers du module Docs levait « Cannot read properties of undefined (reading
  * 'length') ». Vérifié par ModuleBar.test.tsx.
+ *
+ * Cette route répond 503 depuis le 2026-08-23, avec un état d'installation
+ * (`core/embedding_install.py`) — et la normalisation reste tout aussi
+ * nécessaire : le corps d'un 503 n'a pas plus de champ `files` que celui d'un
+ * 500. Ce qui a changé, c'est qu'on sait maintenant quoi AFFICHER à la place
+ * (cf. `recherche.ts`) ; un panneau vide restait correct et incompréhensible.
  *
  * `Array.isArray` et non `?? []` : le second laisse passer `null` transformé en
  * tableau, mais aussi une chaîne ou un objet, qui replantent plus loin.
@@ -227,6 +234,12 @@ export default function ModuleBar({
   // installé (cf. voix.ts), un micro affiché ne rend qu'un 503 par appui.
   const voix = useVoix()
   const micDisponible = !!showMic && voix.transcription
+  // Préparation du moteur documentaire. Dans un paquet livré, la pile
+  // d'embedding (~2 Go) s'installe au premier usage : le panneau fichiers doit
+  // le DIRE, au lieu de rester vide pendant plusieurs minutes puis de se
+  // remplir. Cf. recherche.ts. Sur une installation complète, cet état vaut
+  // « prêt » et rien ne s'affiche.
+  const recherche = useRecherche()
   const [activePanel, setActivePanel] = useState<Panel>(null)
   const [showFullModelList, setShowFullModelList] = useState(false)
 
@@ -309,13 +322,30 @@ export default function ModuleBar({
 
   // ── Initial load ──────────────────────────────────────────────────────────
 
+  /**
+   * Liste des fichiers indexés. Un seul site d'appel, joué à trois moments.
+   *
+   * Extrait en callback parce qu'il sert au montage, après un import de document,
+   * et à nouveau quand le moteur passe de « en préparation » à « prêt » (cf.
+   * l'effet juste en dessous). Il était écrit deux fois, avec la normalisation
+   * recopiée à la main de chaque côté — le genre de duplication où une seule des
+   * deux copies finit corrigée.
+   *
+   * `503` déclenche une relecture de l'état de préparation : c'est la réponse du
+   * backend pendant que la pile d'embedding s'installe, et c'est ce qui fait
+   * apparaître le bandeau sans attendre l'interrogation périodique suivante.
+   */
+  const chargerFichiers = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API}/rag/files`)
+      if (res.status === 503) { void chargerRecherche(); return }
+      const d = await res.json() as { files?: unknown }
+      setAvailableFiles(liste<string>(d.files))
+    } catch { /* backend qui démarre, token pas encore appairé : sans gravité */ }
+  }, [])
+
   useEffect(() => {
-    if (showFile) {
-      apiFetch(`${API}/rag/files`)
-        .then(r => r.json())
-        .then((d: { files?: unknown }) => setAvailableFiles(liste<string>(d.files)))
-        .catch(() => {})
-    }
+    if (showFile) void chargerFichiers()
 
     apiFetch(`${API}/context`)
       .then(r => r.json())
@@ -353,7 +383,20 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort])
+  }, [showFile, showModel, showEffort, chargerFichiers])
+
+  /**
+   * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.
+   *
+   * Sans ça, le panneau resterait vide jusqu'à ce que l'utilisateur ferme et
+   * réouvre l'écran — après une installation de plusieurs minutes qu'il vient
+   * justement d'attendre. `recherche.etat` est le seul déclencheur : il ne passe
+   * à « prêt » qu'une fois, et sur une installation complète il y est dès le
+   * départ (`inconnu`, donc pas de second appel).
+   */
+  useEffect(() => {
+    if (showFile && recherche.etat === 'prêt') void chargerFichiers()
+  }, [showFile, recherche.etat, chargerFichiers])
 
   // ── Settings sync ─────────────────────────────────────────────────────────
 
@@ -476,22 +519,25 @@ export default function ModuleBar({
       const form = new FormData()
       supported.forEach(f => form.append('files', f, f.name))
       const res = await apiFetch(`${API}/files/upload`, { method: 'POST', body: form })
+      // 503 = la pile d'embedding s'installe ; l'import ne peut pas aboutir, mais
+      // c'est un état à annoncer, pas une erreur à avaler. Le bandeau du panneau
+      // s'en charge dès que l'état est relu.
+      if (res.status === 503) { void chargerRecherche(); return }
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res)
-      const [filesData, ctxData] = await Promise.all([
-        apiFetch(`${API}/rag/files`).then(r => r.json()) as Promise<Record<string, unknown>>,
-        apiFetch(`${API}/context`).then(r => r.json()) as Promise<Record<string, unknown>>,
-      ])
-      // LE point de l'incident : ces deux appels suivent l'indexation, donc le
-      // moteur RAG vient d'être sollicité. S'il n'est pas installable (paquet
-      // livré sans sentence-transformers), /rag/files répond 500 et son corps
-      // n'a pas de `files`.
-      setAvailableFiles(liste<string>(filesData.files))
+      // LE point de l'incident : ce rechargement suit l'indexation, donc le
+      // moteur RAG vient d'être sollicité. S'il n'est pas installé (paquet livré
+      // sans sentence-transformers), /rag/files répondait 500 et son corps
+      // n'avait pas de `files` — d'où `chargerFichiers`, qui normalise et sait
+      // lire le 503.
+      await chargerFichiers()
+      const ctxData = await apiFetch(`${API}/context`)
+        .then(r => r.json()) as Record<string, unknown>
       const active = liste<string>(ctxData['fichiers_actifs'])
       setActiveFiles(active); setSelectedFiles(active)
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }
-  }, [consumeLoadStream])
+  }, [consumeLoadStream, chargerFichiers])
 
   // ── STT ───────────────────────────────────────────────────────────────────
 
@@ -622,6 +668,38 @@ export default function ModuleBar({
       {/* ── Files panel ── */}
       {showFile && activePanel === 'files' && (
         <div className="border-t border-line bg-surface px-4 py-4 max-h-72 overflow-y-auto space-y-4">
+          {/* Préparation du moteur documentaire — un ÉTAT, pas une erreur.
+              Avant, ce cas produisait un 500 côté serveur et un panneau vide
+              côté client : rien ne disait qu'il manquait 2 Go à télécharger, ni
+              que ça s'installait tout seul. Le bandeau ne s'affiche pas quand
+              l'état vaut « prêt » ou « inconnu », donc jamais sur une
+              installation complète (cf. recherche.ts). */}
+          {!recherche.prete && (
+            <div className={`border rounded-md px-3 py-2 space-y-2 ${
+              recherche.etat === 'échec'
+                ? 'border-error/40 bg-error/5'
+                : 'border-accent2/40 bg-accent2/5'
+            }`}>
+              <div className="flex items-start gap-2">
+                {recherche.etat === 'échec'
+                  ? <AlertTriangle size={13} className="shrink-0 mt-0.5 text-error" />
+                  : <Loader2 size={13} className="shrink-0 mt-0.5 text-accent2 animate-spin" />}
+                <p className="text-xs text-secondary leading-relaxed">{recherche.message}</p>
+              </div>
+              {/* Un « Réessayer » seulement quand réessayer peut marcher : le
+                  backend ne relance pas tout seul (une tentative par process),
+                  mais `pip_absent` et `désactivé` ne se réparent pas depuis
+                  l'application — le second est une variable d'instance. */}
+              {recherche.etat === 'échec'
+                && recherche.cause !== 'pip_absent'
+                && recherche.cause !== 'désactivé' && (
+                <Button variant="secondary" size="sm" onClick={() => void relancerRecherche()}>
+                  Réessayer
+                </Button>
+              )}
+            </div>
+          )}
+
           <div
             onDragOver={e => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}

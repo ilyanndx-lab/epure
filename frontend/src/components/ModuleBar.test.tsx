@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 
 import ModuleBar from './ModuleBar'
+import { chargerRecherche, reinitialiserRecherche } from '../recherche'
 
 /**
  * ModuleBar face à des réponses qui n'ont pas la forme annoncée.
@@ -45,6 +46,35 @@ import ModuleBar from './ModuleBar'
 
 /** Corps d'erreur du gestionnaire d'exceptions de `main.py`, mot pour mot. */
 const ERREUR_500 = { detail: 'Erreur interne du serveur', type: 'ImportError' }
+
+/**
+ * `GET /rag/capabilities` — l'état de préparation du moteur documentaire.
+ *
+ * Ces corps sont recopiés de `core/embedding_install.py::_verdict`. Le cas
+ * `en_cours` n'est pas une hypothèse : dans un paquet livré,
+ * `sentence-transformers` n'est pas installé (il tire ~2 Go de torch), le
+ * backend lance `pip` de lui-même et répond 503 en attendant. L'interface doit
+ * dire ce qui se passe, pas rester vide plusieurs minutes.
+ */
+const CAPACITES_PRETES = {
+  'état': 'prêt', disponible: true, message: 'Moteur de recherche documentaire prêt.',
+  cause: '', 'taille_estimée_mo': 2000,
+}
+const CAPACITES_EN_COURS = {
+  'état': 'en_cours', disponible: false,
+  message: 'Préparation du moteur de recherche documentaire — téléchargement '
+    + "d'environ 2 Go, quelques minutes, connexion réseau nécessaire.",
+  cause: '', 'taille_estimée_mo': 2000,
+}
+const CAPACITES_ECHEC_RESEAU = {
+  'état': 'échec', disponible: false,
+  message: "Préparation impossible : l'index de téléchargement est injoignable. "
+    + 'Vérifiez la connexion réseau, puis réessayez.',
+  cause: 'réseau', 'taille_estimée_mo': 2000,
+}
+
+/** Le 503 que le backend rend pendant la préparation, corps compris. */
+const ERREUR_503 = { detail: CAPACITES_EN_COURS.message, ...CAPACITES_EN_COURS }
 
 /** `GET /context` nominal — l'état de session, sans lequel rien ne s'affiche. */
 const CONTEXTE_OK = {
@@ -91,6 +121,7 @@ function tableSaine(): Record<string, Reponse> {
     '/pair': { corps: { token: 'jeton-de-test' } },
     '/context': { corps: CONTEXTE_OK },
     '/rag/files': { corps: { files: ['/fiches/cours.pdf'] } },
+    '/rag/capabilities': { corps: CAPACITES_PRETES },
     '/models': { corps: MODELES_OK },
     '/voice/capabilities': {
       corps: {
@@ -127,6 +158,9 @@ async function ouvrir(titre: string) {
 afterEach(() => {
   cleanup()
   localStorage.clear()
+  // Le store de `recherche.ts` est un état de MODULE : il survit au démontage
+  // (c'est son intérêt en production) et fuirait donc d'un test au suivant.
+  reinitialiserRecherche()
 })
 
 describe('ModuleBar — panneau fichiers', () => {
@@ -170,6 +204,84 @@ describe('ModuleBar — panneau fichiers', () => {
     })
 
     await waitFor(() => expect(screen.getByText(/Glisser un fichier ici/)).toBeTruthy())
+  })
+
+  it("annonce la préparation du moteur au lieu d'un panneau vide", async () => {
+    // Le cas d'un paquet livré : /rag/files répond 503 pendant que le backend
+    // installe torch + sentence-transformers. Avant, c'était un 500 et un
+    // panneau vide sans explication — l'utilisateur ne pouvait pas savoir qu'il
+    // fallait attendre, ni combien.
+    poserFetch({
+      ...tableSaine(),
+      '/rag/files': { status: 503, corps: ERREUR_503 },
+      '/rag/capabilities': { corps: CAPACITES_EN_COURS },
+    })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText(/Préparation du moteur/)).toBeTruthy())
+    // Le message dit le poids ET que le réseau est nécessaire : ce sont les deux
+    // seules choses que l'utilisateur peut vérifier de son côté.
+    expect(screen.getByText(/2 Go/)).toBeTruthy()
+    expect(screen.getByText(/connexion réseau/)).toBeTruthy()
+    // Une préparation n'est pas un échec : pas de bouton « Réessayer ».
+    expect(screen.queryByText('Réessayer')).toBeNull()
+    // Et le panneau reste utilisable, sans « Fichiers indexés » mensonger.
+    expect(screen.getByText(/Glisser un fichier ici/)).toBeTruthy()
+    expect(screen.queryByText('Fichiers indexés')).toBeNull()
+  })
+
+  it("distingue un échec réseau d'une préparation, et propose de réessayer", async () => {
+    poserFetch({
+      ...tableSaine(),
+      '/rag/files': { status: 503, corps: ERREUR_503 },
+      '/rag/capabilities': { corps: CAPACITES_ECHEC_RESEAU },
+      '/rag/install': { corps: CAPACITES_EN_COURS },
+    })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText(/index de téléchargement est injoignable/)).toBeTruthy())
+    // Le backend ne réessaie pas tout seul (une tentative par process) : sans ce
+    // bouton, l'échec resterait affiché jusqu'au prochain démarrage.
+    const bouton = screen.getByText('Réessayer')
+    await act(async () => { bouton.click() })
+    await waitFor(() => expect(screen.getByText(/Préparation du moteur/)).toBeTruthy())
+    expect(screen.queryByText('Réessayer')).toBeNull()
+  })
+
+  it('remplit le panneau tout seul quand le moteur devient prêt', async () => {
+    // La fin de l'histoire, et le seul point qui rende l'attente supportable :
+    // après plusieurs minutes d'installation, l'utilisateur ne doit pas avoir à
+    // fermer et réouvrir l'écran.
+    poserFetch({
+      ...tableSaine(),
+      '/rag/files': { status: 503, corps: ERREUR_503 },
+      '/rag/capabilities': { corps: CAPACITES_EN_COURS },
+    })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText(/Préparation du moteur/)).toBeTruthy())
+    expect(screen.queryByText('cours.pdf')).toBeNull()
+
+    // L'installation aboutit. `chargerRecherche()` est appelé à la main plutôt
+    // que d'attendre l'interrogation périodique : c'est exactement ce que fait
+    // la minuterie de `recherche.ts`, et un test ne doit pas coûter 4 secondes.
+    poserFetch(tableSaine())
+    await act(async () => { await chargerRecherche() })
+
+    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
+    expect(screen.queryByText(/Préparation du moteur/)).toBeNull()
+  })
+
+  it('ne dit rien quand /rag/capabilities est absente (backend plus ancien)', async () => {
+    // Défaut inverse de `voix.ts`, et c'est voulu : ici l'incertitude doit être
+    // SILENCIEUSE. Afficher « préparation en cours » par défaut mettrait un
+    // bandeau anxiogène sur une installation parfaitement saine.
+    poserFetch({ ...tableSaine(), '/rag/capabilities': { status: 404, corps: { detail: 'Not Found' } } })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
+    expect(screen.queryByText(/Préparation du moteur/)).toBeNull()
+    expect(screen.queryByText('Réessayer')).toBeNull()
   })
 
   it('reste rendu quand TOUT le backend répond 500', async () => {

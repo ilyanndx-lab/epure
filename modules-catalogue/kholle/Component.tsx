@@ -58,9 +58,16 @@ export default function Kholle({ onAssistantDone, playSpeech, stopSpeech, synthe
   const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
 
   useEffect(() => {
+    // `Array.isArray` et non `data.files` cru sur parole : cette route répond 503
+    // pendant que le backend installe la pile d'embedding (~2 Go, paquet livré,
+    // cf. core/embedding_install.py), et 401 tant que le token n'est pas appairé.
+    // Le corps n'a alors PAS de champ `files` ; `.catch()` ne voit rien puisque
+    // le parse a réussi, et l'état passe à `undefined` — ça ne casse qu'au rendu
+    // suivant, sur un `.length`. Même incident que ModuleBar.test.tsx.
     apiFetch(`${API}/rag/files`)
       .then(r => r.json())
-      .then((data: { files: string[] }) => setIndexedFiles(data.files))
+      .then((data: { files?: unknown }) =>
+        setIndexedFiles(Array.isArray(data.files) ? data.files as string[] : []))
       .catch(err => console.error('Erreur GET /rag/files:', err))
   }, [])
 

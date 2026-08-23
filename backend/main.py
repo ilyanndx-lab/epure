@@ -37,6 +37,7 @@ from core.codeagent import (
 )
 from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
+from core.embedding_install import EmbeddingIndisponible
 from core.orchestrator import OrchestratorEngine
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
@@ -233,7 +234,35 @@ logger.info("Hôtes autorisés (en-tête Host) : %s", _ALLOWED_HOSTS)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_ALLOWED_HOSTS)
 
 
-# ── Gestion d'erreurs : JSON propre pour toute exception non gérée ────────────
+# ── Gestion d'erreurs ────────────────────────────────────────────────────────
+
+@app.exception_handler(EmbeddingIndisponible)
+async def _embedding_indisponible_handler(request: Request, exc: EmbeddingIndisponible):
+    """503 avec l'état d'avancement, au lieu d'un 500 « ImportError » opaque.
+
+    Un GESTIONNAIRE et non un `try` par endpoint, et c'est le point de ce choix :
+    les trois collections vectorielles (`fiches`, `doc_analysis`, `history`)
+    partagent UN store, donc tout ce qui les touche passe par le même
+    `VectorStore.__init__` — `GET /rag/files` et `POST /files/upload` côté
+    Réglages, le chargement de documents, la recherche du chat, l'historique
+    vectoriel, les modules du catalogue qui listent les fiches indexées. Les
+    traiter un par un garantirait d'en oublier, et un seul oublié rend
+    l'interface inexplicable au lieu de simplement dégradée.
+
+    Starlette cherche un gestionnaire en remontant le `__mro__` de l'exception :
+    celui-ci gagne donc sur le gestionnaire générique d'`Exception` ci-dessous,
+    plus général.
+
+    503 et non 500, pour la même raison que `VoiceModelUnavailable` : ce n'est pas
+    une panne d'Épure, c'est une capacité pas encore prête. Et `logger.warning`
+    plutôt qu'`exception` — une installation en cours n'est pas un incident dont
+    on veut la pile.
+    """
+    logger.warning("Recherche documentaire indisponible sur %s %s : %s",
+                   request.method, request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc), **exc.etat})
+
+
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception):
     """Renvoie un JSON uniforme (500) au lieu d'une trace brute.

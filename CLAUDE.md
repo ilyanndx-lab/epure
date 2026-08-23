@@ -77,6 +77,7 @@ python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS
 python test_installeur.py         # installeur du paquet : mise à jour sans perte de données
 python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/* mort (§8)
 python test_models_cloud_sans_cle.py # un fournisseur sans clé ne rend aucun modèle
+python test_embedding_install.py  # installation à la demande de torch + sentence-transformers (§3.4)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
 python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
@@ -289,6 +290,31 @@ Aucune base de données côté application. Deux stockages :
   d'uvicorn — l'incident exact que `_LazyEngine` corrige (§3.2), réintroduit par
   la bande. **La paresse du proxy ne couvre que la CONSTRUCTION des moteurs,
   jamais l'import de leurs dépendances.**
+
+  **IMPÉRATIF — `VectorStore.__init__` appelle `exiger_pile()` AVANT cet import, et
+  ce n'est pas une précaution : c'est le seul chemin qui installe la pile.** Dans un
+  paquet livré, `sentence-transformers` n'est pas installé (`HORS_PAQUET_PIP` l'exclut,
+  il tire ~2 Go de torch). L'import levait donc un `ImportError` nu, qui devenait
+  `500 {"detail": …, "type": "ImportError"}` sur toute route touchant le RAG — à chaque
+  appel, pour toujours, et rien dans l'application ne pouvait installer ce qui manquait
+  puisque `pip` était lui aussi purgé du paquet. `core/embedding_install.py` ferme ça :
+  `pip install torch --index-url https://download.pytorch.org/whl/cpu` puis
+  `pip install sentence-transformers==…`, **dans cet ordre** (sur ARM64, PyPI ne publie
+  aucune wheel `win_arm64` pour torch), dans un thread, **une seule tentative par
+  process**, avec un état exposé par `GET /rag/capabilities` et un 503 lisible à la place
+  du 500. Points à ne pas défaire :
+
+  - `PURGE_SITE_PACKAGES` doit rester **sans `pip` ni `setuptools`** (15,2 Mo contre les
+    2 Go qu'ils installent) — verrouillé par `test_paquet.py` ;
+  - `core/runtime.py::_warmup` ne préchauffe pas le RAG quand la pile manque, sinon un
+    premier démarrage tire 2 Go sans qu'on le lui ait demandé ;
+  - `EPURE_EMBEDDING_AUTOINSTALL=0` coupe le mécanisme, et `_test_env.py` le pose pour
+    toute la suite : le job rapide de la CI n'installe ni torch ni sentence-transformers,
+    donc sans cette variable le premier test touchant le RAG téléchargerait 2 Go sur le
+    runner ;
+  - l'état persiste dans `memory/embedding_install.json`, **verdicts terminaux
+    seulement** (`prêt`/`échec`) — un `en_cours` sur le disque survivrait au process qui
+    l'a écrit.
 
   chromadb a été retiré le 2026-08-13 (`docs/remplacement-vectoriel.md`) : aucune
   wheel Windows ARM64, et une grappe — `grpcio`, `kubernetes`, `opentelemetry-*` —
@@ -553,6 +579,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
 | Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
 | Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
+| La recherche documentaire répond **500 « ImportError »** dans un paquet livré | `sentence-transformers` n'y est pas installé (2 Go de torch) et rien ne l'installait — la promesse « s'installe au premier usage » était de la prose. Depuis le 2026-08-23, `VectorStore.__init__` appelle `exiger_pile()` : installation en tâche de fond, 503 avec état, `GET /rag/capabilities`. Ne pas remettre `pip` dans `PURGE_SITE_PACKAGES`, ne pas préchauffer le RAG sans la pile. Cf. §3.4 et `test_embedding_install.py`. |
 | `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répond 500 (`sentence-transformers` exclu, et le premier accès au moteur RAG l'importe) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 

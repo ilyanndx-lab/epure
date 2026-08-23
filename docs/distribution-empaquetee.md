@@ -535,7 +535,7 @@ Ce que « le reste » couvre exactement, d'après l'archive réellement produite
 | `app/backend/piper_models/` | `.onnx` de la voix, 76 Mo téléchargés au premier usage |
 | `app/workspace/` | `resolve_workspace()` → `<racine>/workspace`, et `app/` tient le rôle de racine |
 | `app/data/fiches/` | `resolve_fiches_dir()` → `<racine>/data/fiches` : les fiches du destinataire |
-| tout le reste | y compris un `torch` installé à la main dans `python/Lib/site-packages` |
+| tout le reste | y compris le `torch` que l'application installe elle-même dans `python/Lib/site-packages` |
 
 **Deux exceptions**, toutes deux volontaires :
 
@@ -558,8 +558,9 @@ Ce que « le reste » couvre exactement, d'après l'archive réellement produite
    généré dont les noms de fichiers changent à chaque build (`index-<hash>.js`) :
    une simple superposition les empilerait à chaque mise à jour, sans que rien ne le
    signale puisque `index.html` ne référence que le dernier. `python/` est aussi
-   généré mais n'est **pas** traité ainsi — le destinataire peut y avoir installé
-   `torch` à la main (~2 Go, cf. écart 3), et le vider le lui ferait retélécharger.
+   généré mais n'est **pas** traité ainsi — l'application y installe `torch` et
+   `sentence-transformers` au premier usage de la recherche documentaire (~2 Go, cf.
+   écarts 2 et 3), et le vider les ferait retélécharger.
 
 **La promesse est vérifiée à l'exécution, pas seulement documentée.** L'installeur
 prend un instantané (taille + date) de tout fichier présent sous les emplacements
@@ -683,12 +684,19 @@ Ce qui n'est pas mesuré : si le blocage se reproduit sur une machine **jamais**
 ces fichiers (ici, `pip` venait de les écrire, et le poste avait déjà vu ce genre de DLL).
 À vérifier sur la machine du premier destinataire.
 
-#### Trois écarts découverts en écrivant la procédure d'installation (2026-08-22)
+#### Trois écarts découverts en écrivant la procédure d'installation (2026-08-22) — **les trois corrigés au 2026-08-23**
 
 Relecture du chemin réel du destinataire, code en main, avant d'écrire l'installeur.
 Trois choses que le paquet ne faisait pas alors que le plan et les docstrings les
 donnaient pour acquises. Elles sont ici et pas dans un fil de discussion parce que
 chacune se lit comme réglée tant qu'on ne suit pas la commande jusqu'au bout.
+
+Ce qu'elles ont en commun, et qui vaut plus que chacune d'elles : **un docstring qui
+décrit une intention se lit exactement comme un docstring qui décrit du code.** L'écart 5
+annonçait un Atelier éteint que rien n'éteignait ; l'écart 2 annonçait une installation
+« au premier usage » que rien n'installait. Dans les deux cas la phrase était juste sur
+l'intention et fausse sur l'instance, et dans les deux cas ça ne se voyait qu'en suivant
+la commande jusqu'au bout — pas en relisant.
 
 ##### Écart 5 — l'Atelier restait joignable — **corrigé par ce commit**
 
@@ -724,58 +732,95 @@ le `.env` et le manifeste (`ENV_PAQUET` monkeypatché sur un contenu qui n'étei
 `"atelier": False` en dur laissait les 43 autres verts — dans le cas nominal, « constater »
 et « déclarer » sont indiscernables.
 
-##### Écart 2 — rien ne télécharge torch au premier usage — **ouvert**
+##### Écart 2 — rien ne téléchargeait torch au premier usage — **corrigé le 2026-08-23**
 
-Décision 3 du docstring de `tools/faire_paquet.py` dit que `torch` « s'installe au premier
-usage du RAG ». **Aucun chemin de code ne fait ça.** `VectorStore.__init__` fait
+Décision 3 du docstring de `tools/faire_paquet.py` disait que `torch` « s'installe au
+premier usage du RAG ». **Aucun chemin de code ne faisait ça.** `VectorStore.__init__`
+faisait
 
 ```python
 from sentence_transformers import SentenceTransformer   # core/vector_store.py
 ```
 
-et lève un `ImportError` s'il manque ; aucun appel à `pip` n'existe côté application. Le
-premier document chargé produit donc une **erreur**, pas un téléchargement. Au démarrage,
-`_warmup` échoue proprement (`Préchauffage RAG échoué` en trace, attrapée), l'app sert le
-reste : la dégradation est correcte, c'est bien l'installation qui n'a jamais été écrite.
+et levait un `ImportError` s'il manquait ; aucun appel à `pip` n'existait côté
+application. Le premier document chargé produisait donc une **erreur**, pas un
+téléchargement. Au démarrage, `_warmup` échouait proprement (`Préchauffage RAG échoué` en
+trace, attrapée), l'app servait le reste : la dégradation était correcte, c'est bien
+l'installation qui n'avait jamais été écrite.
 
-##### Écart 3 — et `pip` est purgé, donc le rattrapage manuel n'est pas trivial — **ouvert**
+Et cette erreur ne restait pas dans les logs. Le corps du 500 —
+`{"detail": "Erreur interne du serveur", "type": "ImportError"}` — n'a pas de champ
+`files`, ce que le panneau fichiers du module Docs lisait quand même : `availableFiles`
+passait à `undefined` et l'ouverture du panneau levait « Cannot read properties of
+undefined (reading 'length') » dans un chunk minifié. La normalisation côté client a été
+faite séparément (`ModuleBar.test.tsx`, CLAUDE.md §8), mais elle ne rendait le panneau
+que **vide et silencieux** : correct, et incompréhensible pour son utilisateur.
 
-`PURGE_SITE_PACKAGES = ("pip", "setuptools", "pkg_resources")` : `python.exe -m pip` n'existe
-pas chez le destinataire. Le rattrapage de l'écart 2 demande donc d'abord de **rebootstrapper
-pip** :
+##### Écart 3 — et `pip` était purgé, donc rien ne pouvait le rattraper — **corrigé le 2026-08-23**
 
-```powershell
-curl.exe -o get-pip.py https://bootstrap.pypa.io/pip/get-pip.py
-.\python\python.exe get-pip.py --no-warn-script-location
-.\python\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-.\python\python.exe -m pip install sentence-transformers==5.5.1
-```
+`PURGE_SITE_PACKAGES = ("pip", "setuptools", "pkg_resources")` : `python.exe -m pip`
+n'existait pas chez le destinataire. Les deux exclusions se composaient sans que personne
+ne l'ait décidé — `HORS_PAQUET_PIP` reporte torch au premier usage,
+`PURGE_SITE_PACKAGES` retirait l'outil qui seul pouvait l'installer. Chacune est
+défendable isolément ; leur produit ne l'était pas.
 
-L'ordre est critique sur ARM64 (§7) : torch d'abord et depuis l'index PyTorch, faute de
-wheel `win_arm64` sur PyPI. Les deux exclusions se composaient sans que personne ne l'ait
-décidé — `HORS_PAQUET_PIP` reporte torch au premier usage, `PURGE_SITE_PACKAGES` retire
-l'outil qui seul pourrait l'installer. Chacune est défendable isolément ; leur produit ne
-l'est pas.
+##### Ce qui a été fait : l'option 2, l'installation par l'application
 
-##### Décision produit à trancher — après le premier test réel sur ARM64
+Ce document présentait deux options — garder une procédure manuelle documentée, ou
+installer automatiquement — et disait de ne pas trancher avant un essai ARM64. **C'est
+l'option 2 qui a été retenue, et sans attendre cet essai.** La raison de ne plus
+attendre : l'essai ARM64 devait dire si `get-pip.py` se comporte bien sur un Python
+embeddable ARM64. Cette question n'existe plus, puisque `pip` n'est plus retiré du tout —
+il n'y a plus rien à rebootstrapper. La mesure attendue portait sur un obstacle que la
+correction supprime.
 
-Les écarts 2 et 3 sont **le même écart** et se tranchent ensemble. Deux options, et il
-n'y a pas d'urgence à choisir : la procédure manuelle ci-dessus fonctionne et est
-documentée.
+Ce qui bascule, en trois pièces :
 
-1. **Garder le manuel.** Le RAG documentaire reste une capacité qu'on active à deux, une
-   fois, à l'installation. Coût : une session d'accompagnement par destinataire. Honnête
-   tant que le paquet vise une poignée de proches.
-2. **Installer torch automatiquement au premier usage du RAG** — chantier séparé, qui
-   suppose de **garder `pip` dans le paquet** au lieu de le purger, et d'écrire dans
-   l'application la logique d'installation (index PyTorch selon l'architecture, ordre
-   torch → sentence-transformers, ~2 Go, progression visible, reprise après coupure,
-   et le refus propre si le réseau manque).
+| Pièce | Effet |
+|---|---|
+| **`PURGE_SITE_PACKAGES = ()`** | `pip` et `setuptools` restent dans le paquet. Coût mesuré : **15,2 Mo** (10,1 + 5,1), soit 0,7 % des ~2 Go de torch qu'ils servent à installer. `pkg_resources` part avec eux : c'est un module DE setuptools, le purger seul livrerait un setuptools amputé. |
+| **`backend/core/embedding_install.py`** | `VectorStore.__init__` appelle `exiger_pile()` au lieu d'importer aveuglément. Pile absente → un thread lance `pip install torch --index-url https://download.pytorch.org/whl/cpu` puis `pip install sentence-transformers==5.5.1`, **dans cet ordre**, et l'appelant reçoit `EmbeddingIndisponible` porteuse d'un état. |
+| **`GET /rag/capabilities`** + `frontend/src/recherche.ts` | L'état (`absent` / `en_cours` / `prêt` / `échec` + `cause`) est exposé sur le modèle de `/voice/capabilities`, et le panneau fichiers l'affiche : « préparation du moteur de recherche documentaire — environ 2 Go, quelques minutes, connexion réseau nécessaire », puis se remplit tout seul. |
 
-Ne pas trancher avant le **premier test réel sur machine ARM64** : c'est lui qui dira si
-le rattrapage manuel passe en pratique, et si `get-pip.py` sur un Python embeddable ARM64
-se comporte comme sur x64. Choisir l'option 2 avant cette mesure, ce serait écrire une
-installation automatique pour un chemin qu'on n'a jamais parcouru une fois.
+Les points de conception qui ne se devinent pas, et qui sont chacun la réponse à un piège
+précis :
+
+- **L'ordre `torch` → `sentence-transformers` et l'index PyTorch sont maintenant dans du
+  code**, donc testables (`test_embedding_install.py`). C'était une consigne en prose dans
+  `requirements.txt` ; une inversion ne se serait vue que sur une machine ARM64, où PyPI
+  ne publie aucune wheel `win_arm64` pour torch.
+- **Une seule tentative automatique par process.** L'ouverture du panneau fichiers
+  déclenche `GET /rag/files` et `GET /rag/capabilities` presque en même temps ; sans garde,
+  chacun lancerait son `pip install torch` sur le même `site-packages`. Un verrou et un
+  drapeau `_tentee` s'en chargent, et douze appels simultanés sont testés.
+- **Un échec ne se relance pas tout seul**, d'où un `POST /rag/install` et un bouton
+  « Réessayer ». La cause la plus probable — pas de réseau — se corrige en dehors de
+  l'application, et l'utilisateur est le seul à savoir quand.
+- **« Pas de réseau » et « pip a échoué » sont deux verdicts distincts**, mesurés et non
+  devinés : une sonde HEAD sur l'index PyTorch **avant** de lancer `pip`, où une réponse
+  HTTP — même 403 — compte comme réseau présent. La sortie de `pip` est relue ensuite
+  comme signal secondaire, pour la coupure qui arrive pendant les 2 Go.
+- **L'état persisté ne porte que des verdicts terminaux.** Un `en_cours` sur le disque
+  survivrait au process qui l'a écrit et deviendrait un mensonge que rien ne peut réfuter.
+  Le fichier (`memory/embedding_install.json`, via `core/jsonstore.py`) est écrit **avant**
+  que l'état mémoire change : l'ordre inverse laisse une fenêtre — observée, pas supposée —
+  où l'application annonce « échec réseau » alors qu'un redémarrage immédiat repartirait de
+  « absent ».
+- **Rien ne se télécharge au démarrage.** `core/runtime.py::_warmup` ne préchauffe plus le
+  RAG quand la pile manque : résoudre le proxy y lancerait 2 Go sur la connexion du
+  destinataire avant qu'il ait ouvert quoi que ce soit. L'installation part au premier
+  appel qui a réellement besoin du moteur.
+- **`EPURE_EMBEDDING_AUTOINSTALL=0`** coupe l'installation automatique. Deux besoins
+  distincts : une instance sur connexion facturée, et la suite de tests — le job `backend`
+  de la CI n'installe ni torch ni sentence-transformers, donc sans cette variable
+  (posée par `backend/_test_env.py`) le premier test touchant le RAG téléchargerait 2 Go
+  sur le runner. La variable est relue avant **chaque** commande, pas seulement au
+  déclenchement : un interrupteur qui n'arrête pas ce qui est déjà parti ne tient que la
+  moitié de sa promesse.
+
+La procédure manuelle est donc retirée de ce document plutôt qu'archivée : elle décrivait
+un rattrapage pour un `pip` qui n'est plus purgé, et la laisser lisible ferait
+rebootstrapper `pip` par-dessus celui du paquet.
 
 ### Étape D — Réglages du proche : catalogue restreint
 

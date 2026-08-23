@@ -89,6 +89,14 @@ sentence-transformers==5.5.1
 # depuis PyPI, où il n'y a rien pour cette architecture. Torch d'abord, depuis le
 # bon index, et la ligne ci-dessus le trouve déjà satisfait.
 #
+# CETTE CONSIGNE RESTE, mais elle ne sert plus qu'à une installation MANUELLE (dépôt
+# cloné, image Docker). Dans le paquet distribué, où cette ligne est commentée par
+# `tools/faire_paquet.py`, c'est l'APPLICATION qui joue ces deux commandes au premier
+# usage de la recherche documentaire — `backend/core/embedding_install.py`, dans le même
+# ordre et sur le même index, vérifié par `backend/test_embedding_install.py`. La phrase
+# ci-dessus a été pendant tout l'été la seule chose qui « installait » torch dans un
+# paquet, c'est-à-dire personne (docs/distribution-empaquetee.md, « écarts 2 et 3 »).
+#
 # Sur x64 il n'y a rien à faire : PyPI suffit. Vérifié aussi que tout le RESTE de
 # ce que le RAG télécharge au premier usage est bon pour ARM64 — transformers,
 # sympy, networkx, joblib, Jinja2, huggingface-hub (universels), scikit-learn,

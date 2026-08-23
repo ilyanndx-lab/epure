@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from core import catalogue as _catalogue
 from core.codeagent import SecurityError
+from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
 from core.rag import RAGEngine
@@ -480,8 +481,54 @@ async def files_active_delete():
 
 # ── RAG ──────────────────────────────────────────────────────────────────────
 
+@router.get("/rag/capabilities")
+async def rag_capabilities():
+    """La recherche documentaire est-elle prête, et sinon où en est-elle ?
+
+    Même rôle que `/voice/capabilities` : répondre AVANT que l'utilisateur
+    clique, pour que l'interface explique au lieu d'afficher une erreur. La
+    différence est la seule qui compte — un paquet vocal absent ne s'installe pas
+    en cliquant (aucune wheel `win_arm64`), la pile d'embedding si. D'où un état
+    à quatre valeurs (`absent` / `en_cours` / `prêt` / `échec`) et non un booléen,
+    et une `cause` qui distingue « pas de réseau » d'un vrai échec de `pip` —
+    parce que ce n'est pas la même chose à dire à quelqu'un.
+
+    **Ne déclenche rien.** C'est une lecture (`find_spec` + un fichier d'état),
+    et c'est délibéré : le frontend interroge cette route en boucle pendant
+    l'installation, elle ne doit surtout pas en lancer une seconde. Le
+    déclenchement appartient à `VectorStore.__init__`, donc aux routes qui ont
+    réellement besoin du moteur.
+    """
+    return etat_installation()
+
+
+@router.post("/rag/install")
+async def rag_install():
+    """Relance explicitement la préparation du moteur, après un échec.
+
+    Une tentative automatique par process seulement (cf.
+    `core/embedding_install.py`) : sans ça, chaque appel concurrent relancerait
+    un `pip install torch`. La conséquence est qu'un échec reste affiché jusqu'à
+    ce qu'on redemande — et la cause la plus probable, une connexion absente, se
+    corrige en dehors de l'application. L'utilisateur est donc le seul à savoir
+    quand réessayer, d'où ce bouton plutôt qu'une boucle de réessais.
+
+    Ne relance jamais par-dessus une installation en cours : `explicite=True`
+    lève la garde du « déjà tenté », pas celle du « déjà en train ».
+    """
+    return declencher_installation(explicite=True)
+
+
 @router.get("/rag/files")
 async def rag_files():
+    """Fichiers indexés. Peut répondre 503 — c'est un état, pas une panne.
+
+    `rag` est un `_LazyEngine` : ce premier accès construit `RAGEngine`, donc un
+    `VectorStore`, qui a besoin de `sentence_transformers`. Absent (le cas de tout
+    paquet livré), il lève `EmbeddingIndisponible` — traduite en 503 avec l'état
+    d'avancement par le gestionnaire de `main.py`, et non plus en 500
+    « ImportError » dont le corps n'a même pas de champ `files`.
+    """
     loop = asyncio.get_running_loop()
     files = await loop.run_in_executor(None, rag.get_indexed_files)
     return {"files": files}

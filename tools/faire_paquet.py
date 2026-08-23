@@ -56,6 +56,24 @@ cassée.
 usage du RAG documentaire. `sentence-transformers` est donc exclu de
 l'installation.
 
+**Cette phrase a été un mensonge pendant tout l'été, et ne l'est plus depuis le
+2026-08-23.** « Il s'installe au premier usage » décrivait une intention qu'aucun
+chemin de code ne réalisait : `VectorStore.__init__` importait
+`sentence_transformers` et laissait remonter l'`ImportError`, donc le premier
+document chargé produisait un 500 et pas un téléchargement. Aggravant, et de la
+main de ce même fichier : `PURGE_SITE_PACKAGES` retirait `pip`, donc même le
+rattrapage à la main demandait de rebootstrapper `pip` par `get-pip.py`. Les deux
+décisions sont défendables isolément ; leur produit ne l'était pas
+(`docs/distribution-empaquetee.md`, « écarts 2 et 3 »).
+
+Réalisé désormais par `backend/core/embedding_install.py` : l'application lance
+elle-même `pip install torch --index-url …` puis
+`pip install sentence-transformers==…`, dans un thread, une fois par process,
+avec un état (`absent` / `en_cours` / `prêt` / `échec`) exposé par
+`GET /rag/capabilities` et affiché dans le panneau fichiers. C'est ce qui impose
+de **garder `pip` et `setuptools` dans le paquet** — 15,2 Mo, cf.
+`PURGE_SITE_PACKAGES`.
+
 ⚠️ **Sur Windows ARM64, ce téléchargement doit viser l'index PyTorch et non
 PyPI** : `pip install torch --index-url https://download.pytorch.org/whl/cpu`,
 AVANT `sentence-transformers` (sinon torch se résout depuis PyPI). PyPI ne
@@ -64,7 +82,9 @@ publie que des wheels `win_amd64` pour torch ; l'index PyTorch publie bien
 ici. Vérifié le 2026-08-13, cf. `backend/requirements.txt`, qui porte la
 consigne là où le destinataire la lira (ce fichier-ci ne part pas dans le
 paquet). Tout le reste de la grappe du premier usage a déjà ce qu'il faut pour
-ARM64 : torch était le seul manquant.
+ARM64 : torch était le seul manquant. **L'ordre et l'index sont désormais dans du
+code** (`core.embedding_install.commandes_installation`), donc testables — une
+inversion ne se verrait autrement que sur une machine ARM64.
 
 **4. `google-generativeai` et son arbre transitif ne partent pas** — il tire à
 lui seul `googleapiclient` (97,9 Mo) et toute la chaîne
@@ -220,16 +240,41 @@ HORS_PAQUET_PIP = ("sentence-transformers", "google-generativeai")
 HORS_PAQUET_PIP_ARM64 = ("faster-whisper", "piper-tts")
 
 #: Retiré du `site-packages` APRÈS installation, par simple nom de dossier
-#: sous `site-packages/`. `pip` et ses compagnons n'ont rien à faire dans le
-#: paquet : le destinataire n'installe rien. N'y mettre que des paquets qui
-#: s'installent bien comme UN dossier `site-packages/<nom>/`.
+#: sous `site-packages/`. N'y mettre que des paquets qui s'installent bien comme
+#: UN dossier `site-packages/<nom>/`.
 #:
-#: `kubernetes` y a figuré (37,8 Mo, dépendance déclarée de chromadb que seul
-#: son chemin de déploiement distribué importe). Retiré de cette liste avec
-#: chromadb lui-même : il n'est plus installé du tout, donc il n'y a plus rien à
-#: purger. Une entrée de purge qui ne correspond à rien n'est pas neutre — elle
+#: **VIDE depuis le 2026-08-23, et c'est le cœur de la correction des « écarts 2
+#: et 3 » de `docs/distribution-empaquetee.md`.** Cette liste portait
+#: `("pip", "setuptools", "pkg_resources")`, sur la justification « le
+#: destinataire n'installe rien ». C'était faux, et faux à cause d'une autre
+#: décision de ce même fichier : `HORS_PAQUET_PIP` exclut
+#: `sentence-transformers` en promettant qu'il « s'installe au premier usage du
+#: RAG » (décision 3). Les deux se composaient en panne — l'une reporte une
+#: installation, l'autre retire l'outil qui seul peut la faire — et le résultat
+#: était un 500 définitif sur toute la recherche documentaire, plus une procédure
+#: manuelle passant par `get-pip.py` pour la réparer.
+#:
+#: `core/embedding_install.py` fait désormais cette installation depuis
+#: l'application, ce qui demande un `pip` fonctionnel dans le paquet. Coût
+#: mesuré du renoncement : **15,2 Mo** (`pip` 10,1 + `setuptools` 5,1) — soit
+#: 0,7 % des ~2 Go de torch que ces 15 Mo servent justement à installer. Le
+#: calcul ne se discute pas.
+#:
+#: `pkg_resources` part avec eux : c'est un module DE `setuptools`, pas un paquet
+#: indépendant. Le purger en gardant setuptools livrerait un setuptools amputé —
+#: une incohérence pire que les 5 Mo qu'elle économise.
+#:
+#: `kubernetes` y a figuré aussi (37,8 Mo, dépendance déclarée de chromadb que
+#: seul son chemin de déploiement distribué importe), retiré avec chromadb
+#: lui-même. Une entrée de purge qui ne correspond à rien n'est pas neutre — elle
 #: fait croire, à la relecture, qu'un paquet est encore là et surveillé.
-PURGE_SITE_PACKAGES = ("pip", "setuptools", "pkg_resources")
+#:
+#: Le MÉCANISME reste, et n'est pas du code mort : `purger_site_packages` vide
+#: aussi tous les `__pycache__` de l'arbre Python, ce qui n'a jamais dépendu de
+#: cette liste. La garder vide plutôt que supprimer la fonction laisse le geste
+#: disponible sans qu'aucun paquet ne le subisse. `test_paquet.py` verrouille le
+#: point qui compte : `pip` ne doit PAS y revenir.
+PURGE_SITE_PACKAGES: tuple[str, ...] = ()
 
 #: Dossiers de DONNÉES, exclus **à la racine de `backend/` seulement**. Ce sont
 #: les données d'Ilyann : `memory/` contient son token d'API et son profil,
@@ -511,10 +556,16 @@ def preparer_python(destination: Path, embeddable: Path | None,
                     arch: str = "amd64") -> dict:
     """Runtime embeddable + dépendances, dans `destination`.
 
-    Trois gestes que le Python embeddable impose et qui ne se devinent pas :
+    Deux gestes que le Python embeddable impose et qui ne se devinent pas :
     décommenter `import site` dans `python312._pth` (sinon `site-packages` est
-    ignoré et `pip` reste introuvable), amener `pip` par `get-pip.py` (il n'est
-    pas embarqué), et purger ce qui n'a pas à partir.
+    ignoré et `pip` reste introuvable) et amener `pip` par `get-pip.py` (il n'est
+    pas embarqué).
+
+    Le troisième — « purger ce qui n'a pas à partir » — n'en est plus un : `pip`
+    et `setuptools` RESTENT, parce que l'application installe elle-même sa pile
+    d'embedding au premier usage de la recherche documentaire
+    (`core/embedding_install.py`). Cf. :data:`PURGE_SITE_PACKAGES`, désormais
+    vide : `purger_site_packages` ne fait plus que vider les `__pycache__`.
 
     `arch` choisit le zip embeddable ET les exigences installées. Les deux
     ensemble, jamais séparément : un runtime ARM64 avec les exigences x64 échoue
@@ -623,7 +674,15 @@ def _exigences_du_paquet(cible: Path, arch: str = "amd64") -> Path:
 
 
 def purger_site_packages(racine_python: Path, journal=print) -> dict[str, float]:
-    """Retire de `site-packages` ce qui n'a pas à être livré. Renvoie les Mo gagnés."""
+    """Retire de `site-packages` ce qui n'a pas à être livré. Renvoie les Mo gagnés.
+
+    :data:`PURGE_SITE_PACKAGES` étant vide depuis le 2026-08-23, la boucle ne
+    retire plus rien et la fonction ne fait, en pratique, que vider les
+    `__pycache__` — ce qui n'a jamais dépendu de cette liste et reste utile (le
+    bytecode de l'installation se régénère chez le destinataire, avec ses chemins
+    à lui). La mécanique reste en place pour qu'un besoin futur ait où s'écrire ;
+    ce qui a disparu, c'est le paquet qu'elle visait.
+    """
     sp = racine_python / "Lib" / "site-packages"
     gagne: dict[str, float] = {}
     for nom in PURGE_SITE_PACKAGES:
