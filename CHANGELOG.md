@@ -147,11 +147,13 @@ familles très différentes, que l'annotation GitHub ne distinguait pas :
   accès à une variable avant sa déclaration.
 
   Elles ne sont pas corrigées parce que les corriger **change le comportement**,
-  et qu'il n'existe **aucun test frontend** pour rattraper une régression
-  (`package.json` n'a que `dev`/`build`/`lint`/`preview`, zéro `*.test.*`).
+  et qu'il n'existait **aucun test frontend** pour rattraper une régression.
 
-  **Prérequis avant d'y toucher : mettre en place `vitest` +
-  `@testing-library/react`.** Puis commencer par
+  **Ce prérequis est levé depuis le 2026-08-23** : `vitest` + `jsdom` +
+  `@testing-library/react` sont en place, `npm test` est bloquant en CI, et
+  `src/components/ModuleBar.test.tsx` en est le premier client (il a été écrit
+  pour un TypeError de production, pas pour cette dette). Ce qui reste à faire
+  est d'écrire les tests, en commençant par
   **`src/usePersistentState.ts`** — il écrit `latest.current` et `keyRef.current`
   pendant le rendu, et ce hook porte l'état persisté de toute l'application :
   c'est à la fois la violation la plus structurante et celle dont la régression

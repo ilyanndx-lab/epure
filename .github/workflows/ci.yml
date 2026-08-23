@@ -32,8 +32,11 @@
 #              dupliquerait la maintenance (torch/sentence-transformers y sont).
 #              Si un autre paquet devient porteur d'un invariant, il rejoint les
 #              deux épinglés.
-# - frontend : npm ci + tsc -b + npm run build + eslint — les trois BLOQUANTS
-#              depuis le 2026-08-08. eslint tourne avec un cliquet
+# - frontend : npm ci + tsc -b + npm test + npm run build + eslint — QUATRE
+#              BLOQUANTS. Les trois premiers datent du 2026-08-08 ; `npm test`
+#              (vitest + jsdom) est arrivé le 2026-08-23, après un TypeError en
+#              production qu'aucun des trois autres ne pouvait voir — détail
+#              au-dessus de l'étape. eslint tourne avec un cliquet
 #              `--max-warnings 61` (0 erreur, périmètre src/ + catalogue
 #              installé) : le détail est au-dessus de l'étape, plus bas.
 #              Le type-check est gardé EN PLUS du build, pour que le nom de
@@ -132,6 +135,16 @@ jobs:
       # de ce commentaire était inventé — d'où le détail des runs ici.
       - name: Type-check (bloquant)
         run: npx tsc -b
+      # TESTS DE COMPOSANTS — vitest + jsdom, arrivés le 2026-08-23 pour une
+      # raison précise : un `TypeError: Cannot read properties of undefined
+      # (reading 'length')` en production, dans un chunk minifié, sur un rendu de
+      # ModuleBar. Ni `tsc -b` ni eslint ne pouvaient le voir — la faute était un
+      # `as` posé sur un `r.json()`, c'est-à-dire une affirmation de forme que le
+      # compilateur croit sur parole. Le seul gate capable de dire non est un
+      # RENDU du composant avec des réponses qui n'ont pas la forme annoncée.
+      # Rapide (~3 s) : aucune raison de le réserver à un job manuel.
+      - name: Tests de composants (bloquant)
+        run: npm test
       # CATALOGUE — vérification après INSTALLATION SIMULÉE.
       #
       # Les composants de modules-catalogue/<id>/ ne sont compilés par personne
@@ -215,9 +228,9 @@ jobs:
       #   20 react-hooks/{refs,set-state-in-effect,immutability} — VRAIES
       #      violations des Rules of React, passées en « warn » dans
       #      eslint.config.js faute de tests frontend pour rattraper une
-      #      régression. Prérequis pour les traiter : vitest +
-      #      testing-library, en commençant par usePersistentState.ts.
-      #      Voir CHANGELOG.md, « dette assumée ».
+      #      régression. Le prérequis (vitest + testing-library) EXISTE depuis
+      #      le 2026-08-23 : il reste à écrire les tests, en commençant par
+      #      usePersistentState.ts. Voir CHANGELOG.md, « dette assumée ».
       - name: eslint — installation simulée du catalogue
         run: |
           set -euo pipefail

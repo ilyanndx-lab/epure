@@ -112,6 +112,58 @@ const PROVIDER_TEXT: Record<string, string> = {
   nvidia: 'text-accent2', mistral: 'text-accent2',
 }
 
+/**
+ * Tableau sûr depuis un corps de réponse. À utiliser à CHAQUE `.json()`.
+ *
+ * `r.json() as { files: string[] }` est une **affirmation**, pas une
+ * vérification : TypeScript la croit sur parole et ne peut rien dire de la
+ * réalité. Or trois réponses parfaitement normales d'une application locale
+ * n'ont pas cette forme — le 500 du gestionnaire d'exceptions
+ * (`{"detail": …, "type": …}`), le 401 tant que le token n'est pas appairé, le
+ * 404 sur une instance qui n'a pas la route. Le champ annoncé est alors
+ * `undefined`, l'état devient `undefined`, et le `.catch()` ne voit rien
+ * puisque `r.json()` a parfaitement réussi. La faute n'apparaît qu'au rendu
+ * suivant, sur un `.length` — et dans un bundle minifié la trace ne nomme même
+ * pas la ligne.
+ *
+ * C'est l'incident : `GET /rag/files` répond 500 dans un paquet livré
+ * (`sentence-transformers` en est exclu, et le premier accès au moteur RAG
+ * l'importe), `availableFiles` passait à `undefined`, et l'ouverture du panneau
+ * fichiers du module Docs levait « Cannot read properties of undefined (reading
+ * 'length') ». Vérifié par ModuleBar.test.tsx.
+ *
+ * `Array.isArray` et non `?? []` : le second laisse passer `null` transformé en
+ * tableau, mais aussi une chaîne ou un objet, qui replantent plus loin.
+ */
+function liste<T>(v: unknown): T[] {
+  return Array.isArray(v) ? (v as T[]) : []
+}
+
+/**
+ * Les trois catégories cloud, garanties tableaux.
+ *
+ * `d.cloud ?? { rapide: [], … }` ne suffit pas : `cloud: {}` est **truthy**,
+ * donc le défaut ne s'applique pas et `[...cloudCategories.rapide]` échoue sur
+ * « n'est pas itérable » — une seconde panne, indépendante de la première, que
+ * le test a trouvée en éprouvant la forme de `GET /models` (dont la réponse a
+ * changé récemment avec le filtrage des fournisseurs sans clé).
+ */
+function categories(v: unknown): CloudCategories {
+  const o = (v ?? {}) as Partial<CloudCategories>
+  return {
+    rapide: liste<ModelInfo>(o.rapide),
+    puissant: liste<ModelInfo>(o.puissant),
+    long_contexte: liste<ModelInfo>(o.long_contexte),
+  }
+}
+
+/** Dictionnaire sûr : `'x' in "une chaîne"` lève, un tableau ne dit rien. */
+function dico(v: unknown): Record<string, boolean> {
+  return v && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, boolean>)
+    : {}
+}
+
 function FileTypeIcon({ name }: { name: string }) {
   const ext = name.split('.').pop()?.toLowerCase() ?? ''
   const cls = 'shrink-0 text-muted'
@@ -261,7 +313,7 @@ export default function ModuleBar({
     if (showFile) {
       apiFetch(`${API}/rag/files`)
         .then(r => r.json())
-        .then((d: { files: string[] }) => setAvailableFiles(d.files))
+        .then((d: { files?: unknown }) => setAvailableFiles(liste<string>(d.files)))
         .catch(() => {})
     }
 
@@ -269,7 +321,7 @@ export default function ModuleBar({
       .then(r => r.json())
       .then((d: Record<string, unknown>) => {
         if (showFile) {
-          const files = (d['fichiers_actifs'] as string[]) ?? []
+          const files = liste<string>(d['fichiers_actifs'])
           setActiveFiles(files)
           setSelectedFiles(files)
         }
@@ -284,11 +336,13 @@ export default function ModuleBar({
     if (showModel) {
       apiFetch(`${API}/models`)
         .then(r => r.json())
-        .then((d: { local: ModelInfo[]; local_npu?: ModelInfo[]; cloud: CloudCategories; fournisseurs?: Record<string, boolean> }) => {
-          setLocalModels(d.local ?? [])
-          setLocalNpuModels(d.local_npu ?? [])
-          setCloudCategories(d.cloud ?? { rapide: [], puissant: [], long_contexte: [] })
-          setFournisseurs(d.fournisseurs ?? {})
+        // Aucun champ n'est annoncé non-optionnel : la seule chose qu'on sache
+        // de ce corps, c'est qu'il a été parsé.
+        .then((d: { local?: unknown; local_npu?: unknown; cloud?: unknown; fournisseurs?: unknown }) => {
+          setLocalModels(liste<ModelInfo>(d.local))
+          setLocalNpuModels(liste<ModelInfo>(d.local_npu))
+          setCloudCategories(categories(d.cloud))
+          setFournisseurs(dico(d.fournisseurs))
         })
         .catch(() => {})
     }
@@ -296,7 +350,7 @@ export default function ModuleBar({
     if (showEffort) {
       apiFetch(`${API}/orchestrator/presets`)
         .then(r => r.json())
-        .then((d: { presets: Preset[] }) => setPresets(d.presets ?? []))
+        .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
   }, [showFile, showModel, showEffort])
@@ -348,6 +402,10 @@ export default function ModuleBar({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nom: newPresetName.trim(), effort, steps: pipelineSteps }),
       })
+      // `res.ok` d'abord : sans lui, un corps d'erreur entrait dans la liste
+      // des presets comme un preset aux champs `undefined`, et c'est `.steps`
+      // qui aurait planté, ailleurs et plus tard.
+      if (!res.ok) return
       const preset = await res.json() as Preset
       setPresets(prev => [...prev, preset])
       setNewPresetName('')
@@ -382,7 +440,9 @@ export default function ModuleBar({
       }
     }
     setSummary({ résumé: summaryAccRef.current, pages_totales: finalPages, chunks_indexés: finalChunks })
-    if (finalPaths) setActiveFiles(finalPaths)
+    // `undefined` signifie « garder les fichiers actifs » (cas de l'upload, qui
+    // les relit ensuite) ; toute autre valeur doit être un tableau.
+    if (finalPaths !== undefined) setActiveFiles(liste<string>(finalPaths))
   }, [])
 
   const loadSelectedFiles = useCallback(async () => {
@@ -419,11 +479,15 @@ export default function ModuleBar({
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res)
       const [filesData, ctxData] = await Promise.all([
-        apiFetch(`${API}/rag/files`).then(r => r.json()) as Promise<{ files: string[] }>,
+        apiFetch(`${API}/rag/files`).then(r => r.json()) as Promise<Record<string, unknown>>,
         apiFetch(`${API}/context`).then(r => r.json()) as Promise<Record<string, unknown>>,
       ])
-      setAvailableFiles(filesData.files)
-      const active = (ctxData['fichiers_actifs'] as string[]) ?? []
+      // LE point de l'incident : ces deux appels suivent l'indexation, donc le
+      // moteur RAG vient d'être sollicité. S'il n'est pas installable (paquet
+      // livré sans sentence-transformers), /rag/files répond 500 et son corps
+      // n'a pas de `files`.
+      setAvailableFiles(liste<string>(filesData.files))
+      const active = liste<string>(ctxData['fichiers_actifs'])
       setActiveFiles(active); setSelectedFiles(active)
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }

@@ -95,6 +95,32 @@ tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
 l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
 torch et sentence-transformers et tourne dans le job `integration`, manuel).
 
+### Tests frontend — `npm test` depuis `frontend/`
+
+**vitest + jsdom + @testing-library/react**, arrivés le 2026-08-23. Bloquants en
+CI, `frontend/vitest.config.ts`, fichiers `src/**/*.test.tsx`.
+
+Ils existent pour une classe de bug que ni `tsc -b` ni eslint ne peuvent voir :
+**un `as` posé sur un `r.json()` est une affirmation, pas une vérification.**
+Le compilateur croit l'annotation ; le serveur, lui, répond parfois un corps
+d'erreur (`{"detail": …, "type": …}` du gestionnaire d'exceptions, un 401 avant
+appairage, un 404 sur une instance qui n'a pas la route). Le champ annoncé est
+alors `undefined`, le `.catch()` ne voit rien puisque `r.json()` a réussi, et la
+faute n'apparaît qu'au rendu suivant — sur un `.length`, dans un chunk minifié
+où la trace ne nomme même pas la ligne. C'est exactement ce qui s'est produit
+dans le panneau fichiers du module Docs (§8).
+
+**Écrire les nouveaux tests de composant en éprouvant la FORME des réponses**,
+pas seulement le cas nominal : `ModuleBar.test.tsx` rejoue le corps de réponse
+réel d'un backend qui refuse, et son idiome (`liste()`, `categories()`, `dico()`
+dans `ModuleBar.tsx`) est ce qu'il faut reprendre à chaque frontière `.json()`.
+
+```powershell
+cd frontend
+npm test              # vitest run
+npx vitest             # mode watch, pendant le développement
+```
+
 ### Écart de version Python — piège actif
 
 Les `.pyc` locaux sont en `cpython-314` (Python 3.14) ; la CI tourne en **3.12**
@@ -527,6 +553,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
 | Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
 | Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
+| `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répond 500 (`sentence-transformers` exclu, et le premier accès au moteur RAG l'importe) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---
