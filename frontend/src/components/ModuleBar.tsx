@@ -17,7 +17,8 @@ import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
 const MODULE_RECOMMENDATIONS: Record<string, { id: string; label: string }[]> = {
   chat: [
     { id: 'flm:qwen3:4b',                             label: 'Instant · NPU' },
-    { id: 'groq:llama-3.1-8b-instant',                label: 'Rapide · Cloud' },
+    // `groq:llama-3.1-8b-instant` jusqu'au 2026-08-24 : 404 mesuré côté Groq.
+    { id: 'groq:openai/gpt-oss-20b',                  label: 'Rapide · Cloud' },
     { id: 'gemini:gemini-2.5-flash',                  label: 'Général · Cloud' },
     { id: 'nvidia:nvidia/nemotron-3-super-120b-a12b',  label: 'Puissant · Cloud' },
   ],

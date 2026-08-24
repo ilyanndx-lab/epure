@@ -16,7 +16,13 @@ def _log_path() -> Path:
     return resolve_data_dir() / "consolidation_log.json"
 
 
-_CLOUD_MODEL = "groq:llama-3.3-70b-versatile"
+#: Cible cloud de la consolidation, quand l'utilisateur la demande explicitement
+#: (`use_cloud=True`). C'était `groq:llama-3.3-70b-versatile`, qui répond **404**
+#: depuis que Groq l'a retiré de son catalogue — mesuré le 2026-08-24. La branche
+#: « cloud » de ce module échouait donc déjà, et le `except` de chaque
+#: `consolidate_*` la faisait retomber en local sans le dire : une option qui
+#: avait l'air de marcher. `openai/gpt-oss-120b` vérifié par un appel réel.
+_CLOUD_MODEL = "groq:openai/gpt-oss-120b"
 _CTX_LIMIT = 12000  # chars fed to LLM for conversation consolidation
 
 

@@ -407,7 +407,8 @@ async def list_models():
     if flm_ok and "qwen3:4b" in flm_installed:
         recommandations["Conversation instantanée"] = "flm:qwen3:4b"
     elif key_ok.get("groq", False):
-        recommandations["Conversation instantanée"] = "groq:llama-3.1-8b-instant"
+        # `groq:llama-3.1-8b-instant` jusqu'au 2026-08-24 : 404 mesure.
+        recommandations["Conversation instantanée"] = "groq:openai/gpt-oss-20b"
 
     # `fournisseurs` : quelles clés sont posées. Le frontend en a besoin pour ses
     # recommandations curées (ModuleBar.MODULE_RECOMMENDATIONS), qui nomment des

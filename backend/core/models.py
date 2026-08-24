@@ -20,16 +20,6 @@ logger = logging.getLogger(__name__)
 # ── Qualitative metadata ─────────────────────────────────────────────────────
 
 QUALITATIVE_METADATA: dict[str, dict] = {
-    "llama-3.1-8b-instant": {
-        "categorie": "rapide",
-        "description": "Chat temps réel · 560 tok/s",
-        "usages": ["Chat rapide", "Discussion libre", "Conversation instantanée"],
-    },
-    "llama-3.3-70b-versatile": {
-        "categorie": "puissant",
-        "description": "Qualité générale · 280 tok/s",
-        "usages": ["Kholle", "Explication cours"],
-    },
     "openai/gpt-oss-120b": {
         "categorie": "puissant",
         "description": "Raisonnement fort · 500 tok/s",
@@ -69,12 +59,6 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "categorie": "rapide",
         "description": "Nouveau · Google",
         "usages": ["Chat rapide"],
-    },
-    # Groq reasoning
-    "deepseek-r1-distill-llama-70b": {
-        "categorie": "puissant",
-        "description": "Raisonnement · chain-of-thought · Groq",
-        "usages": ["Kholle maths", "Kholle physique"],
     },
     # NVIDIA NIM DeepSeek
     "deepseek-ai/deepseek-r1": {
@@ -139,8 +123,6 @@ QUALITATIVE_METADATA: dict[str, dict] = {
 }
 
 _NOM_MAP: dict[str, str] = {
-    "llama-3.1-8b-instant":               "Llama 3.1 8B",
-    "llama-3.3-70b-versatile":            "Llama 3.3 70B",
     "openai/gpt-oss-120b":                "GPT OSS 120B",
     "openai/gpt-oss-20b":                 "GPT OSS 20B",
     "nvidia/nemotron-3-super-120b-a12b":   "Nemotron 120B",
@@ -149,7 +131,6 @@ _NOM_MAP: dict[str, str] = {
     "gemini-2.5-flash-lite":              "Gemini 2.5 Flash-Lite",
     "gemini-2.5-pro":                     "Gemini 2.5 Pro",
     "gemini-3.1-flash-lite":              "Gemini 3.1 Flash-Lite",
-    "deepseek-r1-distill-llama-70b":  "DeepSeek R1 70B",
     "deepseek-ai/deepseek-r1":        "DeepSeek R1 (NIM)",
     "deepseek-ai/deepseek-v4-flash":  "DeepSeek V4 Flash (NIM)",
     "codestral-latest":               "Codestral",
@@ -163,8 +144,12 @@ _NOM_MAP: dict[str, str] = {
 
 # Recommendations that must override the dynamic first-match logic
 RECOMMENDATION_OVERRIDES: dict[str, str] = {
-    "Kholle maths":    "groq:deepseek-r1-distill-llama-70b",
-    "Kholle physique": "groq:deepseek-r1-distill-llama-70b",
+    # `groq:deepseek-r1-distill-llama-70b` ici jusqu'au 2026-08-24 : 404 mesuré.
+    # Recommander un modèle mort est pire que ne rien recommander — l'utilisateur
+    # suit le conseil et tombe sur une erreur qu'il n'a aucun moyen de relier au
+    # conseil.
+    "Kholle maths":    "groq:openai/gpt-oss-120b",
+    "Kholle physique": "groq:openai/gpt-oss-120b",
 }
 
 _GROQ_EXCLUDE = {"whisper", "guard", "orpheus", "compound"}
@@ -172,12 +157,25 @@ _GROQ_EXCLUDE = {"whisper", "guard", "orpheus", "compound"}
 # Static fallbacks when the live /v1/models fetch is unavailable.
 # For NVIDIA/Mistral these are also the curated surface (the live list is only
 # used to validate availability — NIM exposes 100+ models we don't want to show).
+#: Catalogue Groq de secours, quand `/v1/models` ne répond pas. **Chaque
+#: identifiant doit exister**, et trois n'existaient plus :
+#: `llama-3.1-8b-instant`, `llama-3.3-70b-versatile` et
+#: `deepseek-r1-distill-llama-70b` répondaient tous 404 — mesuré le 2026-08-24,
+#: où Groq n'avait plus AUCUN modèle Llama de chat à son catalogue.
+#:
+#: Retirés et non remplacés : les deux `gpt-oss` restants couvrent les mêmes
+#: catégories (`rapide` et `puissant`) et répondent — vérifié par un appel réel,
+#: 1,1 s et 2,5 s. Ajouter `qwen/qwen3.6-27b`, seul autre modèle de chat du
+#: catalogue, aurait demandé de le mesurer d'abord : il rend son raisonnement en
+#: balises `<think>` DANS le contenu, ce qui s'afficherait tel quel dans le chat.
+#:
+#: Ce que coûtait un identifiant mort ici : cette liste ne sert que de REPLI, donc
+#: le bug restait invisible tant que l'API répondait. Le jour où elle ne répond
+#: pas, l'utilisateur se voyait proposer trois modèles dont chaque appel échouait
+#: en 404 — sur le chemin où tout va déjà mal.
 _GROQ_STATIC = [
-    "llama-3.1-8b-instant",
-    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "deepseek-r1-distill-llama-70b",
 ]
 _CEREBRAS_STATIC = ["llama3.1-8b", "llama-4-scout", "llama-4-maverick"]
 _NVIDIA_STATIC = [

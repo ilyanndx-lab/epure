@@ -512,5 +512,97 @@ class AucuneLectureResiduelleTest(unittest.TestCase):
                 self.assertNotIn("_llm._model", source)
 
 
+class CataloguesSansModeleMortTest(unittest.TestCase):
+    """Aucun catalogue en dur ne cite un modèle retiré par son fournisseur.
+
+    **Trois entrées Groq étaient mortes**, mesuré le 2026-08-24 par
+    `client.models.list()` puis par un appel réel : `llama-3.1-8b-instant`,
+    `llama-3.3-70b-versatile` et `deepseek-r1-distill-llama-70b` répondaient tous
+    404. Groq n'avait plus aucun modèle Llama de chat à son catalogue.
+
+    Ce que ça coûtait, et c'est ce qui rend ce test utile plutôt que cosmétique :
+
+    * `consolidation._pick_model` visait le second → la branche « cloud » de la
+      consolidation échouait, et le `except` de chaque `consolidate_*` la faisait
+      retomber en local **sans le dire**. Une option qui avait l'air de marcher ;
+    * `orchestrator._CLASSIFY_MODEL_GROQ` visait le premier → le palier Adaptatif
+      se comportait comme Direct, son `except` rendant `{"complexity": "simple"}` ;
+    * `RECOMMENDATION_OVERRIDES` et les recommandations curées les proposaient à
+      l'utilisateur, qui suivait le conseil et tombait sur une erreur sans pouvoir
+      la relier au conseil.
+
+    Le test ne peut pas appeler Groq (pas de réseau dans la suite, et une clé n'est
+    pas garantie) : il vérifie qu'aucune des trois chaînes ne revient dans un
+    catalogue en dur. C'est la régression réelle — ces identifiants ont été copiés
+    d'un site à l'autre, et c'est comme ça qu'ils ont survécu à leur retrait.
+    """
+
+    #: Retirés de Groq. La liste est là pour être ALLONGÉE quand un fournisseur
+    #: retire encore un modèle — c'est un journal, pas une exhaustivité.
+    MORTS = (
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "deepseek-r1-distill-llama-70b",
+    )
+
+    def _code_seul(self, source: str) -> str:
+        """Sans les commentaires : ils CITENT les identifiants morts pour dire
+        qu'ils le sont. Même piège que `ResumeImportTest._code_seul`.
+
+        Les DEUX styles, et l'oubli s'est produit en écrivant ce test : `#` pour
+        Python, `//` pour TypeScript. Ne retirer que le premier faisait échouer la
+        vérification du frontend sur le commentaire qui explique le retrait.
+        """
+        lignes = []
+        for ligne in source.splitlines():
+            lignes.append(ligne.split("#")[0].split("//")[0])
+        return chr(10).join(lignes)
+
+    def test_aucune_table_de_modeles_ne_cite_un_mort(self):
+        from core import models
+        code = self._code_seul(open(models.__file__, encoding="utf-8").read())
+        for mort in self.MORTS:
+            with self.subTest(modele=mort):
+                self.assertNotIn(mort, code)
+
+    def test_la_cible_cloud_de_la_consolidation_est_vivante(self):
+        from core.consolidation import _CLOUD_MODEL
+        for mort in self.MORTS:
+            self.assertNotIn(mort, _CLOUD_MODEL)
+        # Et elle reste bien du Groq : la correction ne change pas de fournisseur,
+        # seulement d'identifiant.
+        self.assertTrue(_CLOUD_MODEL.startswith("groq:"))
+
+    def test_les_recommandations_pointent_des_modeles_du_catalogue(self):
+        """Une recommandation doit désigner un modèle que le catalogue propose.
+
+        `RECOMMENDATION_OVERRIDES` visait `deepseek-r1-distill-llama-70b`, absent
+        de `_GROQ_STATIC` depuis son retrait : la recommandation survivait à la
+        disparition du modèle recommandé.
+        """
+        from core.models import RECOMMENDATION_OVERRIDES, _GROQ_STATIC
+        connus = set(_GROQ_STATIC)
+        for usage, ident in RECOMMENDATION_OVERRIDES.items():
+            if not ident.startswith("groq:"):
+                continue
+            with self.subTest(usage=usage):
+                self.assertIn(ident.split(":", 1)[1], connus, ident)
+
+    def test_le_frontend_ne_recommande_plus_un_mort(self):
+        """`MODULE_RECOMMENDATIONS` de `ModuleBar.tsx` nomme des IDs en dur.
+
+        Ils ne peuvent pas se déduire d'une liste — c'est justement pourquoi ils
+        survivent à un retrait côté fournisseur.
+        """
+        chemin = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "frontend", "src", "components", "ModuleBar.tsx"))
+        with open(chemin, encoding="utf-8") as f:
+            code = self._code_seul(f.read())
+        for mort in self.MORTS:
+            with self.subTest(modele=mort):
+                self.assertNotIn(mort, code)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
