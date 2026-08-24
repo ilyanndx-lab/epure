@@ -43,6 +43,12 @@ qui sont des explications historiques, jamais du comportement.
 ## 2. Lancer et tester
 
 ```powershell
+# Relance de DEV après un git pull : node résiduels, pull, npm ci (avec
+# réparation EPERM), build, libération du port 8000, uvicorn au premier plan.
+# Un raccourci de bureau y mène (-PoserRaccourci pour le (re)créer).
+.	ools\dev-epure.ps1
+.	ools\dev-epure.ps1 -Diagnostic   # tout sauf uvicorn, pour vérifier l'état
+
 # Tout-en-un (Ollama + backend + frontend + tray) — usage normal
 python epure_tray.py
 
@@ -98,6 +104,15 @@ liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
 tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
 l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
 torch et sentence-transformers et tourne dans le job `integration`, manuel).
+
+**Trois lanceurs, trois publics** — ne pas les confondre :
+`tools/dev-epure.ps1` (ce poste, après un pull, logs visibles),
+`epure_tray.py` (usage normal : icône, Ollama, Vite, console masquée),
+`tools/Installer-Epure.cmd` + `installer-epure.ps1` (**le destinataire d'un
+paquet**, à ne pas toucher pour un besoin de dev). Le premier n'implémente PAS la
+décision « ce port est-il à moi ? » : il appelle `lanceur.py`, qui la porte avec
+ses 37 tests — deux implémentations divergeraient, et celle qui se tromperait
+tuerait le processus de quelqu'un d'autre.
 
 ### Tests frontend — `npm test` depuis `frontend/`
 
