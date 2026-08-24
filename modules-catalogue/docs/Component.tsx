@@ -302,7 +302,18 @@ export default function Docs() {
           <input
             ref={fileRef}
             type="file"
-            accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.webp"
+            /* `.pdf` SEUL, et c'est une correction, pas une restriction.
+               Cet attribut annonçait dix types pendant que `handleUpload` juste
+               au-dessus refuse tout ce qui n'est pas un PDF — et le backend de ce
+               module n'en lit pas d'autre : `docanalysis.load_document_streaming`
+               appelle `pypdf.PdfReader` sans condition, parce qu'il compte des
+               PAGES. Proposer un .docx dans le sélecteur pour le refuser au clic
+               suivant est le pire des trois états possibles.
+               Ne pas confondre avec la barre de modules (`ModuleBar`), qui elle
+               accepte les douze types de `SUPPORTED_EXTENSIONS` : ce sont deux
+               ingestions différentes — celle-ci analyse un document page par
+               page, l'autre indexe du texte pour la recherche. */
+            accept=".pdf"
             className="hidden"
             onChange={e => {
               const f = e.target.files?.[0]

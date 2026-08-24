@@ -325,6 +325,53 @@ class ExigencesTest(unittest.TestCase):
         self.assertIn("starlette", texte)
         self.assertGreater(sum(1 for l in texte.splitlines() if l.lstrip().startswith("#")), 10)
 
+    def test_les_lecteurs_de_documents_partent_dans_le_paquet(self):
+        """`python-docx`, `python-pptx`, `openpyxl` doivent être INSTALLÉS.
+
+        Ce sont les lecteurs de `core/rag.py`. Les exclure par ressemblance avec
+        `sentence-transformers` — « c'est du traitement de documents, ça doit être
+        lourd » — coûterait cher et sans erreur au build : `_extract_text_from_path`
+        rend une chaîne VIDE quand le paquet manque (dégradation volontaire), donc
+        le destinataire déposerait un .pptx qui s'indexerait à zéro chunk **en
+        silence**. C'est exactement le symptôme que ce lot corrige.
+
+        Le poids ne justifie pas de les écarter : mesuré à **+6,6 Mo** sur
+        `site-packages` pour les quatre paquets du lot (les trois lecteurs +
+        `et-xmlfile` et `XlsxWriter`), **zéro transitif nouveau** — `lxml` et
+        `Pillow` étaient déjà dans l'arbre. À comparer aux 97,9 Mo de
+        `googleapiclient` que la décision 4 écarte, ou aux ~2 Go de torch.
+        """
+        for lecteur in ("python-docx", "python-pptx", "openpyxl"):
+            with self.subTest(lecteur=lecteur):
+                self.assertNotIn(lecteur, paquet.HORS_PAQUET_PIP)
+                self.assertNotIn(lecteur, paquet.HORS_PAQUET_PIP_ARM64)
+        with tempfile.TemporaryDirectory() as tmp:
+            texte = paquet._exigences_du_paquet(Path(tmp) / "req.txt").read_text(encoding="utf-8")
+        actives = [l for l in texte.splitlines()
+                   if l.strip() and not l.lstrip().startswith("#")]
+        for lecteur in ("python-docx", "python-pptx", "openpyxl"):
+            with self.subTest(exigence=lecteur):
+                self.assertTrue(any(l.lower().startswith(lecteur) for l in actives), lecteur)
+
+    def test_les_lecteurs_de_documents_partent_aussi_sur_arm64(self):
+        """Sur ARM64 aussi, et c'est le point qui mérite un test à part.
+
+        `HORS_PAQUET_PIP_ARM64` retire ce qui n'a pas de wheel `win_arm64` — la
+        voix. Les trois lecteurs publient tous une wheel `py3-none-any` sans
+        aucune extension compilée (vérifié fichier par fichier), donc ils n'ont
+        rien à faire dans cette liste. Les y glisser « au cas où » retirerait la
+        lecture de documents d'un paquet ARM64 pour une raison inexistante.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            texte = paquet._exigences_du_paquet(Path(tmp) / "req.txt", "arm64").read_text(encoding="utf-8")
+        actives = [l for l in texte.splitlines()
+                   if l.strip() and not l.lstrip().startswith("#")]
+        for lecteur in ("python-docx", "python-pptx", "openpyxl"):
+            with self.subTest(exigence=lecteur):
+                self.assertTrue(any(l.lower().startswith(lecteur) for l in actives), lecteur)
+        # Contre-épreuve : la voix, elle, est bien retirée sur cette architecture.
+        self.assertFalse(any(l.lower().startswith("piper-tts") for l in actives))
+
     def test_google_generativeai_est_retire_de_l_installation(self):
         """Décision 4 : rien d'autre dans requirements.txt ne dépend de lui, donc
         toute sa chaîne transitive (googleapiclient, google-api-core,

@@ -30,7 +30,7 @@ from core.codeagent import SecurityError
 from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
-from core.rag import RAGEngine
+from core.rag import SUPPORTED_EXTENSIONS, RAGEngine
 from core.runtime import (
     API_KEY_NAMES,
     PIPER_VOICE,
@@ -52,7 +52,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _ENV_FILE = Path(__file__).parent.parent.parent / ".env"
-_SUPPORTED_EXT = {'.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'}
+#: Extensions acceptées à l'upload. **Importées, plus recopiées** : c'était une
+#: seconde liste pour la même notion, et elle avait déjà divergé de rien — mais
+#: l'ajout de `.pptx`/`.xlsx` demandait de penser à deux endroits, et un fichier
+#: accepté ici que `_extract_text_from_path` ne sait pas lire s'indexe à vide, en
+#: silence. Une seule liste ne peut pas diverger d'elle-même.
+_SUPPORTED_EXT = SUPPORTED_EXTENSIONS
 
 
 # ── Voice ────────────────────────────────────────────────────────────────────
@@ -462,7 +467,11 @@ async def files_upload(files: list[UploadFile] = File(...)):
     if not saved_paths:
         raise HTTPException(
             status_code=400,
-            detail="Types supportés : PDF, DOCX, TXT, MD, CSV, JSON, PNG, JPG, JPEG, WEBP",
+            # Dérivé de la liste, jamais réécrit : ce message énumérait les types
+            # à la main et devenait faux au premier ajout — en promettant moins
+            # que ce que le code accepte, ce qui se lit comme un refus légitime.
+            detail=("Types supportés : "
+                    + ", ".join(sorted(e.lstrip(".").upper() for e in _SUPPORTED_EXT))),
         )
     return StreamingResponse(
         _stream_load_sse(saved_paths), media_type="text/event-stream", headers=SSE_HEADERS

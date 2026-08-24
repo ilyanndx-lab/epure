@@ -79,6 +79,7 @@ python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/*
 python test_models_cloud_sans_cle.py # un fournisseur sans clé ne rend aucun modèle
 python test_embedding_install.py  # installation à la demande de torch + sentence-transformers (§3.4)
 python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté (§8)
+python test_ingestion_documents.py   # formats lus par le RAG : pptx/xlsx/docx réels
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
 python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
@@ -265,6 +266,43 @@ Règles à respecter :
   `core/jsonstore.transaction()`** (`InstanceConfig._mutate`). Cette liste
   conditionne le démarrage ; un read-modify-write non verrouillé y perd des
   écritures.
+
+### 3.3 bis Ingestion des documents — **deux chemins, pas un**
+
+C'est la confusion la plus facile à faire, et elle mène à croire un format
+supporté là où il ne l'est pas :
+
+| chemin | code | formats | ce qu'il produit |
+|---|---|---|---|
+| **RAG / fiches** | `RAGEngine._extract_text_from_path` | les 12 de `SUPPORTED_EXTENSIONS` | des chunks de texte pour la recherche |
+| **module Docs** | `docanalysis.load_document_streaming` | **PDF seulement** | un document paginé (`n_pages`, aperçu, résumé) |
+
+Le second appelle `pypdf.PdfReader` sans condition **parce qu'il compte des
+pages** : l'étendre n'est pas ajouter une branche, c'est décider ce que « page »
+veut dire pour un classeur. Son `accept` côté frontend annonçait dix types pour
+n'en accepter qu'un ; ramené à `.pdf` le 2026-08-24.
+
+**IMPÉRATIF — une seule liste d'extensions.** `SUPPORTED_EXTENSIONS`
+(`core/rag.py`) est la source ; `modules/settings/router.py:_SUPPORTED_EXT`
+l'importe, le message du 400 de l'upload en est dérivé, et le frontend en tient
+un miroir unique (`EXTENSIONS_ACCEPTEES` dans `ModuleBar.tsx`, d'où sortent
+`accept` **et** le filtre de `uploadFiles`). Il y en avait trois côté backend et
+deux côté frontend : l'oubli le plus probable produit le pire symptôme — un
+fichier accepté que le moteur ne sait pas lire s'indexe **à zéro chunk, en
+silence**.
+
+`.pptx`/`.xlsx` ajoutés le 2026-08-24 (python-pptx, openpyxl : `py3-none-any`,
+aucune extension compilée, +6,6 Mo, zéro transitif nouveau). `.docx` était déjà
+lu — ce qui manquait était le contenu de ses **tableaux**, que `doc.paragraphs`
+n'inclut pas. Pas de conversion externe : ni LibreOffice, ni Office, ni binaire
+appelé. Et **pas** de `.doc`/`.ppt`/`.xls` — aucune des trois bibliothèques ne lit
+l'OOXML pré-2007, les accepter donnerait une erreur à l'ouverture au lieu d'un
+refus à l'upload.
+
+Convention des extracteurs : paquet **absent** → avertissement + chaîne vide
+(dégradation, le paquet livré peut l'avoir perdu) ; fichier **illisible** →
+l'exception remonte, comme `.pdf` depuis toujours. Ne pas confondre les deux :
+l'un est une installation incomplète, l'autre un mauvais fichier.
 
 ### 3.4 Persistance
 

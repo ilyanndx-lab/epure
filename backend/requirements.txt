@@ -114,6 +114,40 @@ python-dotenv==1.2.2
 google-generativeai==0.8.6
 openai==2.38.0
 python-docx==1.2.0
+# ── Lecture des documents bureautiques pour le RAG (core/rag.py) ─────────────
+# Ajoutés le 2026-08-24. `python-docx` était déjà là, et servait DÉJÀ à la
+# lecture (pas seulement à l'écriture) — ce qui manquait était le contenu de ses
+# tableaux, que `doc.paragraphs` n'inclut pas.
+#
+# Les quatre paquets de ce lot (les deux ci-dessous + `et-xmlfile` et
+# `XlsxWriter` en transitif) publient tous une wheel `py3-none-any` et
+# n'embarquent AUCUNE extension compilée — vérifié fichier par fichier, pas
+# déduit du nom. Il n'y a donc pas de question de wheel `win_arm64`, celle qui a
+# coûté `chromadb` puis la voix sur ARM64.
+#
+# Coût mesuré sur site-packages : **+6,6 Mo** au total, et **zéro dépendance
+# transitive nouvelle** — `lxml` (9,3 Mo) arrive déjà par python-docx, `Pillow`
+# (16,2 Mo) par pystray. C'est ce qui rend ce lot bon marché : il réutilise
+# l'arbre au lieu de l'étendre.
+#
+# `XlsxWriter` (1,9 Mo) est du poids qu'on ne choisit pas : python-pptx le
+# déclare en dépendance directe pour l'ÉCRITURE de graphiques, dont on ne se sert
+# pas. Non écartable tant que python-pptx est là — même situation qu'`onnxruntime`
+# à l'époque de chromadb, et la leçon est la même : on mesure avant de purger,
+# parce qu'un paquet qui a l'air lié à une fonction qu'on n'utilise pas peut être
+# réclamé par autre chose.
+#
+# AUCUNE conversion externe : pas de LibreOffice, pas d'Office, pas d'appel à un
+# binaire. C'est une contrainte du paquet distribué (le destinataire n'installe
+# rien), pas une préférence — et `shell=True` est de toute façon interdit
+# (CLAUDE.md §6).
+#
+# Ce qui n'est PAS couvert, et ne le sera pas par ces paquets : `.doc`, `.ppt`,
+# `.xls`, les formats binaires pré-2007. Aucune des trois bibliothèques ne les
+# lit — elles ne parlent que l'OOXML zippé. Les ajouter à SUPPORTED_EXTENSIONS
+# donnerait une erreur à l'ouverture au lieu d'un refus honnête à l'upload.
+python-pptx==1.0.2
+openpyxl==3.1.5
 pandas==3.0.3
 
 # ── Lanceur système : epure_tray.py, PAS le backend ──────────────────────────

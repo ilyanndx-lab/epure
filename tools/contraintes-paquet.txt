@@ -4,6 +4,17 @@
 # le paquet du 2026-08-13 (132,2 Mo zippé). Généré, pas écrit à la main : ne pas
 # éditer une ligne isolément.
 #
+# ⚠️ CE FICHIER EST EN RETARD DE DEUX LOTS, et c'est sans effet en attendant.
+# Il ne connaît ni `python-pptx`/`openpyxl` (lecture des documents, 2026-08-24),
+# ni la sortie de `pip`/`setuptools` de la purge (2026-08-23). Un fichier de
+# contraintes n'INSTALLE rien : il n'épingle que ce qu'il liste, donc ces paquets
+# se résolvent librement et le build passe. Les ajouter à la main donnerait un
+# fichier décrivant un environnement que personne n'a installé — ce que
+# l'avertissement ci-dessus interdit précisément. Il se régénère en construisant
+# un paquet avec `--sans-contraintes` puis en lisant `python.gel` du `PAQUET.json`
+# produit. Le poids annoncé (132,2 Mo) est lui aussi périmé : +15,2 Mo de pip et
+# setuptools, +6,6 Mo de lecteurs, soit ≈ 154 Mo — arithmétique, pas mesure.
+#
 # Régénéré le 2026-08-13 après le retrait de `chromadb`
 # (`docs/remplacement-vectoriel.md`, étape D). **53 paquets contre 101** dans la
 # version précédente : 49 partis, aucun arrivé — c'est la moitié de l'arbre

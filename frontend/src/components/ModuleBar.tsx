@@ -171,11 +171,36 @@ function dico(v: unknown): Record<string, boolean> {
     : {}
 }
 
+/**
+ * Extensions acceptées à l'upload. **Une seule liste**, et c'est le point.
+ *
+ * Elle était écrite deux fois — l'attribut `accept` du champ de fichier et le
+ * filtre de `uploadFiles` — donc un ajout demandait de penser aux deux. Or les
+ * deux copies ne disent pas la même chose à l'utilisateur quand elles divergent :
+ * `accept` décide de ce que le sélecteur de fichiers PROPOSE, le filtre décide de
+ * ce qui part vraiment. Désaccordées, elles produisent un fichier qu'on peut
+ * choisir et qui disparaît sans message.
+ *
+ * Miroir de `SUPPORTED_EXTENSIONS` dans `backend/core/rag.py`, qui reste
+ * l'autorité : le backend refuse en 400 ce qu'il ne sait pas lire, et le message
+ * de ce 400 est dérivé de sa liste. Celle-ci n'est donc pas une garantie mais une
+ * commodité — elle évite de laisser choisir un fichier voué au refus.
+ */
+const EXTENSIONS_ACCEPTEES = [
+  'pdf', 'docx', 'pptx', 'xlsx', 'txt', 'md', 'csv', 'json',
+  'png', 'jpg', 'jpeg', 'webp',
+] as const
+
+const ACCEPT_FICHIERS = EXTENSIONS_ACCEPTEES.map(e => '.' + e).join(',')
+
 function FileTypeIcon({ name }: { name: string }) {
   const ext = name.split('.').pop()?.toLowerCase() ?? ''
   const cls = 'shrink-0 text-muted'
-  if (ext === 'pdf' || ext === 'docx' || ext === 'txt' || ext === 'md')
+  if (ext === 'pdf' || ext === 'docx' || ext === 'txt' || ext === 'md' || ext === 'pptx')
     return <FileText size={13} className={cls} />
+  // `.xlsx` avec le `.csv` : ce sont les deux formats tabulaires, et l'icone est
+  // le seul indice de type dans une liste de noms tronques.
+  if (ext === 'xlsx') return <FileSpreadsheet size={13} className={cls} />
   if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp')
     return <FileImage size={13} className={cls} />
   if (ext === 'json') return <FileJson size={13} className={cls} />
@@ -525,7 +550,7 @@ export default function ModuleBar({
   const uploadFiles = useCallback(async (files: File[]) => {
     const supported = files.filter(f => {
       const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
-      return ['pdf','docx','txt','md','csv','json','png','jpg','jpeg','webp'].includes(ext)
+      return (EXTENSIONS_ACCEPTEES as readonly string[]).includes(ext)
     })
     if (supported.length === 0) return
     setLoadingFiles(true)
@@ -727,7 +752,7 @@ export default function ModuleBar({
               {loadingFiles ? 'Chargement...' : 'Glisser un fichier ici · Cliquer pour parcourir'}
             </span>
             <input ref={fileInputRef} type="file" multiple
-              accept=".pdf,.docx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,.webp"
+              accept={ACCEPT_FICHIERS}
               className="hidden"
               onChange={e => { if (e.target.files) uploadFiles(Array.from(e.target.files)) }}
             />

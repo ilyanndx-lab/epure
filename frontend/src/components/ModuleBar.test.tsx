@@ -284,6 +284,32 @@ describe('ModuleBar — panneau fichiers', () => {
     expect(screen.queryByText('Réessayer')).toBeNull()
   })
 
+  it('propose les types de documents que le backend sait lire', async () => {
+    // La moitié VISIBLE du support de format : `accept` décide de ce que le
+    // sélecteur de fichiers propose. Il était écrit à la main, en double avec le
+    // filtre de `uploadFiles` — deux listes pour une notion, donc un ajout qui
+    // s'oublie d'un côté. Désaccordées, elles produisent un fichier qu'on peut
+    // choisir et qui disparaît sans message.
+    //
+    // Miroir de `SUPPORTED_EXTENSIONS` dans `backend/core/rag.py` : ce test ne
+    // peut pas vérifier l'accord entre les deux dépôts, mais il verrouille le
+    // fait que les formats bureautiques y sont — c'est ce qui a été ajouté, et
+    // c'est ce qu'un `accept` réécrit à la main perdrait en premier.
+    poserFetch(tableSaine())
+    await rendre()
+    await ouvrir('Fichiers')
+    const entree = document.querySelector('input[type="file"]') as HTMLInputElement
+    const accept = entree.getAttribute('accept') ?? ''
+    for (const ext of ['.pdf', '.docx', '.pptx', '.xlsx', '.txt', '.md', '.csv', '.json']) {
+      expect(accept.split(',')).toContain(ext)
+    }
+    // Les formats binaires pré-2007 ne sont lus par aucune des bibliothèques :
+    // les proposer donnerait une erreur à l'ouverture au lieu d'un refus honnête.
+    for (const ext of ['.doc', '.ppt', '.xls']) {
+      expect(accept.split(',')).not.toContain(ext)
+    }
+  })
+
   it('reste rendu quand TOUT le backend répond 500', async () => {
     // Backend qui démarre, token pas encore appairé, route absente : la barre
     // doit s'afficher amputée, pas disparaître derrière une ErrorBoundary.

@@ -146,6 +146,7 @@ def _pile(absents=("torch", "sentence_transformers"), *, joignable=True, pip=Non
     finally:
         pip.liberer.set()
         _attendre_fin(bornes=(ei.PRET, ei.ECHEC), timeout=5, tolerer_en_cours=True)
+        _joindre_le_thread_d_installation()
         ei._module_importable, ei._index_joignable, ei._pip = originaux
         if precedent is None:
             os.environ.pop("EPURE_EMBEDDING_AUTOINSTALL", None)
@@ -154,6 +155,29 @@ def _pile(absents=("torch", "sentence_transformers"), *, joignable=True, pip=Non
         ei._reinitialiser_pour_tests()
         with contextlib.suppress(OSError):
             ei._fichier_etat().unlink(missing_ok=True)
+
+
+def _joindre_le_thread_d_installation(timeout=10) -> None:
+    """Attend que le thread d'installation soit VRAIMENT fini.
+
+    Observer l'état ne suffit pas, et l'écart a produit un échec instable :
+    `_poser` publie le verdict terminal puis le thread continue quelques
+    instructions (journalisation, sortie de fonction). `_attendre_fin` rend donc
+    la main pendant que le thread vit encore. Si le test suivant démarre à cet
+    instant, ce thread-là écrit `_etat` par-dessus le sien — et comme le dernier
+    verdict d'un thread qui va au bout est « Préparation incomplète »
+    (`cause=pip`, `étape=""`), le symptôme observé était un `étape` vide dans un
+    test qui attendait « torch ». Un quart d'heure de recherche pour une course
+    de quelques microsecondes, rendue probable par la charge de la machine.
+
+    On joint par le NOM plutôt qu'en gardant une référence :
+    `declencher_installation` ne rend pas son thread — c'est son contrat, il ne
+    doit rien faire attendre à son appelant — donc le test n'a que `threading`
+    pour le retrouver.
+    """
+    for fil in threading.enumerate():
+        if fil.name == "epure-embedding-install" and fil.is_alive():
+            fil.join(timeout=timeout)
 
 
 @contextlib.contextmanager

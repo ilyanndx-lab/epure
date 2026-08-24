@@ -16,7 +16,28 @@ from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md', '.csv', '.json', '.png', '.jpg', '.jpeg', '.webp'}
+#: Extensions que `_extract_text_from_path` sait lire. **Source unique** : le
+#: routeur Réglages l'importe (`_SUPPORTED_EXT`) au lieu d'en tenir une copie, et
+#: le message d'erreur de l'upload en est dérivé. Il y avait trois listes pour une
+#: notion, dont deux à mettre à jour de mémoire.
+#:
+#: `.pptx`, `.xlsx` ajoutés le 2026-08-24. `.docx` était déjà là — et lu, contre
+#: l'idée que `python-docx` ne servait qu'à l'écriture ; ce qui manquait était le
+#: contenu de ses TABLEAUX (cf. `_texte_docx`).
+#:
+#: Ce qui n'y est PAS et ne doit pas y arriver par ressemblance : `.doc`, `.ppt`,
+#: `.xls` (les formats binaires pré-2007). Aucune des trois bibliothèques ne les
+#: lit — python-docx, python-pptx et openpyxl ne parlent que l'OOXML zippé — et
+#: les accepter donnerait une erreur à l'ouverture au lieu d'un refus à l'upload.
+SUPPORTED_EXTENSIONS = {
+    '.pdf', '.docx', '.pptx', '.xlsx', '.txt', '.md', '.csv', '.json',
+    '.png', '.jpg', '.jpeg', '.webp',
+}
+
+#: Nombre de lignes lues par feuille d'un classeur. Même borne que le `nrows=500`
+#: du `.csv` juste en dessous, et pour la même raison : au-delà, on indexe un
+#: export de base de données, pas un document qu'on lit.
+_XLSX_MAX_LIGNES = 500
 
 
 class RAGEngine:
@@ -55,6 +76,144 @@ class RAGEngine:
         self._query_lru = functools.lru_cache(maxsize=50)(self._do_query)
         self._query_filtered_lru = functools.lru_cache(maxsize=50)(self._do_query_filtered)
 
+    # ── Extracteurs par format ───────────────────────────────────────────────
+    #
+    # Méthodes nommées et non des branches en ligne : chacune est testable seule
+    # (`test_ingestion_documents.py`), sans construire de moteur ni de store —
+    # ce qui compte ici, parce que construire un `RAGEngine` charge torch.
+    #
+    # Convention commune, calquée sur la branche `.docx` d'origine : un paquet
+    # ABSENT donne un avertissement et une chaîne vide (dégradation : le paquet
+    # distribué peut l'avoir perdu), un fichier ILLISIBLE laisse remonter
+    # l'exception — comme le fait `.pdf` depuis toujours. Les deux ne se
+    # confondent pas : l'un est une installation incomplète, l'autre un mauvais
+    # fichier, et l'appelant n'a pas le même recours.
+
+    @staticmethod
+    def _texte_docx(path: str) -> str:
+        """Paragraphes PUIS tableaux d'un .docx.
+
+        `doc.paragraphs` **n'inclut pas les cellules de tableau** — mesuré : un
+        document d'un paragraphe et d'un tableau à deux cellules rendait 14
+        caractères, le tableau perdu en silence. Un tableau est souvent ce qu'un
+        document de cours contient de plus dense (dates, formules, correspondances),
+        donc c'était le contenu le plus utile qui manquait.
+
+        Les tableaux arrivent APRÈS le corps, pas à leur place dans le fil : les
+        restituer dans l'ordre demande de parcourir `doc.element.body` à la main.
+        Pour de la recherche par similarité, l'ordre entre un tableau et le
+        paragraphe qui l'introduit ne change rien au fait que le contenu soit
+        trouvable ; l'absence, si.
+        """
+        try:
+            from docx import Document  # python-docx
+        except ImportError:
+            logger.warning("python-docx non installé — pip install python-docx")
+            return ""
+        doc = Document(str(path))
+        morceaux = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for ligne in table.rows:
+                cellules = [c.text.strip() for c in ligne.cells]
+                if any(cellules):
+                    morceaux.append("\t".join(cellules))
+        return "\n".join(morceaux)
+
+    @staticmethod
+    def _texte_pptx(path: str) -> str:
+        """Texte d'un .pptx, diapositive par diapositive.
+
+        Trois sources par diapositive, et les trois comptent :
+
+        * les **formes à texte** — titres et corps sont l'un et l'autre des
+          `shape` avec un `text_frame`, python-pptx ne les distingue pas par type.
+          Les prendre tous évite de deviner un rôle de placeholder ;
+        * les **tableaux** (`shape.has_table`), qu'aucun `text_frame` ne couvre ;
+        * les **notes du présentateur**, souvent la seule prose complète d'une
+          présentation dont les diapositives ne sont que des puces.
+
+        Le numéro de diapositive est écrit dans le texte : c'est ce qui permet à
+        une réponse de citer « diapositive 4 » au lieu d'un extrait flottant.
+        """
+        try:
+            from pptx import Presentation  # python-pptx
+        except ImportError:
+            logger.warning("python-pptx non installé — pip install python-pptx")
+            return ""
+        presentation = Presentation(str(path))
+        morceaux: list[str] = []
+        for numero, slide in enumerate(presentation.slides, start=1):
+            lignes: list[str] = []
+            for shape in slide.shapes:
+                if shape.has_text_frame and shape.text_frame.text.strip():
+                    lignes.append(shape.text_frame.text.strip())
+                if getattr(shape, "has_table", False) and shape.has_table:
+                    for ligne in shape.table.rows:
+                        cellules = [c.text.strip() for c in ligne.cells]
+                        if any(cellules):
+                            lignes.append("\t".join(cellules))
+            # `has_notes_slide` avant d'y toucher : le lire crée la diapositive de
+            # notes si elle n'existe pas, donc modifie l'objet en mémoire pour
+            # répondre à une question de lecture.
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes:
+                    lignes.append(f"Notes : {notes}")
+            if lignes:
+                morceaux.append(f"Diapositive {numero}\n" + "\n".join(lignes))
+        return "\n\n".join(morceaux)
+
+    @staticmethod
+    def _texte_xlsx(path: str) -> str:
+        """Contenu d'un .xlsx, feuille par feuille, cellule par cellule.
+
+        Deux options d'`load_workbook` qui ne sont pas des détails :
+
+        * ``read_only=True`` — un classeur d'export peut faire des dizaines de
+          milliers de lignes, et le mode normal les charge toutes en objets ;
+        * ``data_only=True`` — rend la **valeur** mise en cache des formules et
+          non leur source. ``12`` plutôt que ``=SOMME(A1:A3)``, qui est ce sur
+          quoi une question porte.
+
+        **La contrepartie de ``data_only``, à connaître** : cette valeur en cache
+        est écrite par le tableur, pas par le fichier. Un classeur généré par un
+        script (openpyxl, pandas) et jamais ouvert dans Excel n'en a aucune —
+        ses cellules de formule ressortent donc VIDES. C'est le cas le plus
+        probable pour un fichier fabriqué, et le moins probable pour un fichier
+        que quelqu'un a réellement rempli. Le compromis est fait dans ce sens-là ;
+        `test_ingestion_documents.py` fixe le comportement pour qu'il ne surprenne
+        pas plus tard.
+
+        Le nom de la feuille est écrit dans le texte, pour la même raison que le
+        numéro de diapositive : un extrait doit pouvoir se situer.
+        """
+        try:
+            import openpyxl
+        except ImportError:
+            logger.warning("openpyxl non installé — pip install openpyxl")
+            return ""
+        classeur = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+        try:
+            morceaux: list[str] = []
+            for feuille in classeur.worksheets:
+                lignes: list[str] = []
+                for n, valeurs in enumerate(feuille.iter_rows(values_only=True)):
+                    if n >= _XLSX_MAX_LIGNES:
+                        lignes.append(f"[… lignes suivantes non indexées "
+                                      f"(limite {_XLSX_MAX_LIGNES})]")
+                        break
+                    cellules = ["" if v is None else str(v) for v in valeurs]
+                    if any(c.strip() for c in cellules):
+                        lignes.append("\t".join(cellules).rstrip("\t"))
+                if lignes:
+                    morceaux.append(f"Feuille : {feuille.title}\n" + "\n".join(lignes))
+            return "\n\n".join(morceaux)
+        finally:
+            # `read_only=True` garde le zip ouvert : sans ce close, le fichier
+            # reste verrouillé sous Windows, et le `rmtree` d'un test ou une
+            # ré-indexation après modification échoue sur un fichier occupé.
+            classeur.close()
+
     @staticmethod
     def _extract_text_from_path(path: str) -> str:
         ext = Path(path).suffix.lower()
@@ -62,13 +221,11 @@ class RAGEngine:
             reader = pypdf.PdfReader(str(path))
             return "\n".join(page.extract_text() or "" for page in reader.pages)
         elif ext == '.docx':
-            try:
-                from docx import Document  # python-docx
-                doc = Document(str(path))
-                return "\n".join(para.text for para in doc.paragraphs)
-            except ImportError:
-                logger.warning("python-docx non installé — pip install python-docx")
-                return ""
+            return RAGEngine._texte_docx(path)
+        elif ext == '.pptx':
+            return RAGEngine._texte_pptx(path)
+        elif ext == '.xlsx':
+            return RAGEngine._texte_xlsx(path)
         elif ext in ('.txt', '.md'):
             return Path(path).read_text(encoding='utf-8', errors='ignore')
         elif ext == '.csv':

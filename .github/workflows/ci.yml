@@ -81,11 +81,23 @@ jobs:
       # `/ws/*` dans un paquet livré. Le laisser hors de cette liste rendrait le
       # garde-fou vert par vacuité, exactement ce que ce dépôt a déjà payé avec
       # `tsc --noEmit` plus bas. Python pur, 25 ko, aucun transitif nouveau.
+      #
+      # `python-docx`, `python-pptx`, `openpyxl` : même raison exactement, et le
+      # même piège évité. Ce sont les lecteurs de documents de `core/rag.py`, et
+      # `test_ingestion_documents.py` FABRIQUE un .docx/.pptx/.xlsx réel pour
+      # vérifier que le texte extrait correspond à la source. Sans eux ici, ces
+      # tests se sauteraient (`find_spec` → absent) et la suite resterait verte
+      # sur une extraction cassée. À noter que `python-docx` n'y était PAS alors
+      # que le dépôt lit du .docx depuis longtemps : ce chemin n'était donc pas
+      # couvert en CI, personne ne l'avait remarqué. Les trois sont py3-none-any,
+      # sans extension compilée, +6,6 Mo — rien à voir avec les deps ML que cet
+      # en-tête écarte.
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
           pip install fastapi==0.136.3 starlette==1.2.0
           pydantic pyyaml python-dotenv
           httpx python-multipart numpy ollama pypdf watchdog uvicorn wsproto
+          python-docx python-pptx openpyxl
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
         # Les tests forcent HF_HUB_OFFLINE=1 et neutralisent les sondes
