@@ -75,7 +75,24 @@ EFFORT_PIPELINES: dict = {
             "role": "analyzer",
             "label": "Analyse",
             "prompt_template": "Analyse ce problème et décompose-le en étapes claires : {message}",
-            "recommended": "groq:deepseek-r1-distill-llama-70b",
+            # `groq:deepseek-r1-distill-llama-70b` sur les CINQ sites de ce
+            # fichier jusqu'au 2026-08-24 : **404**. Groq l'a retiré de son
+            # catalogue avec tous ses modèles Llama de chat — mesuré par
+            # `models.list()` puis par un appel réel.
+            #
+            # Ce n'est PAS un changement de politique : Medium et High restent
+            # cloud par défaut, c'est le but assumé de ces paliers. Seul
+            # l'identifiant change, et il s'aligne sur ce que l'interface annonce
+            # DÉJÀ — `EFFORT_DEFINITIONS` de `ModuleBar.tsx` affiche
+            # `groq:openai/gpt-oss-120b` pour `analyzer` et `verifier`. Les deux
+            # divergeaient, et c'était l'interface qui avait raison : l'utilisateur
+            # lisait un modèle dans le panneau Effort, et un autre partait.
+            #
+            # Le commentaire nomme le mort exprès. `test_taches_locales` cherche
+            # cet identifiant dans le CODE SANS LES COMMENTAIRES, précisément pour
+            # qu'une trace écrite du retrait reste possible sans faire échouer le
+            # garde-fou.
+            "recommended": "groq:openai/gpt-oss-120b",
         },
         {
             "role": "solver",
@@ -103,7 +120,7 @@ EFFORT_PIPELINES: dict = {
             "prompt_template": (
                 "Analyse en profondeur, identifie les pièges et concepts clés : {message}"
             ),
-            "recommended": "groq:deepseek-r1-distill-llama-70b",
+            "recommended": "groq:openai/gpt-oss-120b",
         },
         {
             "role": "solver",
@@ -120,7 +137,7 @@ EFFORT_PIPELINES: dict = {
             "prompt_template": (
                 "Vérifie cette résolution, identifie erreurs et imprécisions :\n{solver_output}"
             ),
-            "recommended": "groq:deepseek-r1-distill-llama-70b",
+            "recommended": "groq:openai/gpt-oss-120b",
         },
         {
             "role": "pedagogue",
@@ -140,9 +157,9 @@ _DEFAULT_PRESETS = [
         "nom": "Kholle maths",
         "effort": "high",
         "steps": [
-            {"role": "analyzer", "model": "groq:deepseek-r1-distill-llama-70b"},
+            {"role": "analyzer", "model": "groq:openai/gpt-oss-120b"},
             {"role": "solver", "model": "qwen2.5:7b"},
-            {"role": "verifier", "model": "groq:deepseek-r1-distill-llama-70b"},
+            {"role": "verifier", "model": "groq:openai/gpt-oss-120b"},
             {"role": "pedagogue", "model": "gemini:gemini-2.5-flash"},
         ],
         "défaut": True,

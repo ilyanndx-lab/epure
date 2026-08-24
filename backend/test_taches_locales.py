@@ -34,6 +34,7 @@ Usage :
 import asyncio
 import json
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -545,25 +546,130 @@ class CataloguesSansModeleMortTest(unittest.TestCase):
         "deepseek-r1-distill-llama-70b",
     )
 
-    def _code_seul(self, source: str) -> str:
-        """Sans les commentaires : ils CITENT les identifiants morts pour dire
-        qu'ils le sont. Même piège que `ResumeImportTest._code_seul`.
+    def _utilise(self, source: str, modele: str) -> bool:
+        """L'identifiant est-il UTILISÉ comme valeur, et pas seulement mentionné ?
 
-        Les DEUX styles, et l'oubli s'est produit en écrivant ce test : `#` pour
-        Python, `//` pour TypeScript. Ne retirer que le premier faisait échouer la
-        vérification du frontend sur le commentaire qui explique le retrait.
+        Première version de ce test : retirer les commentaires (`#`, `//`) puis
+        chercher la chaîne. Insuffisant — l'identifiant apparaît aussi dans des
+        **docstrings**, qui ne sont ni l'un ni l'autre. Le docstring de
+        `_classify_model` explique justement que ce modèle répond 404, et faisait
+        donc échouer le garde-fou sur sa propre explication. Retirer les
+        docstrings ligne par ligne demandait de suivre l'état d'ouverture des
+        triples guillemets : plus de machinerie que ce que le test vaut.
+
+        DEUX filtres, et chacun couvre l'angle mort de l'autre :
+
+        1. on retire les commentaires de ligne (`#`, `//`) — parce qu'un
+           commentaire peut REPRODUIRE la ligne de code supprimée, guillemets
+           compris (`# _CLASSIFY_MODEL_GROQ = "groq:…" vivait ici`), ce qu'un
+           test de littéral prendrait pour une vraie utilisation ;
+        2. dans ce qui reste, on cherche un **littéral de chaîne** — avec ou sans
+           préfixe de fournisseur : `"llama-3.3-70b-versatile"` comme entrée de
+           table, `'groq:llama-3.1-8b-instant'` comme identifiant complet. Les
+           docstrings, eux, citent ces noms entre backticks : ils passent, donc
+           une trace écrite du retrait reste possible — ce qui est le but, sinon
+           on ne peut pas documenter ce qu'on retire.
+
+        Les deux essais précédents ont chacun échoué sur l'angle mort de l'autre,
+        et c'est ce qui a mené à cette forme.
         """
-        lignes = []
-        for ligne in source.splitlines():
-            lignes.append(ligne.split("#")[0].split("//")[0])
-        return chr(10).join(lignes)
+        sans_commentaires = chr(10).join(
+            l.split("#")[0].split("//")[0] for l in source.splitlines())
+        motif = re.compile(r"""["']([a-z0-9_]+:)?""" + re.escape(modele) + r"""["']""")
+        return bool(motif.search(sans_commentaires))
 
     def test_aucune_table_de_modeles_ne_cite_un_mort(self):
         from core import models
-        code = self._code_seul(open(models.__file__, encoding="utf-8").read())
+        source = open(models.__file__, encoding="utf-8").read()
         for mort in self.MORTS:
             with self.subTest(modele=mort):
-                self.assertNotIn(mort, code)
+                self.assertFalse(self._utilise(source, mort),
+                                 f"{mort} est encore utilisé dans core/models.py")
+
+    def test_l_orchestrateur_ne_cite_plus_un_mort(self):
+        """Les paliers et les presets livrés, restés sur l'id mort après c7c95e5.
+
+        Cinq sites : les `recommended` de `medium/analyzer`, `high/analyzer`,
+        `high/verifier`, et les étapes `analyzer`/`verifier` du preset livré
+        « Kholle maths ». Ils avaient survécu au nettoyage de `core/models.py`
+        parce qu'ils vivent dans un AUTRE fichier — c'est exactement comment un
+        identifiant copié d'un site à l'autre survit au retrait du modèle.
+        """
+        from core import orchestrator
+        source = open(orchestrator.__file__, encoding="utf-8").read()
+        for mort in self.MORTS:
+            with self.subTest(modele=mort):
+                self.assertFalse(self._utilise(source, mort),
+                                 f"{mort} est encore utilisé dans core/orchestrator.py")
+
+    def test_les_paliers_restent_cloud_par_defaut(self):
+        """La contre-épreuve du test précédent, et elle compte autant.
+
+        Corriger un identifiant mort ne doit pas devenir « passer les paliers en
+        local » : Medium et High sont cloud par choix assumé, et c'est ce que
+        l'utilisateur demande en les sélectionnant. Sans cette assertion, un
+        remplacement par un modèle local passerait le test ci-dessus en cassant
+        la politique.
+        """
+        from core.orchestrator import EFFORT_PIPELINES
+        for palier in ("medium", "high"):
+            recommandes = [t.get("recommended") for t in EFFORT_PIPELINES[palier]]
+            with self.subTest(palier=palier):
+                self.assertTrue(any(r and est_modele_cloud(r) for r in recommandes),
+                                f"{palier} n'a plus aucun modèle cloud recommandé")
+
+    def test_les_paliers_du_backend_et_de_l_interface_concordent(self):
+        """Le backend et `EFFORT_DEFINITIONS` de `ModuleBar.tsx` doivent nommer le
+        MÊME modèle pour un rôle donné.
+
+        C'est la divergence qui a laissé l'id mort survivre : l'interface affichait
+        déjà `groq:openai/gpt-oss-120b` quand le backend envoyait le deepseek
+        retiré. L'utilisateur lisait un modèle dans le panneau Effort, et un autre
+        partait — un écart qu'aucun des deux côtés ne pouvait signaler seul.
+
+        Comparaison limitée aux rôles dont le frontend nomme un modèle : ses
+        `recommended: null` veulent dire « le backend décide » (`active`/`local`),
+        ce qui n'est pas une divergence.
+        """
+        chemin = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "frontend", "src", "components", "ModuleBar.tsx"))
+        with open(chemin, encoding="utf-8") as f:
+            source = f.read()
+        bloc = source[source.index("const EFFORT_DEFINITIONS"):
+                      source.index("const EFFORT_LABELS")]
+        attendu, palier = {}, None
+        for ligne in bloc.splitlines():
+            m = re.match(r"\s*(low|medium|high):", ligne)
+            if m:
+                palier = m.group(1)
+            m2 = re.search(r"role: '([^']+)'.*recommended: '([^']+)'", ligne)
+            if m2 and palier:
+                attendu[(palier, m2.group(1))] = m2.group(2)
+        self.assertTrue(attendu, "aucune recommandation lue dans ModuleBar.tsx")
+
+        from core.orchestrator import EFFORT_PIPELINES
+        for (palier, role), modele_front in attendu.items():
+            tpl = next((t for t in EFFORT_PIPELINES[palier] if t["role"] == role), None)
+            with self.subTest(palier=palier, role=role):
+                self.assertIsNotNone(tpl, f"{palier}/{role} absent du backend")
+                self.assertEqual(tpl.get("recommended"), modele_front)
+
+    def test_le_preset_livre_ne_cite_plus_un_mort(self):
+        """Les presets LIVRÉS (`_DEFAULT_PRESETS`), lus quand aucun fichier
+        n'existe encore — donc sur toute installation neuve.
+
+        À savoir, et hors de portée d'un test : un `orchestrator_presets.json`
+        déjà écrit garde ses anciens identifiants. `_DEFAULT_PRESETS` ne s'applique
+        qu'à un fichier absent, et ce fichier est une donnée utilisateur qu'on ne
+        réécrit pas.
+        """
+        from core.orchestrator import _DEFAULT_PRESETS
+        for preset in _DEFAULT_PRESETS:
+            for etape in preset["steps"]:
+                with self.subTest(preset=preset["nom"], role=etape["role"]):
+                    for mort in self.MORTS:
+                        self.assertNotIn(mort, etape["model"])
 
     def test_la_cible_cloud_de_la_consolidation_est_vivante(self):
         from core.consolidation import _CLOUD_MODEL
@@ -598,10 +704,11 @@ class CataloguesSansModeleMortTest(unittest.TestCase):
             os.path.dirname(os.path.abspath(__file__)),
             "..", "frontend", "src", "components", "ModuleBar.tsx"))
         with open(chemin, encoding="utf-8") as f:
-            code = self._code_seul(f.read())
+            source = f.read()
         for mort in self.MORTS:
             with self.subTest(modele=mort):
-                self.assertNotIn(mort, code)
+                self.assertFalse(self._utilise(source, mort),
+                                 f"{mort} est encore recommandé par ModuleBar.tsx")
 
 
 if __name__ == "__main__":
