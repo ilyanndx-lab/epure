@@ -114,6 +114,38 @@ haute. Un paquet sans voix est donc une instance cohérente, pas une instance
 amputée — et `PAQUET.json` porte `arch` et `voix` pour que ça se lise sans
 deviner.
 
+**6. Un paquet se construit sur l'architecture qu'il vise. Le build croisé est
+refusé, pas averti.** Il l'a été jusqu'au 2026-08-24, sur une affirmation fausse :
+« le zip embeddable et les wheels viennent de PyPI, donc un build croisé produit
+une archive correcte, simplement non testable ici ». Vrai du téléchargement, faux
+de tout ce qui suit — `preparer_python` **exécute** le `python.exe` de la cible,
+d'abord pour `get-pip.py` puis pour `pip install`. Sur un hôte x64, lancer un
+binaire ARM64 lève `OSError: [WinError 216]` : l'émulation Windows ne va que
+d'ARM64 vers x64, jamais dans ce sens. Ce n'était donc pas « non testable ici »,
+c'était « ne se construit pas du tout » — et le message rassurait sur un échec
+certain.
+
+Le refus est dans `exiger_arch_native`, appelée par `main` (avant `npm run build`,
+pour ne pas faire attendre quelques minutes une erreur connue d'avance) **et** par
+`preparer_python` (qui est la fonction qui bute, donc celle qui doit porter la
+règle). Seule dérogation : `--sauter-python`, qui n'exécute jamais l'interpréteur
+cible — l'archive produite est alors dépourvue de runtime, donc bonne à éprouver
+l'assemblage et à rien d'autre.
+
+L'option écartée, et pourquoi : on *pourrait* construire un paquet ARM64 depuis
+x64 sans jamais lancer l'interpréteur cible, en remplaçant les deux exécutions par
+un `pip download --platform win_arm64 --python-version 312 --only-binary=:all:
+--target <site-packages>` lancé avec le pip de l'HÔTE, et en déposant `pip`
+lui-même dans le `site-packages` au lieu de le bootstrapper. C'est faisable, mais
+ça achète peu : `--only-binary=:all:` interdit toute sdist, ce qui est justement le
+point aveugle ARM64 que `docs/distribution-empaquetee.md` (« Reporté : le build
+réel sur ARM64 ») veut lever — sept paquets dont on ne sait pas s'ils publient une
+wheel `win_arm64`. Un build croisé réussirait ou échouerait sur la résolution sans
+jamais dire si l'archive DÉMARRE, ce qui est la seule question qui reste. Et la
+décision d'Ilyann (2026-08-10) est déjà de faire ce premier build sur une machine
+ARM64. Tant que ce build-là n'a pas eu lieu, le cross-build serait un mécanisme
+de plus à maintenir pour livrer un paquet qu'on ne saurait toujours pas juger.
+
 **Ce qui n'est plus ici, et pourquoi c'est la vraie nouvelle.** Ce docstring a
 longtemps décrit un second mécanisme, bien plus lourd, pour contenir la grappe de
 `chromadb` : une purge par lecture des `RECORD` de `.dist-info`
@@ -194,6 +226,30 @@ def arch_hote() -> str:
     testable sans monkey-patcher un global.
     """
     return "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+
+
+def exiger_arch_native(arch: str) -> None:
+    """Refuse un build croisé, parce qu'il ne se construit pas — cf. point 6 du docstring.
+
+    Ce garde-fou est ici et pas seulement dans `main` : `preparer_python` EXÉCUTE
+    l'interpréteur de la cible (`get-pip.py`, puis `pip install`), donc n'importe
+    quel appelant qui court-circuiterait la ligne de commande buterait sur le même
+    `WinError 216`. La règle appartient à la fonction qui la subit.
+    """
+    if arch != arch_hote():
+        raise ErreurPaquet(
+            f"build croisé non supporté : ce poste est en {arch_hote()}, cible "
+            f"demandée {arch}.\n"
+            f"  Le zip embeddable et les wheels se téléchargent bien depuis PyPI, "
+            f"mais la suite EXÉCUTE le python.exe de la cible (get-pip.py, puis "
+            f"pip install) : Windows ne sait pas lancer un binaire {arch} sur un "
+            f"hôte {arch_hote()} (l'émulation ne va que d'ARM64 vers x64).\n"
+            f"  Lancez ce script sur une machine {arch} "
+            f"(docs/distribution-empaquetee.md, « Reporté : le build réel sur ARM64 »), "
+            f"ou ajoutez --sauter-python pour n'assembler que le code — archive "
+            f"non livrable, sans runtime."
+        )
+
 
 #: `pip freeze` du paquet du 2026-08-10 (§0.3 de `docs/distribution-empaquetee.md`) —
 #: fige l'arbre transitif, que `requirements.txt` seul laisse dériver (mesuré :
@@ -571,7 +627,12 @@ def preparer_python(destination: Path, embeddable: Path | None,
     ensemble, jamais séparément : un runtime ARM64 avec les exigences x64 échoue
     au `pip install`, l'inverse produit un paquet qui ne démarre pas chez le
     destinataire. C'est le genre d'écart qui ne se voit qu'à l'ouverture.
+
+    **Et `arch` doit être celle de CE poste** (`exiger_arch_native`), parce que les
+    deux gestes ci-dessus exécutent le `python.exe` téléchargé. Le télécharger est
+    portable, le lancer ne l'est pas.
     """
+    exiger_arch_native(arch)
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="epure-paquet-py-") as tmp:
         zip_py = Path(embeddable) if embeddable else _telecharger(
@@ -882,10 +943,15 @@ def main(argv=None) -> int:
                    help="suffixe de l'archive ; défaut : aucun (nom stable)")
     p.add_argument("--arch", choices=ARCHS, default=arch_hote(),
                    help="architecture de la MACHINE CIBLE ; défaut : celle de ce "
-                        f"poste ({arch_hote()}). En arm64, la voix "
-                        "(faster-whisper, piper-tts) est retirée de l'installation.")
+                        f"poste ({arch_hote()}), et la seule qui se construise ici "
+                        "(le build croisé est refusé : le runtime cible doit être "
+                        "exécuté). En arm64, la voix (faster-whisper, piper-tts) "
+                        "est retirée de l'installation.")
     p.add_argument("--sauter-python", action="store_true",
-                   help="n'installe pas le runtime (paquet incomplet, pour essai)")
+                   help="n'installe pas le runtime — archive SANS python/, non "
+                        "livrable, pour éprouver le reste de l'assemblage. Seule "
+                        "façon de faire tourner le script avec un --arch autre que "
+                        f"{arch_hote()}.")
     p.add_argument("--lister-modules", action="store_true",
                    help="affiche le catalogue et sort")
     args = p.parse_args(argv)
@@ -906,11 +972,15 @@ def main(argv=None) -> int:
         print(f"Paquet pour « {args.destinataire} » — modules : {demandes or '∅'} "
               f"— cible : {args.arch}")
         if args.arch != arch_hote():
-            # Averti, pas refusé : le zip embeddable et les wheels viennent de
-            # PyPI, pas du poste, donc un build croisé produit une archive
-            # correcte. Ce qui n'est PAS vérifiable ainsi, c'est qu'elle démarre.
-            print(f"  ⚠ build croisé (ce poste est en {arch_hote()}) — "
-                  f"l'archive est correcte mais non testable ici")
+            # Refusé ICI, avant `construire_frontend` : le mur est dans
+            # `preparer_python`, qui vient après plusieurs minutes de `npm run
+            # build`. Échouer tôt sur une condition connue dès l'analyse des
+            # arguments est la moindre des politesses.
+            if not args.sauter_python:
+                exiger_arch_native(args.arch)
+            print(f"  ⚠ build croisé (ce poste est en {arch_hote()}) accepté "
+                  f"seulement parce que --sauter-python n'exécute jamais le "
+                  f"python.exe de la cible — archive SANS runtime, non livrable.")
 
         print("Frontend :")
         dist = construire_frontend(demandes)
@@ -925,7 +995,9 @@ def main(argv=None) -> int:
                 runtime = preparer_python(staging / "python", args.embeddable,
                                           args.contraintes, arch=args.arch)
             else:
-                print("Runtime Python : SAUTÉ (--sauter-python) — paquet incomplet")
+                print("Runtime Python : SAUTÉ (--sauter-python) — archive sans "
+                      "python/, à ne pas envoyer : l'installeur n'y trouverait "
+                      "aucun interpréteur.")
 
             print("Assemblage :")
             infos = assembler(staging, dist, manifestes, runtime, arch=args.arch)

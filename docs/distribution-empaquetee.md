@@ -964,15 +964,36 @@ section, en complétant celle-ci.
 
 Tout ce qui précède a été vérifié sur x64 uniquement — aucune machine ARM64 n'était
 accessible pendant cette session. Ilyann le fera lui-même, quand il aura accès au poste
-de sandr ou à une machine ARM64 empruntée (§5). L'outillage est prêt côté script, un seul
-piège à éviter :
+de sandr ou à une machine ARM64 empruntée (§5).
+
+**Ce build doit être lancé DEPUIS une machine ARM64. Ce n'est pas une préférence
+méthodologique, c'est la seule façon dont le script fonctionne** — et cette section a
+dit le contraire jusqu'au 2026-08-24. Elle recommandait de télécharger le zip embeddable
+ARM64 à la main et de le passer en `--embeddable` depuis x64, sur l'idée que le seul
+obstacle était une URL câblée en dur (elle ne l'est plus : `--arch` choisit le zip depuis
+le 2026-08-22). Cette recommandation ne pouvait pas aboutir : passé l'extraction,
+`preparer_python` **exécute** le `python.exe` extrait — `get-pip.py`, puis
+`pip install -r`. Un binaire ARM64 lancé sur un hôte x64 lève
+`OSError: [WinError 216]` ; l'émulation Windows ne fonctionne que d'ARM64 vers x64.
+Fournir le bon zip rendait donc l'échec plus tardif, pas moins certain.
+
+Le script refuse désormais explicitement (`exiger_arch_native`, cf. point 6 du docstring
+de `tools/faire_paquet.py`), dès l'analyse des arguments et avant le `npm run build`.
+Sur la bonne machine, la commande est simplement :
 
 ```powershell
-# URL_EMBEDDABLE (tools/faire_paquet.py) est câblée en dur sur "embed-amd64" — sans
-# --embeddable, le script téléchargerait un runtime x64 et l'exécuterait (mal) sous
-# émulation. Télécharger la release ARM64 à la main, puis :
-python tools\faire_paquet.py --destinataire sandr --modules <à choisir> `
-  --embeddable chemin\vers\python-3.12.10-embed-arm64.zip
+# Sur la machine ARM64 : --arch suffit, le zip embeddable arm64 est téléchargé seul.
+python tools\faire_paquet.py --destinataire sandr --arch arm64 `
+  --modules <à choisir> --sans-contraintes
+```
+
+Depuis x64, la seule chose qui reste possible est d'éprouver l'assemblage sans runtime,
+et l'archive obtenue n'est **pas** livrable (aucun `python/` : l'installeur du
+destinataire n'y trouverait pas d'interpréteur) :
+
+```powershell
+python tools\faire_paquet.py --destinataire sandr --arch arm64 `
+  --modules <à choisir> --sauter-python
 ```
 
 Pas de contraintes par défaut la première fois (`--sans-contraintes`) : `tools/contraintes-paquet.txt` fige un arbre résolu sur x64, qui n'a aucune raison de correspondre aux

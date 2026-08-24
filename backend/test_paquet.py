@@ -31,12 +31,15 @@ Usage :
     python test_paquet.py
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -522,6 +525,116 @@ class ExigencesTest(unittest.TestCase):
         """
         self.assertIn("vector_db", paquet.EXCLUS_RACINE)
         self.assertIn("chroma_db", paquet.EXCLUS_RACINE)
+
+
+class BuildCroiseTest(unittest.TestCase):
+    """Un paquet se construit sur l'architecture qu'il vise — refus, pas avertissement.
+
+    Le script a averti au lieu de refuser jusqu'au 2026-08-24, sur une affirmation
+    fausse : « le zip embeddable et les wheels viennent de PyPI, donc l'archive est
+    correcte, simplement non testable ici ». Vrai du téléchargement, faux de la
+    suite — `preparer_python` EXÉCUTE le `python.exe` de la cible (`get-pip.py`,
+    puis `pip install`), et Windows ne lance pas un binaire ARM64 sur un hôte x64
+    (`OSError: [WinError 216]` ; l'émulation ne va que d'ARM64 vers x64).
+
+    Ce qui est éprouvé ici, et qui est le cœur du bug : que l'échec arrive **avant**
+    `construire_frontend`. Le mur physique est dans `preparer_python`, qui vient
+    après plusieurs minutes de `npm run build` — un refus tardif serait correct et
+    quand même une régression.
+    """
+
+    def setUp(self):
+        self._hote = paquet.arch_hote
+        self.addCleanup(setattr, paquet, "arch_hote", self._hote)
+
+    def _poser_hote(self, arch: str) -> None:
+        paquet.arch_hote = lambda: arch
+
+    def _main_muet(self, argv: list[str]) -> int:
+        """`main` écrit son journal de build sur stdout/stderr — une vingtaine de
+        lignes par appel, qui noieraient la sortie de la suite."""
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            return paquet.main(argv)
+
+    def test_l_arch_de_l_hote_passe(self):
+        """Contre-épreuve : le garde-fou ne doit pas bloquer le cas normal."""
+        for arch in paquet.ARCHS:
+            with self.subTest(arch=arch):
+                self._poser_hote(arch)
+                paquet.exiger_arch_native(arch)   # ne lève pas
+
+    def test_une_autre_arch_est_refusee(self):
+        self._poser_hote("amd64")
+        with self.assertRaises(paquet.ErreurPaquet) as ctx:
+            paquet.exiger_arch_native("arm64")
+        message = str(ctx.exception)
+        # Le message doit dire quoi FAIRE, pas seulement que c'est refusé : c'est
+        # tout ce que l'ancien avertissement ne disait pas.
+        self.assertIn("arm64", message)
+        self.assertIn("amd64", message)
+        self.assertIn("--sauter-python", message)
+
+    def test_preparer_python_refuse_avant_de_telecharger(self):
+        """La règle vit dans la fonction qui la subit, pas seulement dans `main`.
+
+        Un futur appelant (script d'automatisation, test) qui court-circuiterait la
+        ligne de commande buterait sur le même `WinError 216`. Et le refus doit
+        précéder le téléchargement : sinon un build croisé coûte 11 Mo et deux
+        minutes avant d'échouer.
+        """
+        appels = []
+        ancien = paquet._telecharger
+        paquet._telecharger = lambda *a, **k: appels.append(a) or Path("x")
+        self.addCleanup(setattr, paquet, "_telecharger", ancien)
+        self._poser_hote("amd64")
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(paquet.ErreurPaquet):
+                paquet.preparer_python(Path(tmp) / "python", None, None,
+                                       journal=lambda *_: None, arch="arm64")
+        self.assertEqual(appels, [])
+
+    def test_main_refuse_sans_construire_le_frontend(self):
+        appels = []
+        ancien = paquet.construire_frontend
+        paquet.construire_frontend = lambda *a, **k: appels.append(a)
+        self.addCleanup(setattr, paquet, "construire_frontend", ancien)
+        self._poser_hote("amd64")
+        with tempfile.TemporaryDirectory() as tmp:
+            code = self._main_muet(["--destinataire", "sandr", "--arch", "arm64",
+                                    "--sortie", tmp])
+        self.assertEqual(code, 1)
+        self.assertEqual(appels, [], "npm run build lancé avant le refus")
+
+    def test_sauter_python_est_la_derogation(self):
+        """`--sauter-python` n'exécute jamais l'interpréteur cible : rien ne casse.
+
+        C'est la seule façon d'éprouver l'assemblage d'un paquet ARM64 depuis x64 —
+        et l'archive obtenue n'a pas de `python/`, donc n'est pas livrable. Le test
+        vérifie les deux : que ça passe, et que le runtime est bien absent.
+        """
+        self._poser_hote("amd64")
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp) / "dist"
+            dist.mkdir()
+            (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+            ancien = paquet.construire_frontend
+            paquet.construire_frontend = lambda *a, **k: dist
+            self.addCleanup(setattr, paquet, "construire_frontend", ancien)
+            sortie = Path(tmp) / "sortie"
+            code = self._main_muet(["--destinataire", "sandr", "--arch", "arm64",
+                                    "--sauter-python", "--sortie", str(sortie)])
+            self.assertEqual(code, 0)
+            archive = sortie / "epure-sandr.zip"
+            self.assertTrue(archive.is_file())
+            with zipfile.ZipFile(archive) as z:
+                noms = z.namelist()
+            self.assertFalse([n for n in noms if n.startswith("python/")],
+                             "un runtime a été assemblé sans preparer_python")
+            with zipfile.ZipFile(archive) as z:
+                manifeste = json.loads(z.read("PAQUET.json").decode("utf-8"))
+            self.assertEqual(manifeste["arch"], "arm64")
+            self.assertIs(manifeste["voix"], False)
 
 
 class PurgeSitePackagesTest(unittest.TestCase):
