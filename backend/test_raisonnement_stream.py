@@ -50,6 +50,11 @@ os.environ.setdefault("EPURE_CORS_ORIGINS", "http://localhost:5173")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import ollama  # noqa: E402
+from openai.types.chat import ChatCompletionChunk  # noqa: E402
+from openai.types.chat.chat_completion_chunk import (  # noqa: E402
+    Choice as ChoiceOai, ChoiceDelta,
+)
+from openai.types.completion_usage import CompletionUsage  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402  — monte l'app entière ; cf. test_auth_surface.py
@@ -637,6 +642,160 @@ class ReglageDeSessionTest(unittest.TestCase):
         routeur_chat.memory._write(routeur_chat.memory._context_path, contexte)
         self.assertNotIn("raisonnement", routeur_chat.memory.get_context())
         self.assertIs(self._envoyer_et_lire_le_flag(), True)
+
+
+def _chunk_oai(content=None, reasoning=None, usage=None):
+    """Un chunk de streaming OpenAI-compatible, avec les VRAIES classes du SDK.
+
+    `ChoiceDelta` accepte les champs extra et les expose en attribut — vérifié,
+    pas supposé : c'est exactement le mécanisme par lequel `_stream_openai`
+    atteint `reasoning_content`, que le SDK ne modélise pas. Un double maison
+    validerait un accès que le vrai type pourrait refuser.
+
+    `usage` arrive dans un chunk à `choices` VIDE (`stream_options
+    include_usage`) : c'est le cas qui casse un `chunk.choices[0]` écrit sans
+    garde, d'où sa présence ici.
+    """
+    champs = {"role": "assistant", "content": content}
+    if reasoning is not None:
+        champs["reasoning_content"] = reasoning
+    delta = ChoiceDelta(**champs)
+    return ChatCompletionChunk(
+        id="chatcmpl-test", object="chat.completion.chunk", created=1787582789,
+        model="qwen3:4b",
+        choices=[] if usage is not None else [
+            ChoiceOai(index=0, delta=delta, finish_reason=None)],
+        usage=usage,
+    )
+
+
+class RaisonnementFlmTest(unittest.TestCase):
+    """Le `reasoning_content` de FastFlowLM ne doit plus être jeté.
+
+    **Deux mesures trop étroites ont précédé celle-ci, et c'est l'enseignement du
+    lot** : sondé sur `qwen3.5:4b` seul, FLM « ne séparait pas le raisonnement du
+    contenu » — vrai de ce modèle, faux de `qwen3:4b`, qui envoie bien un champ à
+    part. Un modèle sondé ne dit rien de la famille.
+
+    Ce qui a été mesuré avant d'écrire le code (FLM 0.9.43, `qwen3:4b`,
+    `think: true`, `max_tokens` = 2048 du `config.yaml`) :
+
+    * **le champ s'appelle `reasoning_content`**, pas `reasoning`. Lire le mauvais
+      nom aurait donné un flux vide sans la moindre erreur ;
+    * il est atteignable en attribut bien que non modélisé par le SDK ;
+    * **le premier chunk le porte VIDE** (`reasoning_content: ""`) — d'où un test
+      de vérité et non de présence ;
+    * séquence `raisonnement×1419 → contenu×290`, aucun chunk portant les deux,
+      aucun retour en arrière ;
+    * **premier contenu à 91,8 s**, premier raisonnement à 4,2 s : le silence
+      était plus long ici que sur Ollama (76 s), sur le chemin NPU censé être le
+      rapide. Après correction, premier affichage mesuré à 5,3 s.
+    """
+
+    def _sortie(self, provider, chunks):
+        """Rend la liste yieldée par `_stream_openai` sur ce flux."""
+
+        class _Completions:
+            def create(_self, **kw):
+                return iter(list(chunks))
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+        moteur = LLMEngine(config_path=_CONFIG)
+        return list(moteur._stream_openai(
+            [{"role": "user", "content": "17 x 23 ?"}], "qwen3:4b",
+            _Client(), provider, 300))
+
+    #: La forme mesurée : du raisonnement, puis du contenu, puis l'usage.
+    MESURE = [
+        _chunk_oai(reasoning=""),          # le 1er chunk réel, vide
+        _chunk_oai(reasoning="Okay, 17 x 23"),
+        _chunk_oai(reasoning=". Let me compute."),
+        _chunk_oai(content="17 x 23"),
+        _chunk_oai(content=" = 391."),
+        _chunk_oai(usage=CompletionUsage(prompt_tokens=28, completion_tokens=742,
+                                        total_tokens=770)),
+    ]
+
+    def test_le_raisonnement_flm_remonte(self):
+        sortie = self._sortie("flm", self.MESURE)
+        self.assertEqual(_raisonnements(sortie), ["Okay, 17 x 23", ". Let me compute."])
+        self.assertEqual("".join(_textes(sortie)), "17 x 23 = 391.")
+
+    def test_le_premier_chunk_vide_ne_produit_rien(self):
+        """`reasoning_content: ""` est le premier chunk RÉEL de FLM.
+
+        Yielder sur la présence de la clé — elle est là, à vide — enverrait une
+        sentinelle vide à chaque flux, donc un bloc « Raisonnement » qui s'ouvre
+        sur rien avant même que le modèle ait commencé.
+        """
+        sortie = self._sortie("flm", [_chunk_oai(reasoning=""), _chunk_oai(content="391")])
+        self.assertEqual(_raisonnements(sortie), [])
+        self.assertEqual(_textes(sortie), ["391"])
+
+    def test_l_ordre_est_respecte(self):
+        sortie = self._sortie("flm", self.MESURE)
+        genres = ["raisonnement" if isinstance(p, dict) and p.get("__reasoning__")
+                  else "stats" if isinstance(p, dict) else "texte"
+                  for p in sortie]
+        self.assertEqual(genres, ["raisonnement", "raisonnement", "texte", "texte", "stats"])
+
+    def test_un_chunk_portant_les_deux_rend_le_raisonnement_d_abord(self):
+        """Jamais observé (1419 + 290 chunks, zéro mixte), fixé quand même."""
+        sortie = self._sortie("flm", [_chunk_oai(content="391", reasoning="donc 391")])
+        self.assertEqual(sortie[0], {"__reasoning__": True, "content": "donc 391"})
+        self.assertEqual(sortie[1], "391")
+
+    def test_les_stats_survivent(self):
+        """Le chunk d'usage a `choices` VIDE.
+
+        La condition de contenu était `chunk.choices and chunk.choices[0].delta
+        and ….content` ; en la découpant pour insérer le raisonnement, oublier la
+        garde sur `choices` lèverait un IndexError sur ce chunk-là — le dernier du
+        flux, donc à chaque réponse.
+        """
+        sortie = self._sortie("flm", self.MESURE)
+        stats = [p for p in sortie if isinstance(p, dict) and p.get("__stats__")]
+        self.assertEqual(len(stats), 1)
+        self.assertEqual(stats[0]["output_tokens"], 742)
+        self.assertEqual(stats[0]["prompt_tokens"], 28)
+
+    def test_les_fournisseurs_cloud_ne_voient_pas_leur_raisonnement_remonter(self):
+        """La garde sur `provider`, et pourquoi elle est là.
+
+        `deepseek` publie un `reasoning_content` sur son modèle de raisonnement,
+        et le remonter serait probablement juste — mais « probablement » n'est pas
+        une mesure, et la vérifier veut dire appeler une API payante. Tant que
+        c'est le cas, un flux cloud qui porterait ce champ doit se comporter
+        exactement comme avant : le contenu, rien d'autre.
+
+        Vérifié aussi sur un vrai appel groq : 0,9 s, aucune sentinelle.
+        """
+        for provider in ("groq", "cerebras", "mistral", "nvidia", "deepseek", ""):
+            sortie = self._sortie(provider, self.MESURE)
+            self.assertEqual(_raisonnements(sortie), [], provider)
+            self.assertEqual("".join(_textes(sortie)), "17 x 23 = 391.", provider)
+
+    def test_un_flux_flm_sans_raisonnement_est_inchange(self):
+        """Bascule coupée, ou modèle qui ne pense pas : rien de neuf ne sort."""
+        sortie = self._sortie("flm", [
+            _chunk_oai(content="17 x 23"), _chunk_oai(content=" = 391"),
+            _chunk_oai(usage=CompletionUsage(prompt_tokens=1, completion_tokens=2,
+                                             total_tokens=3)),
+        ])
+        self.assertEqual(_raisonnements(sortie), [])
+        self.assertEqual(_textes(sortie), ["17 x 23", " = 391"])
+
+    def test_un_delta_absent_ne_leve_pas(self):
+        """Un chunk sans `choices` ET sans usage : ignoré, pas d'IndexError."""
+        vide = ChatCompletionChunk(id="x", object="chat.completion.chunk", created=1,
+                                   model="qwen3:4b", choices=[])
+        sortie = self._sortie("flm", [vide, _chunk_oai(content="391")])
+        self.assertEqual(_textes(sortie), ["391"])
 
 
 if __name__ == "__main__":

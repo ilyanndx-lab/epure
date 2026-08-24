@@ -424,12 +424,41 @@ class LLMEngine:
         été mesurée, et ``extra_body`` part vers une API distante qui pourrait
         refuser un champ inconnu. On ne devine pas sur du réseau facturé.
 
-        Ce que ce chemin ne fait toujours PAS, et c'est un manque connu : lire le
-        ``reasoning_content`` que FLM renvoie quand le raisonnement est actif. Il
-        arrive bien dans le delta (733 caractères mesurés, visibles via
-        ``delta.model_extra``) et il est jeté ici, comme Ollama le faisait avant
-        le 2026-08-24 — donc raisonnement actif sur FLM = ~16 s de silence. Non
-        traité dans ce lot, qui porte la bascule ; noté pour ne pas l'oublier.
+        **Le raisonnement de FLM est remonté depuis le 2026-08-24**, comme celui
+        d'Ollama et sous la même sentinelle ``__reasoning__`` — donc le même
+        ``{"type": "reasoning"}`` sur ``/ws/chat`` et le même bloc repliable, sans
+        une ligne de frontend à ajouter. Ce paragraphe disait le contraire la
+        veille (« non traité dans ce lot »), et disait aussi, l'avant-veille, que
+        FLM ne séparait pas le raisonnement du contenu : **c'était une mesure trop
+        étroite.** Vrai de ``qwen3.5:4b``, faux de ``qwen3:4b``, qui envoie bien
+        un champ à part. Un seul modèle sondé ne dit rien de la famille.
+
+        Ce qui a été mesuré avant d'écrire (FLM 0.9.43, ``qwen3:4b``,
+        ``think: true``, ``max_tokens`` = 2048 du ``config.yaml``) :
+
+        * **le nom exact du champ est ``reasoning_content``** — pas ``reasoning``.
+          Lire le mauvais aurait donné un flux vide sans la moindre erreur ;
+        * il est atteignable **en attribut** (``delta.reasoning_content``) bien
+          qu'il ne soit pas modélisé par le SDK : ``ChoiceDelta`` accepte les
+          champs extra et les expose. ``getattr(..., None)`` plutôt qu'un accès
+          direct, pour que la disparition de cette tolérance donne « pas de
+          raisonnement » et non une exception ;
+        * **le premier chunk le porte VIDE** (``reasoning_content: ""``), d'où le
+          test de vérité et non de présence — sinon une sentinelle vide part à
+          chaque flux ;
+        * séquence ``raisonnement×1419 → contenu×290``, aucun chunk portant les
+          deux, aucun retour en arrière — même forme qu'Ollama ;
+        * **premier contenu à 91,8 s**, premier raisonnement à 4,2 s. Le silence
+          était donc ici plus long que sur Ollama (76 s), sur le chemin NPU qui
+          est censé être le rapide.
+
+        **Réservé à ``flm``, délibérément.** Les autres fournisseurs
+        OpenAI-compatibles n'ont pas été mesurés — ``deepseek`` en particulier
+        publie un ``reasoning_content`` sur son modèle de raisonnement, et le
+        remonter serait probablement juste. Mais « probablement » n'est pas une
+        mesure, et la vérifier veut dire appeler une API **payante**. Lever la
+        garde quand ce sera mesuré tient en un mot : retirer le test sur
+        ``provider``. Le reste du code n'a pas à changer.
         """
         oai = [{"role": m["role"], "content": m["content"]} for m in messages]
         stream_start = time.time()
@@ -461,8 +490,21 @@ class LLMEngine:
 
         try:
             for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta is not None:
+                    if provider == "flm":
+                        # Champ extra, non modélisé par le SDK : `getattr` et non
+                        # `delta.reasoning_content`, pour que la fin de cette
+                        # tolérance rende None au lieu de lever. Test de VÉRITÉ et
+                        # non de présence — le premier chunk le porte vide.
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        if reasoning:
+                            # Avant le contenu du même chunk, comme sur le chemin
+                            # Ollama. Mesuré : aucun chunk ne porte les deux, mais
+                            # l'ordre correct ne coûte rien.
+                            yield {"__reasoning__": True, "content": reasoning}
+                    if delta.content:
+                        yield delta.content
                 if getattr(chunk, "usage", None):
                     prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
                     output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0

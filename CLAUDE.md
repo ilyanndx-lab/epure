@@ -445,10 +445,25 @@ mesuré) — donc toujours le passer, dans les deux sens ; et il passe par
 `extra_body`, le SDK `openai` levant sur un paramètre inconnu. Les fournisseurs
 cloud ne reçoivent rien : leur bascule n'a pas été mesurée.
 
-**Manque connu** : `_stream_openai` jette le `reasoning_content` que FLM renvoie
-quand le raisonnement est actif (733 caractères mesurés sur `qwen3:4b`, dans
-`delta.model_extra`) — donc raisonnement actif sur FLM = ~16 s de silence,
-exactement ce que le chemin Ollama ne fait plus.
+**Le raisonnement de FLM remonte aussi**, depuis le 2026-08-24 et sous la même
+sentinelle `__reasoning__` — donc le même `{"type": "reasoning"}` et le même bloc
+repliable, sans une ligne de frontend en plus. Le champ s'appelle
+**`reasoning_content`** (pas `reasoning`), il est atteignable en attribut bien que
+non modélisé par le SDK (`getattr`, jamais un accès direct), et **le premier chunk
+le porte VIDE** : tester la vérité, pas la présence. Mesuré : premier contenu à
+91,8 s avant, premier affichage à 5,3 s après — le silence était plus long ici
+que sur Ollama, sur le chemin NPU censé être le rapide.
+
+**Réservé à `flm`.** `deepseek` publie aussi un `reasoning_content` et le remonter
+serait probablement juste, mais ça n'a pas été mesuré — le vérifier veut dire
+appeler une API payante. Lever la garde tiendra en retirant le test sur
+`provider` ; rien d'autre à changer.
+
+**Ce que deux mesures trop étroites ont coûté**, et c'est l'enseignement à garder :
+sondé sur `qwen3.5:4b` seul, FLM « ne séparait pas le raisonnement du contenu ».
+Vrai de ce modèle, faux de `qwen3:4b`. **Un modèle sondé ne dit rien de la
+famille** — même piège que le §0 de `docs/remplacement-vectoriel.md` a été écrit
+pour éviter, rejoué sur les modèles au lieu des wheels.
 
 - SSE : `StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)`
   où `SSE_HEADERS` vient de `core.runtime` (`Cache-Control: no-cache`,
