@@ -8,12 +8,17 @@ from pathlib import Path
 from threading import Thread
 from typing import Optional
 
+from core.instance import modele_local_defaut
 from core.jsonstore import read_json, transaction, write_json
 from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
-_CLASSIFY_MODEL_GROQ = "groq:llama-3.1-8b-instant"
+# `_CLASSIFY_MODEL_GROQ = "groq:llama-3.1-8b-instant"` vivait ici : c'était le
+# modèle de `classify_task`, choisi dès qu'une clé Groq existait. Retiré le
+# 2026-08-24 avec son dernier appelant — la classification est locale (cf.
+# `_classify_model`). Une constante sans appelant ferait croire, à la relecture,
+# que ce chemin peut encore partir vers le cloud.
 
 _KEY_MAP = {
     "groq":     "GROQ_API_KEY",
@@ -230,8 +235,28 @@ class OrchestratorEngine:
         logger.debug("Résolution modèle: %r → %r", model_id, model_id)
         return model_id
 
-    def _classify_model(self) -> Optional[str]:
-        return _CLASSIFY_MODEL_GROQ if self._provider_ok("groq") else None
+    def _classify_model(self) -> str:
+        """Modèle de la classification du palier Adaptatif — **local**.
+
+        Il rendait `groq:llama-3.1-8b-instant` dès qu'une clé Groq existait, et
+        `classify_task` tourne AVANT CHAQUE MESSAGE en mode Adaptatif : c'était
+        donc un appel cloud automatique par message, que personne n'avait choisi
+        — le cas le plus net de la règle « pas de cloud sans choix explicite ».
+
+        Deux choses mesurées qui ont décidé du sens :
+
+        * la classification est un mot à rendre (`simple|moderate|complex`), avec
+          `num_predict` par défaut : un modèle local la produit sans peine ;
+        * `groq:llama-3.1-8b-instant` **répond 404 aujourd'hui** (retiré du
+          catalogue Groq, vérifié le 2026-08-24). Cette branche « cloud »
+          échouait donc déjà en silence, absorbée par le `except Exception` de
+          `classify_task` qui retombe sur `{"complexity": "simple"}` — c'est-à-dire
+          que le palier Adaptatif se comportait comme Direct sans le dire.
+
+        Rendre un `str` et non `Optional[str]` : `None` laissait `LLMEngine`
+        retomber sur `config.yaml`, ce qui court-circuitait le réglage.
+        """
+        return modele_local_defaut()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -261,8 +286,13 @@ class OrchestratorEngine:
         step_models: [{"role": "analyzer", "model": "groq:..."}]
         Returns list of steps ready for run_pipeline.
         """
-        active_model = ctx.get("modèle_actif") or self._llm._model
-        local_model = self._llm._model
+        # `active_model` reste le modèle du CHAT : c'est le sens de la valeur
+        # `"active"` d'un template de palier, et le palier est un choix explicite
+        # de l'utilisateur. Seul son REPLI change — il retombait sur config.yaml.
+        active_model = ctx.get("modèle_actif") or modele_local_defaut()
+        # `"local"` veut dire le modèle local de l'instance, donc le réglage, plus
+        # `config.yaml` que personne n'édite depuis l'interface.
+        local_model = modele_local_defaut()
         templates = EFFORT_PIPELINES.get(effort, [])
         model_map = {s["role"]: s["model"] for s in step_models}
 
@@ -319,7 +349,8 @@ class OrchestratorEngine:
 
         for i, step in enumerate(steps):
             t_start = time.time()
-            model = step.get("model") or self._llm._model
+            # Repli d'une étape sans modèle résolu : local, jamais config.yaml.
+            model = step.get("model") or modele_local_defaut()
             role = step.get("role", f"step{i + 1}")
             label = step.get("label", role)
 

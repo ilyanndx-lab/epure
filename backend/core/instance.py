@@ -25,7 +25,7 @@ from threading import RLock
 from typing import Any, Optional
 
 from core.jsonstore import read_json, transaction, write_json
-from core.paths import FICHES_DIR, resolve_data_dir
+from core.paths import BACKEND_DIR, FICHES_DIR, resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,15 @@ _KEY_TO_PROVIDER = {
     "NVIDIA_API_KEY": "nvidia",
     "DEEPSEEK_API_KEY": "deepseek",
 }
+
+#: Préfixes de fournisseurs DISTANTS. Dérivé de la table ci-dessus plutôt que
+#: réécrit : une clé ajoutée là-haut serait sinon absente ici, et un modèle de ce
+#: fournisseur passerait pour local dans les tâches de fond — exactement la fuite
+#: que ce garde-fou existe pour empêcher.
+#:
+#: `flm` en est ABSENT, et ce n'est pas un oubli : c'est le NPU de la machine, du
+#: local au même titre qu'Ollama.
+_FOURNISSEURS_CLOUD = frozenset(_KEY_TO_PROVIDER.values())
 
 _DEFAULT_LOCAL_MODEL = "qwen2.5:7b"
 
@@ -346,6 +355,117 @@ class InstanceConfig:
 
 # Singleton applicatif (créé une fois au démarrage).
 instance_config = InstanceConfig()
+
+
+# ── Modèle des tâches de fond ────────────────────────────────────────────────
+
+def est_modele_cloud(model_id: str) -> bool:
+    """``provider:modèle`` d'un fournisseur distant ?
+
+    Un nom Ollama contient un « : » lui aussi (``qwen2.5:7b``) : le préfixe doit
+    donc être comparé à la liste des fournisseurs, jamais déduit de la présence
+    du séparateur. ``flm`` compte comme LOCAL — c'est le NPU de la machine, pas
+    un service distant, et le confondre avec du cloud interdirait le seul moteur
+    local rapide de ce poste.
+
+    Jumeau de `core.orchestrator._is_cloud_model`, délibérément non partagé :
+    l'orchestrateur importe `core.llm`, et `core/instance.py` est importé par
+    presque tout le backend — y compris des scripts qui doivent rester légers.
+    Payer cet import pour six lignes recréerait le cycle qu'on évite.
+    """
+    if ":" not in model_id:
+        return False
+    return model_id.split(":", 1)[0] in _FOURNISSEURS_CLOUD
+
+
+def modele_local_defaut() -> str:
+    """Modèle des tâches qui ne sont PAS le tour de chat de l'utilisateur.
+
+    **La règle que cette fonction sert** : résumé, titrage, classification,
+    réflexion de l'agent de code, fiches — tout ce que l'utilisateur n'a pas
+    demandé nommément — tourne en local, et ne part vers le cloud que sur un
+    choix explicite pour cette tâche précise. Jamais en héritant du modèle actif
+    du chat, qui est un choix fait pour *répondre à un message*.
+
+    Pourquoi une fonction et pas cinq lectures : ``self._llm._model`` était lu en
+    dur à cinq endroits (`orchestrator.build_steps` ×2, `run_pipeline`,
+    `docanalysis` par ``model=None``, `history._generate_title`). Chacun retombait
+    donc sur ``config.yaml``, un fichier que l'utilisateur n'édite pas depuis
+    l'interface. Remplacer un défaut en dur par cinq lectures d'un réglage aurait
+    juste déplacé le problème.
+
+    Trois niveaux, dans cet ordre :
+
+    1. ``providers.local`` de la config d'instance — **le réglage**. Ce champ
+       existait déjà et n'était lu par personne ; il est utilisé plutôt que
+       créé, parce que deux champs pour une notion divergent mécaniquement
+       (CLAUDE.md §3.3, mesuré sur `modules_state.json`).
+    2. ``model.name`` de ``config.yaml`` — le comportement d'avant, donc aucune
+       instance ne change de modèle en installant cette version.
+    3. :data:`_DEFAULT_LOCAL_MODEL`, si le fichier est illisible.
+
+    **Un identifiant cloud dans ce réglage est REFUSÉ ici**, pas seulement à
+    l'écriture : un `providers.local` valant ``groq:…`` viderait la règle de son
+    sens tout en ayant l'air d'un réglage valide, et le vérifier au seul point
+    d'écriture laisserait passer un fichier édité à la main.
+    """
+    brut = ((instance_config.get().get("providers") or {}).get("local") or "").strip()
+    if brut and not est_modele_cloud(brut):
+        return brut
+    if brut:
+        logger.warning(
+            "providers.local vaut %r, un modèle cloud — ignoré pour les tâches de "
+            "fond, qui restent locales. Corrigez le réglage dans Réglages.", brut,
+        )
+    return _modele_config_yaml()
+
+
+def _modele_config_yaml() -> str:
+    """``model.name`` de ``config.yaml`` — le défaut d'avant ce réglage.
+
+    Lu ici et non pris sur ``LLMEngine._model`` : ce module ne doit pas importer
+    ``core.llm`` (cycle, et poids inutile pour les scripts légers). Le fichier est
+    relu à chaque appel, jamais mémorisé — même règle que `core.paths` : figer un
+    chemin ou une valeur de config à l'import est le piège que ce dépôt a déjà
+    payé plusieurs fois.
+    """
+    try:
+        import yaml
+        cfg = yaml.safe_load((BACKEND_DIR / "config.yaml").read_text(encoding="utf-8")) or {}
+        nom = ((cfg.get("model") or {}).get("name") or "").strip()
+        return nom or _DEFAULT_LOCAL_MODEL
+    except Exception:
+        logger.warning("config.yaml illisible — modèle local par défaut : %s",
+                       _DEFAULT_LOCAL_MODEL, exc_info=True)
+        return _DEFAULT_LOCAL_MODEL
+
+
+def modele_pour_tache(use_cloud: bool, modele_cloud: str, cle_env: str) -> Optional[str]:
+    """Le modèle d'une tâche de fond, selon un choix EXPLICITE de l'utilisateur.
+
+    Contrat unique de toutes les tâches de fond, copié de
+    ``consolidation._pick_model`` qui était le seul endroit à le tenir :
+
+    * ``use_cloud=False`` (le défaut partout) → :func:`modele_local_defaut`.
+      Jamais ``None``, et c'est une différence avec l'original : rendre ``None``
+      laissait ``LLMEngine`` retomber sur ``config.yaml``, donc court-circuitait
+      le réglage sans que le site d'appel le sache.
+    * ``use_cloud=True`` → ``modele_cloud``, **nommé pour la tâche**, et
+      seulement si sa clé est présente. Sinon repli local avec un avertissement :
+      une clé absente est un état prévu, pas une panne, et échouer serait pire
+      que répondre plus lentement.
+
+    Ce qui n'arrive JAMAIS ici : lire ``modèle_actif``. C'est tout le sujet — le
+    modèle du chat est un choix fait pour répondre à un message, pas un mandat
+    pour toutes les tâches de fond de la session.
+    """
+    if not use_cloud:
+        return modele_local_defaut()
+    if not os.environ.get(cle_env, "").strip():
+        logger.warning("%s absente — tâche de fond gardée en local (%s demandé)",
+                       cle_env, modele_cloud)
+        return modele_local_defaut()
+    return modele_cloud
 
 
 # ── Helpers fiches (remplacent _FICHES_DIR / config.yaml watch_folders) ───────

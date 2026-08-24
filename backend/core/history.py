@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from core.instance import modele_local_defaut
 from core.jsonstore import read_json, transaction, write_json
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,13 @@ class HistoryEngine:
             f"Extraits :\n{sample}"
         )
         try:
-            title = self._llm.generate([{"role": "user", "content": prompt}])
+            # Modèle LOCAL explicite. L'appel n'en passait aucun, donc `LLMEngine`
+            # retombait sur `config.yaml` — local, mais hors du réglage, donc
+            # impossible à changer depuis l'interface. Le titrage tourne après
+            # chaque conversation sans que personne ne le demande : c'est une
+            # tâche de fond au sens strict (CLAUDE.md §3.7).
+            title = self._llm.generate([{"role": "user", "content": prompt}],
+                                       model=modele_local_defaut())
             title = title.strip().strip('"').strip("'")[:80]
             return title or fallback
         except Exception:

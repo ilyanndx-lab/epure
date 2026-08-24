@@ -29,6 +29,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from core.instance import modele_local_defaut
 from core.runtime import flashcards_engine, llm, memory, rag
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,19 @@ def _construire_plan() -> dict:
 
     fiches = _fiches_disponibles()
     extraits = _extraits_rag(cibles)
-    model = memory.get_context().get("modèle_actif") or None
+    # Plan de révision : tâche de fond, donc LOCALE par défaut. Elle héritait de
+    # `modèle_actif`, ce qui envoyait le profil de révision (forces, lacunes,
+    # extraits de fiches) au fournisseur cloud choisi pour le chat.
+    # TOUJOURS LOCAL, sans option — et ce n'est pas un oubli de `use_cloud` :
+    # `GET /reviseur/plan` n'a pas de corps de requête, donc aucun endroit où
+    # l'utilisateur poserait ce choix. Même raisonnement que le résumé d'import :
+    # pas de choix possible, donc pas de cloud.
+    #
+    # Ce qu'il envoyait avant, en héritant de `modèle_actif` : le profil de
+    # révision — lacunes confirmées, forces, extraits de fiches — au fournisseur
+    # cloud choisi pour le chat. Des données d'apprentissage personnelles, pour
+    # une tâche que personne n'a demandé d'envoyer ailleurs.
+    model = modele_local_defaut()
 
     fallback = False
     try:

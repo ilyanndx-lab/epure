@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from core import catalogue as _catalogue
 from core.codeagent import SecurityError
 from core.embedding_install import declencher_installation, etat_installation
-from core.instance import fiches_root, instance_config
+from core.instance import fiches_root, instance_config, modele_local_defaut
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
 from core.rag import SUPPORTED_EXTENSIONS, RAGEngine
 from core.runtime import (
@@ -362,8 +362,19 @@ async def _stream_load_sse(paths: list[str]):
             "Indique les sujets principaux et les notions clés. Sois factuel.\n\n"
             f"Contenu :\n{combined}"
         )
-        ctx = memory.get_context()
-        model_override = ctx.get("modèle_actif") or None
+        # TOUJOURS LOCAL, et sans option cloud — décision explicite.
+        #
+        # Ce résumé n'est pas demandé : il part automatiquement à l'import d'un
+        # fichier, dans le même flux SSE que l'indexation. Il tombe donc
+        # directement sous la règle « pas de cloud sans choix explicite pour cette
+        # tâche précise » : il n'y a pas de choix à faire, donc pas de cloud, donc
+        # pas de paramètre `use_cloud` à offrir. Un drapeau ici serait une option
+        # que rien ne peut poser, sur le seul chemin où l'utilisateur n'a rien
+        # décidé.
+        #
+        # Ce qu'il envoyait avant : le CONTENU des fichiers qu'on vient d'importer,
+        # au fournisseur cloud actif dans le chat.
+        model_override = modele_local_defaut()
         queue: asyncio.Queue = asyncio.Queue()
 
         def _worker(msgs, q, lp, model):

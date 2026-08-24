@@ -22,6 +22,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from core.auth import ws_require_token
+from core.instance import modele_local_defaut
 from core.rag import RAGEngine
 from core.runtime import (
     SSE_HEADERS,
@@ -293,7 +294,18 @@ async def _stream_résumé_sse():
         "Indique les sujets principaux et les notions clés. Sois factuel.\n\n"
         f"Contenu :\n{combined}"
     )
-    model_override = ctx.get("modèle_actif") or None
+    # LOCAL, jamais le modèle du chat. Ce flux héritait de `ctx["modèle_actif"]`
+    # sans le moindre garde-fou : demander un résumé de ses fiches envoyait leur
+    # CONTENU (jusqu'à 12 000 caractères, cf. `combined` ci-dessus) au fournisseur
+    # cloud choisi pour discuter — sans que rien ne le dise, et sans qu'aucun
+    # `use_cloud` n'existe pour le refuser. C'était le site le plus exposé du lot.
+    #
+    # Pas de paramètre `use_cloud` ici, et c'est délibéré : `/skills/résumé` est
+    # déclenché par un bouton unique, sans écran de choix. Ajouter le drapeau sans
+    # interface pour le poser produirait une option que personne ne peut atteindre.
+    # Le jour où ce choix existe côté client, ce site prendra `modele_pour_tache`
+    # comme les autres.
+    model_override = modele_local_defaut()
     queue: asyncio.Queue = asyncio.Queue()
 
     def _worker(msgs, q, lp, model):

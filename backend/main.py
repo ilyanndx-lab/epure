@@ -43,7 +43,10 @@ from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core import module_workshop
-from core.instance import instance_config, fiches_root, fiches_watch_paths
+from core.instance import (
+    est_modele_cloud as _est_modele_cloud,
+    fiches_root, fiches_watch_paths, instance_config,
+)
 from core.memory import MemoryEngine
 from core.module_registry import (
     list_modules as _list_modules,
@@ -436,6 +439,22 @@ async def instance_config_put(request: Request):
     partial = await request.json()
     if not isinstance(partial, dict):
         raise HTTPException(status_code=400, detail="Corps JSON attendu (objet)")
+
+    # `providers.local` pilote TOUTES les tâches de fond (résumés, titrage,
+    # classification, réflexion de l'agent de code). Y écrire un identifiant
+    # cloud viderait la règle « pas de cloud sans choix explicite » de son sens,
+    # tout en ayant l'air d'un réglage valide — on refuse à la source plutôt que
+    # de le corriger en silence à la lecture (`modele_local_defaut` sait déjà
+    # l'ignorer, mais un réglage qu'on ignore est un réglage qui ment).
+    if isinstance(partial.get("providers"), dict):
+        local = (partial["providers"].get("local") or "").strip()
+        if local and _est_modele_cloud(local):
+            raise HTTPException(
+                status_code=400,
+                detail=(f"« {local} » est un modèle cloud. Le modèle des tâches de "
+                        "fond doit être local (Ollama, ou flm: pour le NPU) : ces "
+                        "tâches partent sans que vous les demandiez."),
+            )
 
     cfg = instance_config.update(partial)
 

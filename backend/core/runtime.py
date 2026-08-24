@@ -66,7 +66,7 @@ from core.embedding_install import (
 )
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
-from core.instance import fiches_watch_paths
+from core.instance import est_modele_cloud, fiches_watch_paths, modele_local_defaut
 from core.llm import LLMEngine
 from core.memory import MemoryEngine
 from core.models import ModelsRegistry
@@ -238,14 +238,31 @@ def provider_of(model: Optional[str]) -> str:
 
 
 def pick_reflection_model(preferred: Optional[str]) -> Optional[str]:
-    """Retourne un modèle cloud pour la réflexion, ou None si aucun disponible."""
-    if preferred and ":" in preferred and not preferred.startswith("ollama:"):
+    """Modèle de l'étape de réflexion de l'agent de code. **Local par défaut.**
+
+    Elle rendait un modèle CLOUD dès qu'une clé traînait dans l'environnement —
+    Gemini, sinon Groq — pour une étape qui part **automatiquement** avant chaque
+    demande de code jugée telle par `_is_code_request`. Personne ne l'avait
+    choisie : c'était le cas le plus net du lot avec `classify_task`.
+
+    Ce qui est conservé, et c'est le seul cas de cloud restant ici :
+    `preferred`, quand l'appelant a nommé un modèle distant. C'est un choix
+    explicite pour cette tâche — exactement ce que la règle autorise. En pratique
+    il vient du `pipeline.reflection.model` de l'écran Code, donc d'un réglage
+    visible.
+
+    Le repli n'est plus `None` : `None` désactivait l'étape entière côté
+    `CodeAgent.run_turn` (`if ref_enabled and eff_ref_model`). Sur une machine
+    sans aucune clé, la réflexion ne tournait donc **jamais** — une capacité
+    silencieusement absente, alors qu'un modèle local en est parfaitement capable.
+
+    À noter, mesuré le 2026-08-24 : `groq:llama-3.3-70b-versatile`, l'ancien repli
+    Groq, répond **404** (retiré du catalogue). Cette branche était donc morte en
+    plus d'être non choisie.
+    """
+    if preferred and est_modele_cloud(preferred):
         return preferred
-    if os.environ.get("GEMINI_API_KEY", "").strip():
-        return "gemini:gemini-2.0-flash"
-    if os.environ.get("GROQ_API_KEY", "").strip():
-        return "groq:llama-3.3-70b-versatile"
-    return None
+    return modele_local_defaut()
 
 
 # ── Surveillance des dossiers de fiches (config d'instance) ──────────────────

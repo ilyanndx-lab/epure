@@ -541,6 +541,30 @@ export default function Settings() {
     return [...seen.values()]
   })()
 
+  /**
+   * Modèles LOCAUX seuls — pour le sélecteur des tâches de fond.
+   *
+   * Un identifiant cloud y serait refusé par le backend (400 sur
+   * `PUT /instance/config`), donc l'offrir ne produirait qu'une erreur au clic.
+   * Le filtre reproduit `core/instance.py::est_modele_cloud` : le préfixe
+   * décide, jamais la présence d'un « : » — un nom Ollama en contient un
+   * (`qwen2.5:7b`), et `flm:` est local (c'est le NPU de la machine).
+   *
+   * Le modèle réglé est garanti présent même s'il ne figure plus dans /models :
+   * sinon le `<select>` afficherait la première option et ferait croire à un
+   * réglage qui n'est pas celui enregistré.
+   */
+  const localModelOptions: ModelOption[] = (() => {
+    const cloud = ['gemini', 'groq', 'cerebras', 'mistral', 'nvidia', 'deepseek']
+    const estCloud = (id: string) =>
+      id.includes(':') && cloud.includes(id.split(':')[0])
+    const seen = new Map<string, ModelOption>()
+    for (const m of modelOptions) if (!estCloud(m.id)) seen.set(m.id, m)
+    const local = config.providers.local
+    if (local && !seen.has(local)) seen.set(local, { id: local, nom: local, disponible: true })
+    return [...seen.values()]
+  })()
+
   if (!profile) {
     return (
       <main className="flex flex-col flex-1 overflow-hidden items-center justify-center">
@@ -709,6 +733,39 @@ export default function Settings() {
               </option>
             ))}
           </Select>
+          <p className="text-xs text-muted mt-1 leading-relaxed">
+            Le modèle qui répond à vos messages dans le chat.
+          </p>
+        </div>
+
+        {/* Modèle des tâches de fond — DISTINCT du modèle du chat, et c'est tout
+            le sujet. Avant, résumés, titres de conversation, fiches et plans de
+            révision partaient vers le modèle actif du chat : choisir un
+            fournisseur cloud pour discuter y envoyait aussi le CONTENU des cours,
+            sans que rien ne le dise. Ces tâches partent sans être demandées,
+            donc elles restent locales. */}
+        <div>
+          <label className="text-xs text-muted uppercase tracking-wide mb-1 flex items-center gap-1.5">
+            <Cpu size={12} /> Modèle des tâches automatiques
+          </label>
+          <Select
+            mono
+            value={config.providers.local}
+            onChange={e => void updateInstance({ providers: { local: e.target.value } })}
+            className="w-full"
+          >
+            {localModelOptions.map(m => (
+              <option key={m.id} value={m.id} disabled={!m.disponible}>
+                {m.nom}{m.disponible ? '' : ' — indisponible'}
+              </option>
+            ))}
+          </Select>
+          <p className="text-xs text-muted mt-1 leading-relaxed">
+            Résumés de documents, titres de conversation, fiches, plan de révision :
+            tout ce qui se lance tout seul. Ces tâches restent sur votre machine et
+            ne partent jamais vers un service en ligne, meme si le chat en utilise
+            un. Seuls les modèles locaux sont proposés.
+          </p>
         </div>
 
         {/* Dossiers de fiches */}

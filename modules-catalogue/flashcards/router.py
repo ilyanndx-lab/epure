@@ -14,8 +14,17 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from core.instance import modele_pour_tache
 from core.rag import RAGEngine
 from core.runtime import SSE_HEADERS, flashcards_engine, llm, memory
+
+#: Cible cloud de ce module, nommée POUR LA TÂCHE. Cf. `core/instance.py` :
+#: `use_cloud=True` ne veut pas dire « le modèle actif du chat », il veut dire
+#: « le modèle choisi pour cette tâche-ci ». Hériter du chat, c'était envoyer le
+#: contenu des cours au fournisseur sélectionné pour tout autre chose.
+_MODELE_CLOUD = "groq:openai/gpt-oss-120b"
+_CLE_CLOUD = "GROQ_API_KEY"
+
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,10 @@ class GenerateFlashcardsRequest(BaseModel):
     source: str
     nom: str
     n_cartes: Optional[int] = None
+    #: Autorise le cloud POUR CETTE génération. Défaut False : un client qui ne
+    #: connaît pas ce champ (interface pas à jour, appel direct) obtient du local,
+    #: jamais une fuite par omission.
+    use_cloud: bool = False
 
 
 class ReviewRequest(BaseModel):
@@ -76,8 +89,15 @@ async def _stream_flashcards_generate(req: GenerateFlashcardsRequest):
         '{"cartes": [{"question": "...", "réponse": "..."}, ...]}'
     )
 
-    ctx = memory.get_context()
-    model_override = ctx.get("modèle_actif") or None
+    # Génération de fiches : tâche de fond, donc LOCALE par défaut. Elle héritait
+    # de `modèle_actif`, ce qui envoyait 14 000 caractères de cours au fournisseur
+    # cloud choisi pour le chat, sans que rien ne le demande.
+    #
+    # `use_cloud` vient du client : ce module a un écran de génération, donc un
+    # endroit où l'utilisateur peut réellement poser le choix — contrairement au
+    # résumé d'import. Absent de la requête, il vaut False.
+    model_override = modele_pour_tache(
+        bool(getattr(req, "use_cloud", False)), _MODELE_CLOUD, _CLE_CLOUD)
     queue: asyncio.Queue = asyncio.Queue()
 
     def _worker(msgs, q, lp, model):

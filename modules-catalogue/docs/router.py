@@ -187,10 +187,20 @@ async def docanalysis_search(req: DocSearchRequest):
 
 @router.post("/docanalysis/deepen")
 async def docanalysis_deepen(req: DocDeepenRequest):
-    ctx = memory.get_context()
-    model = ctx.get("modèle_actif") if req.use_cloud else None
+    """Approfondir des extraits. Local sauf `use_cloud` explicite du client.
+
+    Le garde-fou existait déjà ici — `if req.use_cloud` — mais il choisissait le
+    mauvais modèle : `ctx["modèle_actif"]`, donc celui du CHAT. « Cloud » voulait
+    dire « le fournisseur que j'ai sélectionné pour discuter », pas un modèle
+    choisi pour résumer. Et la branche locale rendait `None`, ce qui laissait
+    `LLMEngine` retomber sur `config.yaml` au lieu du réglage.
+
+    Le moteur résout désormais lui-même (`DocAnalysisEngine._modele`) : ce routeur
+    ne transmet que l'INTENTION, ce qui est tout ce qu'un client a à dire.
+    """
     return StreamingResponse(
-        _stream_tokens_from_generator(docanalysis.summarize_section, req.chunks, req.query, model),
+        _stream_tokens_from_generator(docanalysis.summarize_section, req.chunks,
+                                      req.query, None, req.use_cloud),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -198,10 +208,10 @@ async def docanalysis_deepen(req: DocDeepenRequest):
 
 @router.post("/docanalysis/summarize")
 async def docanalysis_summarize(req: DocSummarizeRequest):
-    ctx = memory.get_context()
-    model = ctx.get("modèle_actif") if req.use_cloud else None
+    """Résumer un document. Même contrat que `/docanalysis/deepen` ci-dessus."""
     return StreamingResponse(
-        _stream_tokens_from_generator(docanalysis.summarize_document, req.doc_id, req.level, model),
+        _stream_tokens_from_generator(docanalysis.summarize_document, req.doc_id,
+                                      req.level, None, req.use_cloud),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

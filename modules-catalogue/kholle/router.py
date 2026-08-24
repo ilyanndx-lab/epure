@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from core.auth import ws_require_token
+from core.instance import modele_local_defaut, modele_pour_tache
 from core.rag import RAGEngine
 from core.runtime import (
     consolidation_engine,
@@ -24,6 +25,11 @@ from core.runtime import (
     provider_of as _provider_of,
     usage_tracker,
 )
+
+#: Cible cloud de ce module, nommee POUR LA TACHE (cf. `core/instance.py`) :
+#: `use_cloud=True` ne veut pas dire « le modele actif du chat ».
+_MODELE_CLOUD = "groq:openai/gpt-oss-120b"
+_CLE_CLOUD = "GROQ_API_KEY"
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +71,12 @@ def _generate_questions(source_files: list) -> list:
         "Réponds UNIQUEMENT avec un JSON valide, sans texte avant ou après :\n"
         '{"questions": ["question1", "question2", ..., "question10"]}'
     )
-    raw = llm.generate([{"role": "user", "content": prompt}])
+    # LOCAL. Aucun modele n'etait passe, donc `config.yaml` : local de fait, mais
+    # hors du reglage, donc impossible a changer depuis l'interface. Generer des
+    # questions a partir d'un cours est une tache de fond — l'utilisateur a clique
+    # sur « demarrer une kholle », pas choisi un modele pour cette etape.
+    raw = llm.generate([{"role": "user", "content": prompt}],
+                       model=modele_local_defaut())
     return _parse_questions_json(raw)
 
 
@@ -98,7 +109,10 @@ def _extract_errors(correction: str, question: str, answer: str) -> list:
             'Réponds UNIQUEMENT avec ce JSON valide : {"errors": ["erreur1", "erreur2"]}\n'
             'Si aucune erreur : {"errors": []}'
         )
-        raw = llm.generate([{"role": "user", "content": prompt}])
+        # LOCAL, meme raison que `_generate_questions` : analyse automatique
+        # apres la correction, jamais demandee explicitement.
+        raw = llm.generate([{"role": "user", "content": prompt}],
+                           model=modele_local_defaut())
         match = re.search(r'\{.*?\}', raw, re.DOTALL)
         if match:
             return json.loads(match.group()).get("errors", [])
@@ -158,8 +172,21 @@ async def ws_kholle(websocket: WebSocket):
                 question = questions[current_index]
                 answers.append(answer)
 
-                ctx = memory.get_context()
-                model_override = ctx.get("modèle_actif") or None
+                # LOCAL par defaut, cloud sur demande EXPLICITE du client.
+                #
+                # Ce site est le plus discutable des trois, et vaut d'etre lu : la
+                # correction repond a ce que l'eleve vient d'ecrire, donc elle
+                # ressemble a un tour de chat. Mais elle n'est pas *le* chat — le
+                # modele actif y a ete choisi pour discuter, et il partait ici
+                # avec la question, la reponse de l'eleve ET son contexte memoire
+                # (profil, lacunes) sans que personne ne l'ait demande.
+                #
+                # `use_cloud` dans le message WS plutot que rien : contrairement au
+                # resume d'import et au plan de revision, ce flux a un client qui
+                # envoie du JSON, donc un endroit ou le choix peut reellement se
+                # poser. Absent du message → local.
+                model_override = modele_pour_tache(
+                    bool(msg.get("use_cloud", False)), _MODELE_CLOUD, _CLE_CLOUD)
                 mem_ctx = await loop.run_in_executor(None, memory.build_system_context, question)
 
                 system_content = _KHOLLE_SYSTEM

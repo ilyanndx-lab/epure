@@ -6,6 +6,8 @@ from typing import Generator, Optional
 
 import pypdf
 
+from core.instance import modele_pour_tache
+
 logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 800
@@ -201,17 +203,46 @@ class DocAnalysisEngine:
 
     # ── Synthesis ─────────────────────────────────────────────────────────────
 
-    def summarize_section(self, chunks: list, query: Optional[str] = None, model: Optional[str] = None) -> Generator:
+    #: Modèle cloud des résumés, **nommé ici** et non hérité du chat. Le choix
+    #: reste celui de l'utilisateur (`use_cloud`), mais la CIBLE est décidée pour
+    #: la tâche : « résumer un document » et « répondre à mon message » n'ont
+    #: aucune raison de vouloir le même modèle, et hériter faisait partir un
+    #: résumé vers le fournisseur choisi pour tout autre chose.
+    _MODELE_CLOUD = "groq:openai/gpt-oss-120b"
+    _CLE_CLOUD = "GROQ_API_KEY"
+
+    def _modele(self, model: Optional[str], use_cloud: bool) -> str:
+        """Le modèle d'un résumé. Local sauf choix explicite — CLAUDE.md §3.7.
+
+        Trois cas, et le premier compte autant que les autres :
+
+        * ``model`` explicitement fourni → il gagne. C'est un appelant qui a
+          nommé un modèle pour CETTE tâche, ce que la règle autorise.
+        * sinon ``use_cloud=True`` → :data:`_MODELE_CLOUD`, si sa clé est là.
+        * sinon → le modèle local de l'instance.
+
+        Ce qui a changé : ``model=None`` laissait ``LLMEngine`` retomber sur
+        ``config.yaml``, un fichier que l'utilisateur n'édite pas depuis
+        l'interface. Le réglage était donc contournable sans le savoir.
+        """
+        if model:
+            return model
+        return modele_pour_tache(use_cloud, self._MODELE_CLOUD, self._CLE_CLOUD)
+
+    def summarize_section(self, chunks: list, query: Optional[str] = None,
+                          model: Optional[str] = None, use_cloud: bool = False) -> Generator:
         combined = "\n\n---\n\n".join(chunks)
         if query:
             prompt = f"À partir de ces extraits, réponds précisément : {query}\n\nExtraits :\n{combined}"
         else:
             prompt = f"Résume ces extraits de façon concise et structurée :\n{combined}"
-        for token in self._llm.stream([{"role": "user", "content": prompt}], model=model, max_tokens=2048):
+        modele = self._modele(model, use_cloud)
+        for token in self._llm.stream([{"role": "user", "content": prompt}], model=modele, max_tokens=2048):
             if isinstance(token, str):
                 yield token
 
-    def summarize_document(self, doc_id: str, level: str = "short", model: Optional[str] = None) -> Generator:
+    def summarize_document(self, doc_id: str, level: str = "short",
+                           model: Optional[str] = None, use_cloud: bool = False) -> Generator:
         try:
             result = self._col.get(
                 where={"doc_id": doc_id},
@@ -230,6 +261,12 @@ class DocAnalysisEngine:
         all_chunks = [d for _, d in pairs]
         total = len(all_chunks)
 
+        # Résolu UNE fois pour tout le résumé : `level="full"` enchaîne un appel
+        # par lot de 10 chunks puis un appel de synthèse. Résoudre à chaque appel
+        # relirait le réglage en cours de route, et un changement à mi-parcours
+        # ferait basculer de moteur au milieu d'un même résumé.
+        modele = self._modele(model, use_cloud)
+
         if level == "full":
             batch_size = 10
             batch_summaries: list[str] = []
@@ -237,7 +274,7 @@ class DocAnalysisEngine:
                 batch_text = "\n\n---\n\n".join(all_chunks[b : b + batch_size])
                 prompt = f"Résume ce passage de façon concise :\n{batch_text}"
                 summary = ""
-                for token in self._llm.stream([{"role": "user", "content": prompt}], model=model, max_tokens=512):
+                for token in self._llm.stream([{"role": "user", "content": prompt}], model=modele, max_tokens=512):
                     if isinstance(token, str):
                         summary += token
                 batch_summaries.append(summary)
@@ -247,7 +284,7 @@ class DocAnalysisEngine:
                 "structuré avec des titres de sections :\n\n"
                 + "\n\n---\n\n".join(batch_summaries)
             )
-            for token in self._llm.stream([{"role": "user", "content": final_prompt}], model=model, max_tokens=2048):
+            for token in self._llm.stream([{"role": "user", "content": final_prompt}], model=modele, max_tokens=2048):
                 if isinstance(token, str):
                     yield token
 
@@ -267,7 +304,7 @@ class DocAnalysisEngine:
                     "Résume ce document de façon structurée avec des sections clairement délimitées "
                     "et les notions clés :\n\n" + combined
                 )
-            for token in self._llm.stream([{"role": "user", "content": prompt}], model=model, max_tokens=2048):
+            for token in self._llm.stream([{"role": "user", "content": prompt}], model=modele, max_tokens=2048):
                 if isinstance(token, str):
                     yield token
 
