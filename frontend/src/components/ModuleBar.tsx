@@ -256,6 +256,10 @@ export default function ModuleBar({
 
   // Skills state
   const [strictMode, setStrictMode] = useState(false)
+  // Raisonnement du modèle. Défaut `true` = comportement historique, et défaut
+  // optimiste assumé : si `/context` ne répond pas, on n'éteint pas une capacité
+  // qu'on n'a pas pu lire.
+  const [raisonnement, setRaisonnement] = useState(true)
   const [sessionInstruction, setSessionInstruction] = useState('')
   const [instructionDraft, setInstructionDraft] = useState('')
 
@@ -356,6 +360,10 @@ export default function ModuleBar({
           setSelectedFiles(files)
         }
         setStrictMode((d['strict_mode'] as boolean) ?? false)
+        // `?? true` et non `?? false` : la clé est absente des
+        // `context_session.json` écrits avant ce réglage, et son absence doit
+        // valoir « activé », pas « désactivé ».
+        setRaisonnement((d['raisonnement'] as boolean) ?? true)
         const instr = (d['session_instruction'] as string) ?? ''
         setSessionInstruction(instr)
         setInstructionDraft(instr)
@@ -413,6 +421,12 @@ export default function ModuleBar({
     setStrictMode(next)
     pushSettings({ strict_mode: next })
   }, [strictMode, pushSettings])
+
+  const handleRaisonnementToggle = useCallback(() => {
+    const next = !raisonnement
+    setRaisonnement(next)
+    pushSettings({ raisonnement: next })
+  }, [raisonnement, pushSettings])
 
   const handleInstructionSave = useCallback(() => {
     setSessionInstruction(instructionDraft)
@@ -784,6 +798,29 @@ export default function ModuleBar({
             </div>
           </div>
 
+          {/* Le raisonnement a sa propre ligne, avec une phrase — pas un
+              interrupteur de plus dans la rangée ci-dessus. Deux raisons : c'est
+              le seul réglage d'ici qui change le TEMPS DE RÉPONSE (mesuré : 78 s
+              contre 4 s sur la même question), et « raisonnement » ne veut rien
+              dire pour quelqu'un qui n'a jamais lu ce qu'un modèle produit avant
+              de répondre. Un libellé nu se cocherait au hasard. */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <Toggle checked={raisonnement} onChange={handleRaisonnementToggle}
+                      label="Réflexion du modèle" />
+              <span className="text-xs text-secondary">réflexion du modèle</span>
+            </div>
+            <p className="text-xs text-muted leading-relaxed">
+              {raisonnement
+                ? 'Le modèle réfléchit avant de répondre : les réponses sont plus '
+                  + 'sûres sur les questions difficiles, mais arrivent beaucoup plus '
+                  + "tard. Sa réflexion s'affiche pendant l'attente."
+                : 'Le modèle répond directement, sans réfléchir à voix haute : '
+                  + 'beaucoup plus rapide, mais moins fiable sur un calcul ou un '
+                  + 'raisonnement en plusieurs étapes.'}
+            </p>
+          </div>
+
           <div className="space-y-1.5">
             <p className="text-xs text-muted uppercase tracking-wide">Préfixes @</p>
             {/* AT_COMMANDS et non une copie : cette liste était dupliquée du
@@ -1026,7 +1063,13 @@ export default function ModuleBar({
             className={`p-2 rounded-sm transition-colors duration-150 ${
               activePanel === 'skills'
                 ? 'bg-accent/10 text-accent'
-                : strictMode || ttsEnabled || sessionInstruction
+                /* `!raisonnement` et non `raisonnement` : la pastille signale un
+                   réglage HORS DÉFAUT, et le défaut est « activé ». Sans ça,
+                   quelqu'un qui a coupé la réflexion trois jours plus tôt n'a
+                   aucun moyen de se rappeler pourquoi ses réponses ne réfléchissent
+                   plus — c'est le réglage le plus visible à l'usage et le plus
+                   facile à oublier d'avoir posé. */
+                : strictMode || ttsEnabled || sessionInstruction || !raisonnement
                 ? 'text-accent2 hover:bg-elevated'
                 : 'text-muted hover:text-secondary hover:bg-elevated'
             }`}>

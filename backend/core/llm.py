@@ -152,17 +152,35 @@ class LLMEngine:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
-    def stream(self, messages: list[dict], model: Optional[str] = None, max_tokens: Optional[int] = None) -> Generator:
+    def stream(self, messages: list[dict], model: Optional[str] = None,
+               max_tokens: Optional[int] = None, raisonnement: bool = True) -> Generator:
+        """Flux de génération. ``raisonnement=False`` coupe la réflexion du modèle.
+
+        **Le défaut est ``True``, et c'est le comportement historique** : les
+        modèles qui pensent pensent, ceux qui ne pensent pas ne changent pas.
+        Les onze autres appelants de cette méthode (résumés de documents, agent de
+        code, Atelier…) n'ont donc rien à passer et rien à voir changer.
+
+        **Asymétrie imposée par la mesure, pas par le goût** — cf.
+        :meth:`_stream_ollama` : couper se dit ``think=False``, mais *allumer* ne
+        se dit PAS ``think=True``, qui fait répondre 400 à Ollama sur un modèle
+        sans capacité de raisonnement. « Allumer » veut donc dire « ne rien
+        passer ». Le paramètre de cette méthode est booléen quand même : c'est aux
+        chemins de flux de traduire, pas à leurs appelants de connaître ce piège.
+        """
         m = model or self._model
         provider, model_id = self._parse_model(m)
         mt = max_tokens or self._gen["max_tokens"]
         if provider == "gemini":
+            # Pas de bascule ici : `google-generativeai` n'expose rien
+            # d'équivalent sur ce chemin, et rien n'a été mesuré. Ne pas inventer.
             yield from self._stream_gemini(messages, m, mt)
         elif provider in _OPENAI_COMPAT:
             client = self._openai_client(provider)  # raises if key missing
-            yield from self._stream_openai(messages, model_id, client, provider, mt)
+            yield from self._stream_openai(messages, model_id, client, provider, mt,
+                                          raisonnement=raisonnement)
         else:
-            yield from self._stream_ollama(messages, m, mt)
+            yield from self._stream_ollama(messages, m, mt, raisonnement=raisonnement)
 
     def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
         m = model or self._model
@@ -179,7 +197,8 @@ class LLMEngine:
 
     # ── Ollama ───────────────────────────────────────────────────────────────
 
-    def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None) -> Generator:
+    def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None,
+                       raisonnement: bool = True) -> Generator:
         """Flux Ollama : texte (``str``), raisonnement et stats (dicts sentinelles).
 
         **Le raisonnement arrive dans un champ SÉPARÉ, et il était jeté.** Mesuré
@@ -218,16 +237,40 @@ class LLMEngine:
         supplémentaire ne peut pas se retrouver concaténée à du texte par
         accident. Le seul qui ne filtrait pas — ``_stream_résumé_sse`` — sérialisait
         déjà ``__stats__`` comme un token ; il est corrigé dans le même lot.
+
+        **``raisonnement=False`` → ``think=False``. Mais l'inverse n'est PAS
+        ``think=True``, et cette asymétrie est mesurée, pas prudentielle :**
+
+        ============================  ==========================================
+        appel sur ``qwen2.5:7b``      résultat
+        ============================  ==========================================
+        aucun argument ``think``      200, 4 chunks, ``391``
+        ``think=False``               200, 4 chunks, ``391`` — ignoré proprement
+        ``think=True``                **400** ``"qwen2.5:7b" does not support
+                                      thinking``
+        ============================  ==========================================
+
+        Vérifié aussi sur ``qwen2.5-coder:7b`` : même 400. Donc un réglage
+        « raisonnement activé » qui poserait ``think=True`` casserait le chat sur
+        le modèle par défaut de ``config.yaml``, et sur tous les modèles non
+        pensants — un réglage censé n'ajouter qu'un affichage. « Activé » veut
+        dire **ne rien passer**, ce qui est exactement l'état d'avant ce
+        paramètre. ``think=False``, lui, est sûr partout : mesuré ignoré sur les
+        deux modèles sans raisonnement, et il évite les ~570 tokens que le modèle
+        produirait pour rien.
         """
-        for chunk in ollama_client.chat(
-            model=model, messages=messages, stream=True,
-            options={
+        appel: dict = {
+            "model": model, "messages": messages, "stream": True,
+            "options": {
                 "temperature": self._gen["temperature"],
                 "top_p": self._gen["top_p"],
                 "num_predict": max_tokens or self._gen["max_tokens"],
                 "num_thread": 8,
             },
-        ):
+        }
+        if not raisonnement:
+            appel["think"] = False
+        for chunk in ollama_client.chat(**appel):
             message = chunk["message"]
             # `.get()` et non `message["thinking"]` : `Message` est un
             # `SubscriptableBaseModel` d'Ollama, dont l'indexation d'une clé
@@ -343,7 +386,51 @@ class LLMEngine:
 
     # ── OpenAI-compatible providers ──────────────────────────────────────────
 
-    def _stream_openai(self, messages: list[dict], model_id: str, client, provider: str = "", max_tokens: Optional[int] = None) -> Generator:
+    def _stream_openai(self, messages: list[dict], model_id: str, client, provider: str = "",
+                       max_tokens: Optional[int] = None, raisonnement: bool = True) -> Generator:
+        """Flux OpenAI-compatible. ``raisonnement`` n'agit que sur ``flm``.
+
+        **FastFlowLM (le NPU) a une bascule, et elle ne marche pas comme celle
+        d'Ollama.** Mesuré sur ce poste (FLM 0.9.43, ``qwen3:4b``, dont
+        ``GET /api/ps`` annonce ``think_toggleable: true``) :
+
+        ==========================  ======  =============  ====================
+        corps de requête            durée   raisonnement   contenu
+        ==========================  ======  =============  ====================
+        ``think: true``              20 s   733 car.       ``17 x 23 = 391.``
+        ``think: false``              4 s   aucun          ``17 x 23 = 391``
+        ==========================  ======  =============  ====================
+
+        Trois différences avec Ollama, toutes vérifiées :
+
+        1. **``think=True`` est SÛR ici.** Sur ``lfm2:1.2b``
+           (``think: false, think_toggleable: false`` dans ``/api/ps``), les deux
+           valeurs répondent 200 en 2,8 s et le flag est ignoré. Pas de 400,
+           contrairement à Ollama — donc pas besoin de l'asymétrie du chemin
+           Ollama.
+        2. **Le flag doit être passé À CHAQUE APPEL, dans les deux sens.** Son
+           absence n'est pas « valeur par défaut du modèle » mais **« garde la
+           valeur du dernier appel »** : séquence mesurée —
+           ``think=false`` → 4 s ; ``rien`` → 4 s ; ``think=true`` → 18,5 s ;
+           ``rien`` → 27 s avec raisonnement. L'état est collant côté serveur.
+           Ne poser le flag que pour couper laisserait donc le chat en mode
+           non-pensant après le premier envoi, sans que rien ne l'explique.
+        3. **``extra_body`` et non un kwarg.** Le SDK ``openai`` lève sur un
+           paramètre inconnu ; ``extra_body`` le fusionne dans le corps JSON.
+           Vérifié à travers le SDK, pas seulement en HTTP brut.
+
+        Les autres fournisseurs OpenAI-compatibles (groq, cerebras, mistral,
+        nvidia, deepseek) ne reçoivent **rien de nouveau** : leur bascule n'a pas
+        été mesurée, et ``extra_body`` part vers une API distante qui pourrait
+        refuser un champ inconnu. On ne devine pas sur du réseau facturé.
+
+        Ce que ce chemin ne fait toujours PAS, et c'est un manque connu : lire le
+        ``reasoning_content`` que FLM renvoie quand le raisonnement est actif. Il
+        arrive bien dans le delta (733 caractères mesurés, visibles via
+        ``delta.model_extra``) et il est jeté ici, comme Ollama le faisait avant
+        le 2026-08-24 — donc raisonnement actif sur FLM = ~16 s de silence. Non
+        traité dans ce lot, qui porte la bascule ; noté pour ne pas l'oublier.
+        """
         oai = [{"role": m["role"], "content": m["content"]} for m in messages]
         stream_start = time.time()
         prompt_tokens = 0
@@ -355,6 +442,8 @@ class LLMEngine:
                 model=model_id, messages=oai, stream=True,
                 temperature=self._gen["temperature"], max_tokens=mt,
             )
+            if provider == "flm":
+                kwargs["extra_body"] = {"think": bool(raisonnement)}
             if with_usage:
                 kwargs["stream_options"] = {"include_usage": True}
             return client.chat.completions.create(**kwargs)

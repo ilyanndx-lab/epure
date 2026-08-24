@@ -312,7 +312,8 @@ async def context_get():
 @router.patch("/context/settings")
 async def context_settings(request: Request):
     body = await request.json()
-    allowed = {"modèle_actif", "strict_mode", "session_instruction", "consolidation_cloud", "orchestrateur_actif"}
+    allowed = {"modèle_actif", "strict_mode", "session_instruction", "consolidation_cloud",
+               "orchestrateur_actif", "raisonnement"}
     filtered = {k: v for k, v in body.items() if k in allowed}
     memory.update_context(**filtered)
     return {"ok": True}

@@ -29,6 +29,12 @@ _CONTEXT_DEFAULT = {
     "modèle_actif": "qwen2.5:7b",
     "strict_mode": False,
     "session_instruction": "",
+    # Raisonnement du modele affiche/produit. `True` = comportement historique :
+    # les modeles qui pensent pensent. Toujours lu par `.get("raisonnement", True)`
+    # et jamais par indexation directe — un `context_session.json` deja sur le
+    # disque n'a pas cette cle, et `get_context` rend le fichier tel quel sans
+    # fusionner ce defaut.
+    "raisonnement": True,
 }
 
 # Le cache LRU des sections retenues (clé : `message[:100]`) a disparu avec

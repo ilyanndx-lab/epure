@@ -428,6 +428,28 @@ Côté WebSocket de chat, le raisonnement a son propre type — `{"type": "reaso
 `accumulated`, donc pas dans `history`, donc pas dans le prompt du tour suivant :
 c'est ce que `test_raisonnement_stream.py` vérifie explicitement.
 
+**Bascule `raisonnement`** — `stream(..., raisonnement: bool = True)`, réglage de
+session (`memory` → clé `raisonnement`, `PATCH /context/settings`, toggle dans le
+panneau Compétences). Le défaut `True` est le comportement historique, donc les
+onze autres appelants n'ont rien à passer. Les deux moteurs locaux **ne se
+pilotent pas de la même façon**, et c'est mesuré, pas déduit :
+
+| | désactiver | activer |
+|---|---|---|
+| **Ollama** | `think=False` — ignoré proprement par un modèle sans raisonnement | **ne rien passer.** `think=True` → **400** `"qwen2.5:7b" does not support thinking`, y compris sur le modèle par défaut de `config.yaml` |
+| **FLM** (`/v1`) | `extra_body={"think": False}` | `extra_body={"think": True}` — toléré même par `lfm2:1.2b`, qui ne pense pas |
+
+Deux pièges propres à FLM : **omettre le flag ne veut pas dire « défaut du
+modèle » mais « garder la valeur du dernier appel »** (état collant côté serveur,
+mesuré) — donc toujours le passer, dans les deux sens ; et il passe par
+`extra_body`, le SDK `openai` levant sur un paramètre inconnu. Les fournisseurs
+cloud ne reçoivent rien : leur bascule n'a pas été mesurée.
+
+**Manque connu** : `_stream_openai` jette le `reasoning_content` que FLM renvoie
+quand le raisonnement est actif (733 caractères mesurés sur `qwen3:4b`, dans
+`delta.model_extra`) — donc raisonnement actif sur FLM = ~16 s de silence,
+exactement ce que le chemin Ollama ne fait plus.
+
 - SSE : `StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)`
   où `SSE_HEADERS` vient de `core.runtime` (`Cache-Control: no-cache`,
   `X-Accel-Buffering: no` — indispensable derrière nginx).

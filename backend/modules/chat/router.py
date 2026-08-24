@@ -365,6 +365,13 @@ async def ws_chat(websocket: WebSocket):
             ctx = memory.get_context()
             active_files = ctx.get("fichiers_actifs", [])
             model_override = ctx.get("modèle_actif") or None
+            # Réglage de session, comme `strict_mode` : lu ici plutôt que reçu
+            # dans le message. Le client n'a donc rien à envoyer, et le réglage
+            # vaut pour tous les chemins de ce tour (direct ET pipeline).
+            # `.get(..., True)` : un `context_session.json` déjà sur le disque
+            # n'a pas la clé, et son absence doit valoir « activé » — le
+            # comportement d'avant ce réglage.
+            raisonnement = bool(ctx.get("raisonnement", True))
             _last_model[0] = model_override or llm._model
 
             _req_start = time.time()
@@ -474,7 +481,9 @@ async def ws_chat(websocket: WebSocket):
                         "steps": [{"role": s["role"], "label": s.get("label", s["role"]), "model": s["model"]} for s in _pipeline],
                     }))
                     _final = ""
-                    async for _event in orchestrator.run_pipeline(_pipeline, user_text, messages, loop):
+                    async for _event in orchestrator.run_pipeline(
+                            _pipeline, user_text, messages, loop,
+                            raisonnement=raisonnement):
                         if _event.get("type") == "pipeline_done":
                             _final = _event.get("final_output", "")
                         await websocket.send_text(json.dumps(_event))
@@ -490,7 +499,7 @@ async def ws_chat(websocket: WebSocket):
 
             def _stream(msgs, q, lp, model):
                 try:
-                    for token in llm.stream(msgs, model=model):
+                    for token in llm.stream(msgs, model=model, raisonnement=raisonnement):
                         asyncio.run_coroutine_threadsafe(q.put(token), lp)
                 except Exception as exc:
                     logger.exception("Erreur streaming chat")

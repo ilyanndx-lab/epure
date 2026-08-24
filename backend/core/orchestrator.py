@@ -283,8 +283,15 @@ class OrchestratorEngine:
             })
         return steps
 
-    async def run_pipeline(self, steps: list[dict], message: str, messages: list[dict], loop):
-        """AsyncGenerator yielding pipeline events."""
+    async def run_pipeline(self, steps: list[dict], message: str, messages: list[dict], loop,
+                           raisonnement: bool = True):
+        """AsyncGenerator yielding pipeline events.
+
+        ``raisonnement`` est transmis tel quel à chaque étape : un réglage qui
+        s'appliquerait au chat direct mais pas au mode « effort » serait
+        incompréhensible, alors que c'est justement le mode le plus lent. Le
+        défaut ``True`` garde le comportement d'avant pour tout autre appelant.
+        """
         import asyncio
 
         system_msgs = [m for m in messages if m.get("role") == "system"]
@@ -354,7 +361,8 @@ class OrchestratorEngine:
 
             def _run(msgs, q, lp, mdl, mt=step_max_tokens, _role=role):
                 try:
-                    for token in self._llm.stream(msgs, model=mdl, max_tokens=mt):
+                    for token in self._llm.stream(msgs, model=mdl, max_tokens=mt,
+                                                  raisonnement=raisonnement):
                         asyncio.run_coroutine_threadsafe(q.put(token), lp)
                 except Exception:
                     logger.exception("Erreur pipeline step %s (model=%s)", _role, mdl)

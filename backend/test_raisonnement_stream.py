@@ -85,7 +85,7 @@ def _chunk(content="", thinking=None, done=False):
     )
 
 
-def _rejouer(chunks):
+def _rejouer(chunks, **stream_kwargs):
     """Remplace `ollama_client.chat` et rend (yields, kwargs de l'appel)."""
     appels = {}
 
@@ -98,7 +98,7 @@ def _rejouer(chunks):
     try:
         moteur = LLMEngine(config_path=_CONFIG)
         sortie = list(moteur.stream([{"role": "user", "content": "17 x 23 ?"}],
-                                    model="qwen3:8b"))
+                                    model="qwen3:8b", **stream_kwargs))
     finally:
         module_llm.ollama_client.chat = original
     return sortie, appels
@@ -253,7 +253,7 @@ class ProtocoleWebSocketTest(unittest.TestCase):
         routeur_chat.llm.stream = self._stream_original
 
     def _poser_flux(self, pieces):
-        def faux_stream(messages, model=None, max_tokens=None):
+        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True):
             self.prompts.append([dict(m) for m in messages])
             return iter(list(pieces))
         # Remplace la méthode sur le singleton partagé de `core.runtime` — le
@@ -369,7 +369,7 @@ class ResumeSseTest(unittest.TestCase):
         shutil.rmtree(self._dossier, ignore_errors=True)
 
     def test_seul_le_texte_part_en_token(self):
-        def faux_stream(messages, model=None, max_tokens=None):
+        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True):
             return iter([
                 {"__reasoning__": True, "content": "je réfléchis"},
                 "Résumé.",
@@ -387,6 +387,256 @@ class ResumeSseTest(unittest.TestCase):
         # Ni le raisonnement, ni les stats, ni un « [object Object] » en devenir.
         self.assertNotIn("__stats__", reponse.text)
         self.assertNotIn("__reasoning__", reponse.text)
+
+
+class BasculeOllamaTest(unittest.TestCase):
+    """La bascule `raisonnement` — et son asymétrie, qui est mesurée.
+
+    Ce qui a été mesuré sur ce poste, et qui dicte la forme du paramètre :
+
+    ============================  ======================================
+    appel sur `qwen2.5:7b`        résultat
+    ============================  ======================================
+    aucun argument `think`        200, 4 chunks, `391`
+    `think=False`                 200, 4 chunks, `391` — ignoré proprement
+    `think=True`                  **400** `"qwen2.5:7b" does not support
+                                  thinking`
+    ============================  ======================================
+
+    Même 400 sur `qwen2.5-coder:7b`. Donc « activé » ne peut PAS vouloir dire
+    `think=True` : ça casserait le chat sur le modèle par défaut de
+    `config.yaml`. « Activé » veut dire « ne rien passer », ce qui est exactement
+    l'état d'avant ce réglage.
+    """
+
+    def test_desactive_pose_think_false(self):
+        _, appels = _rejouer([_chunk(content="391"), _chunk(done=True)],
+                             raisonnement=False)
+        self.assertIs(appels["think"], False)
+
+    def test_active_ne_pose_aucun_think(self):
+        """L'invariant qui protège les modèles sans raisonnement.
+
+        Poser `think=True` ici ferait répondre 400 à Ollama sur `qwen2.5:7b` —
+        mesuré, pas supposé. Ce test échoue si quelqu'un « complète » la symétrie.
+        """
+        _, appels = _rejouer([_chunk(content="391"), _chunk(done=True)],
+                             raisonnement=True)
+        self.assertNotIn("think", appels)
+
+    def test_le_defaut_est_active_et_identique_a_avant(self):
+        """Sans argument : exactement l'appel d'avant l'existence du paramètre.
+
+        C'est ce qui garantit que les onze autres appelants de `stream()`
+        (résumés de documents, agent de code, Atelier, pipeline) ne voient rien
+        changer.
+        """
+        _, appels = _rejouer([_chunk(content="391"), _chunk(done=True)])
+        self.assertNotIn("think", appels)
+        self.assertEqual(appels["options"]["num_thread"], 8)
+        self.assertTrue(appels["stream"])
+
+    def test_desactive_ne_touche_pas_les_options_historiques(self):
+        """La bascule ajoute une clé, elle n'en modifie aucune."""
+        _, avec = _rejouer([_chunk(content="391"), _chunk(done=True)],
+                           raisonnement=False)
+        _, sans = _rejouer([_chunk(content="391"), _chunk(done=True)])
+        self.assertEqual(avec["options"], sans["options"])
+        self.assertEqual(avec["model"], sans["model"])
+        self.assertEqual(set(avec) - set(sans), {"think"})
+
+    def test_un_modele_sans_raisonnement_traverse_les_deux_valeurs(self):
+        """Le flux d'un modèle sans raisonnement est le même dans les deux sens.
+
+        Mesuré : `think=False` est ignoré par `qwen2.5:7b`, qui rend ses 4 chunks
+        habituels. Le générateur ne doit donc rien inventer non plus — ni
+        sentinelle de raisonnement, ni texte modifié.
+        """
+        mesure = [_chunk(content="3"), _chunk(content="9"), _chunk(content="1"),
+                  _chunk(done=True)]
+        for valeur in (True, False):
+            sortie, _ = _rejouer(mesure, raisonnement=valeur)
+            self.assertEqual(_textes(sortie), ["3", "9", "1"], "raisonnement=%s" % valeur)
+            self.assertEqual(_raisonnements(sortie), [], "raisonnement=%s" % valeur)
+
+
+class BasculeFlmTest(unittest.TestCase):
+    """FastFlowLM : la bascule existe, elle ne marche PAS comme celle d'Ollama.
+
+    **Ce qui a été cherché puis mesuré**, la consigne étant « ne suppose pas que
+    ça marche comme Ollama » :
+
+    * la CLI `flm --help` n'expose AUCUNE option de raisonnement (vérifié : ni
+      `--think`, ni `--no-think`, rien dans les 20 options listées) ;
+    * `fastflowlm.com/docs/models/qwen` dit « Type `/think` to toggle on/off
+      interactively » et, en mode serveur, « Set the `"think"` flag in the request
+      payload » — **sans dire sur quel endpoint, ni donner un seul exemple de
+      corps**. La page OpenAI-compat, elle, ne liste aucun paramètre de
+      raisonnement ;
+    * donc mesuré sur le serveur réel (FLM 0.9.43, `qwen3:4b`, dont
+      `GET /api/ps` annonce `think_toggleable: true`) :
+
+      ==========================  ======  =============  ==================
+      corps de requête            durée   raisonnement   contenu
+      ==========================  ======  =============  ==================
+      `think: true`                20 s   733 car.       `17 x 23 = 391.`
+      `think: false`                4 s   aucun          `17 x 23 = 391`
+      ==========================  ======  =============  ==================
+
+    Trois écarts avec Ollama, tous vérifiés, et chacun change le code :
+
+    1. **`think=True` est SÛR sur FLM.** `lfm2:1.2b` (`think: false`,
+       `think_toggleable: false` dans `/api/ps`) répond 200 en 2,8 s avec les
+       deux valeurs, le flag ignoré. Pas de 400 — l'asymétrie du chemin Ollama
+       n'a donc pas lieu d'être ici, et la reproduire aurait rendu la bascule à
+       moitié muette.
+    2. **Le flag est COLLANT quand on l'omet.** Séquence mesurée :
+       `think=false` → 4 s ; *rien* → 4 s ; `think=true` → 18,5 s ; *rien* →
+       27 s avec raisonnement. Son absence ne veut pas dire « défaut du modèle »
+       mais « garde la valeur du dernier appel ». D'où : toujours le passer, dans
+       les deux sens.
+    3. **`extra_body` et non un kwarg** : le SDK `openai` lève sur un paramètre
+       inconnu. Vérifié à travers le SDK, pas seulement en HTTP brut.
+
+    Ce que ces tests NE prouvent pas : que FLM honore le flag. Ça, seule la
+    mesure ci-dessus le dit — ici on vérifie que le corps de requête part avec la
+    bonne valeur, ce qu'aucune relecture ne garantit puisque `extra_body` est
+    fusionné silencieusement par le SDK.
+    """
+
+    def _capturer(self, provider, model_id, **kwargs):
+        """Rend le kwargs passé à `client.chat.completions.create`."""
+        vus = {}
+
+        class _Completions:
+            def create(_self, **kw):
+                vus.update(kw)
+                return iter([])
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+        moteur = LLMEngine(config_path=_CONFIG)
+        list(moteur._stream_openai([{"role": "user", "content": "17 x 23 ?"}],
+                                   model_id, _Client(), provider, 300, **kwargs))
+        return vus
+
+    def test_flm_recoit_le_flag_dans_les_deux_sens(self):
+        """Les deux valeurs partent explicitement — cf. point 2 du docstring.
+
+        Ne poser le flag que pour couper laisserait le serveur en mode
+        non-pensant pour tous les appels suivants, mesuré.
+        """
+        self.assertEqual(self._capturer("flm", "qwen3:4b", raisonnement=False)["extra_body"],
+                         {"think": False})
+        self.assertEqual(self._capturer("flm", "qwen3:4b", raisonnement=True)["extra_body"],
+                         {"think": True})
+
+    def test_flm_passe_par_extra_body_et_non_par_un_kwarg(self):
+        """`create(think=...)` lèverait : le SDK refuse les paramètres inconnus."""
+        vus = self._capturer("flm", "qwen3:4b", raisonnement=False)
+        self.assertNotIn("think", vus)
+        self.assertIn("extra_body", vus)
+
+    def test_les_fournisseurs_cloud_ne_recoivent_rien_de_neuf(self):
+        """Aucun `extra_body` vers groq/cerebras/mistral/nvidia/deepseek.
+
+        Leur bascule n'a pas été mesurée, et `extra_body` part vers une API
+        distante qui peut refuser un champ inconnu. On ne devine pas sur du
+        réseau facturé — et un 400 chez un fournisseur cloud se lirait comme une
+        clé invalide, pas comme ce paramètre.
+        """
+        for provider in ("groq", "cerebras", "mistral", "nvidia", "deepseek"):
+            for valeur in (True, False):
+                vus = self._capturer(provider, "un-modele", raisonnement=valeur)
+                self.assertNotIn("extra_body", vus, "%s / %s" % (provider, valeur))
+
+    def test_le_defaut_flm_est_le_raisonnement_actif(self):
+        """Sans argument : `think=True`, donc le comportement d'avant.
+
+        Nuance propre à FLM : « avant », c'était l'absence de flag, donc la valeur
+        collante du dernier appel. Poser `True` explicitement est un CHANGEMENT
+        assumé — il rend le comportement déterministe au lieu de dépendre de ce
+        qui s'est passé avant, y compris depuis un autre écran.
+        """
+        self.assertEqual(self._capturer("flm", "qwen3:4b")["extra_body"], {"think": True})
+
+
+class ReglageDeSessionTest(unittest.TestCase):
+    """Le réglage lui-même : liste blanche, persistance, et effet sur le chat."""
+
+    def setUp(self):
+        self.client = TestClient(main.app, base_url="http://localhost",
+                                 client=("127.0.0.1", 54321))
+        self.token = get_api_token()
+        self.entetes = {"Authorization": "Bearer " + self.token}
+        self._avant = routeur_chat.memory.get_context().get("raisonnement", True)
+        self._stream_original = routeur_chat.llm.stream
+
+    def tearDown(self):
+        routeur_chat.memory.update_context(raisonnement=self._avant)
+        routeur_chat.llm.stream = self._stream_original
+
+    def test_la_cle_est_acceptee_par_l_endpoint_de_reglages(self):
+        """`PATCH /context/settings` a une liste blanche : sans l'entrée, le
+        réglage serait ignoré en silence et le toggle reviendrait tout seul à sa
+        position d'avant au rechargement suivant.
+        """
+        r = self.client.patch("/context/settings", headers=self.entetes,
+                              json={"raisonnement": False})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIs(routeur_chat.memory.get_context()["raisonnement"], False)
+        self.assertIs(self.client.get("/context", headers=self.entetes)
+                      .json()["raisonnement"], False)
+
+    def test_une_cle_inconnue_reste_refusee(self):
+        """La liste blanche s'est élargie d'une entrée, pas ouverte."""
+        self.client.patch("/context/settings", headers=self.entetes,
+                          json={"nimporte_quoi": 1})
+        self.assertNotIn("nimporte_quoi", routeur_chat.memory.get_context())
+
+    def _envoyer_et_lire_le_flag(self):
+        """Envoie un message par le WS et rend la valeur de `raisonnement` reçue."""
+        recu = {}
+
+        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True):
+            recu["raisonnement"] = raisonnement
+            return iter(["ok"])
+
+        routeur_chat.llm.stream = faux_stream
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            ws.send_text(json.dumps({"role": "user", "content": "test", "direct": True}))
+            while json.loads(ws.receive_text())["type"] != "done":
+                pass
+        return recu.get("raisonnement")
+
+    def test_le_reglage_atteint_le_flux_du_chat(self):
+        """Le bout du fil : la valeur du contexte de session arrive jusqu'à
+        `llm.stream`. Sans ce test, le toggle pourrait être purement décoratif —
+        il écrirait un JSON que personne ne lit.
+        """
+        routeur_chat.memory.update_context(raisonnement=False)
+        self.assertIs(self._envoyer_et_lire_le_flag(), False)
+        routeur_chat.memory.update_context(raisonnement=True)
+        self.assertIs(self._envoyer_et_lire_le_flag(), True)
+
+    def test_une_cle_absente_vaut_active(self):
+        """Un `context_session.json` écrit avant ce réglage n'a pas la clé.
+
+        `get_context` rend le fichier tel quel sans fusionner les défauts : lire
+        par indexation lèverait, et lire avec un défaut `False` couperait la
+        réflexion chez tous ceux qui ont déjà un fichier sur le disque, sans que
+        rien ne l'explique.
+        """
+        contexte = routeur_chat.memory.get_context()
+        contexte.pop("raisonnement", None)
+        # Réécrit le fichier SANS la clé, comme un fichier d'avant ce réglage.
+        routeur_chat.memory._write(routeur_chat.memory._context_path, contexte)
+        self.assertNotIn("raisonnement", routeur_chat.memory.get_context())
+        self.assertIs(self._envoyer_et_lire_le_flag(), True)
 
 
 if __name__ == "__main__":
