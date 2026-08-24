@@ -319,6 +319,18 @@ async def _stream_résumé_sse():
         if isinstance(item, dict) and "error" in item:
             yield f"data: {json.dumps({'type': 'error', 'content': item['error']})}\n\n"
             return
+        if not isinstance(item, str):
+            # Sentinelles du générateur (`__stats__`, `__reasoning__`) : ce flux-ci
+            # ne sert qu'à afficher un résumé, il n'a rien à en faire.
+            #
+            # Bug PRÉEXISTANT, pas une précaution ajoutée pour le raisonnement :
+            # `__stats__` existe depuis longtemps et était sérialisé tel quel en
+            # `{"type": "token", "content": {"__stats__": true, …}}`. Le
+            # consommateur fait `last.content + ev.content`, donc un
+            # « [object Object] » se collait à la fin de chaque résumé, avec
+            # n'importe quel modèle. Le raisonnement n'aurait fait qu'en ajouter
+            # un second, plus gros.
+            continue
         yield f"data: {json.dumps({'type': 'token', 'content': item}, ensure_ascii=False)}\n\n"
 
 
@@ -501,6 +513,23 @@ async def ws_chat(websocket: WebSocket):
                         json.dumps({"type": "error", "content": item["error"]})
                     )
                     break
+                if isinstance(item, dict) and item.get("__reasoning__"):
+                    # Raisonnement du modèle, canal distinct du contenu final.
+                    # `{"type": "reasoning"}` suit la forme de `{"type": "token"}`
+                    # juste en dessous plutôt qu'un format à part : le frontend a
+                    # déjà un aiguillage sur `data.type`, et un second format
+                    # aurait demandé un second aiguillage pour la même chose.
+                    #
+                    # N'entre PAS dans `accumulated`, et c'est le point : c'est
+                    # `accumulated` qui part dans `history` puis dans le prompt du
+                    # tour suivant. Y verser le raisonnement le ferait relire par
+                    # le modèle comme s'il l'avait dit à l'utilisateur, et
+                    # gonflerait le contexte de plusieurs centaines de tokens par
+                    # tour (584 générés pour 14 caractères de réponse, mesuré).
+                    await websocket.send_text(json.dumps({
+                        "type": "reasoning", "content": item["content"],
+                    }, ensure_ascii=False))
+                    continue
                 if isinstance(item, dict) and "__stats__" in item:
                     usage_tracker.track(
                         _provider_of(_last_model[0]),

@@ -78,6 +78,7 @@ python test_installeur.py         # installeur du paquet : mise à jour sans per
 python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/* mort (§8)
 python test_models_cloud_sans_cle.py # un fournisseur sans clé ne rend aucun modèle
 python test_embedding_install.py  # installation à la demande de torch + sentence-transformers (§3.4)
+python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté (§8)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
 python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
@@ -413,6 +414,20 @@ Référence correcte : `codeagent._safe_path`, couverte par `test_safe_path.py`.
 
 ### 3.6 SSE et WebSocket
 
+**Ce que `LLMEngine.stream()` yielde** : du `str` pour le texte, et des **dicts
+sentinelles** pour le reste — `{"__stats__": True, …}` (tokens et durées) et
+`{"__reasoning__": True, "content": …}` (raisonnement du modèle, Ollama seul).
+**IMPÉRATIF : tout consommateur filtre par `isinstance(item, str)` avant de
+concaténer.** Les douze sites d'appel le font ; le seul qui ne le faisait pas
+(`_stream_résumé_sse`) sérialisait `__stats__` comme un token depuis toujours, ce
+qui collait un « [object Object] » à la fin de chaque résumé. Une sentinelle de
+plus ne doit pas pouvoir se retrouver dans du texte.
+
+Côté WebSocket de chat, le raisonnement a son propre type — `{"type": "reasoning",
+"content": …}`, même forme que `{"type": "token", …}`. Il **n'entre pas** dans
+`accumulated`, donc pas dans `history`, donc pas dans le prompt du tour suivant :
+c'est ce que `test_raisonnement_stream.py` vérifie explicitement.
+
 - SSE : `StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)`
   où `SSE_HEADERS` vient de `core.runtime` (`Cache-Control: no-cache`,
   `X-Accel-Buffering: no` — indispensable derrière nginx).
@@ -581,6 +596,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
 | La recherche documentaire répond **500 « ImportError »** dans un paquet livré | `sentence-transformers` n'y est pas installé (2 Go de torch) et rien ne l'installait — la promesse « s'installe au premier usage » était de la prose. Depuis le 2026-08-23, `VectorStore.__init__` appelle `exiger_pile()` : installation en tâche de fond, 503 avec état, `GET /rag/capabilities`. Ne pas remettre `pip` dans `PURGE_SITE_PACKAGES`, ne pas préchauffer le RAG sans la pile. Cf. §3.4 et `test_embedding_install.py`. |
 | `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répond 500 (`sentence-transformers` exclu, et le premier accès au moteur RAG l'importe) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
+| Un modèle à raisonnement (qwen3) reste **muet une minute** puis lâche trois mots | Le raisonnement arrive dans un champ **séparé** du flux Ollama (`chunk.message.thinking`), pas en balises `<think>`, et **sans qu'on le demande** — aucun argument `think` n'est passé. `_stream_ollama` ne lisait que `content` et faisait `if content: yield content` : un chunk de raisonnement a `content == ""`, donc rien n'était yieldé. Mesuré sur `qwen3:8b` : **584 tokens en 78 s, premier caractère visible à 76,5 s**, pour `17 x 23 = 391.` — et `num_predict` consommé de façon invisible. Corrigé le 2026-08-24 : sentinelle `__reasoning__` → `{"type": "reasoning"}` sur `/ws/chat` → bloc repliable dans le chat (premier affichage à 7,8 s, mesuré). Ne PAS passer `think=True` : inutile pour les modèles qui pensent, et ça modifierait l'appel pour ceux qui ne pensent pas. Côté FLM il n'y a rien à récupérer — mesuré sur `qwen3.5:4b` via `/v1/chat/completions`, le delta ne porte que `role`/`content`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---

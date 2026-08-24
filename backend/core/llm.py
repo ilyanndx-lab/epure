@@ -180,6 +180,45 @@ class LLMEngine:
     # ── Ollama ───────────────────────────────────────────────────────────────
 
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None) -> Generator:
+        """Flux Ollama : texte (``str``), raisonnement et stats (dicts sentinelles).
+
+        **Le raisonnement arrive dans un champ SÉPARÉ, et il était jeté.** Mesuré
+        sur ce dépôt (Ollama 0.32.15, client python 0.6.2, ``qwen3:8b``) : le
+        schéma réel de ``chunk.message`` est
+        ``role, content, thinking, images, tool_name, tool_calls``, et sur une
+        question d'arithmétique **298 chunks sur 299 portaient un ``thinking``
+        non vide avec un ``content`` VIDE**. Aucune balise ``<think>`` à parser —
+        Ollama sépare lui-même, et il le fait **sans qu'on le demande** : aucun
+        argument ``think`` n'est passé ci-dessous, et le raisonnement arrive
+        quand même. C'est pour ça qu'il n'y en a pas : le demander ne changerait
+        rien pour les modèles qui pensent, et modifierait l'appel pour ceux qui
+        ne pensent pas (``qwen2.5:7b`` : ``thinking: null``, 4 chunks), qui
+        doivent rester strictement inchangés.
+
+        L'ancien code lisait ``chunk["message"]["content"]`` et faisait
+        ``if content: yield content``. Un chunk de raisonnement a
+        ``content == ""``, donc falsy, donc **rien n'était yieldé** : le
+        raisonnement était jeté ici, chunk par chunk, avant que quoi que ce soit
+        en aval puisse le voir. Coût mesuré sur le chemin réel
+        (``LLMEngine.stream``, ``max_tokens=2048``) : **584 tokens générés en
+        78 s, premier caractère visible à 76,5 s**, pour ``17 x 23 = 391.`` —
+        14 caractères. 76 secondes de silence total dans le chat, et le budget
+        ``num_predict`` consommé de façon invisible.
+
+        La forme du yield suit la convention déjà en place dans ce générateur —
+        du ``str`` pour le texte, un dict sentinelle pour le reste (``__stats__``
+        existait déjà). Le nom ``__reasoning__`` n'est pas choisi ici : un
+        commentaire de ``modules/settings/router.py`` le nommait **avant** que ce
+        code existe, en anticipation. Autant tenir la promesse qui était écrite.
+
+        **Tous les consommateurs de ``stream()`` filtrent déjà par
+        ``isinstance(item, str)``** avant de concaténer (vérifié un par un :
+        ``codeagent`` ×4, ``docanalysis`` ×4, ``module_workshop``,
+        ``orchestrator``, les deux du chat, ``settings``), donc cette sentinelle
+        supplémentaire ne peut pas se retrouver concaténée à du texte par
+        accident. Le seul qui ne filtrait pas — ``_stream_résumé_sse`` — sérialisait
+        déjà ``__stats__`` comme un token ; il est corrigé dans le même lot.
+        """
         for chunk in ollama_client.chat(
             model=model, messages=messages, stream=True,
             options={
@@ -189,7 +228,19 @@ class LLMEngine:
                 "num_thread": 8,
             },
         ):
-            content = chunk["message"]["content"]
+            message = chunk["message"]
+            # `.get()` et non `message["thinking"]` : `Message` est un
+            # `SubscriptableBaseModel` d'Ollama, dont l'indexation d'une clé
+            # absente lève. Vérifié plutôt que supposé — `get()` existe bien et
+            # rend `None` sur un modèle qui ne pense pas.
+            reasoning = message.get("thinking")
+            if reasoning:
+                # Avant le contenu du même chunk : mesuré, aucun chunk ne porte
+                # les deux à la fois (3 formes de prompt sur qwen3:8b, séquence
+                # toujours `thinking×N → content×N`), mais l'ordre correct ne
+                # coûte rien et vaut mieux qu'une hypothèse.
+                yield {"__reasoning__": True, "content": reasoning}
+            content = message["content"]
             if content:
                 yield content
             try:

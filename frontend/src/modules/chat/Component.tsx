@@ -44,6 +44,17 @@ interface Message {
   stats?: MsgStats
   isError?: boolean
   thinking?: ThinkingBlock
+  /**
+   * Raisonnement du modele (Ollama : champ `thinking` du flux), distinct du
+   * contenu final. Ne pas confondre avec `thinking` juste au-dessus, qui est le
+   * deroule des ETAPES DU PIPELINE de l'orchestrateur — deux notions differentes
+   * qui s'affichent toutes deux en bloc repliable, d'ou le nom francais pour
+   * celle-ci plutot qu'un second `thinking` desambigue par un prefixe.
+   *
+   * Jamais envoye au modele au tour suivant : le backend ne met que le contenu
+   * dans `history` (cf. modules/chat/router.py).
+   */
+  raisonnement?: string
 }
 
 interface ChatProps {
@@ -68,6 +79,60 @@ function fmtDuration(ms: number): string {
   const m = Math.floor(s / 60)
   const rem = Math.round(s % 60)
   return `${m}m${rem}s`
+}
+
+/**
+ * Raisonnement du modèle, en bloc repliable, pendant qu'il arrive.
+ *
+ * Pourquoi ça existe : sur `qwen3:8b`, mesuré sur le chemin réel, une question
+ * d'arithmétique produisait **584 tokens en 78 s dont le premier caractère
+ * visible à 76,5 s** — le raisonnement était reçu chunk par chunk et jeté dans
+ * `core/llm.py`, donc le chat restait muet pendant 76 secondes avant de lâcher
+ * 14 caractères. Ce bloc rend ces 76 secondes lisibles ; il ne rend pas la
+ * réponse plus rapide.
+ *
+ * Volontairement PAS `ThinkingBlockView` : celui-là déroule les étapes du
+ * pipeline de l'orchestrateur (une liste, avec statuts, modèles et stats par
+ * étape). Ici c'est un seul flux de texte. Le langage visuel est le même
+ * (`Card accent="secondary"`, icône `Brain`, chevron) parce que c'est la même
+ * idée pour l'utilisateur ; la structure ne l'est pas.
+ *
+ * `max-h-52 overflow-y-auto` : le raisonnement fait couramment plusieurs
+ * milliers de caractères — sans plafond, il pousse la réponse hors de l'écran
+ * au moment précis où elle arrive.
+ */
+function RaisonnementView({ texte, enCours, collapsed, onToggle }: {
+  texte: string
+  enCours: boolean
+  collapsed: boolean
+  onToggle: () => void
+}) {
+  return (
+    <Card accent="secondary" padded={false} className="mb-2 overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-elevated transition-colors duration-150"
+      >
+        <span className="text-xs text-secondary flex items-center gap-2">
+          <Brain size={14} className={`text-accent2 shrink-0 ${enCours ? 'animate-pulse' : ''}`} />
+          <span>{enCours ? 'Raisonnement...' : 'Raisonnement'}</span>
+        </span>
+        <ChevronDown
+          size={14}
+          className={`text-muted shrink-0 transition-transform duration-150 ${collapsed ? '' : 'rotate-180'}`}
+        />
+      </button>
+
+      {!collapsed && (
+        <div className="border-t border-line px-3 py-2">
+          <p className="text-xs text-muted leading-relaxed whitespace-pre-wrap break-words m-0 max-h-52 overflow-y-auto">
+            {texte}
+            {enCours && <span className="animate-pulse text-accent2">▍</span>}
+          </p>
+        </div>
+      )}
+    </Card>
+  )
 }
 
 function ThinkingBlockView({ thinking, collapsed, onToggle }: {
@@ -161,6 +226,16 @@ export default function Chat({
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
   const [streamStats, setStreamStats] = useState<{ tps: number; count: number } | null>(null)
   const [collapsedThinking, setCollapsedThinking] = useState<Record<number, boolean>>({})
+  /**
+   * Repli du bloc de raisonnement, par index de message — et seulement quand
+   * l'utilisateur a TRANCHÉ lui-même.
+   *
+   * Une entrée absente veut dire « automatique » : ouvert tant que le contenu
+   * final n'a pas commencé, refermé dès qu'il commence (cf. le rendu). C'est
+   * pour ça que le défaut n'est pas `false` — sinon il faudrait un `useEffect`
+   * qui referme, qui écraserait le clic de quelqu'un en train de lire.
+   */
+  const [collapsedRaisonnement, setCollapsedRaisonnement] = useState<Record<number, boolean>>({})
 
   // Recherche web : active = force une recherche avant la réponse.
   // Mode 'once' = réinitialisé après chaque message (défaut, non handicapant) ;
@@ -303,6 +378,31 @@ export default function Chat({
           setCollapsedThinking(prev => {
             const idx = pipelineUserMsgIdxRef.current
             return idx >= 0 ? { ...prev, [idx]: true } : prev
+          })
+
+        } else if (data.type === 'reasoning' && !inPipelineRef.current) {
+          // Même aiguillage et même condition d'accumulation que `token` juste en
+          // dessous : le raisonnement se colle au message assistant en cours,
+          // celui-là même qui recevra ensuite le contenu. Les deux vivent donc
+          // sur UN message, ce qui est ce que l'utilisateur voit.
+          //
+          // Mesuré sur qwen3:8b (3 formes de prompt) : la séquence est toujours
+          // `thinking×N → content×N`, sans retour en arrière ni chunk portant les
+          // deux. Ce code ne s'appuie PAS là-dessus — trois prompts sur un modèle
+          // ne prouvent pas le cas général. Si du raisonnement revenait après du
+          // contenu, il s'ajouterait au même bloc (replié), sans rien perdre et
+          // sans réordonner la réponse.
+          //
+          // `lastAssistantRef` n'est PAS touché : il alimente la lecture à voix
+          // haute et `onAssistantDone`. Faire lire le raisonnement à voix haute
+          // serait absurde.
+          setMessages(prev => {
+            const last = prev[prev.length - 1]
+            if (last?.role === 'assistant' && !last.thinking) {
+              return [...prev.slice(0, -1),
+                      { ...last, raisonnement: (last.raisonnement ?? '') + data.content }]
+            }
+            return [...prev, { role: 'assistant', content: '', raisonnement: data.content }]
           })
 
         } else if (data.type === 'token' && !inPipelineRef.current) {
@@ -708,7 +808,30 @@ export default function Chat({
               ) : msg.isError ? (
                 <p className="text-xs text-error whitespace-pre-wrap">{msg.content}</p>
               ) : (
-                <RichMessage content={msg.content} streaming={streaming && i === messages.length - 1} />
+                <>
+                  {msg.raisonnement && (
+                    <RaisonnementView
+                      texte={msg.raisonnement}
+                      // « En cours » = le raisonnement coule encore, c'est-à-dire
+                      // qu'aucun contenu final n'a commencé sur ce message et
+                      // qu'on est bien sur le dernier, en streaming.
+                      enCours={streaming && i === messages.length - 1 && !msg.content}
+                      // Le repli AUTOMATIQUE : ouvert tant qu'il n'y a pas de
+                      // contenu, refermé dès le premier caractère de réponse —
+                      // « refermé/remplacé dès que le vrai contenu commence ».
+                      // Un clic de l'utilisateur (entrée présente dans
+                      // `collapsedRaisonnement`) l'emporte et n'est plus écrasé :
+                      // sans ça, quelqu'un qui ouvre le bloc pour relire le
+                      // raisonnement se le voit refermer au token suivant.
+                      collapsed={collapsedRaisonnement[i] ?? msg.content.length > 0}
+                      onToggle={() => setCollapsedRaisonnement(prev => ({
+                        ...prev,
+                        [i]: !(prev[i] ?? msg.content.length > 0),
+                      }))}
+                    />
+                  )}
+                  <RichMessage content={msg.content} streaming={streaming && i === messages.length - 1} />
+                </>
               )}
               {msg.role === 'assistant' && i === messages.length - 1 && streaming && streamStats && (
                 <div className="mt-1 text-xs font-mono text-muted/70">
