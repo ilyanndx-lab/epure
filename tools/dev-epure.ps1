@@ -140,6 +140,68 @@ function Arreter([string]$quoi, [string]$pourquoi) {
     exit 1
 }
 
+
+# -- Appel d'un binaire externe ------------------------------------------------
+
+function Invoquer-Externe {
+    <#
+        Lance un binaire et rend sa sortie ET son code de sortie, sans qu'une
+        ligne ecrite sur stderr puisse tuer le script.
+
+        L'INCIDENT, et il ne se voit pas en relisant le site d'appel. Ce script
+        pose $ErrorActionPreference = 'Stop' (il le doit : une commande PowerShell
+        qui rate en silence ferait continuer un lanceur dont le but est justement
+        d'arreter net). Or, sous Windows PowerShell 5.1 -- powershell.exe, celui
+        que lance le raccourci de bureau, PAS pwsh -- une redirection 2>&1 sur un
+        binaire natif convertit chaque ligne de son stderr en ErrorRecord, et
+        'Stop' fait de cet ErrorRecord une erreur TERMINANTE. Le script meurt
+        donc sur une ligne de stderr, meme quand le binaire se termine ensuite
+        avec le code 0, et la ligne suivante -- le test sur $LASTEXITCODE, ecrit
+        exactement pour decider de l'echec -- n'est jamais atteinte.
+
+        MESURE, pas deduit. 'npm run build' reussissait (dist\index.html ecrit,
+        'built in 2.89s') et le script s'arretait quand meme a l'etape 5 avec
+        NativeCommandError, sur le seul avertissement de taille de chunk que
+        Vite/Rolldown ecrit sur stderr. Reproduit hors du depot avec un binaire
+        qui ecrit une ligne sur stderr puis sort en 0 : powershell.exe + 2>&1 +
+        'Stop' meurt ; le meme appel sans 2>&1 survit ; le meme appel sous pwsh 7
+        survit. D'ou l'invisibilite du bug : il ne se manifeste que dans l'hote
+        qu'utilise le raccourci.
+
+        LES SIX SITES ETAIENT ARMES, pas seulement le build -- 'git pull' ecrit
+        sa progression ('From github.com...') sur stderr, 'npm ci' ses avis,
+        'taskkill' ses refus, et un interpreteur Python sans fastapi sa trace.
+        Le message 'ecarte (dependances absentes)' de Trouver-Python etait
+        litteralement inatteignable. C'est pourquoi la correction est ici et non
+        a l'etape 5 : un correctif local aurait laisse cinq mines en place.
+
+        POURQUOI UNE FONCTION. L'affectation ci-dessous cree une variable de
+        PORTEE DE FONCTION : la preference globale 'Stop' est retablie au retour,
+        sans sauvegarde ni finally -- verifie ($ErrorActionPreference vaut bien
+        'Stop' au retour). C'est ce qui permet de relacher la regle le temps d'un
+        appel sans la relacher pour le script.
+
+        Rend un objet plutot que la seule sortie, pour que l'appelant n'ait plus
+        aucune raison de lire $LASTEXITCODE lui-meme :
+            .Code    le code de sortie, LE SEUL juge de l'echec
+            .Texte   sortie fusionnee, une chaine (pour -match et l'affichage)
+            .Lignes  la meme, en tableau de lignes
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Binaire,
+        [Parameter(ValueFromRemainingArguments = $true)]$Arguments = @()
+    )
+    $ErrorActionPreference = 'Continue'
+    $sortie = & $Binaire @Arguments 2>&1
+    $code = $LASTEXITCODE
+    $lignes = @($sortie | ForEach-Object { "$_" })
+    return [pscustomobject]@{
+        Code   = $code
+        Texte  = ($lignes -join [Environment]::NewLine).Trim()
+        Lignes = $lignes
+    }
+}
+
 # -- Interpreteur Python ------------------------------------------------------
 
 function Trouver-Python {
@@ -176,8 +238,8 @@ function Trouver-Python {
 
     foreach ($c in $candidats) {
         if (-not (Test-Path $c)) { continue }
-        $verdict = & $c -c "import fastapi, uvicorn; print('ok')" 2>&1
-        if ($LASTEXITCODE -eq 0 -and "$verdict".Trim() -eq 'ok') { return $c }
+        $r = Invoquer-Externe $c -c "import fastapi, uvicorn; print('ok')"
+        if ($r.Code -eq 0 -and $r.Texte -eq 'ok') { return $c }
         Ecrire-Info "ecarte (dependances absentes) : $c"
     }
     Arreter "aucun interpreteur Python n'a les dependances d'Epure" @"
@@ -244,7 +306,7 @@ function Liberer-NodeModules([switch]$Imbrique) {
         Ecrire-Alerte "PID $($p.ProcessId) tient ce checkout : $quoi"
         # /T : les descendants aussi. Un `npm run` laisse un shell parent dont la
         # mort seule laisserait node vivant (meme raison que lanceur.tuer_arbre).
-        & taskkill /F /T /PID $p.ProcessId 2>&1 | Out-Null
+        $null = Invoquer-Externe taskkill /F /T /PID $p.ProcessId
     }
     Start-Sleep -Milliseconds 400
     $restants = Trouver-NodeDuCheckout
@@ -257,28 +319,41 @@ function Liberer-NodeModules([switch]$Imbrique) {
 
 # -- 2. git pull --------------------------------------------------------------
 
+
+function Tete-Git {
+    <#
+        Le SHA de HEAD, ou un arret nomme. Passe par Invoquer-Externe comme tout
+        le reste : sans code de sortie verifie, un `git rev-parse` qui rate rend
+        $null, et le `.Trim()` d'alors echouait sur "You cannot call a method on
+        a null-valued expression" -- un message qui ne dit rien de git.
+    #>
+    $r = Invoquer-Externe git rev-parse HEAD
+    if ($r.Code -ne 0) { Arreter 'git rev-parse HEAD a echoue' $r.Texte }
+    return $r.Texte
+}
+
 function Mettre-A-Jour {
     Ecrire-Etape 'git pull'
     if ($SansPull) { Ecrire-Info 'saute (-SansPull)'; return }
 
     Push-Location $RACINE
     try {
-        $sale = & git status --porcelain 2>&1
-        if ($LASTEXITCODE -ne 0) { Arreter 'git status a echoue' "$sale" }
-        if ($sale) {
+        $etat = Invoquer-Externe git status --porcelain
+        if ($etat.Code -ne 0) { Arreter 'git status a echoue' $etat.Texte }
+        if ($etat.Texte) {
             # On ne tente RIEN sur un arbre sale : un pull qui echoue a mi-chemin
             # sur un conflit laisse un etat que ce script ne sait pas demeler, et
             # le demeler a sa place risquerait du travail non commite.
             Ecrire-Alerte 'arbre de travail modifie -- pull saute'
-            ($sale -split "`n" | Select-Object -First 8) | ForEach-Object { Write-Host "         $_" -ForegroundColor DarkGray }
+            ($etat.Lignes | Select-Object -First 8) | ForEach-Object { Write-Host "         $_" -ForegroundColor DarkGray }
             return
         }
-        $avant = (& git rev-parse HEAD).Trim()
-        $sortie = & git pull --ff-only 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Arreter 'git pull a echoue' "$sortie`n`nA regler a la main (divergence, reseau, authentification)."
+        $avant = Tete-Git
+        $pull = Invoquer-Externe git pull --ff-only
+        if ($pull.Code -ne 0) {
+            Arreter 'git pull a echoue' "$($pull.Texte)`n`nA regler a la main (divergence, reseau, authentification)."
         }
-        $apres = (& git rev-parse HEAD).Trim()
+        $apres = Tete-Git
         if ($avant -eq $apres) {
             Ecrire-Ok "deja a jour ($($apres.Substring(0,7)))"
         } else {
@@ -298,12 +373,11 @@ function Installer-Dependances {
     try {
         foreach ($essai in 1, 2) {
             Ecrire-Info "essai $essai/2"
-            $sortie = & npm ci 2>&1
-            $code = $LASTEXITCODE
-            if ($code -eq 0) { Ecrire-Ok 'installe'; return }
+            $ci = Invoquer-Externe npm ci
+            if ($ci.Code -eq 0) { Ecrire-Ok 'installe'; return }
 
-            $texte = ($sortie | Out-String)
-            Write-Host ($texte.Trim()) -ForegroundColor DarkGray
+            $texte = $ci.Texte
+            Write-Host $texte -ForegroundColor DarkGray
 
             if ($essai -eq 2) {
                 Arreter 'npm ci a echoue deux fois' 'La seconde tentative partait de node_modules supprime : la cause n''est pas un verrou.'
@@ -368,9 +442,9 @@ function Construire-Interface {
 
     Push-Location $FRONTEND
     try {
-        $sortie = & npm run build 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host ($sortie | Out-String) -ForegroundColor DarkGray
+        $build = Invoquer-Externe npm run build
+        if ($build.Code -ne 0) {
+            Write-Host $build.Texte -ForegroundColor DarkGray
             Arreter 'npm run build a echoue' 'Erreur de compilation : elle est au-dessus, elle vient du code, pas du lanceur.'
         }
         # `index.html` et non le seul code de sortie : c'est ce fichier que
@@ -413,7 +487,7 @@ elif lanceur.backend_epure_repond($PORT):
 else:
     print('ETRANGER %d %s' % (pid, lanceur.nom_processus(pid)))
 "@
-    $verdict = (& $python -c $code 2>&1 | Out-String).Trim()
+    $verdict = (Invoquer-Externe $python -c $code).Texte
     $mots = $verdict -split '\s+'
     switch ($mots[0]) {
         'LIBRE'      { Ecrire-Ok 'libre' }
@@ -444,6 +518,12 @@ function Lancer-Uvicorn([string]$python) {
     # (WorkingDirectory = ...\WindowsApps), et le symptome etait un
     # ModuleNotFoundError sur `main` -- pas un message parlant.
     Set-Location $BACKEND
+    # SEUL appel natif qui reste hors Invoquer-Externe, et c'est voulu :
+    # uvicorn journalise sur stderr en continu, et le but de cette etape est
+    # de VOIR ces lignes en direct. Les capturer les avalerait. Sans
+    # redirection 2>&1, powershell.exe ne les convertit pas en ErrorRecord
+    # (mesure), donc 'Stop' ne les rend pas terminantes -- c'est la
+    # redirection qui armait le piege, pas le stderr. Cf. Invoquer-Externe.
     & $python -m uvicorn main:app --host 127.0.0.1 --port $PORT
 }
 
