@@ -35,7 +35,7 @@
     Chacune est un ARRET NET ici, avec la cause nommee, ou une reparation
     automatique -- jamais un echec silencieux.
 
-    CE QU'IL NE FAIT PAS, et c'est deliberé : il ne lance ni Ollama ni Vite. Le
+    CE QU'IL NE FAIT PAS, et c'est delibere : il ne lance ni Ollama ni Vite. Le
     backend sert le frontend CONSTRUIT (resolve_web_dir -> frontend\dist, cf.
     CLAUDE.md 3.5), donc `npm run build` suffit pour voir l'interface a jour sur
     http://127.0.0.1:8000. Pour le dev frontend avec rechargement a chaud, c'est
@@ -71,6 +71,32 @@
 .EXAMPLE
     .\tools\dev-epure.ps1 -PoserRaccourci -RemplacerAnciens
     A jouer une fois, pour remplacer l'ancien raccourci obsolete.
+
+.NOTES
+    CE FICHIER DOIT RESTER EN ASCII PUR, et ce n'est pas une coquetterie.
+
+    Il est lance par powershell.exe (Windows PowerShell 5.1), qui lit un .ps1
+    sans BOM avec la page de code du systeme -- Windows-1252 ici, pas UTF-8. Un
+    caractere hors ASCII y arrive donc mojibake, et deux d'entre eux ne sont pas
+    seulement illisibles : le tiret cadratin U+2014 (octets E2 80 94) et le
+    filet U+2500 (E2 94 80) produisent tous les deux un U+201D, que PowerShell
+    accepte comme DELIMITEUR DE CHAINE a l'egal du guillemet droit.
+
+    Mesure, pas deduit. La version d'avant portait 501 filets et 8 cadratins.
+    Les filets etaient tous dans des commentaires, donc inoffensifs. Le cadratin
+    de la ligne 226 (numerotation d'avant cette note) etait dans une chaine "..." : relu en cp1252 il la fermait,
+    apres quoi l'apostrophe de "l'etape" ouvrait une chaine simple qui courait
+    sur le reste du fichier. Bilan : 33 erreurs de parsing, la premiere
+    annoncee ligne 253 -- une ligne strictement ASCII et sans defaut, qui ne
+    faisait que subir le decalage. Corriger ce seul cadratin ramenait le total a
+    30 et faisait disparaitre l'erreur de la ligne 253 ; le meme fichier lu par
+    pwsh 7 (UTF-8 par defaut) parsait sans une seule erreur.
+
+    D'ou la regle, deja tenue par install.ps1, tools/installer-epure.ps1 et
+    demarrer.py : ASCII pur plutot qu'un BOM. Un BOM corrigerait la lecture,
+    mais ce depot a deja paye le prix des BOM ailleurs (core/jsonstore.py lit en
+    utf-8-sig pour cette raison), et l'ASCII marche sous n'importe quelle page
+    de code, avec ou sans BOM. Verrouille par backend/test_encodage_scripts.py.
 #>
 
 [CmdletBinding()]
@@ -114,7 +140,7 @@ function Arreter([string]$quoi, [string]$pourquoi) {
     exit 1
 }
 
-# ── Interpreteur Python ──────────────────────────────────────────────────────
+# -- Interpreteur Python ------------------------------------------------------
 
 function Trouver-Python {
     <#
@@ -141,8 +167,8 @@ function Trouver-Python {
     # au lieu de lancer python. Preferer un chemin reel quand il y en a un evite
     # ce detour sans rien casser quand il est le seul disponible.
     # `-like` et non `-match` : le motif contient des antislashes, que `-match`
-    # interpreterait comme une regex (`\W` = « non-mot », et un antislash final
-    # rend le motif invalide — erreur de parsing observee en ecrivant ceci).
+    # interpreterait comme une regex (`\W` = "non-mot", et un antislash final
+    # rend le motif invalide -- erreur de parsing observee en ecrivant ceci).
     $reels = @($duPath | Where-Object { $_ -notlike '*\WindowsApps\*' })
     $shims = @($duPath | Where-Object { $_ -like    '*\WindowsApps\*' })
     $candidats += $reels + $shims
@@ -165,7 +191,7 @@ Ou designer le bon :
 "@
 }
 
-# ── 1. Processus node residuels ──────────────────────────────────────────────
+# -- 1. Processus node residuels ----------------------------------------------
 
 function Trouver-NodeDuCheckout {
     <#
@@ -205,8 +231,8 @@ function Trouver-NodeDuCheckout {
 
 function Liberer-NodeModules([switch]$Imbrique) {
     # `-Imbrique` : appelee depuis la reparation EPERM, cette fonction ne doit pas
-    # consommer un numero d'etape — observe en testant, l'affichage annoncait une
-    # « etape 4 » au milieu de l'etape 3 et donnait a lire deux deroules
+    # consommer un numero d'etape -- observe en testant, l'affichage annoncait une
+    # "etape 4" au milieu de l'etape 3 et donnait a lire deux deroules
     # differents pour un seul.
     if ($Imbrique) { Ecrire-Info 'processus node residuels' } else { Ecrire-Etape 'Processus node residuels' }
     $suspects = Trouver-NodeDuCheckout
@@ -223,13 +249,13 @@ function Liberer-NodeModules([switch]$Imbrique) {
     Start-Sleep -Milliseconds 400
     $restants = Trouver-NodeDuCheckout
     if ($restants.Count -gt 0) {
-        Ecrire-Alerte "$($restants.Count) process resistent — l'etape npm nettoiera node_modules si besoin"
+        Ecrire-Alerte "$($restants.Count) process resistent -- l'etape npm nettoiera node_modules si besoin"
     } else {
         Ecrire-Ok "$($suspects.Count) process termine(s)"
     }
 }
 
-# ── 2. git pull ──────────────────────────────────────────────────────────────
+# -- 2. git pull --------------------------------------------------------------
 
 function Mettre-A-Jour {
     Ecrire-Etape 'git pull'
@@ -243,7 +269,7 @@ function Mettre-A-Jour {
             # On ne tente RIEN sur un arbre sale : un pull qui echoue a mi-chemin
             # sur un conflit laisse un etat que ce script ne sait pas demeler, et
             # le demeler a sa place risquerait du travail non commite.
-            Ecrire-Alerte 'arbre de travail modifie — pull saute'
+            Ecrire-Alerte 'arbre de travail modifie -- pull saute'
             ($sale -split "`n" | Select-Object -First 8) | ForEach-Object { Write-Host "         $_" -ForegroundColor DarkGray }
             return
         }
@@ -261,7 +287,7 @@ function Mettre-A-Jour {
     } finally { Pop-Location }
 }
 
-# ── 3. npm ci, avec reparation EPERM ─────────────────────────────────────────
+# -- 3. npm ci, avec reparation EPERM -----------------------------------------
 
 function Installer-Dependances {
     Ecrire-Etape 'npm ci (frontend)'
@@ -287,7 +313,7 @@ function Installer-Dependances {
             # tient, et un `npm ci` interrompu laisse en plus un node_modules
             # incomplet (panne 3 de l'en-tete : `tsc` introuvable au build).
             if ($texte -match 'EPERM|EBUSY|EACCES|operation not permitted') {
-                Ecrire-Alerte 'EPERM/EBUSY — suppression de node_modules puis nouvelle tentative'
+                Ecrire-Alerte 'EPERM/EBUSY -- suppression de node_modules puis nouvelle tentative'
                 Liberer-NodeModules -Imbrique
                 if (Test-Path $modules) {
                     Remove-Item $modules -Recurse -Force -ErrorAction SilentlyContinue
@@ -320,8 +346,8 @@ function Verifier-Outils {
             $bin = Join-Path $FRONTEND "node_modules\.bin\$outil.cmd"
             if (-not (Test-Path $bin)) {
                 # Pas de backtick dans un here-string INTERPOLANT (@" "@) : PowerShell
-                # y lit `n comme un retour a la ligne, et le mot « npm » precede
-                # d'un backtick s'affichait « \n pm ». Trouve en testant cette
+                # y lit `n comme un retour a la ligne, et le mot "npm" precede
+                # d'un backtick s'affichait "\n pm". Trouve en testant cette
                 # panne pour de vrai, pas en relisant.
                 Arreter "$outil est introuvable dans node_modules" @"
 node_modules existe mais est incomplet -- typiquement un 'npm ci' interrompu.
@@ -334,7 +360,7 @@ Ou, si ca se reproduit : supprimer $FRONTEND\node_modules et relancer.
     } finally { Pop-Location }
 }
 
-# ── 4. npm run build ────────────────────────────────────────────────────────
+# -- 4. npm run build --------------------------------------------------------
 
 function Construire-Interface {
     Ecrire-Etape 'npm run build'
@@ -359,7 +385,7 @@ function Construire-Interface {
     } finally { Pop-Location }
 }
 
-# ── 5. Port 8000 ────────────────────────────────────────────────────────────
+# -- 5. Port 8000 ------------------------------------------------------------
 
 function Liberer-Port([string]$python) {
     <#
@@ -392,7 +418,7 @@ else:
     switch ($mots[0]) {
         'LIBRE'      { Ecrire-Ok 'libre' }
         'EPURE_TUE'  {
-            Ecrire-Alerte "backend Epure residuel (PID $($mots[1])) — arrete"
+            Ecrire-Alerte "backend Epure residuel (PID $($mots[1])) -- arrete"
             Start-Sleep -Milliseconds 600
         }
         'ETRANGER'   {
@@ -406,7 +432,7 @@ appartient a autre chose. A regler a la main, ou changer de port.
     }
 }
 
-# ── 6. uvicorn au premier plan ──────────────────────────────────────────────
+# -- 6. uvicorn au premier plan ----------------------------------------------
 
 function Lancer-Uvicorn([string]$python) {
     Ecrire-Etape 'uvicorn (premier plan)'
@@ -421,7 +447,7 @@ function Lancer-Uvicorn([string]$python) {
     & $python -m uvicorn main:app --host 127.0.0.1 --port $PORT
 }
 
-# ── Raccourci de bureau ─────────────────────────────────────────────────────
+# -- Raccourci de bureau -----------------------------------------------------
 
 function Poser-Raccourci {
     <#
@@ -444,7 +470,7 @@ function Poser-Raccourci {
     $lnk.TargetPath       = (Get-Command powershell.exe).Source
     $lnk.Arguments        = "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     $lnk.WorkingDirectory = $RACINE
-    $lnk.Description      = 'Epure — dev : git pull, build, uvicorn au premier plan'
+    $lnk.Description      = 'Epure -- dev : git pull, build, uvicorn au premier plan'
     $lnk.IconLocation     = "$((Get-Command powershell.exe).Source),0"
     $lnk.Save()
     Write-Host "Raccourci ecrit : $cible" -ForegroundColor Green
@@ -476,10 +502,10 @@ function Poser-Raccourci {
     }
 }
 
-# ── Deroule ─────────────────────────────────────────────────────────────────
+# -- Deroule -----------------------------------------------------------------
 
 Write-Host ''
-Write-Host 'Epure — relance de developpement' -ForegroundColor White
+Write-Host 'Epure -- relance de developpement' -ForegroundColor White
 Write-Host "  depot : $RACINE" -ForegroundColor DarkGray
 
 if ($PoserRaccourci) { Poser-Raccourci; exit 0 }
