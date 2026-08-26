@@ -36,9 +36,12 @@ a été validé, rien de plus :
   `ValueError` — vérifié empiriquement sur le vrai chromadb (pas supposé), et c'est
   exactement son comportement.
 
-- L'embedding (`sentence-transformers/all-MiniLM-L6-v2`, normalisé) est calculé
-  explicitement par ce module, avant chaque écriture et chaque requête — plus caché
-  derrière un `embedding_function=` fourni à la collection, comme chez chromadb.
+- L'embedding (`all-MiniLM-L6-v2`, normalisé) est calculé explicitement par ce
+  module, avant chaque écriture et chaque requête — plus caché derrière un
+  `embedding_function=` fourni à la collection, comme chez chromadb. Le calcul
+  lui-même vit dans `core/embedding.py` (ONNX Runtime + WordPiece Python pur
+  depuis le 2026-08-26, en remplacement de `sentence-transformers` : mêmes
+  vecteurs, cosinus 1.0 mesuré, donc les données de ce store restent valides).
 
 - Les distances renvoyées sont `1 - similarité_cosinus` (plus petit = plus proche) —
   vérifié que c'est exactement ce que chromadb renvoyait déjà pour ces collections
@@ -59,12 +62,12 @@ from pathlib import Path
 
 import numpy as np
 
-from core.embedding_install import exiger_pile
+from core.embedding import MoteurEmbedding
 
-# `sentence_transformers` n'est PAS importé ici : cf. `VectorStore.__init__`.
-# `core.embedding_install`, lui, l'est — il ne tire que `core.paths` et
-# `core.jsonstore`, et sa raison d'être est justement de ne RIEN importer de
-# lourd pour répondre à « la pile d'embedding est-elle là ? ».
+# `onnxruntime` n'est PAS importé ici, ni par cet import : `core.embedding` ne le
+# charge que dans `MoteurEmbedding.__init__`. Cet import-ci ne tire que numpy,
+# `core.paths`, `core.jsonstore` et `core.wordpiece` — tout ce qui est nécessaire
+# pour répondre à « le modèle est-il là ? » sans rien charger de lourd.
 
 _TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -138,39 +141,22 @@ class VectorStore:
     cette classe, explicitement.
     """
 
-    def __init__(self, path: str | Path,
-                 embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        # Import LOCAL, et c'est une contrainte, pas un détail de style :
-        # `from sentence_transformers import SentenceTransformer` en tête de
-        # module coûte 17,4 s et tire torch — mesuré, pas estimé. `core/rag.py`
-        # importe ce module, `core/runtime.py` importe `core/rag.py` : en tête
-        # de fichier, cet import se paierait donc à l'import de `core.runtime`,
-        # c'est-à-dire au démarrage d'uvicorn, qui ne répondrait plus à rien —
-        # /health compris — pendant tout ce temps. C'est exactement l'incident
-        # que `_LazyEngine` a été écrit pour corriger (§3.2 de CLAUDE.md), et il
-        # serait réintroduit par la bande, la paresse du proxy ne protégeant que
-        # la CONSTRUCTION des moteurs, jamais l'import de leurs dépendances.
-        #
-        # chromadb ne posait pas ce problème : il n'importait
-        # `sentence_transformers` qu'à l'instanciation de sa fonction
-        # d'embedding. Rendre l'embedding explicite (le but de ce module) rend
-        # donc cet import explicite aussi — et le seul endroit correct pour le
-        # payer est ici, où le modèle est réellement chargé.
-        #
-        # AVANT l'import, et c'est le second incident que cette ligne porte :
-        # dans un paquet livré, `sentence-transformers` n'est PAS installé
-        # (`HORS_PAQUET_PIP` l'exclut, il tire 2 Go de torch). L'import levait
-        # donc un `ImportError` nu, qui remontait au gestionnaire générique de
-        # `main.py` — `500 {"detail": "Erreur interne du serveur", "type":
-        # "ImportError"}` — et tuait le panneau fichiers du module Docs à chaque
-        # ouverture, définitivement. `exiger_pile()` transforme cet état en ce
-        # qu'il est vraiment : une installation qui n'a pas encore eu lieu. Elle
-        # lance `pip` dans un thread et lève `EmbeddingIndisponible`, que les
-        # endpoints traduisent en 503 lisible avec l'état d'avancement.
-        # Cf. `core/embedding_install.py` et docs/distribution-empaquetee.md
-        # (« écarts 2 et 3 »).
-        exiger_pile()
-        from sentence_transformers import SentenceTransformer
+    def __init__(self, path: str | Path, moteur: MoteurEmbedding | None = None):
+        """Ouvre (ou crée) le fichier SQLite et charge le modèle d'embedding.
+
+        `moteur` est injectable pour la même raison que `store` l'est dans
+        `RAGEngine` : un test qui veut éprouver le filtrage ou le SQL n'a aucune
+        raison de charger 90 Mo de poids. En production il est toujours construit
+        ici, donc une seule fois, et partagé par les trois collections via le
+        store unique de `core/runtime.py`.
+
+        **Le moteur est construit AVANT la connexion SQLite**, et l'ordre compte :
+        c'est lui qui peut lever `EmbeddingIndisponible` (modèle pas encore
+        téléchargé), et lever après avoir ouvert la base laisserait une connexion
+        et un fichier créés par un objet qui n'existera jamais.
+        """
+        self._moteur = moteur if moteur is not None else MoteurEmbedding()
+        self._dim = self._moteur.dimension
 
         self._dir = Path(path)
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -178,21 +164,18 @@ class VectorStore:
         self._conn = sqlite3.connect(
             str(self._dir / "vectors.sqlite3"), check_same_thread=False
         )
-        self._model = SentenceTransformer(embedding_model)
-        self._dim = self._model.get_embedding_dimension()
         self._collections: dict[str, "Collection"] = {}
 
     def _embed(self, texts: list[str]) -> np.ndarray:
         """Vecteurs normalisés (norme 1) — la similarité cosinus devient un simple
         produit scalaire, et les valeurs reproduisent celles que chromadb calculait
-        (`SentenceTransformerEmbeddingFunction` normalise aussi, cf. docstring module).
+        (`SentenceTransformerEmbeddingFunction` normalisait aussi, cf. docstring
+        module). La normalisation est faite par `MoteurEmbedding.encoder`, comme
+        elle l'était par `normalize_embeddings=True` : ne pas la refaire ici.
         """
         if not texts:
             return np.zeros((0, self._dim), dtype=np.float32)
-        vecteurs = self._model.encode(
-            texts, convert_to_numpy=True, normalize_embeddings=True
-        )
-        return np.asarray(vecteurs, dtype=np.float32)
+        return self._moteur.encoder(texts)
 
     def collection(self, name: str) -> "Collection":
         """Équivalent de `get_or_create_collection` : crée la table SQLite si absente."""

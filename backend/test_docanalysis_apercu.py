@@ -21,9 +21,11 @@ D'où deux niveaux de preuve, parce que l'un sans l'autre ne vaut pas grand-chos
    passait tous les tests unitaires du filtre, puisque le filtre n'était pas en
    cause.
 
-Aucun modèle d'embedding n'est chargé : le vrai `VectorStore` construirait
-`sentence-transformers` (donc torch, 17 s), que le job rapide de la CI n'installe
-pas. La collection est remplacée par un double qui délègue son filtrage aux
+Aucun modèle d'embedding n'est chargé : le vrai `VectorStore` en construirait
+un, ce qui demande les 90 Mo de poids que la suite ne télécharge jamais
+(`_test_env` : dossier vide + `EPURE_EMBEDDING_AUTOINSTALL=0`). C'était
+`sentence-transformers` et ses 17 s d'import avant le 2026-08-26 ; le motif du
+double n'a pas changé, seule la raison de l'absence. La collection est remplacée par un double qui délègue son filtrage aux
 **vraies** fonctions de `core/vector_store` — ce sont elles qu'on teste, pas une
 réimplémentation qui pourrait diverger en silence.
 

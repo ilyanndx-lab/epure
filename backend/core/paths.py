@@ -124,6 +124,34 @@ def resolve_models_dir() -> Path:
     return base.resolve()
 
 
+def resolve_embedding_dir() -> Path:
+    """Cache du modèle d'embedding ONNX (`model.onnx` + `vocab.txt`).
+
+    Priorité : ``$EPURE_EMBEDDING_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/embedding_model``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Jumeau de :func:`resolve_models_dir` et **pour les mêmes raisons**, ce qui
+    est le seul point qui mérite d'être écrit ici : c'est un **cache**, pas des
+    données utilisateur. Les 90,4 Mo de `model.onnx` sont téléchargés au premier
+    usage de la recherche documentaire puis vérifiés par sha256 — contenu
+    reconstructible à l'identique, rien d'irremplaçable. Il est donc
+    délibérément **absent** de ``_test_env.REAL_DIRS`` (un téléchargement
+    légitime pendant la suite ferait tomber un garde-fou qui parle d'autre
+    chose) tout en étant bien **détourné** par ``_test_env`` sur un temporaire
+    vide. Ne pas confondre « non surveillé » et « laissé au vrai chemin ».
+
+    Dossier séparé de ``piper_models`` et non un sous-dossier : les deux caches
+    n'ont ni la même durée de vie ni le même sort dans un paquet ARM64, où la
+    voix est retirée de l'installation (``HORS_PAQUET_PIP_ARM64``) alors que
+    l'embedding, lui, y fonctionne.
+    """
+    env = os.environ.get("EPURE_EMBEDDING_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "embedding_model")
+    return base.resolve()
+
+
 def resolve_web_dir() -> Path:
     """Frontend **construit** que FastAPI sert lui-même (paquet distribué).
 

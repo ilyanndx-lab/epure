@@ -42,6 +42,14 @@ backend/vector_db/
 # chose, au lieu de décrire un état transitoire qui n'existe plus.
 backend/piper_models/
 
+# Cache du modèle d'embedding ONNX (`model.onnx` 90,4 Mo + `vocab.txt`) — défaut
+# portable de EPURE_EMBEDDING_DIR, arrivé le 2026-08-26 avec le remplacement de
+# `sentence-transformers`. Même nature que `piper_models/` ci-dessus : téléchargé
+# au premier usage et vérifié par sha256, donc reconstructible à l'identique, et
+# à ne jamais suivre — 90 Mo de binaire dans l'historique d'un dépôt Git ne
+# s'enlèvent qu'avec une purge (docs/purge-onnx.md l'a déjà appris une fois).
+backend/embedding_model/
+
 # Données utilisateur (fiches PDF) — défaut portable de EPURE_FICHES_DIR
 /data/
 backend/doc_uploads/

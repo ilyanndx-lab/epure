@@ -32,10 +32,16 @@ import { chargerRecherche, reinitialiserRecherche } from '../recherche'
  *     GET /rag/files -> 500 {"detail":"Erreur interne du serveur","type":"ImportError"}
  *
  * `rag` est un `_LazyEngine` : le premier accès construit `RAGEngine`, donc un
- * `VectorStore`, qui importe `sentence_transformers` dans son `__init__`. Dans
- * un paquet, ce chemin lève à CHAQUE appel. Le panneau fichiers du module Docs
- * y était donc mort d'avance — et c'est ce corps de réponse exact qui est rejoué
- * ci-dessous.
+ * `VectorStore`, qui construisait alors `sentence_transformers` dans son
+ * `__init__`. Dans un paquet, ce chemin levait à CHAQUE appel. Le panneau
+ * fichiers du module Docs y était donc mort d'avance — et c'est ce corps de
+ * réponse exact qui est rejoué ci-dessous.
+ *
+ * (La pile a changé le 2026-08-26 — ONNX Runtime, modèle téléchargé au premier
+ * usage — mais le 500 rejoué ici reste le bon cas de test : ce que ce fichier
+ * garde est la NORMALISATION à la frontière `.json()`, qui ne dépend d'aucune
+ * pile. N'importe quelle route peut répondre 500 ou 401 sur une app locale dont
+ * le backend démarre en parallèle.)
  *
  * CE QUE CES TESTS GARDENT, et ce n'est pas « availableFiles » : aucune réponse
  * du backend ne doit être crue sur sa forme. Chaque état alimenté par un
@@ -50,27 +56,32 @@ const ERREUR_500 = { detail: 'Erreur interne du serveur', type: 'ImportError' }
 /**
  * `GET /rag/capabilities` — l'état de préparation du moteur documentaire.
  *
- * Ces corps sont recopiés de `core/embedding_install.py::_verdict`. Le cas
- * `en_cours` n'est pas une hypothèse : dans un paquet livré,
- * `sentence-transformers` n'est pas installé (il tire ~2 Go de torch), le
- * backend lance `pip` de lui-même et répond 503 en attendant. L'interface doit
- * dire ce qui se passe, pas rester vide plusieurs minutes.
+ * Ces corps sont recopiés de `core/embedding_install.py::_verdict` — mis à jour
+ * le 2026-08-26, quand la pile est passée de `pip install torch` +
+ * `sentence-transformers` (~2 Go) au téléchargement des 90 Mo d'un modèle ONNX.
+ * Les recopier plutôt que les deviner est tout l'intérêt de ce fichier : le
+ * bandeau affiche le `message` du backend tel quel, donc un corps inventé
+ * testerait une phrase que personne n'envoie.
+ *
+ * Le cas `en_cours` n'est pas une hypothèse : dans un paquet livré, le modèle
+ * n'est pas encore là, le backend le télécharge de lui-même et répond 503 en
+ * attendant. L'interface doit dire ce qui se passe, pas rester vide.
  */
 const CAPACITES_PRETES = {
   'état': 'prêt', disponible: true, message: 'Moteur de recherche documentaire prêt.',
-  cause: '', 'taille_estimée_mo': 2000,
+  cause: '', 'taille_estimée_mo': 91,
 }
 const CAPACITES_EN_COURS = {
   'état': 'en_cours', disponible: false,
-  message: 'Préparation du moteur de recherche documentaire — téléchargement '
-    + "d'environ 2 Go, quelques minutes, connexion réseau nécessaire.",
-  cause: '', 'taille_estimée_mo': 2000,
+  message: 'Préparation du moteur de recherche documentaire — téléchargement du '
+    + 'modèle (91 Mo), une à deux minutes, connexion réseau nécessaire.',
+  cause: '', 'taille_estimée_mo': 91,
 }
 const CAPACITES_ECHEC_RESEAU = {
   'état': 'échec', disponible: false,
-  message: "Préparation impossible : l'index de téléchargement est injoignable. "
+  message: 'Préparation impossible : le serveur du modèle est injoignable. '
     + 'Vérifiez la connexion réseau, puis réessayez.',
-  cause: 'réseau', 'taille_estimée_mo': 2000,
+  cause: 'réseau', 'taille_estimée_mo': 91,
 }
 
 /** Le 503 que le backend rend pendant la préparation, corps compris. */
@@ -172,8 +183,8 @@ describe('ModuleBar — panneau fichiers', () => {
   })
 
   it("s'ouvre sans planter quand /rag/files répond 500 — LE bug", async () => {
-    // Le cas exact du paquet livré : sentence-transformers absent, donc 500 sur
-    // toute route qui touche le RAG. Avant correction, l'ouverture du panneau
+    // Le cas exact du paquet livré : moteur d'embedding pas encore prêt, donc 500
+    // sur toute route qui touche le RAG. Avant correction, l'ouverture du panneau
     // levait « Cannot read properties of undefined (reading 'length') ».
     poserFetch({ ...tableSaine(), '/rag/files': { status: 500, corps: ERREUR_500 } })
     await rendre()
@@ -208,9 +219,9 @@ describe('ModuleBar — panneau fichiers', () => {
 
   it("annonce la préparation du moteur au lieu d'un panneau vide", async () => {
     // Le cas d'un paquet livré : /rag/files répond 503 pendant que le backend
-    // installe torch + sentence-transformers. Avant, c'était un 500 et un
-    // panneau vide sans explication — l'utilisateur ne pouvait pas savoir qu'il
-    // fallait attendre, ni combien.
+    // télécharge le modèle. Avant, c'était un 500 et un panneau vide sans
+    // explication — l'utilisateur ne pouvait pas savoir qu'il fallait attendre,
+    // ni combien.
     poserFetch({
       ...tableSaine(),
       '/rag/files': { status: 503, corps: ERREUR_503 },
@@ -221,7 +232,7 @@ describe('ModuleBar — panneau fichiers', () => {
     await waitFor(() => expect(screen.getByText(/Préparation du moteur/)).toBeTruthy())
     // Le message dit le poids ET que le réseau est nécessaire : ce sont les deux
     // seules choses que l'utilisateur peut vérifier de son côté.
-    expect(screen.getByText(/2 Go/)).toBeTruthy()
+    expect(screen.getByText(/91 Mo/)).toBeTruthy()
     expect(screen.getByText(/connexion réseau/)).toBeTruthy()
     // Une préparation n'est pas un échec : pas de bouton « Réessayer ».
     expect(screen.queryByText('Réessayer')).toBeNull()
@@ -239,7 +250,7 @@ describe('ModuleBar — panneau fichiers', () => {
     })
     await rendre()
     await ouvrir('Fichiers')
-    await waitFor(() => expect(screen.getByText(/index de téléchargement est injoignable/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/serveur du modèle est injoignable/)).toBeTruthy())
     // Le backend ne réessaie pas tout seul (une tentative par process) : sans ce
     // bouton, l'échec resterait affiché jusqu'au prochain démarrage.
     const bouton = screen.getByText('Réessayer')

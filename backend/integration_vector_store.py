@@ -22,9 +22,18 @@ qu'un accès concurrent au nouveau store est sérialisé sans corruption.
    silencieusement incohérent).
 
 Nommé `integration_` et non `test_` volontairement, comme `integration_modules_mount.py` :
-charge un vrai modèle `sentence-transformers` (torch) ET un vrai `chromadb.PersistentClient`
-pour la comparaison — lent, et hors de ce que `unittest discover -p 'test_*.py'` doit
-tirer à chaque run de CI. Lancé par le job `integration` (manuel, workflow_dispatch).
+charge un vrai `chromadb.PersistentClient` pour la comparaison — lent, et hors de ce que
+`unittest discover -p 'test_*.py'` doit tirer à chaque run de CI. Lancé par le job
+`integration` (manuel, workflow_dispatch).
+
+⚠️ **Depuis le 2026-08-26, ce script demande DEUX installations manuelles**, et c'est sa
+nature plutôt qu'un oubli : `chromadb` (retiré le 2026-08-13) ET `sentence-transformers`
+(retiré le 2026-08-26, remplacé par ONNX Runtime — étape F). Il compare l'ancien monde au
+nouveau ; il ne peut pas se passer de l'ancien. Le côté « nouveau » de la comparaison, lui,
+utilise le moteur courant : `VectorStore` construit désormais un `MoteurEmbedding` ONNX,
+dont les vecteurs ont été mesurés identiques à ceux de `sentence-transformers`
+(cosinus 1.000000 sur les 180 chunks réels), donc la comparaison garde exactement le sens
+qu'elle avait.
 
 Usage :
     python integration_vector_store.py
@@ -72,7 +81,7 @@ class _Profil(unittest.TestCase):
         ef = SentenceTransformerEmbeddingFunction(model_name=_MODEL)
         client = chromadb.PersistentClient(path=self._tmp_chroma)
         self.chroma_col = client.get_or_create_collection("test_col", embedding_function=ef)
-        self.store = VectorStore(self._tmp_store, embedding_model=_MODEL)
+        self.store = VectorStore(self._tmp_store)
         self.store_col = self.store.collection("test_col")
 
     def tearDown(self):
@@ -304,7 +313,7 @@ class ConcurrenceTest(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="epure-concurrence-")
-        self.store = VectorStore(self._tmp, embedding_model=_MODEL)
+        self.store = VectorStore(self._tmp)
         self.col = self.store.collection("test_col")
         self._ids = [f"id{i}" for i in range(5)]
         self._docs = [_DOCS["chat1"], _DOCS["chat2"], _DOCS["meteo1"],

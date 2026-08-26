@@ -52,39 +52,43 @@ installer autre chose. Sans catalogue livré, `GET /settings/catalogue` renvoie 
 liste vide et le bouton n'apparaît pas — l'incapacité est honnête plutôt que
 cassée.
 
-**3. `torch` n'est pas embarqué** (décision du plan) : il s'installe au premier
-usage du RAG documentaire. `sentence-transformers` est donc exclu de
-l'installation.
+**3. La pile d'embedding est EMBARQUÉE ; seuls les poids du modèle sont
+différés.** C'est l'inverse de ce que cette décision disait jusqu'au 2026-08-26,
+et le renversement mérite d'être daté parce que la phrase précédente a été fausse
+tout un été.
 
-**Cette phrase a été un mensonge pendant tout l'été, et ne l'est plus depuis le
-2026-08-23.** « Il s'installe au premier usage » décrivait une intention qu'aucun
-chemin de code ne réalisait : `VectorStore.__init__` importait
-`sentence_transformers` et laissait remonter l'`ImportError`, donc le premier
-document chargé produisait un 500 et pas un téléchargement. Aggravant, et de la
-main de ce même fichier : `PURGE_SITE_PACKAGES` retirait `pip`, donc même le
-rattrapage à la main demandait de rebootstrapper `pip` par `get-pip.py`. Les deux
-décisions sont défendables isolément ; leur produit ne l'était pas
-(`docs/distribution-empaquetee.md`, « écarts 2 et 3 »).
+Avant : `torch` n'était pas embarqué et `sentence-transformers` était exclu de
+l'installation (`HORS_PAQUET_PIP`), « il s'installe au premier usage du RAG ».
+C'était d'abord un mensonge pur — aucun chemin de code ne faisait cette
+installation, `VectorStore.__init__` importait `sentence_transformers` et laissait
+remonter l'`ImportError`, donc le premier document chargé produisait un 500 et pas
+un téléchargement — puis, à partir du 2026-08-23, une vérité coûteuse :
+`core/embedding_install.py` lançait pour de bon `pip install torch --index-url
+https://download.pytorch.org/whl/cpu` puis `pip install sentence-transformers`,
+soit 198,3 Mo de wheels et 843 Mo sur disque, chez le destinataire, à sa première
+recherche documentaire.
 
-Réalisé désormais par `backend/core/embedding_install.py` : l'application lance
-elle-même `pip install torch --index-url …` puis
-`pip install sentence-transformers==…`, dans un thread, une fois par process,
-avec un état (`absent` / `en_cours` / `prêt` / `échec`) exposé par
-`GET /rag/capabilities` et affiché dans le panneau fichiers. C'est ce qui impose
-de **garder `pip` et `setuptools` dans le paquet** — 15,2 Mo, cf.
-`PURGE_SITE_PACKAGES`.
+Depuis le 2026-08-26 la pile est `onnxruntime` (13,7 Mo, wheel `win_arm64`
+publiée, binaires signés Microsoft) plus un tokeniseur WordPiece en Python pur.
+Elle **part donc dans le paquet comme n'importe quelle exigence** : il n'y a plus
+de wheel reportée, plus de `--index-url` à viser, et plus rien à installer chez le
+destinataire. Ce qui reste différé, ce sont les **90,4 Mo de poids** du modèle
+(`onnx/model.onnx` + `vocab.txt`), téléchargés au premier usage et vérifiés par
+sha256 — c'est-à-dire exactement le motif déjà en place pour les 76 Mo du modèle
+Piper (`core/voice.py`), et non plus une installation de paquets.
 
-⚠️ **Sur Windows ARM64, ce téléchargement doit viser l'index PyTorch et non
-PyPI** : `pip install torch --index-url https://download.pytorch.org/whl/cpu`,
-AVANT `sentence-transformers` (sinon torch se résout depuis PyPI). PyPI ne
-publie que des wheels `win_amd64` pour torch ; l'index PyTorch publie bien
-`torch-2.13.0+cpu-cp312-cp312-win_arm64.whl` — donc cp312, la version embarquée
-ici. Vérifié le 2026-08-13, cf. `backend/requirements.txt`, qui porte la
-consigne là où le destinataire la lira (ce fichier-ci ne part pas dans le
-paquet). Tout le reste de la grappe du premier usage a déjà ce qu'il faut pour
-ARM64 : torch était le seul manquant. **L'ordre et l'index sont désormais dans du
-code** (`core.embedding_install.commandes_installation`), donc testables — une
-inversion ne se verrait autrement que sur une machine ARM64.
+Conséquence à ne pas défaire : `pip` et `setuptools` **restent** dans le paquet
+(`PURGE_SITE_PACKAGES` vide), mais plus pour la même raison. Ils ne servent plus
+la pile d'embedding — ils servent le rattrapage manuel de n'importe quelle
+dépendance manquante, ce que le message de `core/embedding_install.py` demande
+explicitement quand `onnxruntime` est absent. 15,2 Mo pour ne pas livrer une
+installation qu'on ne peut pas réparer.
+
+Ce qui a forcé ce renversement, et qui n'était pas une question de poids : sur la
+machine ARM64 d'un destinataire, **Smart App Control bloque durablement
+`sklearn/utils/_isfinite`**, importé sans condition par `sentence-transformers`.
+`pip install` réussissait, l'import plantait. Détail complet dans
+`backend/requirements.txt` et `backend/core/embedding_install.py`.
 
 **4. `google-generativeai` et son arbre transitif ne partent pas** — il tire à
 lui seul `googleapiclient` (97,9 Mo) et toute la chaîne
@@ -258,14 +262,24 @@ def exiger_arch_native(arch: str) -> None:
 #: fichier lui-même, `--contraintes` en pointe un autre.
 CONTRAINTES_DEFAUT = REPO / "tools" / "contraintes-paquet.txt"
 
-#: Exclus de l'installation : `sentence-transformers` tire torch (~2 Go),
-#: téléchargé au premier usage du RAG. `google-generativeai` tire à lui seul
+#: Exclus de l'installation : `google-generativeai` tire à lui seul
 #: `googleapiclient` (97,9 Mo — le plus gros poste du paquet) et toute la
 #: chaîne `google-api-core`/`google-auth`/`google-ai-generativelanguage` :
 #: rien d'autre dans `requirements.txt` n'en dépend, donc l'exclure suffit à
-#: faire disparaître tout l'arbre transitif de résolution. Cf. décisions 3 et
-#: 4 du docstring.
-HORS_PAQUET_PIP = ("sentence-transformers", "google-generativeai")
+#: faire disparaître tout l'arbre transitif de résolution. Cf. décision 4 du
+#: docstring.
+#:
+#: **`sentence-transformers` était ici et n'y est plus** — il n'est plus dans
+#: `requirements.txt` du tout. Le 2026-08-26, la pile d'embedding est passée à
+#: `onnxruntime` (13,7 Mo, déclaré, EMBARQUÉ dans le paquet) plus un tokeniseur
+#: en Python pur. Il n'y a donc plus de wheel reportée « au premier usage » :
+#: 198,3 Mo de wheels différées deviennent 13,7 Mo embarquées, et ce qui reste
+#: différé, ce sont les 90,4 Mo de POIDS du modèle — un téléchargement de
+#: fichiers, vérifié par sha256, du même genre que les 76 Mo du modèle Piper
+#: (`core/voice.py`). Ne pas rajouter `onnxruntime` ici : ce serait rendre la
+#: recherche documentaire impossible à réparer depuis l'application, puisque
+#: rien dans Épure n'installe plus de paquet Python.
+HORS_PAQUET_PIP = ("google-generativeai",)
 
 #: Exclus **de l'installation ARM64 seulement** : la voix y est déclarée
 #: indisponible (décision du 2026-08-22, `docs/remplacement-vectoriel.md`). Le x64
@@ -284,11 +298,16 @@ HORS_PAQUET_PIP = ("sentence-transformers", "google-generativeai")
 #:   ce chantier a écarté pour `chromadb` (§0 du plan). Décision prise : on
 #:   n'essaie pas.
 #:
-#: Ce qui n'est PAS ici et qui pourrait surprendre : **`onnxruntime` reste**. On
-#: pourrait croire qu'il part avec la voix, mais il publie une wheel `win_arm64`
-#: et rien n'oblige à l'écarter. **`torch` non plus** : sa wheel `win_arm64`
-#: existe sur l'index PyTorch (cf. décision 3) — l'écarter par confusion coûterait
-#: le RAG, qui marche parfaitement sur ARM64.
+#: Ce qui n'est PAS ici et qui pourrait surprendre : **`onnxruntime` reste**, et
+#: depuis le 2026-08-26 ce n'est plus « rien n'oblige à l'écarter » mais « l'écarter
+#: casserait la recherche documentaire ». Il portait la voix en transitif ; il
+#: porte maintenant l'embedding, en dépendance déclarée (décision 3). Le retirer
+#: avec les paquets vocaux — la confusion naturelle, puisqu'il est arrivé par eux —
+#: livrerait un paquet ARM64 sans moteur d'embedding, sur l'architecture même pour
+#: laquelle ce chantier a été fait.
+#:
+#: `torch` n'est plus mentionné ici parce qu'il n'est plus une dépendance d'Épure,
+#: ni directe ni transitive.
 #:
 #: Le point à retenir si cette liste doit changer un jour : le critère est
 #: « pip échoue-t-il à INSTALLER, ou exige-t-il un compilateur sur la machine
@@ -303,18 +322,24 @@ HORS_PAQUET_PIP_ARM64 = ("faster-whisper", "piper-tts")
 #: et 3 » de `docs/distribution-empaquetee.md`.** Cette liste portait
 #: `("pip", "setuptools", "pkg_resources")`, sur la justification « le
 #: destinataire n'installe rien ». C'était faux, et faux à cause d'une autre
-#: décision de ce même fichier : `HORS_PAQUET_PIP` exclut
+#: décision de ce même fichier : `HORS_PAQUET_PIP` excluait alors
 #: `sentence-transformers` en promettant qu'il « s'installe au premier usage du
 #: RAG » (décision 3). Les deux se composaient en panne — l'une reporte une
 #: installation, l'autre retire l'outil qui seul peut la faire — et le résultat
 #: était un 500 définitif sur toute la recherche documentaire, plus une procédure
 #: manuelle passant par `get-pip.py` pour la réparer.
 #:
-#: `core/embedding_install.py` fait désormais cette installation depuis
-#: l'application, ce qui demande un `pip` fonctionnel dans le paquet. Coût
-#: mesuré du renoncement : **15,2 Mo** (`pip` 10,1 + `setuptools` 5,1) — soit
-#: 0,7 % des ~2 Go de torch que ces 15 Mo servent justement à installer. Le
-#: calcul ne se discute pas.
+#: **Depuis le 2026-08-26, plus aucune wheel n'est différée** (décision 3 : la
+#: pile d'embedding est embarquée), donc cette liste n'a plus à servir une
+#: installation déclenchée par l'application. Elle reste vide pour autant, et le
+#: motif est le suivant : un paquet sans `pip` est un paquet qu'on ne peut pas
+#: réparer. `core/embedding_install.py` DIT au destinataire de lancer
+#: `pip install -r requirements.txt` quand `onnxruntime` manque ; lui retirer
+#: `pip` rendrait ce conseil impossible à suivre. Coût
+#: mesuré du renoncement : **15,2 Mo** (`pip` 10,1 + `setuptools` 5,1). Le calcul
+#: se discutait déjà mal quand ces 15 Mo servaient à installer ~2 Go de torch ; il
+#: se discute autrement maintenant qu'ils ne servent plus qu'un rattrapage
+#: éventuel, mais 15 Mo pour rendre un paquet réparable reste bon marché.
 #:
 #: `pkg_resources` part avec eux : c'est un module DE `setuptools`, pas un paquet
 #: indépendant. Le purger en gardant setuptools livrerait un setuptools amputé —
@@ -698,9 +723,11 @@ def _exigences_du_paquet(cible: Path, arch: str = "amd64") -> Path:
     Deux motifs d'exclusion, et ils ne disent pas la même chose au lecteur du
     fichier produit :
 
-    - `HORS_PAQUET_PIP` (toutes architectures) — reporté au premier usage, donc
-      **récupérable** : `sentence-transformers` s'installera quand le destinataire
-      utilisera le RAG.
+    - `HORS_PAQUET_PIP` (toutes architectures) — **récupérable** : rien n'empêche
+      de l'installer plus tard, le paquet garde `pip`. Ne contient plus que
+      `google-generativeai` depuis que la pile d'embedding est embarquée
+      (décision 3) : le fournisseur Gemini reste utilisable en cloud par les
+      autres chemins, et personne ne perd de capacité en attendant.
     - `HORS_PAQUET_PIP_ARM64` (ARM64 seulement) — **définitif** : il n'existe rien
       à installer pour cette architecture, ni maintenant ni plus tard.
 

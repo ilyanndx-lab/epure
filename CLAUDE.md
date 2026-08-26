@@ -83,12 +83,16 @@ python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS
 python test_installeur.py         # installeur du paquet : mise à jour sans perte de données
 python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/* mort (§8)
 python test_models_cloud_sans_cle.py # un fournisseur sans clé ne rend aucun modèle
-python test_embedding_install.py  # installation à la demande de torch + sentence-transformers (§3.4)
+python test_embedding_install.py  # mise à disposition du modèle d'embedding (§3.4)
+python test_wordpiece.py          # parité du tokeniseur Python pur (§3.4)
+python test_dependances_declarees.py  # onnxruntime déclaré en DIRECT, jamais transitif (§8)
+python test_encodage_scripts.py   # les .ps1 versionnés restent en ASCII pur (§8)
+python test_dev_epure.py          # stderr non fatal dans tools/dev-epure.ps1 (§8)
 python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté (§8)
 python test_ingestion_documents.py   # formats lus par le RAG : pptx/xlsx/docx réels
 python test_taches_locales.py     # aucune tâche de fond ne part en cloud (§3.7)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
-python integration_modules_mount.py  # LOURD : core.runtime (torch, sentence-transformers)
+python integration_modules_mount.py  # LOURD : core.runtime + le vrai store vectoriel
 python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
 ```
 
@@ -103,7 +107,7 @@ la CI tourne en `unittest discover` depuis le commit `7e3bf8c`. Ce n'est plus un
 liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
 tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
 l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
-torch et sentence-transformers et tourne dans le job `integration`, manuel).
+le vrai store vectoriel et tourne dans le job `integration`, manuel).
 
 **Trois lanceurs, trois publics** — ne pas les confondre :
 `tools/dev-epure.ps1` (ce poste, après un pull, logs visibles),
@@ -149,9 +153,12 @@ syntaxe récente, vérifie sa disponibilité en 3.12.
 ### Écart de DÉPENDANCES local/CI — le même piège, moins connu
 
 Le job `backend` de la CI n'installe pas `requirements.txt` mais un **jeu
-minimal** (l'en-tête de `ci.yml` le justifie ligne par ligne) : ni `torch`, ni
-`sentence-transformers`, ni **`faster-whisper`, ni `piper-tts`**. Sur le poste
-d'Ilyann tout est installé. Un test qui touche un moteur vocal ou vectoriel peut
+minimal** (l'en-tête de `ci.yml` le justifie ligne par ligne) : ni
+**`faster-whisper`, ni `piper-tts`**. Sur le poste d'Ilyann tout est installé.
+(`onnxruntime` y EST depuis le 2026-08-26 : il ne pèse plus 198 Mo de wheels mais
+14 Mo, et il est embarqué dans le paquet — l'en garder dehors ferait tourner la CI
+dans une configuration qui n'existe nulle part. Ce qui reste hors du job, c'est le
+*modèle* : 90 Mo de poids que `_test_env` empêche de télécharger.) Un test qui touche un moteur vocal ou vectoriel peut
 donc passer en local et échouer en CI **sans une ligne de syntaxe récente** — et
 c'est arrivé : un garde-fou « refuser si `piper-tts` est absent » a fait tomber
 sept tests de `test_models_dir.py`, qui neutralisaient `_load` mais pas la
@@ -164,7 +171,7 @@ Deux réflexes :
   égalité, ou se garde par un `if _module_present(...)` ;
 - avant de pousser un changement qui touche ces moteurs, rejouer la suite avec
   les paquets bloqués — un `sys.meta_path` qui lève `ImportError` sur
-  `piper` / `faster_whisper` / `ctranslate2` / `sentence_transformers` reproduit
+  `piper` / `faster_whisper` / `ctranslate2` / `onnxruntime` reproduit
   la condition en une vingtaine de lignes, et c'est ce qui a attrapé le second
   échec avant la CI plutôt qu'après.
 
@@ -205,9 +212,11 @@ Points de conception à respecter :
   n'importent **aucun** `core.*`).
 - **`_LazyEngine`** : `rag`, `docanalysis`, `history_engine`, `whisper`, `piper`
   sont des proxies. Le moteur réel n'est construit qu'au premier accès à un
-  attribut. Raison : `RAGEngine` importe torch + sentence-transformers (~30 s à
-  chaud, 2 min à froid) et bloquait uvicorn au point que `/health` ne répondait
-  pas. **Ne pas « simplifier » en instanciant directement.**
+  attribut. Raison historique : `RAGEngine` importait torch +
+  sentence-transformers (~30 s à chaud, 2 min à froid) et bloquait uvicorn au
+  point que `/health` ne répondait pas. La pile légère (§3.4) a ramené ce coût à
+  moins d'une seconde, mais la paresse reste **nécessaire** : construire ce moteur
+  peut déclencher le téléchargement de 90 Mo, qu'on ne veut pas au démarrage. **Ne pas « simplifier » en instanciant directement.**
 - **`_hf_offline_if_cached()`** doit rester **avant** le premier import de
   `huggingface_hub` : `HF_HUB_OFFLINE` est figée à l'import. Déplacer cette
   fonction ou les imports en dessous réintroduit un démarrage bloqué plusieurs
@@ -382,38 +391,67 @@ Aucune base de données côté application. Deux stockages :
   `core/docanalysis.py` et `core/history.py` sur l'ancien sans que rien ne le
   signale.
 
-  **IMPÉRATIF : `sentence_transformers` s'importe DANS `VectorStore.__init__`,
-  jamais en tête de `core/vector_store.py`.** Mesuré : 17,4 s et torch chargé au
-  seul import du module. Comme `core/rag.py` l'importe et que `core/runtime.py`
-  importe `core/rag.py`, un import en tête de fichier se paie au démarrage
-  d'uvicorn — l'incident exact que `_LazyEngine` corrige (§3.2), réintroduit par
-  la bande. **La paresse du proxy ne couvre que la CONSTRUCTION des moteurs,
-  jamais l'import de leurs dépendances.**
+  **IMPÉRATIF : `onnxruntime` s'importe DANS `MoteurEmbedding.__init__`, jamais
+  en tête de `core/embedding.py`.** La règle vient de `sentence_transformers`, qui
+  coûtait 17,4 s et chargeait torch au seul import du module — comme
+  `core/vector_store.py` importe la chaîne d'embedding et que `core/runtime.py`
+  importe `core/vector_store.py`, un import en tête de fichier se payait au
+  démarrage d'uvicorn. Le coût est tombé à **0,37 s** avec ONNX Runtime, et la
+  règle ne change pas de nature pour autant : **la paresse du proxy ne couvre que
+  la CONSTRUCTION des moteurs, jamais l'import de leurs dépendances.**
 
-  **IMPÉRATIF — `VectorStore.__init__` appelle `exiger_pile()` AVANT cet import, et
-  ce n'est pas une précaution : c'est le seul chemin qui installe la pile.** Dans un
-  paquet livré, `sentence-transformers` n'est pas installé (`HORS_PAQUET_PIP` l'exclut,
-  il tire ~2 Go de torch). L'import levait donc un `ImportError` nu, qui devenait
-  `500 {"detail": …, "type": "ImportError"}` sur toute route touchant le RAG — à chaque
-  appel, pour toujours, et rien dans l'application ne pouvait installer ce qui manquait
-  puisque `pip` était lui aussi purgé du paquet. `core/embedding_install.py` ferme ça :
-  `pip install torch --index-url https://download.pytorch.org/whl/cpu` puis
-  `pip install sentence-transformers==…`, **dans cet ordre** (sur ARM64, PyPI ne publie
-  aucune wheel `win_arm64` pour torch), dans un thread, **une seule tentative par
-  process**, avec un état exposé par `GET /rag/capabilities` et un 503 lisible à la place
-  du 500. Points à ne pas défaire :
+  **LA PILE A CHANGÉ LE 2026-08-26** — `sentence-transformers` (donc torch,
+  transformers, scikit-learn, scipy) est remplacé par **`onnxruntime` +
+  `core/wordpiece.py`**, sur le MÊME modèle `all-MiniLM-L6-v2`, dont le dépôt
+  HuggingFace publie déjà l'export ONNX fp32.
 
-  - `PURGE_SITE_PACKAGES` doit rester **sans `pip` ni `setuptools`** (15,2 Mo contre les
-    2 Go qu'ils installent) — verrouillé par `test_paquet.py` ;
-  - `core/runtime.py::_warmup` ne préchauffe pas le RAG quand la pile manque, sinon un
-    premier démarrage tire 2 Go sans qu'on le lui ait demandé ;
-  - `EPURE_EMBEDDING_AUTOINSTALL=0` coupe le mécanisme, et `_test_env.py` le pose pour
-    toute la suite : le job rapide de la CI n'installe ni torch ni sentence-transformers,
-    donc sans cette variable le premier test touchant le RAG téléchargerait 2 Go sur le
-    runner ;
-  - l'état persiste dans `memory/embedding_install.json`, **verdicts terminaux
-    seulement** (`prêt`/`échec`) — un `en_cours` sur le disque survivrait au process qui
-    l'a écrit.
+  Ce qui a forcé la sortie n'est pas le poids mais un blocage dur, mesuré deux
+  fois à huit minutes d'écart sur la machine ARM64 d'un destinataire : **Smart App
+  Control y bloque durablement `sklearn/utils/_isfinite`**, que
+  `sentence-transformers` importe sans condition à son chargement — pour un
+  `cos_sim` que `core/vector_store.py` n'appelle jamais, puisqu'il calcule son
+  cosinus en numpy. `pip install` réussissait, l'import plantait. Et
+  `scikit-learn` est une dépendance **inconditionnelle de toutes** les versions de
+  `sentence-transformers` (vérifié de la 2.7.0 à la 6.0.0) : changer de version
+  n'était pas une issue.
+
+  **Les vecteurs sont les mêmes, et c'est mesuré sur l'index réel** : les
+  180 chunks déjà stockés dans `vector_db/` — calculés par
+  `sentence-transformers` — se recalculent au **cosinus 1.000000** (écart absolu
+  maximal 2,1e-07) avec le nouveau moteur. **Aucune réindexation.**
+
+  Trois points à ne pas défaire :
+
+  - **`onnxruntime` est déclaré en DIRECT dans `requirements.txt`.** Il arrivait
+    par `faster-whisper` et `piper-tts`, tous deux retirés des paquets ARM64
+    (`HORS_PAQUET_PIP_ARM64`) : sans déclaration, la pile d'embedding aurait
+    dépendu de paquets vocaux absents sur l'architecture même qui a motivé le
+    chantier, et le poste de dev — où la voix est installée — n'aurait rien pu
+    voir. C'est mot pour mot l'incident `websockets`/`uvicorn[standard]` (§8).
+    Verrouillé par `test_dependances_declarees.py`.
+  - **Le tokeniseur est en Python pur**, et pas `tokenizers`. Son `.pyd` n'est pas
+    signé, c'est-à-dire la catégorie exacte de binaire que Smart App Control
+    bloque — et le blocage se décide **par fichier**, sur réputation : les `.pyd`
+    de numpy, non signés eux aussi, passent sur cette machine ; celui de
+    scikit-learn non. On ne peut donc pas *raisonner* qu'un binaire non signé
+    passera. Les trois binaires d'`onnxruntime`, eux, sont signés
+    `CN=Microsoft Corporation` — vérifié sur la machine cible. Parité du
+    tokeniseur prouvée identifiant par identifiant sur 200 échantillons
+    (`test_wordpiece.py`, table figée : la CI la tient sans installer
+    `tokenizers`).
+  - **`core/embedding_install.py` a changé de nature, pas de rôle.** Il
+    n'installe plus de paquets — il télécharge les **90 Mo de poids** du modèle
+    (`urllib` + sha256, `.part` puis renommage atomique), exactement comme
+    `core/voice.py` fait des 76 Mo de Piper. Le contrat HTTP est inchangé :
+    `GET /rag/capabilities`, `POST /rag/install`, 503 porteur d'un état,
+    `EPURE_EMBEDDING_AUTOINSTALL=0` pour couper. `TAILLE_ESTIMEE_MO` est
+    désormais **dérivée** des tailles déclarées (91) au lieu d'être écrite à la
+    main (elle disait 2000 pour 198 Mo de wheels réelles).
+
+  Poids mesuré du changement : **198,3 Mo de wheels → 14,1 Mo**, et
+  **850,7 Mo retirés du disque** pour ~41,7 Mo ajoutés. Le contournement
+  `torch --index-url download.pytorch.org` construit pour ARM64 disparaît avec
+  torch.
 
   chromadb a été retiré le 2026-08-13 (`docs/remplacement-vectoriel.md`) : aucune
   wheel Windows ARM64, et une grappe — `grpcio`, `kubernetes`, `opentelemetry-*` —
@@ -448,6 +486,13 @@ Aucune base de données côté application. Deux stockages :
   suite **déterministe** — sans ça son comportement dépendrait de la présence
   d'un `npm run build` sur le poste, et un test de l'interface servie passerait
   en local pour échouer en CI.
+- `resolve_embedding_dir()` — `$EPURE_EMBEDDING_DIR`, sinon
+  `<backend>/embedding_model`. Jumeau du suivant et **pour les mêmes raisons** :
+  cache de modèle (90,4 Mo d'ONNX + un vocabulaire, téléchargés au premier usage
+  et vérifiés par sha256), donc détourné par `_test_env` mais **absent** de
+  `REAL_DIRS`. Dossier séparé de `piper_models` et non un sous-dossier : les deux
+  caches n'ont pas le même sort dans un paquet ARM64, où la voix est retirée de
+  l'installation alors que l'embedding y fonctionne.
 - `resolve_models_dir()` — `$EPURE_MODELS_DIR`, sinon `<backend>/piper_models`.
   **C'est un cache de modèles, pas des données utilisateur**, et la distinction
   a des conséquences. Le `.onnx` de Piper (76 Mo) y est téléchargé au premier
@@ -478,15 +523,18 @@ Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchor
 statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
 
 Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
-ces imports. `backend/_test_env.py` pose les **cinq** variables sur des
+ces imports. `backend/_test_env.py` pose les **sept** variables sur des
 temporaires uniques pour la session — `backend/modules/` et
 `frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
 voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
-testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR` et `EPURE_WEB_DIR`
-sont posés sur des temporaires **vides**, pour deux raisons distinctes : copier
-76 Mo de modèle vocal n'aurait aucun sens et aucun test ne le lit (détourné
-seulement pour qu'un test construisant `PiperEngine` par accident ne tire pas
-76 Mo dans le cache réel) ; `frontend/dist/` est vidé pour le **déterminisme** —
+testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR`, `EPURE_EMBEDDING_DIR`,
+`EPURE_VECTOR_DIR` et `EPURE_WEB_DIR` sont posés sur des temporaires **vides**,
+pour des raisons distinctes : copier 76 Mo de modèle vocal ou 90 Mo de modèle
+d'embedding n'aurait aucun sens et aucun test ne les lit (détournés seulement pour
+qu'un test construisant `PiperEngine` ou `MoteurEmbedding` par accident ne tire
+rien dans les caches réels — et, pour l'embedding, avec
+`EPURE_EMBEDDING_AUTOINSTALL=0` par-dessus) ; `frontend/dist/` est vidé pour le
+**déterminisme** —
 `main._register_web` ne monte l'interface que s'il y trouve un `index.html`, donc
 sur le vrai chemin la suite se comporterait différemment selon que le front a été
 construit sur le poste. `test_web_statique.py` fabrique son propre `dist/`.
@@ -729,8 +777,11 @@ production, et `test_module_isolation.py` tourne en CI.
 | Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
 | Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
 | Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
-| La recherche documentaire répond **500 « ImportError »** dans un paquet livré | `sentence-transformers` n'y est pas installé (2 Go de torch) et rien ne l'installait — la promesse « s'installe au premier usage » était de la prose. Depuis le 2026-08-23, `VectorStore.__init__` appelle `exiger_pile()` : installation en tâche de fond, 503 avec état, `GET /rag/capabilities`. Ne pas remettre `pip` dans `PURGE_SITE_PACKAGES`, ne pas préchauffer le RAG sans la pile. Cf. §3.4 et `test_embedding_install.py`. |
-| `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répond 500 (`sentence-transformers` exclu, et le premier accès au moteur RAG l'importe) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
+| La recherche documentaire répond **500 « ImportError »** dans un paquet livré | La pile d'embedding n'y était pas installée et rien ne l'installait — la promesse « s'installe au premier usage » était de la prose. Depuis le 2026-08-23, `VectorStore.__init__` appelle `exiger_pile()` : préparation en tâche de fond, 503 avec état, `GET /rag/capabilities`. Ne pas remettre `pip` dans `PURGE_SITE_PACKAGES`, ne pas préchauffer le RAG sans le modèle. Cf. §3.4 et `test_embedding_install.py`. |
+| Une dépendance **porteuse** qui arrive par un paquet tiers finit par disparaître avec lui | Vu deux fois. `websockets` arrivait par l'extra `standard` d'`uvicorn`, déclaré par `chromadb` : son retrait a tué tout `/ws/*` dans un paquet livré, sur toutes les architectures, et le poste de dev n'a rien vu (il en gardait un orphelin). `onnxruntime` allait rejouer la même chose — installé en transitif par `faster-whisper`/`piper-tts`, tous deux exclus des paquets ARM64, alors qu'il porte désormais TOUT l'embedding. Règle : **ce dont on dépend directement est déclaré directement, même si c'est déjà installé.** « Installé » n'est pas « déclaré », et la différence n'apparaît que chez quelqu'un d'autre. Verrouillé par `test_dependances_declarees.py`. |
+| Un `.ps1` sans BOM meurt sur une **cascade d'erreurs de parsing** loin de sa cause | `powershell.exe` (5.1) lit un `.ps1` sans BOM avec la page de code système — Windows-1252, pas UTF-8. Le tiret cadratin `—` (E2 80 94) et le filet `─` (E2 94 80) y produisent tous deux un **U+201D**, que PowerShell traite comme un délimiteur de chaîne : une chaîne ouverte par `"` peut donc être fermée par lui. Mesuré : 33 erreurs, la première annoncée ligne 253 sur une ligne strictement ASCII, et 0 erreur sous `pwsh 7`. **ASCII pur** dans tout `.ps1`/`.cmd` versionné (`test_encodage_scripts.py`). |
+| Un script PowerShell s'arrête sur une commande qui a **réussi** | Sous `powershell.exe` (5.1), une redirection `2>&1` sur un binaire NATIF convertit chaque ligne de son stderr en `ErrorRecord`, et `$ErrorActionPreference = 'Stop'` en fait une erreur TERMINANTE — même quand le binaire sort en 0. Le `if ($LASTEXITCODE -ne 0)` écrit juste après n'est jamais atteint. `tools/dev-epure.ps1` mourait ainsi sur l'avertissement de taille de chunk de Vite, build réussi. Passer par `Invoquer-Externe`, qui relâche la préférence en portée de FONCTION. Verrouillé par `test_dev_epure.py`. |
+| `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répondait 500 (la pile d'embedding n'y était pas installée, et le premier accès au moteur RAG la construit) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
 | Un modèle à raisonnement (qwen3) reste **muet une minute** puis lâche trois mots | Le raisonnement arrive dans un champ **séparé** du flux Ollama (`chunk.message.thinking`), pas en balises `<think>`, et **sans qu'on le demande** — aucun argument `think` n'est passé. `_stream_ollama` ne lisait que `content` et faisait `if content: yield content` : un chunk de raisonnement a `content == ""`, donc rien n'était yieldé. Mesuré sur `qwen3:8b` : **584 tokens en 78 s, premier caractère visible à 76,5 s**, pour `17 x 23 = 391.` — et `num_predict` consommé de façon invisible. Corrigé le 2026-08-24 : sentinelle `__reasoning__` → `{"type": "reasoning"}` sur `/ws/chat` → bloc repliable dans le chat (premier affichage à 7,8 s, mesuré). Ne PAS passer `think=True` : inutile pour les modèles qui pensent, et ça modifierait l'appel pour ceux qui ne pensent pas. Côté FLM il n'y a rien à récupérer — mesuré sur `qwen3.5:4b` via `/v1/chat/completions`, le delta ne porte que `role`/`content`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 

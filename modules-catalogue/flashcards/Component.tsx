@@ -128,7 +128,7 @@ export default function Flashcards() {
   useEffect(() => {
     fetchDecks()
     // `Array.isArray` et non `d.files` cru sur parole : cette route répond 503
-    // pendant que le backend installe la pile d'embedding (~2 Go, paquet livré,
+    // pendant que le backend prépare le moteur d'embedding (90 Mo, paquet livré,
     // cf. core/embedding_install.py), et 401 tant que le token n'est pas appairé.
     // Le corps n'a alors PAS de champ `files` ; `.catch()` ne voit rien puisque
     // le parse a réussi, et l'état passe à `undefined` — ça ne casse qu'au rendu

@@ -305,15 +305,34 @@ def _exigences(arch: str = "amd64") -> tuple[str, list[str]]:
 
 
 class ExigencesTest(unittest.TestCase):
-    def test_sentence_transformers_est_retire_mais_reste_visible(self):
+    def test_la_pile_d_embedding_part_dans_le_paquet(self):
+        """RENVERSÉ le 2026-08-26, et c'est le point du chantier.
+
+        Ce test s'appelait `test_sentence_transformers_est_retire_mais_reste_visible`
+        et vérifiait l'inverse : que la pile d'embedding N'était PAS installée,
+        parce qu'elle pesait 198 Mo de wheels (torch) et se reportait « au premier
+        usage ». Elle pèse maintenant 13,7 Mo — `onnxruntime` — donc elle part
+        avec le reste, et il n'y a plus rien à reporter côté paquets. Ce qui reste
+        différé, ce sont les 90 Mo de POIDS du modèle, qui ne sont pas une
+        dépendance pip et n'apparaissent donc pas dans ce fichier.
+
+        Le retirer par confusion est le risque réel : `onnxruntime` arrivait
+        jusqu'ici par `faster-whisper` et `piper-tts`, tous deux exclus sur ARM64.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             cible = paquet._exigences_du_paquet(Path(tmp) / "req.txt")
             texte = cible.read_text(encoding="utf-8")
         lignes_actives = [l for l in texte.splitlines()
                          if l.strip() and not l.lstrip().startswith("#")]
-        self.assertFalse(any(l.lower().startswith("sentence-transformers")
+        self.assertTrue(any(l.lower().startswith("onnxruntime")
                             for l in lignes_actives),
-                        "sentence-transformers serait installé (torch dans le paquet)")
+                        "onnxruntime ne partirait pas : plus de moteur d'embedding")
+        # L'ancienne pile ne doit pas revenir par la bande : `sentence-transformers`
+        # réinstallerait scikit-learn, donc le binaire que Smart App Control bloque
+        # sur la machine cible.
+        self.assertFalse(any(l.lower().startswith(("sentence-transformers", "torch"))
+                            for l in lignes_actives),
+                        "l'ancienne pile d'embedding est revenue")
         # Retiré en commentaire et non supprimé : sinon la prochaine relecture du
         # fichier dérivé ne dit pas pourquoi il diffère de requirements.txt.
         self.assertIn("RETIRÉ DU PAQUET", texte)
@@ -459,8 +478,8 @@ class ExigencesTest(unittest.TestCase):
 
     def test_l_exclusion_arm64_est_annoncee_comme_definitive(self):
         """Les deux motifs de retrait ne se lisent pas pareil, et le fichier livré
-        doit le dire : `sentence-transformers` est reporté (« au premier usage »),
-        la voix ARM64 est définitive. Un unique « RETIRÉ » laisserait le
+        doit le dire : `google-generativeai` est récupérable, la voix ARM64 est
+        définitive. Un unique « RETIRÉ » laisserait le
         destinataire attendre une installation qui n'arrivera jamais.
         """
         texte, _ = _exigences("arm64")
@@ -501,18 +520,29 @@ class ExigencesTest(unittest.TestCase):
                     self.assertEqual(infos["arch"], arch)
                     self.assertIs(infos["voix"], voix)
 
-    def test_l_index_arm64_de_torch_est_indique_au_destinataire(self):
-        """`requirements.txt` est livré au destinataire (vérifié dans le paquet) et
-        c'est le seul endroit où il lira quoi faire.
+    def test_plus_aucun_contournement_arm64_a_tenir_pour_l_embedding(self):
+        """REMPLACE `test_l_index_arm64_de_torch_est_indique_au_destinataire`.
 
-        PyPI ne publie aucune wheel `win_arm64` pour torch, l'index PyTorch si :
-        sans cette consigne, `pip install -r requirements.txt` échoue sur ARM64
-        alors que la wheel existe. La consigne doit rester DANS ce fichier — la
-        mettre seulement dans `tools/faire_paquet.py` ne servirait à rien,
-        puisque `tools/` ne part jamais dans le paquet.
+        Ce test exigeait que `requirements.txt` porte la consigne
+        `--index-url https://download.pytorch.org/whl/cpu`, parce que PyPI ne
+        publie aucune wheel `win_arm64` pour torch et que sans elle
+        `pip install -r requirements.txt` échouait sur ARM64. Le contournement a
+        disparu avec torch : `onnxruntime` publie sa wheel `win_arm64` sur PyPI
+        comme tout le monde (cp311 → cp314, vérifié).
+
+        Ce qui est vérifié maintenant est le contraire, et il faut le vérifier :
+        que la consigne ne traîne PAS, active, dans le fichier livré. Une
+        instruction d'installer torch depuis un index tiers, dans un dépôt qui
+        n'en dépend plus, ferait télécharger 2 Go à un destinataire qui suit ce
+        qu'il lit.
         """
         texte = (Path(paquet.BACKEND) / "requirements.txt").read_text(encoding="utf-8")
-        self.assertIn("download.pytorch.org/whl/cpu", texte)
+        lignes_actives = [l for l in texte.splitlines()
+                          if l.strip() and not l.lstrip().startswith("#")]
+        self.assertFalse(any("download.pytorch.org" in l for l in lignes_actives),
+                         "une consigne d'installation de torch subsiste, active")
+        # `win_arm64` doit rester mentionné : c'est là que se lit ce qui a été
+        # vérifié pour cette architecture, et c'est ce qui a coûté le plus cher.
         self.assertIn("win_arm64", texte)
 
     def test_le_store_vectoriel_est_exclu_du_paquet(self):
@@ -663,12 +693,14 @@ class PurgeSitePackagesTest(unittest.TestCase):
     def test_pip_et_setuptools_ne_sont_pas_purges(self):
         """L'invariant qui compte, et le seul que la relecture ne garantit pas.
 
-        Remettre `"pip"` dans cette liste recasserait exactement l'écart 3 de
-        `docs/distribution-empaquetee.md` : `HORS_PAQUET_PIP` reporte
-        l'installation de `sentence-transformers` au premier usage, et purger
-        `pip` retire l'outil qui seul peut la faire. Le paquet se construirait
-        sans une erreur, et la panne n'apparaîtrait qu'à l'ouverture du panneau
-        fichiers, chez quelqu'un d'autre.
+        Remettre `"pip"` dans cette liste livrerait un paquet qu'on ne peut pas
+        réparer. C'était l'écart 3 de `docs/distribution-empaquetee.md` quand
+        `HORS_PAQUET_PIP` reportait l'installation de `sentence-transformers` au
+        premier usage — purger `pip` retirait l'outil qui seul pouvait la faire.
+        La pile d'embedding est embarquée depuis le 2026-08-26, donc ce cas précis
+        a disparu ; le motif reste : `core/embedding_install.py` DIT au
+        destinataire de lancer `pip install -r requirements.txt` quand
+        `onnxruntime` manque, et ce conseil doit rester suivable.
 
         Le test porte sur la LISTE et non sur un paquet construit : la suite ne
         construit aucun paquet (plusieurs minutes de `pip install`), et c'est la

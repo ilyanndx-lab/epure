@@ -9,13 +9,19 @@
 #              app (TestClient), donc importent main.py — d'où numpy/ollama/
 #              pypdf/watchdog/python-multipart. C'est l'ensemble des imports de
 #              niveau module de main.py, mesuré — à UNE exception près, `wsproto`,
-#              justifiée au-dessus de l'étape — et il n'inclut PAS
-#              torch/sentence-transformers (le préchauffage RAG de core.runtime
-#              tourne dans un thread et échoue proprement). `numpy` remplace
-#              `chromadb` depuis le remplacement du store vectoriel : c'est
-#              core/vector_store.py, importé par core/rag.py, qui en dépend —
-#              et lui n'importe `sentence_transformers` que dans son __init__,
-#              donc torch reste hors de ce job.
+#              justifiée au-dessus de l'étape. `numpy` remplace `chromadb` depuis
+#              le remplacement du store vectoriel : c'est core/vector_store.py,
+#              importé par core/rag.py, qui en dépend.
+#              `onnxruntime` EST installé ici depuis le 2026-08-26, et ce n'est
+#              pas un relâchement de la règle « pas de deps ML » : la pile
+#              d'embedding n'est plus torch + sentence-transformers (198 Mo de
+#              wheels) mais onnxruntime seul — 14 Mo, une dépendance DIRECTE de
+#              requirements.txt, embarquée dans le paquet livré. La garder hors
+#              de ce job ferait tourner la CI dans une configuration qui
+#              n'existe plus nulle part. Ce qui reste hors du job, c'est le
+#              MODÈLE : `_test_env.py` pose EPURE_EMBEDDING_DIR sur un
+#              temporaire vide et EPURE_EMBEDDING_AUTOINSTALL=0, donc aucun test
+#              ne télécharge les 90 Mo de poids.
 #              VERSIONS : `fastapi` et `starlette` sont épinglées sur
 #              backend/requirements.txt. C'est la version validée qui fait foi,
 #              pas la dernière publiée — l'inverse n'est pas un choix, c'est un
@@ -29,7 +35,7 @@
 #              de requirements.txt.
 #              Le RESTE de la liste flotte, délibérément : rien n'y dépend d'un
 #              interne de version, et recopier tout requirements.txt ici en
-#              dupliquerait la maintenance (torch/sentence-transformers y sont).
+#              dupliquerait la maintenance.
 #              Si un autre paquet devient porteur d'un invariant, il rejoint les
 #              deux épinglés.
 # - frontend : npm ci + tsc -b + npm test + npm run build + eslint — QUATRE
@@ -42,8 +48,8 @@
 #              Le type-check est gardé EN PLUS du build, pour que le nom de
 #              l'étape en échec dise tout de suite si c'est le typage ou le
 #              bundling. Détail et durées mesurées au-dessus de l'étape.
-# - integration : integration_modules_mount.py charge core.runtime (torch,
-#              sentence-transformers…) → trop lourd pour chaque push, MANUEL
+# - integration : integration_modules_mount.py charge core.runtime et le vrai
+#              store vectoriel → plus lourd que le job rapide, MANUEL
 #              uniquement (workflow_dispatch). Son préfixe `integration_` est ce
 #              qui l'exclut de la découverte du job backend.
 
@@ -97,7 +103,7 @@ jobs:
           pip install fastapi==0.136.3 starlette==1.2.0
           pydantic pyyaml python-dotenv
           httpx python-multipart numpy ollama pypdf watchdog uvicorn wsproto
-          python-docx python-pptx openpyxl
+          python-docx python-pptx openpyxl onnxruntime
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
         # Les tests forcent HF_HUB_OFFLINE=1 et neutralisent les sondes
@@ -273,7 +279,7 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: backend/requirements.txt
-      - name: Dépendances complètes (torch, sentence-transformers…)
+      - name: Dépendances complètes (requirements.txt, voix comprise)
         run: pip install -r backend/requirements.txt
       - name: Montage de tous les modules (integration_modules_mount.py)
         working-directory: backend

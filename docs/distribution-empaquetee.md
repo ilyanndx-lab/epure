@@ -1007,3 +1007,126 @@ si chacun des sept paquets du tableau ci-dessus s'installe (wheel existante) ou 
 (compilation requise ou absente), et si les tests fonctionnels (import chromadb,
 `PersistentClient`, les imports du tableau §0.2) passent une fois le paquet assemblé —
 la même méthode que §0.5, sur la bonne architecture cette fois.
+
+---
+
+# Étape F — la pile d'embedding remplacée (2026-08-26)
+
+`sentence-transformers` est sorti du projet. Il reste le **même modèle**,
+`sentence-transformers/all-MiniLM-L6-v2`, mais chargé par **ONNX Runtime** et
+tokenisé par du **Python pur** (`backend/core/wordpiece.py`).
+
+## Ce qui a forcé la sortie — pas le poids
+
+Sur la machine ARM64 d'un destinataire, mesuré **deux fois à huit minutes
+d'écart** (donc pas une évaluation de réputation transitoire) :
+
+```
+File ".../sentence_transformers/util/similarity.py", line 9, in <module>
+    from sklearn.metrics import pairwise_distances
+...
+ImportError: DLL load failed while importing _cyutility:
+             Une stratégie de contrôle d'application a bloqué ce fichier.
+```
+
+**Smart App Control bloque durablement `sklearn/utils/_isfinite`**, que
+`sentence-transformers` importe sans condition à son chargement
+(`__init__` → `.backend` → `.quantize` → `.util` → `.retrieval` → `.similarity`),
+pour un `cos_sim` que `core/vector_store.py` n'appelle jamais — il calcule son
+cosinus en numpy. `pip install` réussissait (`état: "prêt"` dans
+`embedding_install.json`) ; l'**import** plantait, systématiquement. Le problème
+était donc à l'exécution, pas à l'installation — comme `websockets` en son temps.
+
+Et ce n'était pas une affaire de version : `scikit-learn` est une dépendance
+**inconditionnelle** de toutes les versions de `sentence-transformers` (vérifié
+sur PyPI de la 2.7.0 à la 6.0.0). Changer de version n'était pas une issue.
+
+## Ce qui a été écarté, et pourquoi
+
+| Candidat | Verdict |
+|---|---|
+| **`fastembed`** (ONNX, Qdrant) | **Non installable sur Windows ARM64.** Dépend en dur de `py-rust-stemmers`, qui publie 54 wheels dont **aucune `win_arm64`** — seulement une sdist, donc `pip` voudrait compiler du Rust sur la machine cible. Ramène aussi `mmh3`, `pillow`, `loguru`, `requests`, `tqdm` — et `mmh3` est précisément un des paquets que le retrait de chromadb avait fait partir. |
+| **Une autre version de `sentence-transformers`** | Structurellement impossible (cf. ci-dessus). |
+| **Les exports ONNX int8** (`model_qint8_arm64.onnx`, 23 Mo) | Cosinus 0,988 à 0,994 contre la référence : imposeraient de réindexer. Écartés pour ça, pas par méfiance. |
+| **`tokenizers`** pour la tokenisation | Son `.pyd` **n'est pas signé** — la catégorie exacte de binaire que Smart App Control bloque. Le blocage se décide **par fichier**, sur réputation : les `.pyd` de numpy, non signés eux aussi, passent sur cette machine ; celui de scikit-learn non. On ne peut donc pas *raisonner* qu'un binaire non signé passera. |
+
+## Ce qui a été retenu
+
+`onnxruntime` — dont les **trois** binaires sont signés
+`CN=Microsoft Corporation`, vérifié **sur la machine cible** — plus
+`core/wordpiece.py`, un WordPiece BERT en Python pur.
+
+Vérifié sur l'ARM64 réelle avant d'écrire une ligne de code : installation de la
+wheel, signatures, import (0,08 s), construction de session, inférence, et
+comparaison du vecteur produit à une référence figée sur x64 — **écart
+0,000000**. Le calcul est reproductible bit pour bit entre les deux
+architectures.
+
+## Les vecteurs sont les mêmes — mesuré sur l'index réel
+
+Les 180 chunks **déjà stockés** dans `backend/vector_db/`, calculés par
+`sentence-transformers`, recalculés par le nouveau moteur :
+
+| collection | chunks | cosinus min | écart absolu max |
+|---|---|---|---|
+| `fiches` | 130 | **1.000000** | 1,97e-07 |
+| `doc_analysis` | 34 | **1.000000** | 2,09e-07 |
+| `history` | 16 | **1.000000** | 1,94e-07 |
+
+**Aucune réindexation.** La parité du tokeniseur a été établie séparément,
+identifiant par identifiant, sur 200 échantillons (180 chunks réels + 20 cas
+limites : accent combinant contre précomposé, CJK, pleine largeur, katakana
+demi-largeur, `ß`, emoji hors BMP, mot de 150 caractères, U+0000, U+FFFD, espace
+de largeur nulle, chemin Windows) — **zéro divergence**. La table est figée dans
+`backend/test_wordpiece.py` pour que la CI la tienne sans installer `tokenizers`.
+
+## Poids
+
+| | avant | après |
+|---|---|---|
+| wheels à installer | **198,3 Mo** (torch 122,1 + scipy 36,7 + transformers 11,7 + sklearn 8,2 + sympy 6,3 + hf-xet 4,0 + tokenizers 2,8 + …) | **14,1 Mo** (onnxruntime 14,0 + flatbuffers) |
+| sur disque | 850,7 Mo | ~41,7 Mo |
+| poids du modèle, au premier usage | ~90 Mo (`model.safetensors`, via `huggingface_hub`) | 86,4 Mo (`onnx/model.onnx` + `vocab.txt`, via `urllib` + sha256) |
+| contournement ARM64 | `torch --index-url download.pytorch.org/whl/cpu`, ordre imposé | **aucun** |
+
+`protobuf` n'est pas compté comme un ajout : `google-generativeai` le déclarait
+déjà.
+
+## Conséquence sur le paquet — la décision 3 s'inverse
+
+La pile d'embedding **part maintenant dans le paquet** (14 Mo d'exigences
+ordinaires) au lieu d'être reportée « au premier usage ». `HORS_PAQUET_PIP` ne
+contient plus que `google-generativeai`.
+
+Ce qui reste différé, ce sont les **90 Mo de poids** du modèle — un
+téléchargement de fichiers vérifié par sha256, pas une installation de paquets,
+et exactement le motif déjà en place pour les 76 Mo du modèle Piper
+(`core/voice.py`). `core/embedding_install.py` garde donc son rôle et son contrat
+HTTP (`GET /rag/capabilities`, `POST /rag/install`, 503 porteur d'un état,
+`EPURE_EMBEDDING_AUTOINSTALL=0` pour couper) en changeant de contenu.
+
+`pip` et `setuptools` **restent** dans le paquet (`PURGE_SITE_PACKAGES` vide),
+mais plus pour la même raison : ils ne servent plus la pile d'embedding, ils
+servent le rattrapage manuel que `core/embedding_install.py` recommande quand
+`onnxruntime` manque. Un paquet sans `pip` est un paquet qu'on ne peut pas
+réparer.
+
+## Le piège évité, et il avait déjà coûté cher une fois
+
+`onnxruntime` était **déjà installé** sur le poste de dev — en transitif, par
+`faster-whisper` et `piper-tts`. Or ces deux paquets sont retirés des paquets
+ARM64 (`HORS_PAQUET_PIP_ARM64`). Sans déclaration **directe** dans
+`requirements.txt`, la pile d'embedding aurait donc dépendu de paquets vocaux
+absents **sur l'architecture même qui a motivé ce chantier**, et le poste de dev
+n'aurait rien pu voir.
+
+C'est mot pour mot l'incident `websockets` / `uvicorn[standard]` (étape D,
+séquelle). D'où `backend/test_dependances_declarees.py`, qui tient la règle
+générale : **ce dont on dépend directement est déclaré directement, même si c'est
+déjà installé.**
+
+## Ce que la mesure a corrigé au passage
+
+`TAILLE_ESTIMEE_MO` valait `2000` — une phrase d'interface qui annonçait « 2 Go »
+pour 198 Mo de wheels réelles, soit un facteur 10. Elle est maintenant **dérivée**
+de la somme des tailles déclarées (91).

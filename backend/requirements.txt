@@ -67,41 +67,57 @@ pyyaml==6.0.3
 # `kubernetes`, `opentelemetry-exporter-otlp-proto-grpc` (et de proche en proche
 # `googleapis-common-protos`, tout `opentelemetry-*`, `pypika`, `mmh3`). Mesuré
 # par carte de dépendances inverse avant de toucher à quoi que ce soit : aucun
-# autre paquet installé ne les réclame. `onnxruntime` en revanche RESTE —
-# `faster-whisper` et `piper-tts` en dépendent aussi, il n'était pas à chromadb.
-sentence-transformers==5.5.1
-# ⚠️ SUR WINDOWS ARM64 : installer `torch` AVANT cette ligne, et depuis l'index
-# PyTorch, pas depuis PyPI :
+# autre paquet installé ne les réclame. `onnxruntime` en revanche RESTE — et il
+# est DÉCLARÉ juste en dessous depuis le 2026-08-26 : il ne survivait ici qu'en
+# transitif de `faster-whisper` et `piper-tts` (il n'était pas à chromadb), ce qui
+# ne suffisait plus une fois qu'il porte l'embedding. Détail sous la ligne.
+onnxruntime==1.26.0
+# ── Le moteur d'embedding, depuis le 2026-08-26 ──────────────────────────────
+# REMPLACE `sentence-transformers==5.5.1`, qui vivait ici et tirait torch,
+# transformers, scikit-learn et scipy : 198,3 Mo de wheels, 843 Mo sur disque,
+# pour un usage réel de TROIS appels (`SentenceTransformer(nom)`,
+# `.get_embedding_dimension()`, `.encode(..., normalize_embeddings=True)`).
 #
-#     pip install torch --index-url https://download.pytorch.org/whl/cpu
-#     pip install -r requirements.txt
+# Ce qui a forcé le remplacement n'est pas le poids mais un blocage dur, mesuré
+# deux fois à huit minutes d'écart sur la machine ARM64 d'un destinataire :
+# **Smart App Control y bloque durablement `sklearn/utils/_isfinite`**, que
+# `sentence-transformers` importe SANS CONDITION à son chargement — pour un
+# `cos_sim` que `core/vector_store.py` n'appelle jamais, puisqu'il calcule son
+# cosinus en numpy. `pip install` réussissait ; l'import plantait, à chaque fois.
+# Et scikit-learn est une dépendance inconditionnelle de TOUTES les versions de
+# sentence-transformers (vérifié de la 2.7.0 à la 6.0.0) : changer de version
+# n'était pas une issue.
 #
-# `torch` n'est pas listé ici (il arrive en transitif par sentence-transformers)
-# et n'est pas embarqué dans le paquet distribué — il se télécharge au premier
-# usage du RAG (tools/faire_paquet.py, décision 3). Or **PyPI ne publie aucune
-# wheel `win_arm64` pour torch** : ses wheels Windows y sont `win_amd64`
-# uniquement. L'index de PyTorch, lui, en publie — vérifié le 2026-08-13 :
-# `torch-2.13.0+cpu-cp312-cp312-win_arm64.whl` (et les mêmes pour 2.7 → 2.13,
-# cp311/312/313). Sans ce détour, `pip install -r requirements.txt` échoue sur
-# ARM64 en résolvant torch, alors que la wheel existe.
+# MÊME MODÈLE, mêmes vecteurs : `all-MiniLM-L6-v2`, dont le dépôt HuggingFace
+# publie déjà l'export ONNX fp32. Mesuré contre l'ancienne pile sur 40 chunks
+# réels (dont 37 tronqués à 256 jetons) : cosinus 1.0 pour les 40, écart absolu
+# maximal 1,9e-07. Les données vectorielles existantes restent valides — aucune
+# réindexation. La tokenisation est reprise en Python pur
+# (`core/wordpiece.py`, parité identifiant par identifiant sur 200 échantillons)
+# précisément pour ne pas réintroduire un binaire non signé avec `tokenizers`.
 #
-# L'ORDRE compte : installer sentence-transformers d'abord ferait résoudre torch
-# depuis PyPI, où il n'y a rien pour cette architecture. Torch d'abord, depuis le
-# bon index, et la ligne ci-dessus le trouve déjà satisfait.
+# DÉCLARÉE ICI, EN DIRECT, ET C'EST LE POINT À NE PAS DÉFAIRE. `onnxruntime`
+# était déjà installé sur ce poste — mais en TRANSITIF, par `faster-whisper` et
+# `piper-tts`. Or ces deux-là sont retirés des paquets ARM64
+# (`HORS_PAQUET_PIP_ARM64` : `ctranslate2` ne publie aucune wheel `win_arm64` ni
+# sdist), donc la pile d'embedding aurait dépendu de paquets vocaux absents sur
+# l'architecture même qui a motivé le chantier. C'est mot pour mot l'incident
+# `websockets` / `uvicorn[standard]` : une implémentation qui arrive par une
+# dépendance sans rapport, puis disparaît avec elle. Verrouillé par
+# `backend/test_dependances_declarees.py`.
 #
-# CETTE CONSIGNE RESTE, mais elle ne sert plus qu'à une installation MANUELLE (dépôt
-# cloné, image Docker). Dans le paquet distribué, où cette ligne est commentée par
-# `tools/faire_paquet.py`, c'est l'APPLICATION qui joue ces deux commandes au premier
-# usage de la recherche documentaire — `backend/core/embedding_install.py`, dans le même
-# ordre et sur le même index, vérifié par `backend/test_embedding_install.py`. La phrase
-# ci-dessus a été pendant tout l'été la seule chose qui « installait » torch dans un
-# paquet, c'est-à-dire personne (docs/distribution-empaquetee.md, « écarts 2 et 3 »).
+# ARM64 : wheel `win_arm64` publiée pour cp311 → cp314 (13,7 Mo en cp312, la
+# version du runtime embarqué dans le paquet), et ses trois binaires sont signés
+# `CN=Microsoft Corporation` — vérifié SUR la machine cible, où l'import passe en
+# 0,08 s et où le vecteur produit est identique bit pour bit à celui du x64.
+# Ses dépendances (`flatbuffers`, `packaging`, `numpy`, `protobuf`) sont toutes
+# pures ou couvertes : `protobuf` publie un `py3-none-any` qui couvre ARM64.
+# **Il n'y a plus de contournement `--index-url download.pytorch.org` à tenir.**
 #
-# Sur x64 il n'y a rien à faire : PyPI suffit. Vérifié aussi que tout le RESTE de
-# ce que le RAG télécharge au premier usage est bon pour ARM64 — transformers,
-# sympy, networkx, joblib, Jinja2, huggingface-hub (universels), scikit-learn,
-# scipy, safetensors, regex, tokenizers, pillow (wheels win_arm64 publiées).
-# torch était le seul manquant.
+# Les 90,4 Mo de poids du modèle ne sont PAS dans cette liste : ils se
+# téléchargent au premier usage de la recherche documentaire, vérifiés par
+# sha256 — exactement ce que `core/voice.py` fait des 76 Mo de Piper.
+# Cf. `core/embedding_install.py`.
 # Requis par core/vector_store.py (docs/remplacement-vectoriel.md). Arrivait jusqu'ici en
 # transitif (pandas) : à déclarer puisqu'on en dépend directement — même raison
 # que python-multipart/httpx ci-dessus.

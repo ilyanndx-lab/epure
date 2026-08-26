@@ -21,8 +21,8 @@ from typing import Optional
 import yaml
 
 # ── Démarrage hors-ligne quand les modèles HF sont déjà en cache ──────────────
-# RAGEngine (embedding SentenceTransformer) et WhisperEngine (faster-whisper)
-# valident leur cache auprès de huggingface.co À CHAQUE démarrage. Si HF est
+# WhisperEngine (faster-whisper) valide son cache auprès de huggingface.co À
+# CHAQUE démarrage. Si HF est
 # injoignable (getaddrinfo failed → 5 retries avec backoff PAR fichier), l'import
 # de ce module se bloque plusieurs minutes et uvicorn ne répond à rien (écran
 # « Chargement… » figé). Les poids étant déjà téléchargés, on bascule en mode
@@ -42,10 +42,15 @@ def _hf_offline_if_cached() -> None:
     except Exception:
         _voice = {}
     whisper_size = _voice.get("whisper_model", "small")
-    needed = (
-        "models--sentence-transformers--all-MiniLM-L6-v2",
-        f"models--Systran--faster-whisper-{whisper_size}",
-    )
+    # Le modèle d'EMBEDDING n'est plus dans cette liste depuis le 2026-08-26 : il
+    # ne passe plus par `huggingface_hub` du tout. `core/embedding_install.py` le
+    # télécharge par `urllib` et le vérifie par sha256 (idiome de
+    # `core/voice.py`), donc ni `HF_HUB_OFFLINE` ni ce cache ne le concernent.
+    # Le laisser ici aurait un effet précis et faux : sur une instance qui a le
+    # cache Whisper mais pas celui de MiniLM, on resterait EN LIGNE — donc on
+    # réintroduirait le démarrage bloqué que cette fonction existe pour éviter,
+    # au nom d'un modèle qui n'y est plus.
+    needed = (f"models--Systran--faster-whisper-{whisper_size}",)
     if all(os.path.isdir(os.path.join(hub, n)) for n in needed):
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -61,7 +66,7 @@ from core.codeagent import CodeAgent, WORKSPACE as _CODE_WORKSPACE
 from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
 from core.embedding_install import (
-    paquets_manquants as paquets_embedding_manquants,
+    fichiers_manquants as fichiers_embedding_manquants,
     pile_presente as pile_embedding_presente,
 )
 from core.flashcards import FlashcardsEngine
@@ -86,8 +91,8 @@ with open(Path(__file__).parent.parent / "config.yaml") as _f:
 class _LazyEngine:
     """Proxy de chargement paresseux : l'engine réel (et son modèle, lourd à
     charger en RAM) n'est construit qu'au PREMIER accès à une de ses méthodes.
-    Évite de bloquer le démarrage sur des moteurs coûteux (RAG → torch +
-    sentence-transformers ≈ 30 s à chaud, 2 min à froid ; voix optionnelle).
+    Évite de bloquer le démarrage sur des moteurs coûteux (RAG → modèle
+    d'embedding, dont 90 Mo à télécharger au premier usage ; voix optionnelle).
     Thread-safe : construit une fois. Un thread de préchauffage (cf. plus bas)
     les résout en tâche de fond pour que la 1re requête ne paie pas le coût.
     """
@@ -123,12 +128,15 @@ flashcards_engine = FlashcardsEngine()
 models_registry = ModelsRegistry()
 orchestrator = OrchestratorEngine(llm)
 
-# RAG = seul moteur lourd au démarrage : sa construction importe torch +
-# sentence-transformers et charge le modèle d'embedding (≈ 30 s à chaud, 2 min à
-# froid). Le faire à l'import de ce module bloquait uvicorn (il ne répondait à
-# RIEN, /health compris) tant que ce n'était pas fini → l'app restait figée sur
-# « Chargement… ». On le rend paresseux ; un thread de préchauffage le construit
-# en tâche de fond pendant qu'uvicorn sert déjà.
+# RAG = le moteur le plus lourd au démarrage, et il reste paresseux même après le
+# remplacement de la pile d'embedding (2026-08-26). Le coût a chuté d'un ordre de
+# grandeur — import 15,1 s → 0,37 s, chargement du modèle 4,7 s → 0,38 s, mesuré
+# — mais la paresse ne tenait pas qu'à la durée : construire ce moteur peut lever
+# `EmbeddingIndisponible` et lancer le téléchargement des 90 Mo du modèle. Le
+# faire à l'import de ce module, c'est-à-dire au démarrage d'uvicorn, tirerait ces
+# 90 Mo sur la connexion du destinataire avant qu'il ait ouvert quoi que ce soit.
+# Un thread de préchauffage le construit en tâche de fond pendant qu'uvicorn sert
+# déjà — et seulement si le modèle est DÉJÀ là (cf. `_warmup`).
 # Store vectoriel partagé par les TROIS collections (`fiches`, `doc_analysis`,
 # `history`). C'est lui qui porte le modèle d'embedding, donc lui qui coûte les
 # 30 s à 2 min de chargement — d'où le `_LazyEngine` : le construire à l'import
@@ -143,11 +151,11 @@ orchestrator = OrchestratorEngine(llm)
 # proteste. Le store est désormais un objet nommé, passé explicitement aux trois.
 vector_store = _LazyEngine(
     lambda: VectorStore(resolve_vector_dir()),
-    "Store vectoriel (embeddings, torch + sentence-transformers)",
+    "Store vectoriel (embeddings, ONNX Runtime)",
 )
 rag = _LazyEngine(
     lambda: RAGEngine(store=vector_store),
-    "RAG (embeddings, torch + sentence-transformers)",
+    "RAG (embeddings, ONNX Runtime)",
 )
 # docanalysis/history partagent le même store → paresseux eux aussi (sinon ils
 # forceraient son chargement, donc celui du modèle, à l'import).
@@ -283,18 +291,20 @@ def apply_fiches_watch() -> None:
 
 
 def _warmup() -> None:
-    """Préchauffage en tâche de fond : construit le RAG (torch + embeddings) puis
+    """Préchauffage en tâche de fond : construit le RAG (embeddings) puis
     met les dossiers de fiches sous surveillance. Lancé dès l'import mais SANS
     bloquer : uvicorn peut binder et répondre (/health, etc.) pendant ce temps.
     La 1re requête RAG ne paie alors pas le coût de chargement si le warmup a fini.
 
     **Ne préchauffe PAS quand la pile d'embedding est absente**, et cette
     condition n'est pas une optimisation. Depuis que `VectorStore.__init__`
-    déclenche l'installation de torch + sentence-transformers au lieu de lever
-    (`core/embedding_install.py`), résoudre le RAG ici lancerait ~2 Go de
-    téléchargement au DÉMARRAGE, sur la connexion du destinataire d'un paquet,
-    avant qu'il ait ouvert quoi que ce soit — y compris s'il ne se sert jamais de
-    la recherche documentaire. L'installation part au premier appel qui a
+    déclenche la mise à disposition du modèle au lieu de lever
+    (`core/embedding_install.py`), résoudre le RAG ici lancerait le
+    téléchargement du modèle au DÉMARRAGE, sur la connexion du destinataire d'un
+    paquet, avant qu'il ait ouvert quoi que ce soit — y compris s'il ne se sert
+    jamais de la recherche documentaire. Le volume a changé avec la pile (90 Mo
+    de poids ONNX au lieu de ~2 Go de wheels torch), la décision non : on ne
+    télécharge rien au boot. L'installation part au premier appel qui a
     réellement besoin du moteur (`GET /rag/files` à l'ouverture d'un module qui
     offre le contexte documentaire), jamais au boot.
 
@@ -308,10 +318,10 @@ def _warmup() -> None:
             rag._resolve()
         else:
             logger.info(
-                "Pile d'embedding absente (%s) — pas de préchauffage RAG : "
-                "l'installation partira au premier usage réel de la recherche "
+                "Modèle d'embedding absent (%s) — pas de préchauffage RAG : le "
+                "téléchargement partira au premier usage réel de la recherche "
                 "documentaire, pas au démarrage.",
-                ", ".join(paquets_embedding_manquants()),
+                ", ".join(fichiers_embedding_manquants()) or "runtime ONNX absent",
             )
     except Exception:
         logger.exception("Préchauffage RAG échoué")

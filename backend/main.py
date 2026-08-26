@@ -74,7 +74,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 # Réduit le bruit des bibliothèques tierces très verbeuses.
-for _noisy in ("httpx", "watchdog", "sentence_transformers", "urllib3"):
+for _noisy in ("httpx", "watchdog", "onnxruntime", "urllib3"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # ── Le token ne doit pas atterrir dans un journal (CLAUDE.md §6) ─────────────

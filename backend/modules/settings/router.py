@@ -545,8 +545,9 @@ async def rag_files():
     """Fichiers indexés. Peut répondre 503 — c'est un état, pas une panne.
 
     `rag` est un `_LazyEngine` : ce premier accès construit `RAGEngine`, donc un
-    `VectorStore`, qui a besoin de `sentence_transformers`. Absent (le cas de tout
-    paquet livré), il lève `EmbeddingIndisponible` — traduite en 503 avec l'état
+    `VectorStore`, qui a besoin du modèle d'embedding. Absent (le cas de tout
+    paquet fraîchement installé — les 90 Mo de poids se téléchargent au premier
+    usage), il lève `EmbeddingIndisponible` — traduite en 503 avec l'état
     d'avancement par le gestionnaire de `main.py`, et non plus en 500
     « ImportError » dont le corps n'a même pas de champ `files`.
     """

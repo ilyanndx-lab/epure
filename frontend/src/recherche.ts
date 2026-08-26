@@ -6,19 +6,26 @@ import { API, apiFetch } from './api'
  * État de préparation du moteur de recherche documentaire, pour EXPLIQUER au lieu
  * d'afficher une erreur.
  *
- * L'INCIDENT. Dans tout paquet livré, `sentence-transformers` n'est pas installé
- * (`HORS_PAQUET_PIP` l'exclut, il tire ~2 Go de torch). Le premier accès au
- * moteur RAG l'importait donc en vain : `GET /rag/files` répondait
- * `500 {"detail": "Erreur interne du serveur", "type": "ImportError"}`, et le
- * panneau fichiers du module Docs était mort d'avance — définitivement, puisque
- * rien dans l'application ne pouvait installer ce qui manquait
+ * L'INCIDENT. Dans un paquet livré, le moteur de recherche documentaire n'est pas
+ * prêt au premier lancement, et le premier accès produisait
+ * `500 {"detail": "Erreur interne du serveur", "type": "ImportError"}` : le
+ * panneau fichiers du module Docs était mort d'avance, définitivement, puisque
+ * rien dans l'application ne pouvait réparer ce qui manquait
  * (`docs/distribution-empaquetee.md`, « écarts 2 et 3 »).
  *
- * Le backend installe désormais sa pile lui-même
+ * Le backend prépare désormais son moteur lui-même
  * (`backend/core/embedding_install.py`) et répond 503 avec un état pendant ce
  * temps. Ce module lit cet état pour que le panneau dise « préparation en
- * cours, quelques minutes, connexion réseau nécessaire » plutôt que de rester
+ * cours, une à deux minutes, connexion réseau nécessaire » plutôt que de rester
  * vide sans raison — et qu'il se remplisse tout seul quand c'est prêt.
+ *
+ * CE QUI SE PRÉPARE A CHANGÉ le 2026-08-26, et le volume avec : c'était
+ * `pip install torch` + `sentence-transformers`, ~2 Go ; ce sont maintenant les
+ * 90 Mo de poids d'un modèle ONNX, téléchargés et vérifiés par sha256. Rien à
+ * changer ici : le contrat de `GET /rag/capabilities` — les clés, les quatre
+ * états, la cause — est resté le même, et c'est exactement ce qu'on lui
+ * demandait. Le message et `taille_estimée_mo` viennent du backend, donc
+ * l'interface annonce le bon chiffre sans le connaître.
  *
  * Frère de `voix.ts`, avec UNE différence qui change tout le reste : une capacité
  * vocale absente est définitive (aucune wheel `win_arm64` pour `ctranslate2`), on
@@ -156,8 +163,8 @@ export async function chargerRecherche(): Promise<void> {
  * Redemande la préparation après un échec — le geste du bouton « Réessayer ».
  *
  * Il existe parce que le backend ne réessaie pas tout seul : une seule tentative
- * automatique par process, sans quoi chaque appel concurrent relancerait un
- * `pip install torch`. La cause la plus probable d'un échec étant l'absence de
+ * automatique par process, sans quoi chaque appel concurrent relancerait le même
+ * téléchargement. La cause la plus probable d'un échec étant l'absence de
  * réseau, elle se corrige dehors, et l'utilisateur est le seul à savoir quand.
  */
 export async function relancerRecherche(): Promise<void> {

@@ -128,9 +128,9 @@ const PROVIDER_TEXT: Record<string, string> = {
  * suivant, sur un `.length` — et dans un bundle minifié la trace ne nomme même
  * pas la ligne.
  *
- * C'est l'incident : `GET /rag/files` répondait 500 dans un paquet livré
- * (`sentence-transformers` en est exclu, et le premier accès au moteur RAG
- * l'importe), `availableFiles` passait à `undefined`, et l'ouverture du panneau
+ * C'est l'incident : `GET /rag/files` répondait 500 dans un paquet livré (le
+ * moteur d'embedding n'y est pas prêt au premier lancement, et le premier accès
+ * le construit), `availableFiles` passait à `undefined`, et l'ouverture du panneau
  * fichiers du module Docs levait « Cannot read properties of undefined (reading
  * 'length') ». Vérifié par ModuleBar.test.tsx.
  *
@@ -260,11 +260,11 @@ export default function ModuleBar({
   // installé (cf. voix.ts), un micro affiché ne rend qu'un 503 par appui.
   const voix = useVoix()
   const micDisponible = !!showMic && voix.transcription
-  // Préparation du moteur documentaire. Dans un paquet livré, la pile
-  // d'embedding (~2 Go) s'installe au premier usage : le panneau fichiers doit
-  // le DIRE, au lieu de rester vide pendant plusieurs minutes puis de se
-  // remplir. Cf. recherche.ts. Sur une installation complète, cet état vaut
-  // « prêt » et rien ne s'affiche.
+  // Préparation du moteur documentaire. Dans un paquet livré, le modèle
+  // d'embedding (90 Mo) se télécharge au premier usage : le panneau fichiers doit
+  // le DIRE, au lieu de rester vide une à deux minutes puis de se remplir.
+  // Cf. recherche.ts. Sur une installation complète, cet état vaut « prêt » et
+  // rien ne s'affiche.
   const recherche = useRecherche()
   const [activePanel, setActivePanel] = useState<Panel>(null)
   const [showFullModelList, setShowFullModelList] = useState(false)
@@ -566,10 +566,10 @@ export default function ModuleBar({
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res)
       // LE point de l'incident : ce rechargement suit l'indexation, donc le
-      // moteur RAG vient d'être sollicité. S'il n'est pas installé (paquet livré
-      // sans sentence-transformers), /rag/files répondait 500 et son corps
-      // n'avait pas de `files` — d'où `chargerFichiers`, qui normalise et sait
-      // lire le 503.
+      // moteur RAG vient d'être sollicité. S'il n'est pas prêt (paquet livré dont
+      // le modèle n'est pas encore téléchargé), /rag/files répondait 500 et son
+      // corps n'avait pas de `files` — d'où `chargerFichiers`, qui normalise et
+      // sait lire le 503.
       await chargerFichiers()
       const ctxData = await apiFetch(`${API}/context`)
         .then(r => r.json()) as Record<string, unknown>
@@ -710,8 +710,8 @@ export default function ModuleBar({
         <div className="border-t border-line bg-surface px-4 py-4 max-h-72 overflow-y-auto space-y-4">
           {/* Préparation du moteur documentaire — un ÉTAT, pas une erreur.
               Avant, ce cas produisait un 500 côté serveur et un panneau vide
-              côté client : rien ne disait qu'il manquait 2 Go à télécharger, ni
-              que ça s'installait tout seul. Le bandeau ne s'affiche pas quand
+              côté client : rien ne disait qu'il manquait un modèle à
+              télécharger, ni que ça se faisait tout seul. Le bandeau ne s'affiche pas quand
               l'état vaut « prêt » ou « inconnu », donc jamais sur une
               installation complète (cf. recherche.ts). */}
           {!recherche.prete && (

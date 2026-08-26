@@ -173,7 +173,7 @@ def comparer(rap: Rapport, source: Path, dest: Path, modele: str) -> None:
 
     client = chromadb.PersistentClient(path=str(source))
     ef = SentenceTransformerEmbeddingFunction(model_name=modele)
-    store = VectorStore(dest, embedding_model=modele)
+    store = VectorStore(dest)
 
     noms = sorted(c.name for c in client.list_collections())
     print(f"Collections comparées : {', '.join(noms)}\n")

@@ -96,7 +96,7 @@ def migrer(source: Path, dest: Path, modele: str) -> dict[str, dict]:
     # fait que `get`, jamais `query`), mais il doit correspondre.
     ef = SentenceTransformerEmbeddingFunction(model_name=modele)
 
-    store = VectorStore(dest, embedding_model=modele)
+    store = VectorStore(dest)
 
     rapport: dict[str, dict] = {}
     for nom in _collections_source(client):

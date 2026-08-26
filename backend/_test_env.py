@@ -1,12 +1,18 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
-Cinq arborescences sont détournées vers des temporaires :
+Sept arborescences sont détournées vers des temporaires :
 
     EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
     EPURE_MODULES_DIR    backend/modules/                (copie)
     EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
     EPURE_MODELS_DIR     backend/piper_models/           (temporaire VIDE)
     EPURE_WEB_DIR        frontend/dist/                  (temporaire VIDE)
+    EPURE_VECTOR_DIR     backend/vector_db/              (temporaire VIDE)
+    EPURE_EMBEDDING_DIR  backend/embedding_model/        (temporaire VIDE)
+
+(Cet en-tête annonçait « cinq » et en listait cinq sur six : `EPURE_VECTOR_DIR`
+existait déjà et n'y figurait pas. Le compte est repris avec l'arrivée de
+`EPURE_EMBEDDING_DIR` le 2026-08-26.)
 
 Pourquoi ce fichier existe : la suite écrivait dans les données réelles de
 l'utilisateur. Neuf modules construisaient leur chemin en
@@ -215,16 +221,30 @@ WEB_DIR = _installer_vide("EPURE_WEB_DIR", "web")
 #:     ne prouve rien sur la propreté de `backend/memory/`.
 VECTOR_DIR = _installer_vide("EPURE_VECTOR_DIR", "vecteurs")
 
-#: **Aucun test n'a le droit de lancer un `pip install` de 2 Go.**
+#: Cache du modèle d'embedding ONNX — temporaire VIDE, absent de REAL_DIRS, pour
+#: les deux mêmes raisons distinctes que MODELS_DIR, dont il est le jumeau :
 #:
-#: `core/embedding_install.py` installe torch + sentence-transformers à la demande
-#: quand la pile manque — c'est la correction des « écarts 2 et 3 » de
-#: `docs/distribution-empaquetee.md`. Or le job `backend` de la CI tourne
-#: précisément dans cette configuration : son jeu de dépendances minimal
-#: n'installe ni torch ni sentence-transformers (cf. l'en-tête de `ci.yml`), donc
-#: `pile_presente()` y est faux. Sans cette ligne, le premier test qui touche une
-#: route du RAG lancerait 2 Go de téléchargement sur le runner, puis un second
-#: process de pip par la même occasion.
+#:   * détourné, parce qu'un test qui construirait `MoteurEmbedding` par accident
+#:     tirerait 90 Mo dans le vrai cache ;
+#:   * non surveillé, parce que c'est un cache reconstructible, vérifié par
+#:     sha256 (cf. resolve_embedding_dir), pas une donnée utilisateur.
+#:
+#: Vide, donc `pile_presente()` est FAUX pendant toute la suite : c'est la
+#: configuration d'un paquet fraîchement installé, celle qu'il faut éprouver.
+EMBEDDING_DIR = _installer_vide("EPURE_EMBEDDING_DIR", "embedding")
+
+#: **Aucun test n'a le droit de télécharger les 90 Mo du modèle d'embedding.**
+#:
+#: `core/embedding_install.py` récupère `model.onnx` + `vocab.txt` à la demande
+#: quand ils manquent — c'est la correction des « écarts 2 et 3 » de
+#: `docs/distribution-empaquetee.md`. Or la suite tourne précisément dans cette
+#: configuration, et pas par accident : `EMBEDDING_DIR` ci-dessus est un
+#: temporaire VIDE, donc `pile_presente()` est faux pour tout le monde. Sans cette
+#: ligne, le premier test qui touche une route du RAG lancerait 90 Mo de
+#: téléchargement — sur le runner de la CI comme sur ce poste.
+#:
+#: Le volume a changé le 2026-08-26 (la pile était `pip install torch` +
+#: `sentence-transformers`, ~2 Go), la règle non.
 #:
 #: Posée ici et non dans chaque fichier de test : la protection ne vaut que si
 #: elle couvre aussi les tests qui n'ont pas conscience de toucher au RAG — c'est
