@@ -98,11 +98,26 @@ jobs:
       # couvert en CI, personne ne l'avait remarqué. Les trois sont py3-none-any,
       # sans extension compilée, +6,6 Mo — rien à voir avec les deps ML que cet
       # en-tête écarte.
+      #
+      # `openai` : le SDK du chemin FLM/cloud de `core/llm.py`, et son absence
+      # ici ne produisait PAS un test sauté mais une ERREUR DE COLLECTE.
+      # `test_raisonnement_stream.py` l'importe au NIVEAU MODULE (ligne 53,
+      # `from openai.types.chat import ChatCompletionChunk`), donc le fichier
+      # entier échouait à se charger : `FAILED (errors=1)`, exit 1, CI rouge sur
+      # `main` à chaque push. `ollama`, importé à la ligne juste au-dessus, était
+      # là depuis toujours — c'est le jumeau qui manquait.
+      # Déclaré en direct dans requirements.txt (`openai==2.38.0`), donc « déjà
+      # installé sur le poste de dev » masquait la lacune : l'écart local/CI de
+      # l'en-tête, joué une fois de plus.
+      # Pur Python côté SDK ; ses transitifs (anyio, distro, httpx, jiter,
+      # pydantic, sniffio, tqdm, typing-extensions) ont tous des wheels
+      # manylinux, et httpx/pydantic sont déjà dans cette liste. Rien à voir avec
+      # les deps ML que cet en-tête écarte.
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
           pip install fastapi==0.136.3 starlette==1.2.0
           pydantic pyyaml python-dotenv
-          httpx python-multipart numpy ollama pypdf watchdog uvicorn wsproto
+          httpx python-multipart numpy ollama openai pypdf watchdog uvicorn wsproto
           python-docx python-pptx openpyxl onnxruntime
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
