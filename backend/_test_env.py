@@ -1,8 +1,9 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
-Sept arborescences sont détournées vers des temporaires :
+Huit arborescences sont détournées vers des temporaires :
 
     EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
+    EPURE_HISTORY_DIR    backend/history/                (temporaire VIDE)
     EPURE_MODULES_DIR    backend/modules/                (copie)
     EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
     EPURE_MODELS_DIR     backend/piper_models/           (temporaire VIDE)
@@ -12,7 +13,14 @@ Sept arborescences sont détournées vers des temporaires :
 
 (Cet en-tête annonçait « cinq » et en listait cinq sur six : `EPURE_VECTOR_DIR`
 existait déjà et n'y figurait pas. Le compte est repris avec l'arrivée de
-`EPURE_EMBEDDING_DIR` le 2026-08-26.)
+`EPURE_EMBEDDING_DIR` le 2026-08-26, puis de `EPURE_HISTORY_DIR` le 2026-08-27.)
+
+⚠️ « Temporaire VIDE » ne dit RIEN du fait d'être surveillé ou non — les deux
+propriétés sont indépendantes et les confondre est l'erreur naturelle ici.
+`EPURE_HISTORY_DIR` est vide *et* surveillé (des conversations sont des données
+utilisateur, irremplaçables) ; `EPURE_MODELS_DIR` est vide et *non* surveillé
+(un cache de 76 Mo, reconstructible). Chaque bloc plus bas dit laquelle des deux
+raisons s'applique.
 
 Pourquoi ce fichier existe : la suite écrivait dans les données réelles de
 l'utilisateur. Neuf modules construisaient leur chemin en
@@ -60,8 +68,20 @@ from pathlib import Path
 _BACKEND = Path(__file__).resolve().parent
 _REPO = _BACKEND.parent
 
-#: Les trois arborescences réelles qu'aucun test ne doit toucher.
+#: Les arborescences réelles qu'aucun test ne doit toucher.
 REAL_DATA_DIR = _BACKEND / "memory"
+#: Les conversations sauvegardées. Surveillé au même titre que `memory/` et pour
+#: la même raison — ce sont des données utilisateur que rien ne reconstruit — et
+#: NON au titre des caches (`piper_models/`, `embedding_model/`, `vector_db/`),
+#: qui sont détournés sans être surveillés.
+#:
+#: Absent de cette liste jusqu'au 2026-08-27, ce qui ne se voyait pas : le
+#: dossier n'était atteignable que par un chemin figé à l'import de
+#: `core/history.py`, donc aucun test ne pouvait y écrire *ni* le détourner. Le
+#: chantier « conversations persistées » en fait le magasin vivant du chat —
+#: c'est-à-dire, sans cette ligne, la cible d'une écriture par tour d'assistant
+#: pendant toute la suite.
+REAL_HISTORY_DIR = _BACKEND / "history"
 REAL_MODULES_DIR = _BACKEND / "modules"
 REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
 #: Le catalogue est du code VERSIONNÉ, source des modules installables. Aucune
@@ -70,7 +90,10 @@ REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
 #: d'un catalogue variable détourne `catalogue_dir` lui-même (cf.
 #: CycleReinstallationTest). Surveillé pour que l'oublier se voie.
 REAL_CATALOGUE_DIR = _REPO / "modules-catalogue"
-REAL_DIRS = (REAL_DATA_DIR, REAL_MODULES_DIR, REAL_FRONTEND_MODULES, REAL_CATALOGUE_DIR)
+REAL_DIRS = (
+    REAL_DATA_DIR, REAL_HISTORY_DIR, REAL_MODULES_DIR,
+    REAL_FRONTEND_MODULES, REAL_CATALOGUE_DIR,
+)
 
 #: Non copiés dans l'arbre temporaire : `_backups` pèse 1,2 Mo des 1,6 Mo de
 #: modules/ et n'est qu'un historique de runtime ; `_staging` et les caches sont
@@ -132,9 +155,21 @@ def _installer() -> Path:
 def _installer_vide(var: str, nom: str) -> Path:
     """Pose ``var`` sur un temporaire VIDE — pas une copie.
 
-    Pour les caches reconstructibles, dont on veut seulement qu'un test ne
-    puisse pas écrire dans le vrai. Copier n'aurait aucun sens ici : le modèle
-    vocal pèse 76 Mo, et la suite ne le lit jamais.
+    Deux familles d'appelants, pour deux raisons différentes de ne pas copier :
+
+    * les **caches reconstructibles** (``piper_models``, ``embedding_model``,
+      ``vector_db``, ``dist``), dont on veut seulement qu'un test ne puisse pas
+      écrire dans le vrai. Copier n'aurait aucun sens : le modèle vocal pèse
+      76 Mo et la suite ne le lit jamais ;
+    * les **données utilisateur dont le décompte doit être déterministe**
+      (``history``). Copier les vraies conversations rendrait le résultat de
+      ``list_conversations()`` dépendant de l'historique du poste : un test
+      « la liste contient 2 conversations » passerait ici et échouerait en CI,
+      sur un dossier vide. Vide = l'état d'une installation neuve, qui est
+      précisément celui qu'il faut éprouver.
+
+    Ce que cette fonction ne décide PAS : la surveillance. Un dossier vide peut
+    être surveillé (``history``) ou non (les caches) — cf. ``REAL_DIRS``.
     """
     existant = os.environ.get(var, "").strip()
     if existant:
@@ -178,6 +213,13 @@ REAL_SNAPSHOTS = {str(d): _instantaner(d) for d in REAL_DIRS}
 
 #: Dossier temporaire où toute la suite écrit ses JSON de runtime.
 DATA_DIR = _installer()
+
+#: Conversations sauvegardées — temporaire VIDE, et **surveillé** (REAL_DIRS).
+#: L'inverse exact des blocs ci-dessous : eux sont vides parce que ce sont des
+#: caches qu'on ne surveille pas, celui-ci est vide pour le DÉTERMINISME du
+#: décompte (cf. `_installer_vide`) alors que ce sont bel et bien des données
+#: utilisateur, surveillées comme celles de `memory/`.
+HISTORY_DIR = _installer_vide("EPURE_HISTORY_DIR", "history")
 
 #: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus.
 MODULES_DIR = _installer_arbre("EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules")

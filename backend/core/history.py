@@ -2,15 +2,12 @@ import logging
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from core.instance import modele_local_defaut
 from core.jsonstore import read_json, transaction, write_json
+from core.paths import PathOutsideDataError, resolve_history_dir
 
 logger = logging.getLogger(__name__)
-
-_HISTORY_DIR = Path(__file__).parent.parent / "history"
-_INDEX_FILE = _HISTORY_DIR / "conversations.json"
 
 
 class HistoryEngine:
@@ -19,15 +16,63 @@ class HistoryEngine:
         remplace le couple ``chroma_client``/``ef`` pris dans les attributs
         privés de ``RAGEngine``. Seul des trois appelants à supprimer par ``ids``
         et à ne jamais filtrer par ``where``.
+
+        Les chemins sont résolus ICI, à la construction du moteur — jamais à
+        l'import du module (CLAUDE.md §3.5, et la convention de
+        ``MemoryEngine.__init__``). C'étaient deux constantes de module,
+        ``_HISTORY_DIR`` et ``_INDEX_FILE``, calculées en
+        ``Path(__file__).parent.parent / "history"`` : un chemin figé avant que
+        quoi que ce soit ait pu poser ``$EPURE_HISTORY_DIR``, donc un dossier de
+        données réel qu'aucun test ne pouvait détourner. Cf.
+        :func:`core.paths.resolve_history_dir` pour pourquoi ça tenait jusqu'ici
+        et pourquoi ça cesse de tenir.
         """
         self._llm = llm
-        _HISTORY_DIR.mkdir(exist_ok=True)
+        self._dir = resolve_history_dir()
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._index_path = self._dir / "conversations.json"
         self._col = store.collection("history")
+
+    # ── Chemins ───────────────────────────────────────────────────────────────
+
+    def _conv_path(self, conv_id: str):
+        """Fichier d'une conversation, confiné au dossier d'historique.
+
+        Les trois appelants (``save``/``get``/``delete``) composaient
+        ``_HISTORY_DIR / f"{conv_id}.json"`` chacun de leur côté, et ``conv_id``
+        vient du client sur ``GET`` comme sur ``DELETE /history/{conv_id}`` — qui
+        finit en ``unlink()``.
+
+        Mesuré avant d'écrire cette garde, pour ne pas prétendre corriger une
+        faille qui n'existait pas : **aucune traversée n'est atteignable
+        aujourd'hui**. Un paramètre de chemin Starlette ne peut pas contenir de
+        ``/``, même percent-encodé (``..%2F..%2Fx`` → 404, vérifié), et le
+        préfixe de lecteur Windows est absorbé par la jonction (``C:evil`` →
+        ``<history>/evil.json``, vérifié).
+
+        La garde est donc une ceinture, pas un correctif : elle rend le
+        confinement vrai *par construction* plutôt que par une propriété du
+        routage qui n'est pas écrite ici. Elle prend son sens à l'étape 3 du
+        chantier conversations, où un ``PUT`` **écrit** sous un identifiant
+        fourni par le client. Confinement par ``resolve()`` puis comparaison de
+        chemins, jamais par ``startswith`` de chaîne (CLAUDE.md §6).
+        """
+        racine = self._dir.resolve()
+        cible = (racine / f"{conv_id}.json").resolve()
+        # `parent == racine` et non `is_relative_to(racine)` : le second accepte
+        # encore un sous-dossier (`sub/x` → `<history>/sub/x.json`), confiné mais
+        # créant une arborescence au premier `write_json`, qui fait un
+        # `mkdir(parents=True)`. Un identifiant de conversation est un segment nu
+        # — un `uuid4()` — donc on exige un enfant DIRECT. Même philosophie que
+        # `safe_upload_name` : refuser, plutôt que nettoyer en silence.
+        if cible.parent != racine or cible == racine:
+            raise PathOutsideDataError(f"Identifiant de conversation invalide : {conv_id!r}")
+        return cible
 
     # ── Index helpers ─────────────────────────────────────────────────────────
 
     def _load_index(self) -> list:
-        return read_json(_INDEX_FILE, {}).get("conversations", [])
+        return read_json(self._index_path, {}).get("conversations", [])
 
     @contextmanager
     def _index_transaction(self):
@@ -37,7 +82,7 @@ class HistoryEngine:
         pour que les appelants gardent leur code, mais c'est bien le document
         entier qui est réécrit.
         """
-        with transaction(_INDEX_FILE, {"conversations": []}) as doc:
+        with transaction(self._index_path, {"conversations": []}) as doc:
             yield doc.setdefault("conversations", [])
 
     # ── LLM title ────────────────────────────────────────────────────────────
@@ -82,7 +127,7 @@ class HistoryEngine:
         apercu = user_msgs[0]["content"][:200] if user_msgs else ""
 
         # Persist full conversation
-        conv_path = _HISTORY_DIR / f"{conv_id}.json"
+        conv_path = self._conv_path(conv_id)
         conv_data = {
             "id": conv_id,
             "date": date_str,
@@ -159,7 +204,11 @@ class HistoryEngine:
             return []
 
     def get_conversation(self, conv_id: str) -> dict | None:
-        conv_path = _HISTORY_DIR / f"{conv_id}.json"
+        try:
+            conv_path = self._conv_path(conv_id)
+        except PathOutsideDataError:
+            logger.warning("Identifiant de conversation refusé : %r", conv_id)
+            return None
         return read_json(conv_path, None)
 
     def list_conversations(self, days: int = 30) -> list[dict]:
@@ -170,7 +219,11 @@ class HistoryEngine:
         return [c for c in conversations if c.get("date", "") >= cutoff]
 
     def delete_conversation(self, conv_id: str) -> bool:
-        conv_path = _HISTORY_DIR / f"{conv_id}.json"
+        try:
+            conv_path = self._conv_path(conv_id)
+        except PathOutsideDataError:
+            logger.warning("Suppression refusée, identifiant invalide : %r", conv_id)
+            return False
         if conv_path.exists():
             try:
                 conv_path.unlink()
