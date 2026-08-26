@@ -79,6 +79,7 @@ from core import embedding_install as ei  # noqa: E402
 from core.auth import get_api_token  # noqa: E402
 from core.embedding_install import EmbeddingIndisponible  # noqa: E402
 from core.jsonstore import read_json  # noqa: E402
+from core.paths import REPO_ROOT  # noqa: E402
 from core.vector_store import VectorStore  # noqa: E402
 
 _BACKEND = Path(__file__).resolve().parent
@@ -720,6 +721,78 @@ class RouteRagTest(unittest.TestCase):
             self.assertEqual(r.status_code, 200, r.text)
             self.assertEqual(sum(lancements), 0)
         self.assertIn(r.json()["état"], (ei.PRET, ei.ECHEC))
+
+
+class SondeArm64Test(unittest.TestCase):
+    """`tools/sonde_onnx.py` et ce module ne doivent pas diverger.
+
+    La sonde est le script qu'on envoie sur une machine cible AVANT tout
+    chantier : elle installe `onnxruntime`, vérifie les signatures, importe,
+    télécharge le modèle et compare le vecteur produit à une référence figée.
+    C'est elle qui a levé le gate de la migration du 2026-08-26.
+
+    **Elle est délibérément AUTONOME** — aucun import de `core.*` — parce qu'elle
+    doit tourner sur un poste où Épure n'est pas déployé, à côté d'une archive,
+    avec le seul Python embarqué. Elle recopie donc la révision et les empreintes
+    du modèle. Deux endroits pour une même constante, c'est un de trop : ce test
+    est le prix de l'autonomie, et il est moins cher qu'une sonde qui validerait
+    un autre fichier que celui qu'Épure télécharge.
+    """
+
+    def _constantes_sonde(self) -> dict:
+        """Lit les constantes par AST, sans importer la sonde.
+
+        Sans AST il faudrait l'importer, donc exécuter son en-tête sur ce poste ;
+        et un `regex` sur le texte casserait au premier reformatage.
+        """
+        import ast
+        chemin = REPO_ROOT / "tools" / "sonde_onnx.py"
+        self.assertTrue(chemin.is_file(), f"sonde absente : {chemin}")
+        arbre = ast.parse(chemin.read_text(encoding="utf-8"))
+        trouvees = {}
+        for noeud in arbre.body:
+            if isinstance(noeud, ast.Assign) and len(noeud.targets) == 1:
+                cible = noeud.targets[0]
+                if isinstance(cible, ast.Name) and cible.id in ("REVISION", "FICHIERS"):
+                    trouvees[cible.id] = ast.literal_eval(noeud.value)
+        return trouvees
+
+    def test_la_sonde_vise_la_meme_revision_et_les_memes_empreintes(self):
+        constantes = self._constantes_sonde()
+        self.assertEqual(ei.REVISION_MODELE, constantes["REVISION"],
+                         "la sonde téléchargerait une autre révision du modèle")
+        for nom, (chemin_distant, sha) in constantes["FICHIERS"].items():
+            with self.subTest(fichier=nom):
+                self.assertIn(nom, ei.FICHIERS_MODELE)
+                attendu_chemin, attendu_sha, _ = ei.FICHIERS_MODELE[nom]
+                self.assertEqual(attendu_chemin, chemin_distant)
+                self.assertEqual(attendu_sha, sha)
+
+    def test_la_sonde_reste_autonome(self):
+        """Aucun `import core.*` : c'est ce qui la rend jouable là où il faut.
+
+        La corriger en l'important d'ici supprimerait la duplication ET son
+        utilité : sur la machine cible, `core/` n'est pas forcément déployé, et
+        surtout le but est de tester `onnxruntime` AVANT de faire confiance à
+        quoi que ce soit d'Épure.
+        """
+        source = (REPO_ROOT / "tools" / "sonde_onnx.py").read_text(encoding="utf-8")
+        for ligne in source.splitlines():
+            nu = ligne.strip()
+            if nu.startswith(("import ", "from ")):
+                self.assertNotIn("core", nu.split()[1].split(".")[0])
+
+    def test_la_sonde_est_en_ascii_pur(self):
+        """Elle s'affiche dans une console Windows en cp1252, et son unique
+        raison d'être est d'être lisible là-bas. Même règle que les `.ps1`
+        (`test_encodage_scripts.py`), pour une raison voisine : ici ce n'est pas
+        le parsing qui casse, c'est la sortie — une première version mourait sur
+        `UnicodeEncodeError` avant son premier test, sur un caractère de filet.
+        """
+        octets = (REPO_ROOT / "tools" / "sonde_onnx.py").read_bytes()
+        fautifs = [i for i, o in enumerate(octets) if o > 127]
+        self.assertEqual([], fautifs[:5],
+                         "caractères hors ASCII dans la sonde")
 
 
 class RequirementsTest(unittest.TestCase):
