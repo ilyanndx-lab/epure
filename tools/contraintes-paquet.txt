@@ -1,104 +1,119 @@
 # Contraintes de reproductibilité pour tools/faire_paquet.py.
 #
-# `pip freeze` du site-packages Python 3.12 embeddable qui a produit et vérifié
-# le paquet du 2026-08-13 (132,2 Mo zippé). Généré, pas écrit à la main : ne pas
-# éditer une ligne isolément.
+# `pip freeze` du site-packages Python 3.12 embeddable qui a produit et vérifié le
+# paquet du 2026-08-26 (135,1 Mio zippé, 384,7 Mo décompressé, 58 distributions).
+# Généré, pas écrit à la main : ne pas éditer une ligne isolément. La procédure
+# est celle que l'en-tête précédent décrivait — construire avec
+# `--sans-contraintes`, puis relire `python.gel` du `PAQUET.json` produit.
 #
-# ⚠️ CE FICHIER EST EN RETARD DE DEUX LOTS, et c'est sans effet en attendant.
-# Il ne connaît ni `python-pptx`/`openpyxl` (lecture des documents, 2026-08-24),
-# ni la sortie de `pip`/`setuptools` de la purge (2026-08-23). Un fichier de
-# contraintes n'INSTALLE rien : il n'épingle que ce qu'il liste, donc ces paquets
-# se résolvent librement et le build passe. Les ajouter à la main donnerait un
-# fichier décrivant un environnement que personne n'a installé — ce que
-# l'avertissement ci-dessus interdit précisément. Il se régénère en construisant
-# un paquet avec `--sans-contraintes` puis en lisant `python.gel` du `PAQUET.json`
-# produit. Le poids annoncé (132,2 Mo) est lui aussi périmé : +15,2 Mo de pip et
-# setuptools, +6,6 Mo de lecteurs, soit ≈ 154 Mo — arithmétique, pas mesure.
+# ── Régénéré le 2026-08-26, et il FALLAIT le régénérer ────────────────────────
 #
-# Régénéré le 2026-08-13 après le retrait de `chromadb`
-# (`docs/remplacement-vectoriel.md`, étape D). **53 paquets contre 101** dans la
-# version précédente : 49 partis, aucun arrivé — c'est la moitié de l'arbre
-# transitif qui disparaît avec UNE seule dépendance directe, ce qui dit assez
-# quelle place `chromadb` tenait pour ce qu'on lui demandait. Outre lui-même :
-# `grpcio`, `kubernetes`, `googleapis-common-protos`, les six `opentelemetry-*`,
-# `pypika`, `mmh3`, `bcrypt`, `orjson`, `overrides`, `pybase64`, `tenacity`,
-# `typer`/`rich`/`pygments`/`markdown-it-py`/`mdurl`/`shellingham` (son interface
-# en ligne de commande), `jsonschema` et sa grappe, `aiohttp` et la sienne,
-# `requests`/`urllib3`/`oauthlib` (tirés par `kubernetes`), `websockets`,
-# `watchfiles`, `build`/`pyproject_hooks`.
+# La version précédente datait du 2026-08-13 et s'annonçait « en retard de deux
+# lots, sans effet en attendant » : un fichier de contraintes n'installe rien, il
+# n'épingle que ce qu'il liste, donc les paquets qu'il ignore se résolvaient
+# librement et le build passait.
 #
-# ⚠️ `websockets` était dans ces 49 départs et n'aurait pas dû l'être : c'était la
-# seule implémentation WebSocket de l'arbre, arrivée par l'`uvicorn[standard]` que
-# `chromadb` déclarait. Son départ a coûté tout `/ws/*` chez un destinataire
-# (« No supported WebSocket library detected » au démarrage, puis 401 sur
-# /ws/chat, la requête d'upgrade étant retombée en GET HTTP). Remplacée le
-# 2026-08-23 par `wsproto`, déclarée directement dans `backend/requirements.txt`
-# — Python pur, donc pas de wheel d'architecture à vérifier, et pas un seul
-# transitif nouveau puisque `h11` est déjà là. `wsproto` est donc le 53e paquet
-# ci-dessous, ajouté à la main plutôt que par régénération : le reste de la liste
-# est bien le `pip freeze` du 2026-08-13.
+# Ce raisonnement a cessé de valoir avec le remplacement de la pile d'embedding
+# (2026-08-26, `docs/remplacement-vectoriel.md` étape F). Ce fichier épinglait
+# `onnxruntime==1.28.0` — il le connaissait déjà, en transitif de
+# `faster-whisper`/`piper-tts` — et `backend/requirements.txt` le déclare
+# désormais en **dépendance directe, épinglée `==1.26.0`**, la version
+# effectivement mesurée. Les deux ensemble ne sont pas « en retard » : ils sont
+# **contradictoires**, et `pip install -c` échoue sur la résolution avant la
+# première wheel. Un fichier de contraintes périmé est inoffensif jusqu'au jour
+# où il épingle, à une autre valeur, quelque chose qui vient de devenir direct.
 #
-# La leçon est dans ce fichier même : une grappe transitive ne se lit pas comme du
-# poids mort du seul fait qu'elle disparaît avec son porteur. `watchfiles` et
-# `httptools`, du même extra, l'étaient. Celle-là non, et rien ne les
-# distinguait.
+# Le retard des deux autres lots est rattrapé par la même occasion :
+# `python-pptx`/`openpyxl` (lecteurs de documents, 2026-08-24) et le retour de
+# `pip`/`setuptools` (2026-08-23) sont dans la liste parce qu'ils sont dans le
+# paquet mesuré, pas parce qu'on les y a ajoutés.
 #
-# Ce que ce fichier ne contient plus non plus, et c'est le vrai changement : la
-# distinction entre « installé » et « livré ». Les versions précédentes listaient
-# `grpcio`, `opentelemetry-exporter-otlp-proto-grpc`, `googleapis-common-protos`
-# et `kubernetes` tout en précisant qu'ils étaient purgés APRÈS installation —
-# chromadb les déclarant en dépendances directes et inconditionnelles, `pip` les
-# installait quoi qu'on veuille. Ils ne sont plus installés du tout, donc plus
-# purgés, donc plus mentionnés. Seuls `pip` et `setuptools` restent purgés (le
-# destinataire n'installe rien) et apparaissent encore ci-dessous.
+# ── Ce qui a changé par rapport au gel du 2026-08-13 ──────────────────────────
 #
-# `onnxruntime` reste, et ce n'est pas un résidu : `faster-whisper` et `piper-tts`
-# en dépendent tous les deux. `numpy` reste et devient structurel — c'est le
-# moteur de calcul de `core/vector_store.py`.
+# ARRIVÉS : `et-xmlfile`, `openpyxl`, `python-pptx`, `xlsxwriter`
 #
-# Pourquoi ce fichier existe : `backend/requirements.txt` épingle les paquets
-# directs, mais son résolveur reste libre sur l'arbre transitif. `pip install -c
-# tools/contraintes-paquet.txt` fige l'arbre entier au lieu de le laisser dériver
-# avec ce qui est publié sur PyPI entre deux constructions.
+# PARTIS : aucun
 #
-# Régénération : reconstruire un paquet avec `--sans-contraintes`, lire
-# `python.gel` dans le `PAQUET.json` de l'archive produite, et remplacer ce
-# fichier en entier. Vaut la peine quand `backend/requirements.txt` change une
-# version directe, ou pour rattraper volontairement des correctifs de sécurité
-# transitifs.
+# Aucun `torch`, `sentence-transformers`, `scikit-learn`, `scipy` ni
+# `transformers` : ils n'ont jamais été dans un paquet (ils étaient reportés « au
+# premier usage »), et ils ne sont plus nulle part dans le projet. C'est
+# `onnxruntime` qui porte l'embedding, et il pèse **12,9 Mo dans l'archive**
+# (38,4 Mo décompressés) — mesuré sur l'archive elle-même.
+#
+# `tokenizers` est encore là, et ce n'est PAS pour l'embedding : `faster-whisper`
+# le déclare. Le tokeniseur d'Épure est du Python pur (`core/wordpiece.py`),
+# précisément parce que le `.pyd` de `tokenizers` n'est pas signé — la catégorie
+# de binaire que Smart App Control bloque sur la machine ARM64 du destinataire.
+# Sur un paquet `--arch arm64`, la voix est retirée (`HORS_PAQUET_PIP_ARM64`) et
+# `tokenizers` disparaît donc avec elle, en même temps que 68,6 Mo d'archive
+# (`av`, `av.libs`, `ctranslate2`, `piper`, `faster-whisper`, `hf-xet`,
+# `huggingface-hub`) — mesuré sur ce paquet x64, donc un ordre de grandeur pour
+# l'ARM64, pas une mesure de l'ARM64.
+#
+# ── Pourquoi ce fichier existe ────────────────────────────────────────────────
+#
+# `backend/requirements.txt` épingle les paquets DIRECTS, mais son résolveur reste
+# libre sur l'arbre transitif : mesuré, `google-generativeai==0.8.6` rétrograde
+# `protobuf` selon ce qui est publié sur PyPI au moment du build. Ce fichier fige
+# l'arbre entier. Il est utilisé par défaut ; `--sans-contraintes` l'ignore (pour
+# régénérer après un changement de `requirements.txt`, exactement le cas de ce
+# lot-ci), `--contraintes` en pointe un autre.
+#
+# ⚠️ Il décrit un environnement **x64**. Une cible `win_arm64` n'a aucune raison
+# de résoudre les mêmes wheels : pour cette architecture, construire d'abord avec
+# `--sans-contraintes` et en générer un fichier séparé si la reproductibilité
+# devient nécessaire là aussi.
+#
+# ⚠️ `setuptools` y est, `pip` **non**, et ce n'est pas une purge : `pip freeze`
+# s'omet lui-même. `pip` EST bien dans le paquet (`PURGE_SITE_PACKAGES` est vide
+# depuis le 2026-08-23, vérifié dans l'archive : `python/Lib/site-packages/pip`) —
+# un paquet sans `pip` est un paquet qu'on ne peut pas réparer, et
+# `core/embedding_install.py` recommande nommément `pip install -r
+# requirements.txt` quand `onnxruntime` manque. Ne pas lire l'absence de sa ligne
+# ci-dessous comme son absence du paquet : ce fichier est un gel de dépendances,
+# pas un inventaire de l'archive.
+#
+# La leçon que ce fichier porte depuis 2026-08-13, et qui n'a pas changé : une
+# grappe transitive ne se lit pas comme du poids mort du seul fait qu'elle
+# disparaît avec son porteur. `watchfiles` et `httptools` l'étaient ;
+# `websockets`, partie dans le même lot, ne l'était pas — et son départ a coûté
+# tout `/ws/*` chez un destinataire. Rien ne les distinguait.
 
+PyYAML==6.0.3
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
 av==18.1.0
 certifi==2026.7.22
-click==8.4.2
+click==8.5.0
 colorama==0.4.6
 ctranslate2==4.8.1
 distro==1.9.0
+et_xmlfile==2.0.0
 fastapi==0.136.3
 faster-whisper==1.2.1
-filelock==3.32.3
+filelock==3.32.4
 flatbuffers==25.12.19
 fsspec==2026.7.0
 h11==0.16.0
 hf-xet==1.6.0
 httpcore==1.0.9
 httpx==0.28.1
-huggingface_hub==1.27.0
-idna==3.18
+huggingface_hub==1.28.0
+idna==3.19
 jiter==0.16.0
-lxml==6.1.1
+lxml==6.1.2
 numpy==2.5.2
 ollama==0.6.2
-onnxruntime==1.28.0
+onnxruntime==1.26.0
 openai==2.38.0
+openpyxl==3.1.5
 packaging==26.3
 pandas==3.0.3
 pathvalidate==3.3.1
 pillow==12.2.0
 piper-tts==1.4.2
-protobuf==7.35.1
+protobuf==7.36.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 pypdf==6.12.2
@@ -107,7 +122,7 @@ python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.2.2
 python-multipart==0.0.29
-PyYAML==6.0.3
+python-pptx==1.0.2
 setuptools==84.0.0
 six==1.17.0
 sniffio==1.3.1
@@ -120,3 +135,4 @@ tzdata==2026.3
 uvicorn==0.48.0
 watchdog==6.0.0
 wsproto==1.3.2
+xlsxwriter==3.2.9
