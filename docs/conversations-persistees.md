@@ -378,7 +378,7 @@ livrables et testables **sans changement visible à l'usage**.
 | # | Étape | État |
 |---|---|---|
 | 1 | Prérequis : `resolve_history_dir()`, `_test_env`, `REAL_DIRS` | ✅ fait le 2026-08-27 (`4a1aa1d`) |
-| 2 | `HistoryEngine` : nouvelles méthodes, lecture tolérante des anciens fichiers, `fsync` | à faire |
+| 2 | `HistoryEngine` : nouvelles méthodes, lecture tolérante des anciens fichiers, `fsync` | ✅ fait le 2026-08-27 |
 | 3 | Endpoints `/chat/conversations*` + `PUT …/fichiers` | à faire |
 | 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | à faire |
 | 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | à faire |
@@ -408,3 +408,45 @@ avant de l'écrire, aucune traversée n'est atteignable aujourd'hui (un paramèt
 de chemin Starlette n'accepte pas de `/`, même percent-encodé — `..%2F..%2Fx`
 → 404 ; et `C:evil` est absorbé en `<history>/evil.json`). Elle prend son sens à
 l'étape 3, où un `PUT` écrira sous un identifiant fourni par le client.
+
+### Étape 2 — ce qui a été fait
+
+`jsonstore.write_json(..., fsync=False)` et `transaction(..., fsync=False)`.
+`write_json` est passé de `write_text` à un `open()` explicite, seul moyen
+d'obtenir le descripteur que réclame `os.fsync` ; comportement identique sinon.
+**Un seul appelant passe `True`** — l'écriture d'une conversation — et ça doit le
+rester : le paramètre est un arbitrage par fichier, pas une amélioration à
+généraliser.
+
+`HistoryEngine` gagne ses primitives (`_normaliser`, `_entree_index`,
+`_maj_index`, `_indexer_vectoriel`, `_conversation_transaction`) et ses méthodes
+publiques (`create_conversation`, `append_messages`, `rename_conversation`,
+`set_conversation_files`, `conversation_view`, `rebuild_index`).
+`save_conversation` a été réécrit **par-dessus** ces primitives plutôt que
+conservé en parallèle : il composait son fichier, son entrée d'index et son
+upsert à la main, ce qui allait faire trois copies de chaque.
+
+Trois points qui méritent d'être retrouvés :
+
+- **`_ConversationAbsente`** — `transaction(chemin, {})` sur un fichier
+  **corrompu** ne lève pas : `read_json` loggue et rend `{}`, et le corps du
+  `with` écrirait alors une conversation neuve **par-dessus**. Le contenu réel
+  serait perdu au moment précis où on essaie de l'enrichir — l'« effacement
+  silencieux » de l'en-tête de `core/jsonstore.py`, rejoué sur un autre fichier.
+  La sentinelle abandonne la transaction sans rien écrire. Un `if
+  chemin.exists()` n'aurait pas suffi : il répond à « le fichier est-il là », pas
+  à « son contenu est-il exploitable ».
+- **`croiser_fichiers` est une fonction pure, hors de la classe.** Injecter
+  `rag` dans `HistoryEngine` le coupleraient à un `_LazyEngine` dont le premier
+  accès construit `RAGEngine`, donc peut déclencher 90 Mo de téléchargement
+  (CLAUDE.md §3.2). L'appelant fournit les deux listes.
+- **`n_messages` est recalculé, jamais lu.** C'est une projection de `messages` ;
+  deux sources pour un même fait divergent.
+
+`rebuild_index()` n'est pas un confort : c'est ce qui **prouve** que l'index est
+un cache dérivé, donc ce qui autorise à ne pas lui appliquer `fsync` alors que
+les conversations l'ont.
+
+34 tests ajoutés — `test_history_engine.py` (29) et `test_jsonstore.py` (+5).
+678 au total sous Windows ; les trois fichiers touchés rejoués sous Linux (WSL)
+puisque la CI y tourne.
