@@ -199,11 +199,48 @@ class ConfinementTest(_DossierTemporaire):
         self.assertTrue(cible.name.endswith(".json"))
 
     def test_les_evasions_sont_refusees(self):
+        """Les cas dont la sémantique est la MÊME sur les deux plateformes.
+
+        ``/`` est un séparateur partout, et ``..`` remonte partout. Le cas du
+        backslash, lui, n'en est pas — cf. le test marqué plateforme ci-dessous.
+        """
         moteur = self._moteur()
-        for mauvais in ("../evil", "../../backend/.env", "sub/x", "a\\b"):
+        for mauvais in ("../evil", "../../backend/.env", "sub/x"):
             with self.subTest(conv_id=mauvais):
                 with self.assertRaises(PathOutsideDataError):
                     moteur._conv_path(mauvais)
+
+    @unittest.skipUnless(os.name == "nt", "le backslash n'est un séparateur que sous Windows")
+    def test_le_backslash_est_refuse_sous_windows(self):
+        """``a\\b`` : une évasion sous Windows, un nom de fichier valide sous POSIX.
+
+        Ce cas vivait dans la liste ci-dessus et **cassait la CI**, qui tourne sur
+        ``ubuntu-latest`` (les trois jobs de `ci.yml`). Mesuré des deux côtés
+        plutôt que déduit :
+
+        * ``PureWindowsPath('C:/hist') / 'a\\b.json'`` → deux segments, donc
+          ``parent != racine`` → la garde refuse ;
+        * ``PurePosixPath('/tmp/hist') / 'a\\b.json'`` → **un seul** nom de
+          fichier contenant un backslash littéral, donc ``parent == racine`` → la
+          garde ne se déclenche pas, et ``assertRaises`` échouait.
+
+        Le code n'a pas de bug : sous POSIX, ``a\\b.json`` est un fichier
+        parfaitement confiné dans le dossier. C'était l'ATTENTE du test qui était
+        propre à Windows sans le dire.
+
+        Pourquoi marqué plutôt que simulé : vérifier « ce que ferait Windows »
+        depuis Linux voudrait dire réécrire la logique de ``_conv_path`` avec
+        ``PureWindowsPath`` — on testerait la réécriture, pas le code. Le marquage
+        dit la vérité : cette garantie est vérifiée là où elle compte.
+
+        ⚠️ **Conséquence à assumer : ce test ne tourne jamais en CI**, puisque
+        celle-ci est entièrement sur Linux. Il tourne à chaque
+        ``unittest discover`` sur le poste de développement, qui est aussi la
+        plateforme de production (CLAUDE.md §1). Même compromis que les tests de
+        citation Windows de ``test_command_exec.py``.
+        """
+        with self.assertRaises(PathOutsideDataError):
+            self._moteur()._conv_path("a\\b")
 
     def test_les_points_seuls_restent_dedans(self):
         """Contre-intuitif, et c'est pour ça que c'est écrit : ``..`` ne s'évade pas.

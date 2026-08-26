@@ -65,6 +65,16 @@ class HistoryEngine:
         # `mkdir(parents=True)`. Un identifiant de conversation est un segment nu
         # — un `uuid4()` — donc on exige un enfant DIRECT. Même philosophie que
         # `safe_upload_name` : refuser, plutôt que nettoyer en silence.
+        #
+        # ⚠️ Ce qui compte comme séparateur DÉPEND DE LA PLATEFORME, et c'est
+        # correct dans les deux cas — mais il faut le savoir avant d'écrire un
+        # test. `a\b` est une évasion sous Windows (deux segments) et un simple
+        # nom de fichier sous POSIX (un segment, backslash littéral), donc
+        # confiné et inoffensif. Contrairement à `safe_upload_name`, on ne passe
+        # PAS par `ntpath` sur les deux plateformes : là-bas le nom vient du
+        # navigateur et doit être jugé au plus strict, ici il vient d'un
+        # `uuid4()` que nous avons nous-mêmes écrit, et un fichier nommé `a\b`
+        # sur un serveur POSIX ne menace rien.
         if cible.parent != racine or cible == racine:
             raise PathOutsideDataError(f"Identifiant de conversation invalide : {conv_id!r}")
         return cible
