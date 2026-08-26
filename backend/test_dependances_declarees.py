@@ -49,6 +49,7 @@ from core.paths import BACKEND_DIR, REPO_ROOT  # noqa: E402
 
 REQUIREMENTS = BACKEND_DIR / "requirements.txt"
 CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+CONTRAINTES = REPO_ROOT / "tools" / "contraintes-paquet.txt"
 
 #: Les paquets dont Épure dépend DIRECTEMENT et qui sont arrivés (ou pourraient
 #: arriver) par un tiers. Chaque entrée dit ce qui casse en silence si la ligne
@@ -88,6 +89,24 @@ PORTEUSES = {
 #: non plus), et c'est précisément pourquoi `core/wordpiece.py` existe.
 BANNIES = ("sentence-transformers", "torch", "scikit-learn", "transformers",
            "tokenizers")
+
+#: Ce qui ne doit apparaître **NULLE PART DANS L'ARBRE RÉSOLU**, transitif
+#: compris — et c'est une liste différente de la précédente, pas un doublon.
+#:
+#: L'INCIDENT QUI LA JUSTIFIE : le 2026-08-26, Smart App Control a bloqué
+#: `regex/_regex.pyd` sur la machine ARM64 du destinataire, et plus aucun import
+#: de fichier ne fonctionnait. `regex` n'était déclaré nulle part — il arrivait
+#: par `sentence-transformers` -> `transformers` -> `regex`. Vérifier les
+#: déclarations DIRECTES ne l'aurait jamais vu : c'est la troisième génération de
+#: la chaîne.
+#:
+#: `tokenizers` n'y est PAS, et la nuance compte : il est légitimement dans
+#: l'arbre résolu, tiré par `faster-whisper` pour la transcription vocale. Ce
+#: qu'on lui interdit, c'est d'être une dépendance DIRECTE (liste ci-dessus),
+#: parce que le tokeniseur d'Épure est en Python pur. Sur ARM64 la voix est
+#: retirée et il disparaît avec elle.
+BANNIES_TRANSITIVES = ("sentence-transformers", "torch", "scikit-learn",
+                       "transformers", "scipy", "regex")
 
 
 def lignes_declarees() -> list[str]:
@@ -139,6 +158,64 @@ class DeclarationDirecteTest(unittest.TestCase):
                 self.assertNotIn(banni, declares,
                                  f"{banni} est de retour : il réintroduit un "
                                  "binaire non signé sur le chemin de l'embedding")
+
+
+class ArbreResoluTest(unittest.TestCase):
+    """Ce qui atterrit vraiment sur le disque du destinataire.
+
+    `requirements.txt` dit ce qu'on demande ; `tools/contraintes-paquet.txt` dit
+    ce que `pip` a RÉELLEMENT installé — c'est un `pip freeze` du site-packages
+    du dernier paquet assemblé, pas une intention. C'est donc le seul endroit,
+    hors ligne, où un retour transitif se voit.
+    """
+
+    def setUp(self):
+        self.resolu = {}
+        for ligne in CONTRAINTES.read_text(encoding="utf-8").splitlines():
+            nu = ligne.strip()
+            if nu and not nu.startswith("#") and "==" in nu:
+                nom, version = nu.split("==", 1)
+                self.resolu[nom.strip().lower().replace("_", "-")] = version.strip()
+
+    def test_l_arbre_resolu_n_est_pas_vide(self):
+        """Garde-fou du garde-fou : un fichier vidé ferait tout passer."""
+        self.assertGreaterEqual(len(self.resolu), 40)
+        self.assertIn("onnxruntime", self.resolu)
+
+    def test_aucune_bannie_ne_revient_par_le_transitif(self):
+        """Il ne suffit pas qu'un paquet ne soit pas déclaré : il faut
+        qu'aucune dépendance ne le ramène.
+
+        **Ce test n'aurait PAS attrapé l'incident `regex` du 2026-08-26**, et il
+        faut le dire plutôt que de le laisser croire : `regex` n'est jamais entré
+        par le paquet — il n'y a jamais été. Il est entré par le `pip install
+        sentence-transformers` que l'APPLICATION lançait au premier usage, donc
+        dans un arbre que ce fichier ne décrit pas. Ce qui ferme ce chemin-là est
+        `AucuneInstallationALExecutionTest` dans `test_embedding_install.py` :
+        plus aucun sous-processus sur le chemin d'embedding.
+
+        Celui-ci ferme l'AUTRE porte, celle qui reste ouverte : qu'une dépendance
+        directe, un jour, ramène `regex`, `scikit-learn` ou `torch` dans le paquet
+        lui-même. La leçon des deux incidents est la même — un binaire non signé
+        n'a pas besoin d'être choisi pour arriver — mais les deux portes ne se
+        ferment pas au même endroit.
+        """
+        for banni in BANNIES_TRANSITIVES:
+            with self.subTest(paquet=banni):
+                self.assertNotIn(banni, self.resolu,
+                                 f"{banni} est de retour dans l'arbre résolu — "
+                                 "vérifier quelle dépendance le tire")
+
+    def test_onnxruntime_resolu_est_celui_qui_est_declare(self):
+        """La contradiction qui a cassé le build par défaut le 2026-08-26 :
+        `requirements.txt` épinglait 1.26.0, ce fichier 1.28.0, et
+        `pip install -c` échouait sur la résolution avant la première wheel. Un
+        fichier de contraintes périmé est inoffensif jusqu'au jour où il épingle,
+        à une autre valeur, quelque chose qui vient de devenir direct.
+        """
+        declare = [l for l in lignes_declarees() if l.lower().startswith("onnxruntime==")]
+        self.assertEqual(1, len(declare))
+        self.assertEqual(declare[0].split("==")[1].strip(), self.resolu["onnxruntime"])
 
 
 class PaquetTest(unittest.TestCase):

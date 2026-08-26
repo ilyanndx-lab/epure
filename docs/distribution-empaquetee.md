@@ -1130,3 +1130,62 @@ déjà installé.**
 `TAILLE_ESTIMEE_MO` valait `2000` — une phrase d'interface qui annonçait « 2 Go »
 pour 198 Mo de wheels réelles, soit un facteur 10. Elle est maintenant **dérivée**
 de la somme des tailles déclarées (91).
+
+## Séquelle — `regex`, le lendemain (2026-08-26)
+
+Le jour suivant la migration, la même machine ARM64 a bloqué un second binaire :
+
+```
+DLL load failed while importing _regex:
+Une strategie de controle d'application a bloque ce fichier.
+```
+
+Conséquence chez le destinataire : plus aucun import de fichier.
+
+**Chaîne remontée, mesurée sur les métadonnées et non supposée :**
+
+    regex  <-  transformers  <-  sentence-transformers   (déclaration inconditionnelle)
+
+Vérifications qui ferment les autres hypothèses :
+
+| hypothèse | verdict |
+|---|---|
+| `faster-whisper` tire `transformers` | **non** — uniquement sous l'extra `conversion`, jamais installé (`transformers[torch]>=4.23; extra == "conversion"`) |
+| `google-generativeai` tire `regex` | **non** — arbre transitif de 30 paquets parcouru, absent |
+| `regex` est dans le paquet livré | **non** — les 58 distributions de `epure-sandr.zip` ne le contiennent pas, et **aucune ne le déclare** (les seules occurrences du mot sont un en-tête C de `lxml` et un `.py` de `pygments` vendorisé dans `pip`) |
+| `_regex.pyd` est signé | **non** — `NotSigned`, même classe que `sklearn/utils/_isfinite`, et que `numpy/random/mtrand.pyd` qui, lui, passe sur cette machine |
+
+**Il n'y a donc rien à corriger dans le code : `regex` est entré par la pile que
+l'étape F vient de retirer.** Il est arrivé par le `pip install
+sentence-transformers` que l'application lançait elle-même au premier usage de la
+recherche documentaire — une quarantaine de paquets entrant sur la machine du
+destinataire sans qu'aucun n'ait été relu, mesuré, ni même nommé quelque part.
+
+C'est ce que cette séquelle établit, et qui vaut mieux que la correction d'un
+binaire : **le problème n'était pas `sklearn`, puis `regex`. C'était qu'Épure
+installait des paquets à l'exécution.** Corriger le premier puis attendre le
+second, puis le troisième, n'aurait jamais convergé — et le premier symptôme n'a
+même pas nommé la vraie cause.
+
+### Ce que le destinataire doit faire
+
+Installer le nouveau paquet. L'installeur **met à jour sans rien supprimer**
+(`Deployer` : « Ecrit tout ce que l'archive contient, ne supprime jamais rien
+d'autre » — seul `app/frontend/dist` est vidé avant recopie). Deux conséquences :
+
+- **Les binaires bloqués restent sur le disque**, dans
+  `python/Lib/site-packages/`. Sans effet : plus rien ne les importe, puisque le
+  code n'importe plus `sentence_transformers` et que le paquet ne déclare plus
+  rien qui les tire. Ils n'occupent que de la place.
+- **~850 Mo de poids mort**, laissés par l'ancienne installation au premier
+  usage : `torch` (498), `scipy` (111), `transformers` (92), `sklearn` (39),
+  `sympy` (69), `networkx` (15), `regex`, `safetensors`, `joblib`… Supprimables à
+  la main, mais **pas au jugé** : `numpy`, `tokenizers`, `huggingface_hub`,
+  `fsspec`, `filelock`, `packaging` et `protobuf` sont dans les deux mondes et
+  doivent rester.
+
+Le fichier d'état `memory/embedding_install.json` de l'ancienne pile survit lui
+aussi à la mise à jour, et il dit « prêt ». Il est **ignoré** : seul un verdict
+`échec` est relu du disque, parce qu'il sert à expliquer et jamais à décider —
+« prêt » se décide sur la présence réelle des fichiers. Verrouillé par
+`EtatAncienTest`, écrit pour ce cas précis.

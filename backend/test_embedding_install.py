@@ -78,7 +78,7 @@ import modules.settings.router as routeur_reglages  # noqa: E402
 from core import embedding_install as ei  # noqa: E402
 from core.auth import get_api_token  # noqa: E402
 from core.embedding_install import EmbeddingIndisponible  # noqa: E402
-from core.jsonstore import read_json  # noqa: E402
+from core.jsonstore import read_json, write_json  # noqa: E402
 from core.paths import REPO_ROOT  # noqa: E402
 from core.vector_store import VectorStore  # noqa: E402
 
@@ -721,6 +721,120 @@ class RouteRagTest(unittest.TestCase):
             self.assertEqual(r.status_code, 200, r.text)
             self.assertEqual(sum(lancements), 0)
         self.assertIn(r.json()["état"], (ei.PRET, ei.ECHEC))
+
+
+class AucuneInstallationALExecutionTest(unittest.TestCase):
+    """Le chemin d'embedding n'installe plus RIEN, et c'est LA garde de fond.
+
+    **L'INCIDENT QUI L'A FAIT NAÎTRE**, et il s'est produit deux fois. Sur la
+    machine ARM64 du destinataire, Smart App Control a bloqué successivement :
+
+        sklearn/utils/_isfinite   (2026-08-25) -> plus de recherche documentaire
+        regex/_regex.pyd          (2026-08-26) -> plus aucun import de fichier
+
+    Deux binaires, deux paquets différents, **une seule cause** : ni l'un ni
+    l'autre n'a jamais été choisi. Ils sont arrivés par la chaîne
+    `sentence-transformers` -> `transformers` -> `regex` (et
+    `sentence-transformers` -> `scikit-learn`), c'est-à-dire par un
+    `pip install sentence-transformers` que l'APPLICATION lançait elle-même au
+    premier usage de la recherche documentaire. Une quarantaine de paquets
+    entraient ainsi sur la machine du destinataire sans qu'aucun n'ait été relu,
+    mesuré, ni même nommé quelque part.
+
+    Corriger `sklearn` puis attendre `regex` puis attendre le suivant n'est pas
+    une stratégie. **La correction est structurelle** : ce module n'exécute plus
+    aucun sous-processus. Il télécharge deux fichiers dont il connaît les
+    empreintes, et rien d'autre n'entre.
+
+    Ce test échouerait sur la version d'avant le 2026-08-26, où
+    `commandes_installation()` rendait deux lignes de `pip install`.
+    """
+
+    def _source(self) -> str:
+        return (REPO_ROOT / "backend" / "core" / "embedding_install.py").read_text(
+            encoding="utf-8")
+
+    def test_le_module_n_importe_aucun_lanceur_de_processus(self):
+        import ast
+        arbre = ast.parse(self._source())
+        importes = set()
+        for noeud in ast.walk(arbre):
+            if isinstance(noeud, ast.Import):
+                importes.update(a.name.split(".")[0] for a in noeud.names)
+            elif isinstance(noeud, ast.ImportFrom) and noeud.module:
+                importes.add(noeud.module.split(".")[0])
+        for interdit in ("subprocess", "os.system", "multiprocessing", "shutil"):
+            self.assertNotIn(interdit, importes,
+                             f"{interdit} de retour dans le chemin d'embedding")
+
+    def test_aucun_appel_de_processus_dans_le_code(self):
+        """Les motifs d'appel, en plus des imports.
+
+        Un import est le chemin normal, mais `__import__("subprocess")` et
+        `sys.executable` passeraient sous le radar du test précédent. La PROSE,
+        elle, a le droit de citer `pip install` : le message d'erreur qui
+        conseille au destinataire de réparer son installation le fait
+        nommément, et c'est voulu — c'est lui qui rend l'échec réparable.
+        """
+        source = self._source()
+        for motif in ("subprocess.run", "subprocess.Popen", "os.system",
+                      "sys.executable", "__import__"):
+            self.assertNotIn(motif, source,
+                             f"« {motif} » est de retour dans le chemin d'embedding")
+
+    def test_rien_n_entre_hors_des_fichiers_dont_on_connait_l_empreinte(self):
+        """La seule chose que ce module fait entrer sur la machine, ce sont les
+        entrées de `FICHIERS_MODELE` — chacune avec son sha256. C'est la
+        différence de nature avec un `pip install`, qui fait entrer un arbre dont
+        personne ne connaît la composition à l'avance.
+        """
+        for nom, (_, sha, taille) in ei.FICHIERS_MODELE.items():
+            self.assertRegex(sha, r"^[0-9a-f]{64}$", nom)
+            self.assertGreater(taille, 0, nom)
+        self.assertEqual(2, len(ei.FICHIERS_MODELE))
+
+
+class EtatAncienTest(unittest.TestCase):
+    """Un `embedding_install.json` écrit par l'ANCIENNE pile ne doit pas mentir.
+
+    Sur une instance mise à jour, ce fichier existe déjà et dit « prêt » — il a
+    été écrit quand `pip install torch` + `sentence-transformers` avait réussi.
+    Or l'installeur ne supprime jamais rien (`Deployer` : « Ecrit tout ce que
+    l'archive contient, ne supprime jamais rien d'autre »), donc ce verdict
+    périmé survit à la mise à jour, et il parle d'une pile qui n'existe plus.
+
+    S'il était cru, l'application annoncerait un moteur prêt alors que les 90 Mo
+    de poids ne sont pas là — et le premier appel échouerait sans explication au
+    lieu de déclencher le téléchargement.
+    """
+
+    def test_un_pret_ecrit_par_l_ancienne_pile_est_ignore(self):
+        with _env():   # dossier de modèle VIDE
+            write_json(ei._fichier_etat(), {
+                "état": "prêt",
+                "message": "Moteur de recherche documentaire prêt.",
+                "cause": "", "étape": "", "horodatage": "2026-08-23T10:00:00",
+            })
+            etat = ei.etat_installation()
+            self.assertNotEqual(ei.PRET, etat["état"],
+                                "un verdict périmé fait croire le moteur prêt")
+            self.assertFalse(etat["disponible"])
+
+    def test_un_echec_ancien_reste_lisible_lui(self):
+        """La dissymétrie est voulue : seul `échec` est relu du disque, parce
+        qu'il sert à EXPLIQUER, jamais à décider. `prêt` se décide sur le disque
+        (les fichiers sont là ou non), donc le mémoriser n'apporte rien et peut
+        mentir.
+        """
+        with _env():
+            write_json(ei._fichier_etat(), {
+                "état": "échec", "message": "Préparation impossible : réseau.",
+                "cause": ei.CAUSE_RESEAU, "étape": "model.onnx",
+                "horodatage": "2026-08-23T10:00:00",
+            })
+            etat = ei.etat_installation()
+            self.assertEqual(ei.ECHEC, etat["état"])
+            self.assertEqual(ei.CAUSE_RESEAU, etat["cause"])
 
 
 class SondeArm64Test(unittest.TestCase):
