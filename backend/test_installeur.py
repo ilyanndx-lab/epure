@@ -123,9 +123,13 @@ def _bloc_powershell(nom_variable: str) -> str:
 def _blocs_python() -> list[str]:
     """Tous les here-strings littéraux ``@'…'@`` du script.
 
-    Ce sont les blocs que l'installeur écrit ou exécute tels quels : le
-    `demarrer.py` généré et le code d'échauffement passé à ``python -c``. Les
-    deux sont du Python, donc les deux doivent compiler.
+    Ce sont les blocs que l'installeur écrit et exécute tels quels : le
+    `demarrer.py` généré et le code d'échauffement. Les deux sont du Python, donc
+    les deux doivent compiler.
+
+    (Le second était passé à ``python -c`` jusqu'au 2026-08-26. Il est désormais
+    écrit dans un fichier temporaire — cf. `EchauffementTest`, qui explique
+    pourquoi cette différence n'est pas cosmétique.)
     """
     texte = PS1.read_text(encoding="ascii").replace("\r\n", "\n")
     return re.findall(r"@'\n(.*?)\n'@", texte, re.DOTALL)
@@ -293,6 +297,204 @@ def _powershell() -> str | None:
 
 _PS = _powershell()
 _RAISON = "cas propre à Windows (PowerShell + COM WScript.Shell) — cf. l'en-tête"
+
+
+def _fonction_powershell(nom: str) -> str:
+    """Le corps d'une fonction du script, accolade fermante en colonne 0."""
+    texte = PS1.read_text(encoding="ascii").replace("\r\n", "\n")
+    debut = texte.index(f"function {nom} {{")
+    fin = texte.index("\n}", debut) + 2
+    corps = texte[debut:fin]
+    assert corps.count("{") > 1, f"extraction de {nom} suspecte"
+    return corps
+
+
+class EchauffementTest(unittest.TestCase):
+    """`Echauffer` — le transport du code Python, et ce qu'on ose en conclure.
+
+    **L'INCIDENT.** Chez un destinataire, l'échauffement des modules natifs
+    échouait sur une vraie `SyntaxError`, et les deux alertes qui suivaient
+    accusaient Smart App Control :
+
+        File "<string>", line 8
+           print(absent
+                ^
+        SyntaxError: '(' was never closed
+        !    un module natif a refuse de se charger -- nouvelle tentative dans 20 s
+        !    Smart App Control evalue la reputation des DLL fraichement dezippees
+
+    Le source, lui, disait `print("absent   " + nom)`. **Les guillemets doubles
+    avaient disparu entre le here-string et ce que `python.exe -c` recevait.**
+
+    **MÉCANISME**, reproduit sur x64, sans SAC, donc sans rien devoir à
+    l'architecture : sous Windows PowerShell 5.1 — celui que lance
+    `Installer-Epure.cmd`, donc celui de TOUS les destinataires — la ligne de
+    commande d'un binaire natif est reconstruite selon les règles de
+    `CommandLineToArgvW`, et 5.1 n'échappe pas les guillemets internes d'un
+    argument. Mesuré sur le même here-string :
+
+        powershell.exe 5.1, `-c`   -> SyntaxError: '(' was never closed
+        pwsh 7.6, `-c`             -> fonctionne
+        fichier temporaire         -> fonctionne dans les DEUX
+        stdin (`python -`)         -> fonctionne dans les DEUX
+
+    **Conséquence à mesurer, pas à minimiser : l'échauffement n'a JAMAIS
+    fonctionné chez un destinataire.** Il affichait une `SyntaxError`, accusait
+    Smart App Control, attendait 20 s, rejouait exactement le même échec, puis
+    promettait que « le blocage est temporaire ».
+
+    **CE QUE CES TESTS GARDENT.** Deux choses distinctes, et la seconde vaut
+    autant que la première : que le code arrive intact jusqu'à Python, et que le
+    diagnostic n'affirme pas une cause qu'il n'a pas mesurée. Un message qui se
+    trompe de coupable coûte plus cher qu'une absence de message — il envoie
+    chercher un problème qu'on n'a pas.
+    """
+
+    def setUp(self):
+        self.corps = _fonction_powershell("Echauffer")
+
+    # ── Structure ────────────────────────────────────────────────────────────
+
+    def test_le_code_python_n_est_jamais_passe_en_ligne_de_commande(self):
+        """La règle, et elle est structurelle : aucun `-c`.
+
+        Reformuler le Python sans guillemets doubles marcherait aujourd'hui et
+        casserait au premier `"` ajouté, sans que rien ne le signale — la panne
+        n'apparaîtrait que chez le destinataire. Le fichier temporaire supprime
+        la surface entière.
+        """
+        self.assertNotIn("'-c'", self.corps)
+        self.assertNotIn('"-c"', self.corps)
+        self.assertIn("Set-Content", self.corps)
+        self.assertIn("Remove-Item", self.corps)   # nettoyé derrière
+
+    def test_le_diagnostic_ne_blame_pas_sac_avant_de_savoir(self):
+        """Le contrôle de flux, pas seulement la présence du mot.
+
+        La garde `SyntaxError` doit venir AVANT l'alerte qui nomme Smart App
+        Control, et rendre la main : sinon les deux messages sortent ensemble et
+        le destinataire lit la mauvaise cause.
+        """
+        i_garde = self.corps.find("SyntaxError")
+        i_sac = self.corps.find("Smart App Control")
+        self.assertNotEqual(-1, i_garde, "plus de garde sur SyntaxError")
+        self.assertNotEqual(-1, i_sac)
+        self.assertLess(i_garde, i_sac, "la garde ne protège plus rien")
+        entre = self.corps[i_garde:i_sac]
+        self.assertIn("return", entre, "la garde ne rend pas la main")
+
+    def test_un_echec_deterministe_est_nomme_comme_tel(self):
+        """Deux essais identiques ne sont pas une réputation en cours d'évaluation.
+
+        C'est la seule mesure dont l'installeur dispose pour distinguer les deux,
+        et elle ne coûte rien : comparer les deux sorties.
+        """
+        self.assertIn("$precedente", self.corps)
+        self.assertIn("IDENTIQUE", self.corps)
+
+    # ── Comportement, sous le vrai interpréteur ──────────────────────────────
+
+    def _jouer(self, source_ps1, modules):
+        """Joue le VRAI `Echauffer` d'un script donné, sur le vrai Python.
+
+        La racine est un dossier temporaire dont `python\` est un point de
+        jonction vers l'interpréteur de ce poste : `Echauffer` cherche
+        `<racine>\python\python.exe` et le trouve, sans qu'on ait à copier une
+        installation Python.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            harnais = Path(tmp) / "harnais.ps1"
+            cible = Path(tmp) / "installeur.ps1"
+            cible.write_text(Path(source_ps1).read_text(encoding="ascii"),
+                             encoding="ascii")
+            harnais.write_text(_HARNAIS, encoding="ascii")
+            res = subprocess.run(
+                [_PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                 str(harnais), "-Installeur", str(cible),
+                 "-DossierPython", str(Path(sys.executable).parent),
+                 "-Modules", ",".join(modules)],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=180)
+            return res.stdout + res.stderr
+
+    @unittest.skipIf(_PS is None, _RAISON)
+    def test_les_guillemets_survivent_jusqu_a_python(self):
+        """LE test. Les marqueurs sont espacés par des littéraux entre
+        guillemets doubles (`"absent   "`, `"ok       "`) : les retrouver
+        intacts, avec leur espacement, prouve que la chaîne est arrivée entière.
+        """
+        sortie = self._jouer(PS1, ["json", "module_qui_n_existe_pas"])
+        self.assertIn("ok       json", sortie, sortie)
+        self.assertIn("absent   module_qui_n_existe_pas", sortie, sortie)
+        self.assertIn("modules natifs charges", sortie, sortie)
+        self.assertNotIn("SyntaxError", sortie, sortie)
+        # Et surtout : aucune accusation, puisqu'il n'y a rien à accuser.
+        self.assertNotIn("Smart App Control", sortie, sortie)
+
+    @unittest.skipIf(_PS is None, _RAISON)
+    def test_l_ancien_idiome_echouerait_encore(self):
+        """Cas de CONTRÔLE : sans lui, tout ce fichier pourrait passer sur une
+        machine où le problème n'existe pas, et annoncer une protection qu'il ne
+        mesure pas.
+
+        On rejoue l'idiome d'avant — le même here-string passé en `python -c` —
+        et on vérifie qu'il produit toujours la `SyntaxError` du destinataire.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            essai = Path(tmp) / "ancien.ps1"
+            essai.write_text(_ANCIEN_IDIOME, encoding="ascii")
+            res = subprocess.run(
+                [_PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                 str(essai), "-Exe", sys.executable],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=120)
+        sortie = res.stdout + res.stderr
+        if "pwsh" in (_PS or "").lower():
+            self.skipTest("PowerShell 7 n'a pas ce défaut — cf. le tableau du docstring")
+        self.assertIn("SyntaxError", sortie,
+                      "l'ancien idiome ne casse plus : ce test ne prouve plus rien")
+
+
+#: Harnais : extrait du VRAI script ses deux fonctions et joue `Echauffer` sur
+#: une racine factice. Les sorties de l'installeur sont remplacées par des stubs
+#: — on teste `Echauffer`, pas la journalisation.
+_HARNAIS = """param([string]$Installeur, [string]$DossierPython, [string]$Modules)
+$ErrorActionPreference = 'Stop'
+function Info([string]$m)   { Write-Host $m }
+function Ok([string]$m)     { Write-Host $m }
+function Alerte([string]$m) { Write-Host $m }
+function Note([string]$m)   { Write-Host $m }
+
+$src = Get-Content -LiteralPath $Installeur -Raw
+foreach ($nom in @('Executer-Natif', 'Echauffer')) {
+    $d = $src.IndexOf("function $nom {")
+    $f = $src.IndexOf("`n}", $d)
+    Invoke-Expression $src.Substring($d, $f - $d + 2)
+}
+# La liste reelle est remplacee : le test doit dire ce qu'il attend, pas dependre
+# de ce qui est installe sur la machine qui le joue.
+$MODULES_NATIFS = $Modules -split ','
+
+$racine = Join-Path $env:TEMP ('epure-test-ech-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+New-Item -ItemType Directory -Path $racine | Out-Null
+New-Item -ItemType Junction -Path (Join-Path $racine 'python') -Target $DossierPython | Out-Null
+try {
+    Echauffer -Racine $racine
+} finally {
+    Remove-Item -LiteralPath (Join-Path $racine 'python') -Force -Recurse -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $racine -Recurse -Force -ErrorAction SilentlyContinue
+}
+"""
+
+#: L'idiome d'AVANT, reproduit tel quel pour le cas de controle.
+_ANCIEN_IDIOME = """param([string]$Exe)
+$ErrorActionPreference = 'Continue'
+$code = @'
+import sys
+print("absent   " + sys.argv[1])
+'@
+& $Exe @('-c', $code) + @('json') 2>&1 | ForEach-Object { Write-Host "$_" }
+"""
 
 
 class _ScenarioInstallation(unittest.TestCase):

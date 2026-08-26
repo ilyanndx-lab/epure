@@ -162,6 +162,7 @@ $DONNEES_PRESERVEES = @(
     'app\backend\chroma_db',
     'app\backend\doc_uploads',
     'app\backend\piper_models',
+    'app\backend\embedding_model',
     'app\workspace',
     'app\data'
 )
@@ -683,19 +684,76 @@ for nom in sys.argv[1:]:
         echecs.append(nom)
 sys.exit(1 if echecs else 0)
 '@
-    foreach ($essai in 1, 2) {
-        $r = Executer-Natif -Exe $python -Arguments (@('-c', $code) + $MODULES_NATIFS)
-        $ok = ($r.Code -eq 0)
-        foreach ($l in $r.Sortie) { Info "$l" }
-        if ($ok) { Ok 'modules natifs charges' ; return }
-        if ($essai -eq 1) {
-            Alerte 'un module natif a refuse de se charger -- nouvelle tentative dans 20 s'
-            Alerte 'Smart App Control evalue la reputation des DLL fraichement dezippees'
-            Start-Sleep -Seconds 20
+    # ECRIT DANS UN FICHIER, JAMAIS PASSE A `python -c`. Ce n est pas une
+    # preference de style : sous Windows PowerShell 5.1 -- celui que lance
+    # Installer-Epure.cmd, donc celui de TOUS les destinataires -- les guillemets
+    # doubles d un argument passe a un binaire natif NE SURVIVENT PAS. La ligne
+    # de commande est reconstruite selon les regles de CommandLineToArgvW, et 5.1
+    # n echappe pas les `"` internes.
+    #
+    # Mesure, pas deduction. Le meme here-string, passe en `-c` :
+    #
+    #     powershell.exe 5.1 -> SyntaxError: '(' was never closed
+    #                           (python recoit `print(absent   ` + nom))
+    #     pwsh 7.6           -> fonctionne
+    #     fichier temporaire -> fonctionne dans les DEUX
+    #     stdin (python -)   -> fonctionne dans les DEUX
+    #
+    # L echauffement n a donc JAMAIS fonctionne chez un destinataire : il
+    # affichait une SyntaxError, puis deux alertes qui accusaient Smart App
+    # Control, puis attendait 20 s pour rejouer exactement le meme echec.
+    #
+    # Le fichier temporaire plutot que stdin : il passe par `Executer-Natif` sans
+    # rien changer a sa signature, et il supprime la surface de guillemets une
+    # fois pour toutes -- les noms de modules, eux, sont des identifiants.
+    #
+    # `-Encoding ASCII` et pas UTF8 : sous 5.1, `-Encoding UTF8` ecrit un BOM. Ce
+    # fichier-ci est en ASCII pur (cf. son en-tete), donc le here-string l est
+    # aussi et l encodage est exact.
+    $script_ech = Join-Path ([System.IO.Path]::GetTempPath()) "epure-echauffement-$PID.py"
+    Set-Content -LiteralPath $script_ech -Value $code -Encoding ASCII
+    try {
+        $precedente = $null
+        foreach ($essai in 1, 2) {
+            $r = Executer-Natif -Exe $python -Arguments (@($script_ech) + $MODULES_NATIFS)
+            foreach ($l in $r.Sortie) { Info "$l" }
+            if ($r.Code -eq 0) { Ok 'modules natifs charges' ; return }
+
+            $texte = ($r.Sortie -join ' ')
+            # L echauffement lui-meme casse : ce n est PAS l installation du
+            # destinataire, et lui parler de Smart App Control l enverrait
+            # chercher un probleme qu il n a pas. Ne rien affirmer, ne pas
+            # attendre 20 s pour rejouer un echec deterministe.
+            if ($texte -match 'SyntaxError' -or $texte -match 'Traceback') {
+                Alerte 'le script d echauffement n a pas pu s executer -- c est un defaut'
+                Alerte 'du programme d installation, pas de votre machine. Le reste est'
+                Alerte 'installe et Epure devrait demarrer normalement.'
+                return
+            }
+            if ($essai -eq 1) {
+                Alerte 'un module natif a refuse de se charger -- nouvelle tentative dans 20 s'
+                Alerte 'Smart App Control evalue peut-etre la reputation des DLL dezippees'
+                $precedente = $texte
+                Start-Sleep -Seconds 20
+                continue
+            }
+            # Deuxieme essai : la comparaison des deux sorties est ce qui permet
+            # de NOMMER la difference entre une reputation en cours d evaluation
+            # (qui varie, ou disparait) et un blocage durable (qui ne varie pas).
+            if ($texte -eq $precedente) {
+                Alerte 'echec IDENTIQUE aux deux essais : ce n est donc pas une evaluation'
+                Alerte 'de reputation en cours, mais un blocage durable. Les modules marques'
+                Alerte 'ECHEC ci-dessus ne se chargeront pas en attendant. Journal Windows :'
+                Alerte 'Get-WinEvent -LogName Microsoft-Windows-CodeIntegrity/Operational'
+                return
+            }
         }
+        Alerte 'echauffement incomplet, mais la sortie a change entre les deux essais :'
+        Alerte 'une evaluation est peut-etre en cours. Relancez Epure dans quelques'
+        Alerte 'minutes (voir epure.log et installation.log).'
+    } finally {
+        Remove-Item -LiteralPath $script_ech -Force -ErrorAction SilentlyContinue
     }
-    Alerte 'echauffement incomplet. Si Epure ne demarre pas, relancez dans quelques'
-    Alerte 'minutes : le blocage est temporaire (voir epure.log et installation.log).'
 }
 
 
