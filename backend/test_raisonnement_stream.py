@@ -486,14 +486,35 @@ class BasculeOllamaTest(unittest.TestCase):
         self.assertEqual(appels["options"]["num_thread"], 8)
         self.assertTrue(appels["stream"])
 
-    def test_desactive_ne_touche_pas_les_options_historiques(self):
-        """La bascule ajoute une clé, elle n'en modifie aucune."""
+    def test_desactive_ne_touche_que_think_et_le_budget(self):
+        """La bascule ajoute `think` et change `num_predict` — RIEN d'autre.
+
+        Ce test affirmait « elle n'en modifie aucune » jusqu'au 2026-08-27, et il
+        disait vrai jusque-là. `num_predict` dépend désormais du raisonnement,
+        délibérément : les deux API n'ont qu'un plafond UNIQUE, la réflexion et la
+        réponse y puisent au même endroit, et un modèle qui pense longtemps peut
+        l'épuiser avant d'écrire quoi que ce soit (mesuré : 613 in / 2048 out,
+        réponse vide).
+
+        L'assertion reste donc aussi serrée qu'avant, mais nomme les DEUX
+        différences attendues au lieu d'une : ce qui compte est qu'il n'y en ait
+        pas de troisième.
+        """
         _, avec = _rejouer([_chunk(content="391"), _chunk(done=True)],
                            raisonnement=False)
         _, sans = _rejouer([_chunk(content="391"), _chunk(done=True)])
-        self.assertEqual(avec["options"], sans["options"])
+
         self.assertEqual(avec["model"], sans["model"])
         self.assertEqual(set(avec) - set(sans), {"think"})
+
+        # Toutes les options SAUF le budget restent identiques.
+        self.assertEqual(
+            {k: v for k, v in avec["options"].items() if k != "num_predict"},
+            {k: v for k, v in sans["options"].items() if k != "num_predict"},
+        )
+        # Et le budget est bien plus BAS sans raisonnement : il n'a plus à
+        # couvrir deux productions.
+        self.assertLess(avec["options"]["num_predict"], sans["options"]["num_predict"])
 
     def test_un_modele_sans_raisonnement_traverse_les_deux_valeurs(self):
         """Le flux d'un modèle sans raisonnement est le même dans les deux sens.
