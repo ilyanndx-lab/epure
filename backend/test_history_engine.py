@@ -175,6 +175,141 @@ class AjoutTest(_Base):
         self.assertEqual(self._brut(conv["id"])["modèle"], "qwen2.5:7b")
 
 
+class MetadonneesParMessageTest(_Base):
+    """`horodatage` sur tout message, `modèle` sur les réponses SEULEMENT.
+
+    Un message tapé par l'utilisateur n'est produit par aucun modèle : lui coller
+    le modèle actif dirait quelque chose de faux, et rendrait indistinguables
+    deux situations que l'interface doit séparer — « pas de modèle par nature »
+    et « antérieur à ce champ, on ne sait pas ».
+    """
+
+    def test_chaque_message_recoit_un_horodatage(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "réponse"},
+        ], model="qwen2.5:7b")
+        for m in self._brut(conv["id"])["messages"]:
+            with self.subTest(role=m["role"]):
+                self.assertRegex(m["horodatage"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+    def test_seule_la_reponse_porte_un_modele(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "réponse"},
+        ], model="qwen2.5:7b")
+        utilisateur, assistant = self._brut(conv["id"])["messages"]
+        self.assertNotIn("modèle", utilisateur,
+                         "un message tapé n'est produit par aucun modèle")
+        self.assertEqual(assistant["modèle"], "qwen2.5:7b")
+
+    def test_le_modele_par_message_survit_a_un_changement_de_modele(self):
+        """LE point : la conversation ne porte que le DERNIER modèle utilisé.
+
+        C'est pour ça qu'on ne peut pas s'en servir pour combler un message : il
+        a pu changer plusieurs fois, et l'utiliser attribuerait des réponses à un
+        modèle qui ne les a pas produites.
+        """
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "première"}], model="qwen2.5:7b")
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "seconde"}], model="gemini-2.0-flash")
+
+        brut = self._brut(conv["id"])
+        self.assertEqual([m["modèle"] for m in brut["messages"]],
+                         ["qwen2.5:7b", "gemini-2.0-flash"])
+        self.assertEqual(brut["modèle"], "gemini-2.0-flash",
+                         "la conversation garde le dernier — d'où l'impossibilité d'en déduire les autres")
+
+    def test_sans_modele_connu_le_champ_reste_absent(self):
+        """Absent, et surtout pas une chaîne vide : l'interface distingue les deux."""
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [{"role": "assistant", "content": "x"}])
+        self.assertNotIn("modèle", self._brut(conv["id"])["messages"][0])
+
+
+class RetrocompatibiliteMetadonneesTest(_Base):
+    """Les messages d'AVANT ces champs ne sont ni complétés ni devinés.
+
+    Demande explicite : ne rien rétro-remplir depuis le `modèle` de la
+    conversation. L'absence est une information ; l'inventer serait une erreur
+    silencieuse, la pire espèce — une réponse attribuée à un modèle qui ne l'a
+    pas produite, sans que rien ne le signale.
+    """
+
+    _ANCIENNE = {
+        "id": "3a2f3207-ee38-4099-986e-49d6404f203d",
+        "date": "2026-06-14",
+        "titre": "Avant les métadonnées",
+        "modèle": "gemini-2.0-flash",   # changé depuis : ne doit RIEN combler
+        "modules": ["chat"],
+        "n_messages": 2,
+        "messages": [
+            {"role": "user", "content": "vieille question"},
+            {"role": "assistant", "content": "vieille réponse"},
+        ],
+    }
+
+    def _poser(self):
+        (self.tmp / f"{self._ANCIENNE['id']}.json").write_text(
+            json.dumps(self._ANCIENNE, ensure_ascii=False), encoding="utf-8")
+
+    def test_la_lecture_n_invente_ni_heure_ni_modele(self):
+        self._poser()
+        conv = self.moteur.get_conversation(self._ANCIENNE["id"])
+        for m in conv["messages"]:
+            with self.subTest(role=m["role"]):
+                self.assertNotIn("horodatage", m)
+                self.assertNotIn("modèle", m)
+
+    def test_le_modele_de_la_conversation_ne_deborde_pas_sur_les_messages(self):
+        """Le piège nommé dans la demande, éprouvé directement."""
+        self._poser()
+        conv = self.moteur.get_conversation(self._ANCIENNE["id"])
+        self.assertEqual(conv["modèle"], "gemini-2.0-flash")
+        for m in conv["messages"]:
+            self.assertIsNone(m.get("modèle"))
+
+    def test_un_nouveau_tour_n_affecte_pas_les_anciens_messages(self):
+        """Aucune migration : les anciens restent nus, les nouveaux sont complets."""
+        self._poser()
+        self.moteur.append_messages(self._ANCIENNE["id"], [
+            {"role": "assistant", "content": "réponse récente"}], model="qwen2.5:7b")
+
+        messages = self._brut(self._ANCIENNE["id"])["messages"]
+        self.assertNotIn("horodatage", messages[0])
+        self.assertNotIn("horodatage", messages[1])
+        self.assertIn("horodatage", messages[2])
+        self.assertEqual(messages[2]["modèle"], "qwen2.5:7b")
+
+    def test_la_reprise_ne_date_pas_d_aujourd_hui_des_messages_d_hier(self):
+        """`create_conversation(messages=…)` reprend ce qui est là, n'invente rien.
+
+        Leur donner l'instant présent daterait de ce soir une conversation
+        d'avant-hier.
+        """
+        conv = self.moteur.create_conversation(messages=[
+            {"role": "user", "content": "repris"},
+            {"role": "assistant", "content": "repris aussi"},
+        ])
+        for m in self._brut(conv["id"])["messages"]:
+            with self.subTest(role=m["role"]):
+                self.assertNotIn("horodatage", m)
+                self.assertNotIn("modèle", m)
+
+    def test_la_reprise_conserve_des_metadonnees_deja_presentes(self):
+        conv = self.moteur.create_conversation(messages=[
+            {"role": "assistant", "content": "x",
+             "horodatage": "2026-06-14T20:14:00", "modèle": "qwen2.5:7b"},
+        ])
+        m = self._brut(conv["id"])["messages"][0]
+        self.assertEqual(m["horodatage"], "2026-06-14T20:14:00")
+        self.assertEqual(m["modèle"], "qwen2.5:7b")
+
+
 class FichierCorrompuTest(_Base):
     """Le danger central de l'étape : ne JAMAIS écrire par-dessus l'illisible."""
 

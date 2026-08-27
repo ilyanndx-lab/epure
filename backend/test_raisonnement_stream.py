@@ -269,11 +269,14 @@ class ProtocoleWebSocketTest(unittest.TestCase):
     def _echanger(self, ws, texte="17 x 23 ?"):
         """Envoie un message et collecte les trames de FLUX jusqu'au `done`.
 
-        L'événement d'intendance ``{"type": "conversation", "id": …}`` est mis à
-        part dans ``self.conversation_id`` au lieu d'être rendu. Il est émis
-        quand le serveur ouvre une conversation pour un client qui n'en a pas
-        fourni (création paresseuse, étape 4 du chantier conversations), donc il
-        précède le flux sans en faire partie.
+        Deux événements d'INTENDANCE sont mis à part au lieu d'être rendus :
+
+        * ``{"type": "conversation", "id": …}`` — le serveur ouvre une
+          conversation pour un client qui n'en a pas fourni (création paresseuse) ;
+        * ``{"type": "meta_message", "role": "user", "horodatage": …}`` — l'heure
+          que le serveur vient de poser sur le message reçu.
+
+        Tous deux précèdent le flux sans en faire partie.
 
         Le retirer ici plutôt que d'allonger chaque liste attendue garde ces
         tests sur leur sujet — l'ordre et le type du canal de raisonnement. Mais
@@ -285,12 +288,15 @@ class ProtocoleWebSocketTest(unittest.TestCase):
         trames = []
         while True:
             trame = json.loads(ws.receive_text())
-            if trame["type"] == "conversation":
+            if trame["type"] in ("conversation", "meta_message"):
                 self.assertEqual(
                     trames, [],
-                    "`conversation` ne peut arriver qu'AVANT le flux, jamais dedans",
+                    f"`{trame['type']}` ne peut arriver qu'AVANT le flux, jamais dedans",
                 )
-                self.conversation_id = trame["id"]
+                if trame["type"] == "conversation":
+                    self.conversation_id = trame["id"]
+                else:
+                    self.horodatage_utilisateur = trame.get("horodatage", "")
                 continue
             trames.append(trame)
             if trame["type"] in ("done", "error"):

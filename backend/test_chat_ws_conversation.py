@@ -206,6 +206,51 @@ class ContinuiteTest(_Base):
         self.assertIn("message orphelin", [m["content"] for m in conv["messages"]])
 
 
+class MetadonneesDuTourTest(_Base):
+    """Le protocole porte les métadonnées, pour que le client n'ait pas à relire.
+
+    Sans ça, il faudrait un `GET` de la conversation entière après chaque tour —
+    ou laisser le navigateur poser l'heure lui-même, auquel cas l'heure affichée
+    avant un rechargement viendrait de son horloge et celle d'après du disque.
+    """
+
+    def test_le_done_porte_l_horodatage_et_le_modele_de_la_reponse(self):
+        conv = history_engine.create_conversation()
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            trames, _ = self._envoyer(ws, "question", conversation_id=conv["id"])
+
+        done = trames[-1]
+        self.assertEqual(done["type"], "done")
+        self.assertRegex(done["horodatage"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+        self.assertTrue(done["modèle"], "le modèle de la réponse doit remonter")
+
+        # Et c'est bien ce qui est SUR LE DISQUE, pas une valeur recalculée.
+        stocke = history_engine.get_conversation(conv["id"])["messages"][-1]
+        self.assertEqual(done["horodatage"], stocke["horodatage"])
+        self.assertEqual(done["modèle"], stocke["modèle"])
+
+    def test_le_message_utilisateur_recoit_son_horodatage_du_serveur(self):
+        conv = history_engine.create_conversation()
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            trames, _ = self._envoyer(ws, "question", conversation_id=conv["id"])
+
+        metas = [t for t in trames if t["type"] == "meta_message"]
+        self.assertEqual(len(metas), 1, "un seul `meta_message` par tour")
+        self.assertEqual(metas[0]["role"], "user")
+
+        stocke = history_engine.get_conversation(conv["id"])["messages"][0]
+        self.assertEqual(metas[0]["horodatage"], stocke["horodatage"])
+
+    def test_le_message_utilisateur_n_a_pas_de_modele(self):
+        """Il n'est produit par aucun modèle : le champ doit être ABSENT."""
+        conv = history_engine.create_conversation()
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            self._envoyer(ws, "question", conversation_id=conv["id"])
+
+        utilisateur = history_engine.get_conversation(conv["id"])["messages"][0]
+        self.assertNotIn("modèle", utilisateur)
+
+
 class TitrageTest(_Base):
     def test_le_titre_arrive_apres_le_premier_tour(self):
         with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
