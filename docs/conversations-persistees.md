@@ -381,7 +381,7 @@ livrables et testables **sans changement visible à l'usage**.
 | 2 | `HistoryEngine` : nouvelles méthodes, lecture tolérante des anciens fichiers, `fsync` | ✅ fait le 2026-08-27 |
 | 3 | Endpoints `/chat/conversations*` + `PUT …/fichiers` | ✅ fait le 2026-08-27 |
 | 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | ✅ fait le 2026-08-27 |
-| 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | à faire |
+| 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | ✅ fait le 2026-08-27 |
 | 6 | Frontend : `ConversationList`, recâblage `Component.tsx` et `ModuleBar.tsx`, tests vitest | à faire |
 | 7 | Reprise de `epure.chat.messages` (migration one-shot) | à faire |
 
@@ -573,3 +573,50 @@ tête** — l'écarter en aveugle aurait masqué un `conversation` surgissant au
 milieu d'un flux, qui serait un vrai défaut de protocole.
 
 11 tests ajoutés (`test_chat_ws_conversation.py`) ; 716 au total sous Windows.
+
+### Étape 5 — ce qui a été fait
+
+`fichiers_actifs` et `résumé_contexte` ont quitté `context_session.json`, et
+`GET`/`DELETE /files/active` ont disparu. La migration a coûté ce qu'annonçait
+le §5 : **rien** — ces clés étaient réinitialisées à chaque démarrage, donc ne
+survivaient déjà à aucun lancement.
+
+Ce que le chat lit désormais :
+
+| | Avant | Après |
+|---|---|---|
+| Fichiers du RAG | `ctx["fichiers_actifs"]`, global | `conv["fichiers_attachés"]` |
+| `[CONTEXTE ACTIF]` | `memory.build_system_context` | `sys_parts` du chat |
+| `/skills/résumé` | liste globale | `conversation_id` requis |
+| Import de fichiers | écrase la liste globale | **complète** les attachements du fil visé |
+
+Deux points qui ne se déduisent pas :
+
+- **L'import COMPLÈTE, il ne remplace pas.** D'où `add_conversation_files` à côté
+  de `set_conversation_files` : le panneau coche un ensemble (donc remplace), un
+  import ajoute au contexte en cours. Faire un `set` à l'import détacherait en
+  silence ce que l'utilisateur avait déjà mis là — exactement ce que
+  `update_context(fichiers_actifs=…)` faisait, pour toutes les conversations à la
+  fois.
+- **`conversation_id` est optionnel à l'import, requis pour le résumé.** Importer
+  sans viser un fil est légitime (alimenter le corpus depuis les Réglages) ;
+  résumer sans savoir quels fichiers ne l'est pas, et deviner reproduirait le
+  défaut qu'on retire. Le refus sort en événement SSE `error`, pas en 422 : le
+  consommateur n'écoute que des `data:`.
+
+L'ordre du tour a changé : le message de l'utilisateur est écrit sur le disque
+**avant** `@web` et le RAG, dès que son texte final est connu. Il l'était après,
+ce qui n'avait pas de conséquence tant que `conv` n'était pas relu ensuite — mais
+le RAG en a désormais besoin.
+
+#### ⚠️ Fenêtre de dégradation entre les étapes 5 et 6
+
+Le frontend n'a pas encore été recâblé (c'est l'étape 6). D'ici là, le panneau 📎
+**liste le corpus mais n'attache rien** : il n'envoie pas de `conversation_id`.
+L'application n'est pas cassée — aucun plantage, l'import indexe toujours — mais
+la recherche documentaire dans le chat ne trouve plus de fichiers attachés. C'est
+attendu et transitoire ; ne pas en juger l'application avant l'étape 6.
+
+14 tests ajoutés (`test_fichiers_par_conversation.py`) ; 730 au total sous
+Windows. Deux tests existants basculés (`test_raisonnement_stream`,
+`test_taches_locales`) : ils pilotaient `/skills/résumé` par la liste globale.

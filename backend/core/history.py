@@ -473,6 +473,48 @@ class HistoryEngine:
             logger.warning("Attachement impossible : %r", conv_id)
             return None
 
+    def add_conversation_files(self, conv_id: str, paths: list) -> list[str] | None:
+        """AJOUTE des fichiers aux attachements, sans toucher aux existants.
+
+        Distinct de :meth:`set_conversation_files`, et les deux sont nécessaires :
+        le panneau de fichiers coche un ensemble (donc remplace), mais un import
+        ajoute au contexte en cours (donc complète). Faire un `set` à l'import
+        détacherait en silence ce que l'utilisateur avait déjà mis là.
+
+        Doublons écartés en gardant la PREMIÈRE position : ré-importer un fichier
+        déjà attaché ne doit pas le faire remonter dans la liste.
+        """
+        nouveaux = [str(p) for p in (paths or [])]
+        try:
+            with self._conversation_transaction(conv_id) as conv:
+                fusion = list(conv["fichiers_attachés"])
+                vus = {cle_chemin(p) for p in fusion}
+                for p in nouveaux:
+                    if cle_chemin(p) not in vus:
+                        vus.add(cle_chemin(p))
+                        fusion.append(p)
+                conv["fichiers_attachés"] = fusion
+                resultat = list(fusion)
+            return resultat
+        except (_ConversationAbsente, PathOutsideDataError):
+            logger.warning("Ajout de fichiers impossible : %r", conv_id)
+            return None
+
+    def set_resume_contexte(self, conv_id: str, texte: str) -> bool:
+        """Résumé des fichiers de CETTE conversation, injecté dans son prompt.
+
+        Remplace la clé globale ``résumé_contexte`` de ``context_session.json``,
+        qui était partagée par toutes les conversations et remise à zéro à chaque
+        import : résumer les fiches d'un fil polluait le contexte de tous les
+        autres.
+        """
+        try:
+            with self._conversation_transaction(conv_id) as conv:
+                conv["résumé_contexte"] = texte or ""
+            return True
+        except (_ConversationAbsente, PathOutsideDataError):
+            return False
+
     def conversation_view(self, conv_id: str, sources_indexees=None) -> dict | None:
         """La conversation telle qu'elle part au client, avec ``présent`` par fichier.
 

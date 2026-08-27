@@ -385,12 +385,16 @@ class ResumeSseTest(unittest.TestCase):
         fichier = os.path.join(self._dossier, "cours.txt")
         with open(fichier, "w", encoding="utf-8") as sortie:
             sortie.write("Contenu de cours pour le resume.")
-        self._contexte = routeur_chat.memory.get_context().get("fichiers_actifs", [])
-        routeur_chat.memory.update_context(fichiers_actifs=[fichier])
+        # Les fichiers appartiennent a la CONVERSATION depuis le 2026-08-27 :
+        # `context_session.fichiers_actifs` n'existe plus (une liste globale
+        # ecrasee a chaque import, sans moyen de choisir). Le flux exige donc un
+        # `conversation_id`, et deviner serait reproduire le defaut retire.
+        self._conv = routeur_chat.history_engine.create_conversation(
+            fichiers=[fichier])
 
     def tearDown(self):
         routeur_chat.llm.stream = self._original
-        routeur_chat.memory.update_context(fichiers_actifs=self._contexte)
+        routeur_chat.history_engine.delete_conversation(self._conv["id"])
         shutil.rmtree(self._dossier, ignore_errors=True)
 
     def test_seul_le_texte_part_en_token(self):
@@ -403,8 +407,9 @@ class ResumeSseTest(unittest.TestCase):
             ])
         routeur_chat.llm.stream = faux_stream
 
-        reponse = self.client.post("/skills/résumé",
-                                   headers={"Authorization": f"Bearer {self.token}"})
+        reponse = self.client.post(
+            "/skills/résumé", json={"conversation_id": self._conv["id"]},
+            headers={"Authorization": f"Bearer {self.token}"})
         self.assertEqual(reponse.status_code, 200, reponse.text)
         evenements = [json.loads(ligne[6:]) for ligne in reponse.text.splitlines()
                       if ligne.startswith("data: ")]

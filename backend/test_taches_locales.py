@@ -208,13 +208,17 @@ class SkillsResumeTest(_BaseLocale):
         fichier = os.path.join(dossier, "cours.txt")
         with open(fichier, "w", encoding="utf-8") as f:
             f.write("Contenu de cours.")
-        avant = routeur_chat.memory.get_context().get("fichiers_actifs", [])
-        routeur_chat.memory.update_context(fichiers_actifs=[fichier])
+        # Les fichiers sont attaches a une CONVERSATION depuis le 2026-08-27
+        # (`fichiers_actifs` global retire) ; le pire cas teste par cette classe
+        # — modele_actif cloud + toutes les cles presentes — est inchange.
+        conv = routeur_chat.history_engine.create_conversation(fichiers=[fichier])
         try:
-            r = self.client.post("/skills/résumé", headers=self.entetes)
+            r = self.client.post("/skills/résumé",
+                                 json={"conversation_id": conv["id"]},
+                                 headers=self.entetes)
             self.assertEqual(r.status_code, 200, r.text)
         finally:
-            routeur_chat.memory.update_context(fichiers_actifs=avant)
+            routeur_chat.history_engine.delete_conversation(conv["id"])
         self.assertTrue(capture.modeles, "aucun appel LLM capturé")
         for modele in capture.modeles:
             self.assertLocal(modele, "/skills/résumé")

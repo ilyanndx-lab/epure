@@ -270,12 +270,25 @@ def perform_web_search(query: str) -> str:
 
 # ── Skill /résumé (SSE) ──────────────────────────────────────────────────────
 
-async def _stream_résumé_sse():
-    ctx = memory.get_context()
-    active_files = ctx.get("fichiers_actifs", [])
+async def _stream_résumé_sse(conversation_id: str = ""):
+    """Résumé des fichiers ATTACHÉS À UNE CONVERSATION.
+
+    Lisait `ctx["fichiers_actifs"]`, la liste globale retirée le 2026-08-27 :
+    demander un résumé depuis un fil résumait donc les fichiers du dernier import,
+    quel que soit le fil. L'identifiant est requis — sans lui il n'y a plus de
+    notion de « fichiers actifs » à laquelle se rattacher, et deviner serait
+    reproduire exactement le défaut qu'on retire.
+    """
+    conv = history_engine.get_conversation(conversation_id) if conversation_id else None
+    if conv is None:
+        yield (
+            f"data: {json.dumps({'type': 'error', 'content': 'Conversation inconnue : impossible de savoir quels fichiers résumer.'}, ensure_ascii=False)}\n\n"
+        )
+        return
+    active_files = conv.get("fichiers_attachés", [])
     if not active_files:
         yield (
-            f"data: {json.dumps({'type': 'error', 'content': 'Aucun fichier actif. Chargez des fichiers via le panneau 📎.'})}\n\n"
+            f"data: {json.dumps({'type': 'error', 'content': 'Aucun fichier attaché à cette conversation. Ajoutez-en via le panneau 📎.'}, ensure_ascii=False)}\n\n"
         )
         return
 
@@ -350,10 +363,21 @@ async def _stream_résumé_sse():
         yield f"data: {json.dumps({'type': 'token', 'content': item}, ensure_ascii=False)}\n\n"
 
 
+class ResumeRequest(BaseModel):
+    conversation_id: str = ""
+
+
 @router.post("/skills/résumé")
-async def skills_résumé():
+async def skills_résumé(req: ResumeRequest | None = None):
+    """Corps optionnel pour rester compatible avec un client qui n'en envoie pas.
+
+    Sans `conversation_id`, le flux rend une erreur explicite plutôt qu'un 422 :
+    c'est un flux SSE, et une erreur de validation FastAPI n'y serait pas lisible
+    par le consommateur, qui n'écoute que des événements `data:`.
+    """
     return StreamingResponse(
-        _stream_résumé_sse(), media_type="text/event-stream", headers=SSE_HEADERS
+        _stream_résumé_sse(req.conversation_id if req else ""),
+        media_type="text/event-stream", headers=SSE_HEADERS,
     )
 
 
@@ -664,7 +688,6 @@ async def ws_chat(websocket: WebSocket):
             web_search_override: bool = bool(msg.get("web_search_override", False))
 
             ctx = memory.get_context()
-            active_files = ctx.get("fichiers_actifs", [])
             model_override = ctx.get("modèle_actif") or None
             # Réglage de session, comme `strict_mode` : lu ici plutôt que reçu
             # dans le message. Le client n'a donc rien à envoyer, et le réglage
@@ -745,58 +768,6 @@ async def ws_chat(websocket: WebSocket):
                 user_text = hist_query if hist_query != user_text else user_text.replace("@historique", "").strip()
                 user_text = user_text or msg["content"]
 
-            # @web skill
-            web_ctx = ""
-            if web_search_override:
-                _t_web = time.time()
-                web_query = user_text.strip()
-                web_results = await loop.run_in_executor(None, perform_web_search, web_query)
-                logger.info("TTFT Web: %.3fs (query=%r, len=%d)", time.time() - _t_web, web_query[:80], len(web_results))
-                if web_results:
-                    web_ctx = (
-                        "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
-                        f"{web_results}\n\n"
-                        "Si pertinent, intègre ces informations dans ta réponse et cite la source."
-                    )
-                else:
-                    web_ctx = (
-                        "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
-                        "Réponds à partir de tes connaissances en le signalant."
-                    )
-
-            _t = time.time()
-            if rag_override == "all":
-                chunks = await loop.run_in_executor(None, rag.query, user_text)
-            elif active_files:
-                chunks = await loop.run_in_executor(
-                    None, rag.query_filtered, user_text, active_files
-                )
-            else:
-                chunks = ""
-            logger.info("TTFT RAG: %.3fs", time.time() - _t)
-
-            sys_parts: list[str] = []
-            if strict_override:
-                sys_parts.append(
-                    "Réponds de façon maximalement concise. "
-                    "Pas d'introduction, pas de reformulation."
-                )
-            _t = time.time()
-            mem_ctx = await loop.run_in_executor(None, memory.build_system_context, user_text)
-            logger.info("TTFT Memory: %.3fs", time.time() - _t)
-            if mem_ctx:
-                sys_parts.append(mem_ctx)
-            if hist_ctx:
-                sys_parts.append(hist_ctx)
-            if web_ctx:
-                sys_parts.append(web_ctx)
-            if chunks:
-                sys_parts.append(
-                    "Contexte extrait de tes fiches de révision :\n"
-                    f"{chunks}\n\n"
-                    "Réponds à la question en te basant sur ce contexte si pertinent."
-                )
-
             # Le message de l'utilisateur entre sur le DISQUE ici, et pas plus
             # tôt : son texte a pu être réécrit juste au-dessus (`@historique`
             # retire sa balise), et c'est le texte réellement soumis au modèle qui
@@ -824,6 +795,77 @@ async def ws_chat(websocket: WebSocket):
                     "content": "Cette conversation n'existe plus. Ouvrez-en une nouvelle.",
                 }))
                 continue
+
+
+            # @web skill
+            web_ctx = ""
+            if web_search_override:
+                _t_web = time.time()
+                web_query = user_text.strip()
+                web_results = await loop.run_in_executor(None, perform_web_search, web_query)
+                logger.info("TTFT Web: %.3fs (query=%r, len=%d)", time.time() - _t_web, web_query[:80], len(web_results))
+                if web_results:
+                    web_ctx = (
+                        "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
+                        f"{web_results}\n\n"
+                        "Si pertinent, intègre ces informations dans ta réponse et cite la source."
+                    )
+                else:
+                    web_ctx = (
+                        "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
+                        "Réponds à partir de tes connaissances en le signalant."
+                    )
+
+            # Les fichiers viennent de LA CONVERSATION, plus d'un `fichiers_actifs`
+            # global (retiré le 2026-08-27). `conv` a été relu juste au-dessus par
+            # l'ajout du message, donc l'attachement est frais sans lecture
+            # supplémentaire.
+            #
+            # Les trois modes restent ceux d'avant, seule la provenance de la
+            # liste change : « corpus entier » (`rag_override == "all"`) reste
+            # orthogonal à l'attachement — c'est « cherche partout », pas
+            # « attache tout ».
+            active_files = conv.get("fichiers_attachés", [])
+            _t = time.time()
+            if rag_override == "all":
+                chunks = await loop.run_in_executor(None, rag.query, user_text)
+            elif active_files:
+                chunks = await loop.run_in_executor(
+                    None, rag.query_filtered, user_text, active_files
+                )
+            else:
+                chunks = ""
+            logger.info("TTFT RAG: %.3fs", time.time() - _t)
+
+            sys_parts: list[str] = []
+            if strict_override:
+                sys_parts.append(
+                    "Réponds de façon maximalement concise. "
+                    "Pas d'introduction, pas de reformulation."
+                )
+            _t = time.time()
+            mem_ctx = await loop.run_in_executor(None, memory.build_system_context, user_text)
+            logger.info("TTFT Memory: %.3fs", time.time() - _t)
+            if mem_ctx:
+                sys_parts.append(mem_ctx)
+            # [CONTEXTE ACTIF] : le résumé des fichiers de CETTE conversation.
+            # Il était injecté par `memory.build_system_context`, qui n'a aucun
+            # moyen de savoir de quelle conversation il s'agit — tolérable tant
+            # que le résumé était global, faux dès qu'il y en a un par fil. Il est
+            # donc ajouté ici, où la conversation est connue.
+            resume_conv = (conv.get("résumé_contexte") or "").strip()
+            if resume_conv:
+                sys_parts.append(f"[CONTEXTE ACTIF]\n{resume_conv}")
+            if hist_ctx:
+                sys_parts.append(hist_ctx)
+            if web_ctx:
+                sys_parts.append(web_ctx)
+            if chunks:
+                sys_parts.append(
+                    "Contexte extrait de tes fiches de révision :\n"
+                    f"{chunks}\n\n"
+                    "Réponds à la question en te basant sur ce contexte si pertinent."
+                )
 
             messages = list(conv["messages"])
             if sys_parts:
