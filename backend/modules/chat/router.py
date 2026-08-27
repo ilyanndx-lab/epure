@@ -900,6 +900,10 @@ async def ws_chat(websocket: WebSocket):
             await websocket.send_text(json.dumps({
                 "type": "meta_message", "role": "user",
                 "horodatage": _meta_user.get("horodatage", ""),
+                # Le modèle À QUI la question est posée. Utile surtout dans un
+                # fil où l'on change de modèle en cours de route : sans lui, on
+                # ne peut plus savoir laquelle des questions est partie où.
+                "modèle": _meta_user.get("modèle", ""),
             }, ensure_ascii=False))
 
             messages = list(conv["messages"])

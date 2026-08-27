@@ -241,14 +241,21 @@ class MetadonneesDuTourTest(_Base):
         stocke = history_engine.get_conversation(conv["id"])["messages"][0]
         self.assertEqual(metas[0]["horodatage"], stocke["horodatage"])
 
-    def test_le_message_utilisateur_n_a_pas_de_modele(self):
-        """Il n'est produit par aucun modèle : le champ doit être ABSENT."""
+    def test_le_message_utilisateur_porte_le_modele_interroge(self):
+        """Le modèle À QUI la question part, remonté au client et écrit sur disque.
+
+        Le libellé de l'interface (« envoyé à ») fait que rien n'est affirmé de
+        faux : ce texte ne vient pas du modèle, il lui a été envoyé.
+        """
         conv = history_engine.create_conversation()
         with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
-            self._envoyer(ws, "question", conversation_id=conv["id"])
+            trames, _ = self._envoyer(ws, "question", conversation_id=conv["id"])
 
         utilisateur = history_engine.get_conversation(conv["id"])["messages"][0]
-        self.assertNotIn("modèle", utilisateur)
+        self.assertTrue(utilisateur["modèle"])
+
+        meta = [t for t in trames if t["type"] == "meta_message"][0]
+        self.assertEqual(meta["modèle"], utilisateur["modèle"])
 
 
 class TitrageTest(_Base):

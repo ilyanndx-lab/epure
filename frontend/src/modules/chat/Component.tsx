@@ -130,11 +130,49 @@ function MenuMeta({ meta, onFermer }: { meta: MetaAffichable; onFermer: () => vo
          className="absolute z-20 mt-1 bg-elevated border border-line rounded-md shadow-md px-3 py-2 text-xs font-mono whitespace-nowrap">
       <div className="text-muted">date <span className="text-secondary">{meta.date}</span></div>
       <div className="text-muted">heure <span className="text-secondary">{meta.heure}</span></div>
-      {meta.modele !== null && (
-        <div className="text-muted">modèle <span className="text-secondary">{meta.modele}</span></div>
-      )}
+      <div className="text-muted">{meta.libelleModele} <span className="text-secondary">{meta.modele}</span></div>
     </div>
   )
+}
+
+/**
+ * Distance au-delà de laquelle un clic est en réalité un glisser de sélection.
+ *
+ * 4 px : assez pour absorber le tremblement d'un vrai clic, assez peu pour
+ * qu'un début de sélection compte comme tel.
+ */
+const SEUIL_GLISSER = 4
+
+/**
+ * Ce clic est-il en fait une SÉLECTION de texte ?
+ *
+ * Le bug corrigé : la bulle entière ouvre le menu au clic, or c'est aussi la
+ * zone où l'on sélectionne du texte pour le copier. Sélectionner ouvrait donc le
+ * menu, qui recouvrait le texte au moment précis où l'on essayait de l'attraper.
+ *
+ * Deux garde-fous, parce qu'aucun ne suffit seul :
+ *
+ * 1. **le curseur a-t-il bougé** entre l'enfoncement et le relâchement — c'est
+ *    ce qui attrape le glisser en cours, y compris quand la sélection finit
+ *    vide (un glisser dans une marge) ;
+ * 2. **une sélection non vide existe-t-elle** dans ce message — ce qui attrape
+ *    le double-clic sur un mot, où le curseur n'a pas bougé d'un pixel.
+ *
+ * Le clic qui EFFACE une sélection existante (cliquer ailleurs pour
+ * désélectionner) n'est pas concerné : le navigateur a déjà réduit la sélection
+ * quand `click` se déclenche.
+ */
+function estUneSelectionDepuis(
+  depart: { x: number; y: number } | null,
+  arrivee: { x: number; y: number },
+): boolean {
+  if (depart) {
+    const dx = Math.abs(arrivee.x - depart.x)
+    const dy = Math.abs(arrivee.y - depart.y)
+    if (dx > SEUIL_GLISSER || dy > SEUIL_GLISSER) return true
+  }
+  const selection = window.getSelection()
+  return !!selection && !selection.isCollapsed && selection.toString().trim().length > 0
 }
 
 function fmtDuration(ms: number): string {
@@ -338,6 +376,8 @@ export default function Chat({
   const [webSearchMode, setWebSearchMode] = usePersistentState<'once' | 'always'>('epure.chat.webSearchMode', 'once')
   const [webMenuOpen, setWebMenuOpen] = useState(false)
 
+  /** Position du bouton enfoncé, pour distinguer un clic d'un glisser. */
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const webMenuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -368,12 +408,18 @@ export default function Chat({
           // Horodatage du message utilisateur, posé par le serveur (cf. le
           // commentaire du routeur : deux horloges donneraient deux heures pour
           // le même message selon qu'on le regarde avant ou après un rechargement).
-          if (data.horodatage) {
+          if (data.horodatage || data['modèle']) {
+            const h = data.horodatage as string | undefined
+            const mo = data['modèle'] as string | undefined
             setMessages(prev => {
               const dernier = prev.length - 1
               if (dernier < 0 || prev[dernier].role !== 'user') return prev
               const copie = [...prev]
-              copie[dernier] = { ...copie[dernier], horodatage: data.horodatage }
+              copie[dernier] = {
+                ...copie[dernier],
+                ...(h ? { horodatage: h } : {}),
+                ...(mo ? { modele: mo } : {}),
+              }
               return copie
             })
           }
@@ -1049,7 +1095,13 @@ export default function Chat({
               tabIndex={0}
               aria-label="Détails du message"
               title="Détails du message"
-              onClick={() => setMenuMetaOuvert(v => (v === i ? null : i))}
+              onMouseDown={e => { pointerDownRef.current = { x: e.clientX, y: e.clientY } }}
+              onClick={e => {
+                const depart = pointerDownRef.current
+                pointerDownRef.current = null
+                if (estUneSelectionDepuis(depart, { x: e.clientX, y: e.clientY })) return
+                setMenuMetaOuvert(v => (v === i ? null : i))
+              }}
               onKeyDown={e => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
