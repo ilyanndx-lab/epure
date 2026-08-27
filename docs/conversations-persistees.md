@@ -382,7 +382,7 @@ livrables et testables **sans changement visible à l'usage**.
 | 3 | Endpoints `/chat/conversations*` + `PUT …/fichiers` | ✅ fait le 2026-08-27 |
 | 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | ✅ fait le 2026-08-27 |
 | 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | ✅ fait le 2026-08-27 |
-| 6 | Frontend : `ConversationList`, recâblage `Component.tsx` et `ModuleBar.tsx`, tests vitest | à faire |
+| 6 | Frontend : `ConversationList`, recâblage `Component.tsx` et `ModuleBar.tsx`, tests vitest | ✅ fait le 2026-08-27 |
 | 7 | Reprise de `epure.chat.messages` (migration one-shot) | à faire |
 
 ### Étape 1 — ce qui a été fait, et pourquoi c'était bloquant
@@ -620,3 +620,69 @@ attendu et transitoire ; ne pas en juger l'application avant l'étape 6.
 14 tests ajoutés (`test_fichiers_par_conversation.py`) ; 730 au total sous
 Windows. Deux tests existants basculés (`test_raisonnement_stream`,
 `test_taches_locales`) : ils pilotaient `/skills/résumé` par la liste globale.
+
+### Étape 6 — ce qui a été fait
+
+Cinq fichiers nouveaux, quatre recâblés.
+
+**`src/normaliser.ts`** — `liste`, `dico`, `texte` sortent de `ModuleBar.tsx`.
+L'étape ajoute cinq frontières `.json()` ailleurs, et recopier la règle est le
+meilleur moyen de n'en corriger qu'une des copies le jour venu.
+
+**`modules/chat/conversations.ts`** — l'accès HTTP, séparé du composant. Pas
+seulement pour la forme : un fichier qui exporte à la fois un composant et des
+fonctions casse le Fast Refresh de Vite, et c'est une **erreur** eslint, pas un
+avertissement.
+
+**`modules/chat/ConversationList.tsx`** — rendu **dans le module chat**, pas dans
+`Sidebar.tsx`. La Sidebar est la navigation entre modules ; on ne navigue pas
+« vers une conversation » comme on navigue vers l'Atelier. Rendu ici, le panneau
+disparaît quand on quitte le chat, et aucun autre module n'hérite d'une notion
+qui ne le concerne pas.
+
+**`modules/chat/Component.tsx`** — `messages` cesse d'être persisté dans
+`localStorage`. C'était le bug silencieux du §0.4 : au rechargement l'écran
+réaffichait la conversation pendant que le backend repartait d'une liste vide. La
+source est désormais `GET /chat/conversations/{id}`. Seul `conversationId` reste
+persisté.
+
+Deux nouveaux événements traités : `conversation` (création paresseuse — le
+serveur nous dit quel fil il vient d'ouvrir) et `titre` (rafraîchit la liste sans
+attendre un rechargement).
+
+**« Nouvelle conversation » crée explicitement côté serveur.** Vider
+`conversationId` ne suffirait pas : pour le backend, « pas d'identifiant » veut
+dire « poursuis ce que fait cette connexion », donc le message suivant
+retomberait dans le fil précédent.
+
+**`components/ModuleBar.tsx`** — nouvelle prop `conversationId`. Les attachements
+viennent de `GET /chat/conversations/{id}`, l'import joint `conversation_id`
+(champ de formulaire pour l'upload, champ JSON pour `/files/load`), et « vider »
+devient un `PUT` avec une liste vide plutôt que le `DELETE /files/active` retiré.
+Sans conversation ouverte, le corpus reste consultable et rien n'est coché —
+montrer les fichiers d'un autre fil serait pire qu'un panneau inerte.
+
+**`modules/history/Component.tsx`** — bouton « reprendre » : pose
+`epure.chat.conversationId` puis navigue. Écriture directe dans `localStorage`
+plutôt qu'un état remonté jusqu'à `App` : les deux modules ne coexistent jamais à
+l'écran, et `App` n'a pas à connaître les conversations du chat.
+
+#### Le cliquet eslint
+
+Réglé à la racine. Les deux avertissements venaient de `usePersistentState.ts`,
+qui affectait ses refs **pendant le rendu** (`react-hooks/refs`) — sous le rendu
+concurrent, un rendu abandonné laisserait la ref sur une valeur jamais commitée.
+Les affectations passent dans un effet ; l'effet de debounce lit `value`
+directement, la ref ne lui apportait rien puisqu'il se rejoue à chaque
+changement. **0 erreur, 31 avertissements** (cliquet à 61).
+
+#### Vérification
+
+`tsc -b` vert, `npm run build` vert, **28 tests vitest** (12 → 28), **730 tests
+backend**. Les nouveaux tests éprouvent la FORME des réponses — 401 avant
+appairage, 404 sur une conversation supprimée ailleurs, `fichiers_attachés` qui
+n'est pas un tableau, `n_messages` du mauvais type — parce que c'est la classe de
+bug qui a déjà mordu ce dépôt et que `tsc` ne peut pas voir.
+
+⚠️ La dégradation signalée à l'étape 5 est **levée** : le panneau attache de
+nouveau, et à la bonne conversation.

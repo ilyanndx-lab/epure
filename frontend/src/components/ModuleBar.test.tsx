@@ -87,13 +87,31 @@ const CAPACITES_ECHEC_RESEAU = {
 /** Le 503 que le backend rend pendant la préparation, corps compris. */
 const ERREUR_503 = { detail: CAPACITES_EN_COURS.message, ...CAPACITES_EN_COURS }
 
-/** `GET /context` nominal — l'état de session, sans lequel rien ne s'affiche. */
+/** `GET /context` nominal — l'état de session, sans lequel rien ne s'affiche.
+ *
+ * Ne porte plus `fichiers_actifs` ni `résumé_contexte` : ces clés ont été
+ * retirées le 2026-08-27 et les fichiers appartiennent désormais à la
+ * conversation (docs/conversations-persistees.md §2). Les laisser ici ferait
+ * croire que le composant les lit encore.
+ */
 const CONTEXTE_OK = {
-  fichiers_actifs: [],
-  'résumé_contexte': '',
   'modèle_actif': 'qwen2.5:7b',
   strict_mode: false,
   session_instruction: '',
+}
+
+/** `GET /chat/conversations/{id}` nominal, fichiers marqués `présent`. */
+const CONVERSATION_OK = {
+  id: 'conv-1', titre: 'Thermo', messages: [],
+  // Le MEME chemin que `/rag/files` : le panneau liste le corpus indexé et coche
+  // ce qui est attaché. Un attaché hors corpus ne s'afficherait pas du tout.
+  'fichiers_attachés': [{ chemin: '/fiches/cours.pdf', 'présent': true }],
+  corpus_interrogeable: true,
+}
+
+/** Les cases du panneau fichiers, dans l'ordre du corpus. */
+function cases(): HTMLInputElement[] {
+  return Array.from(document.querySelectorAll('input[type="checkbox"]'))
 }
 
 const MODELES_OK = {
@@ -151,8 +169,9 @@ function tableSaine(): Record<string, Reponse> {
  * `modules-catalogue/docs/Component.tsx` : c'est l'écran où l'incident s'est
  * produit, et les drapeaux décident quels `useEffect` partent.
  */
-async function rendre() {
-  const rendu = render(<ModuleBar module="docs" showFile showModel />)
+async function rendre(conversationId = '') {
+  const rendu = render(
+    <ModuleBar module="docs" conversationId={conversationId} showFile showModel />)
   // Les trois fetch du montage résolvent hors du rendu initial : sans ce tour
   // de boucle, on testerait un composant qui n'a encore rien reçu, donc pas
   // l'état qui plante.
@@ -319,6 +338,48 @@ describe('ModuleBar — panneau fichiers', () => {
     for (const ext of ['.doc', '.ppt', '.xls']) {
       expect(accept.split(',')).not.toContain(ext)
     }
+  })
+
+  it('coche les fichiers attachés À CETTE conversation', async () => {
+    poserFetch({ ...tableSaine(), '/chat/conversations/conv-1': { corps: CONVERSATION_OK } })
+    await rendre('conv-1')
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(cases().some(c => c.checked)).toBe(true))
+  })
+
+  it("s'ouvre sans planter quand la conversation répond 404", async () => {
+    // Supprimée depuis un autre onglet : le corps est `{"detail": …}`, donc sans
+    // `fichiers_attachés`. Un `as` le laisserait passer jusqu'au `.map()`.
+    poserFetch({
+      ...tableSaine(),
+      '/chat/conversations/conv-1': { status: 404, corps: { detail: 'Conversation introuvable' } },
+    })
+    await rendre('conv-1')
+    await ouvrir('Fichiers')
+    expect(screen.getByTitle('Fichiers')).toBeTruthy()
+  })
+
+  it("tient quand `fichiers_attachés` n'est pas un tableau", async () => {
+    // 200 avec un corps inattendu — le cas que `Array.isArray` attrape et que
+    // `?? []` laisserait passer (une chaîne est itérable caractère par caractère).
+    poserFetch({
+      ...tableSaine(),
+      '/chat/conversations/conv-1': { corps: { id: 'conv-1', 'fichiers_attachés': 'oups' } },
+    })
+    await rendre('conv-1')
+    await ouvrir('Fichiers')
+    expect(screen.getByTitle('Fichiers')).toBeTruthy()
+  })
+
+  it('sans conversation ouverte, le corpus reste visible mais rien n’est coché', async () => {
+    // Il n'y a rien à quoi attacher, mais le corpus indexé doit rester
+    // consultable — et surtout aucun fichier ne doit apparaître comme attaché,
+    // ce qui reviendrait à montrer les fichiers d'un autre fil.
+    poserFetch(tableSaine())
+    await rendre('')
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
+    expect(cases().some(c => c.checked)).toBe(false)
   })
 
   it('reste rendu quand TOUT le backend répond 500', async () => {

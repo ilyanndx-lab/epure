@@ -7,6 +7,9 @@ import ModuleBar from '../../components/ModuleBar'
 import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
 import { AT_COMMANDS, allSlashCommands, moduleCommands } from './commands'
+import ConversationList from './ConversationList'
+import { creerConversation } from './conversations'
+import { liste, texte } from '../../normaliser'
 import { useModules } from '../../modules'
 
 interface MsgStats {
@@ -219,7 +222,24 @@ export default function Chat({
   const modules = useModules()
   const [effort, setEffort] = usePersistentState<EffortLevel>('epure.chat.effort', 'direct')
   const [pipelineSteps, setPipelineSteps] = useState<StepConfig[]>([])
-  const [messages, setMessages] = usePersistentState<Message[]>('epure.chat.messages', [])
+  /**
+   * Les messages ne sont PLUS persistés dans localStorage.
+   *
+   * Ils l'étaient sous `epure.chat.messages`, et c'était un bug silencieux : au
+   * rechargement, l'écran réaffichait la conversation pendant que le backend
+   * repartait d'une liste vide (elle vivait dans la fermeture du handler
+   * WebSocket). **Le modèle ne voyait plus les tours précédents alors que
+   * l'utilisateur les avait sous les yeux**, sans le moindre signe.
+   *
+   * La source est désormais le disque, côté backend : `GET
+   * /chat/conversations/{id}`. Écran et modèle lisent enfin la même chose.
+   * L'ancienne clé est reprise une fois puis effacée (étape 7).
+   */
+  const [messages, setMessages] = useState<Message[]>([])
+  /** Seule chose qui reste persistée : QUELLE conversation est ouverte. */
+  const [conversationId, setConversationId] = usePersistentState<string>('epure.chat.conversationId', '')
+  /** Incrémenté pour forcer `ConversationList` à relire l'index. */
+  const [rafraichirConvs, setRafraichirConvs] = useState(0)
   const [input, setInput] = usePersistentState<string>('epure.chat.input', '')
   const [connected, setConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
@@ -269,6 +289,21 @@ export default function Chat({
         // Après un arrêt manuel : on ignore les tokens encore en vol, mais on
         // laisse passer done/error pour réinitialiser proprement l'état.
         if (cancelledRef.current && data.type !== 'done' && data.type !== 'error') return
+
+        if (data.type === 'conversation') {
+          // Création paresseuse côté serveur : le premier message d'un fil neuf
+          // (ou un identifiant devenu inconnu) fait naître la conversation, et
+          // le serveur nous dit laquelle. Sans ce recalage, le message suivant
+          // repartirait sans identifiant et le client écrirait dans le vide.
+          setConversationId(data.id)
+          setRafraichirConvs(n => n + 1)
+          return
+        } else if (data.type === 'titre') {
+          // Titrage automatique après le premier tour : la liste doit le montrer
+          // sans attendre un rechargement de page.
+          setRafraichirConvs(n => n + 1)
+          return
+        }
 
         if (data.type === 'pipeline_info') {
           inPipelineRef.current = true
@@ -481,6 +516,67 @@ export default function Chat({
     return () => wsRef.current?.close()
   }, [onAssistantDone])
 
+  /**
+   * Charge les messages d'une conversation depuis le DISQUE.
+   *
+   * C'est ici que se joue la correction du bug silencieux : avant, l'écran
+   * repartait de `localStorage` et le backend d'une liste vide. Les deux lisent
+   * désormais le même fichier.
+   *
+   * Toutes les frontières `.json()` sont normalisées (`liste`, `texte`) — un 401
+   * avant appairage ou un 404 sur une conversation supprimée ailleurs rendent un
+   * corps qui n'a pas de champ `messages`, et un `as` le laisserait passer
+   * jusqu'au `.map()` du rendu.
+   */
+  useEffect(() => {
+    if (!conversationId) { setMessages([]); return }
+    let annule = false
+    void (async () => {
+      try {
+        const res = await apiFetch(`${API}/chat/conversations/${conversationId}`)
+        if (annule) return
+        if (res.status === 404) {
+          // Supprimée depuis un autre onglet : on repart à vide plutôt que
+          // d'afficher une conversation fantôme.
+          setConversationId('')
+          setMessages([])
+          return
+        }
+        if (!res.ok) return
+        const d = await res.json() as Record<string, unknown>
+        if (annule) return
+        setMessages(liste<Record<string, unknown>>(d.messages).map(m => ({
+          role: texte(m.role) === 'assistant' ? 'assistant' as const : 'user' as const,
+          content: texte(m.content),
+        })))
+      } catch { /* backend qui démarre : la liste reste vide */ }
+    })()
+    return () => { annule = true }
+  }, [conversationId, setConversationId])
+
+  const ouvrirConversation = useCallback((id: string) => {
+    if (id === conversationId) return
+    setConversationId(id)
+    setMessages([])          // évite d'afficher l'ancien fil pendant le chargement
+    setStreaming(false)
+  }, [conversationId, setConversationId])
+
+  /**
+   * Nouvelle conversation : on la crée EXPLICITEMENT côté serveur.
+   *
+   * On ne se contente pas de vider `conversationId` : côté backend, « pas
+   * d'identifiant » veut dire « poursuis ce que fait cette connexion » — le
+   * message suivant repartirait donc dans le fil précédent.
+   */
+  const nouvelleConversation = useCallback(async () => {
+    try {
+      const id = await creerConversation()
+      setConversationId(id)
+      setMessages([])
+      setRafraichirConvs(n => n + 1)
+    } catch { /* le backend répondra au premier message : rien de bloquant */ }
+  }, [setConversationId])
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
@@ -658,6 +754,11 @@ export default function Chat({
     pipelineUserMsgIdxRef.current = -1
 
     const wsMsg: Record<string, unknown> = { role: 'user', content: cleanText || rawText, effort }
+    // Vide au tout premier message : le serveur ouvre alors une conversation et
+    // nous renvoie son identifiant (`{"type": "conversation"}`). Côté serveur,
+    // « pas d'identifiant » veut dire « poursuis ce que fait cette connexion »,
+    // jamais « recommence » — on ne risque donc pas un fil neuf par message.
+    if (conversationId) wsMsg.conversation_id = conversationId
     if (effort !== 'direct' && pipelineSteps.length > 0) wsMsg.steps = pipelineSteps
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
@@ -666,7 +767,7 @@ export default function Chat({
     wsRef.current?.send(JSON.stringify(wsMsg))
 
     if (webSearch && webSearchMode === 'once') setWebSearch(false)
-  }, [connected, effort, pipelineSteps, webSearch, webSearchMode, pushMsg, setWebSearch])
+  }, [connected, conversationId, effort, pipelineSteps, webSearch, webSearchMode, pushMsg, setWebSearch])
 
   const send = useCallback(async () => {
     const rawText = input.trim()
@@ -716,7 +817,10 @@ export default function Chat({
           pendingOllamaStatsRef.current = null
           setStreamStats(null)
           inPipelineRef.current = false
-          wsRef.current?.send(JSON.stringify({ role: 'user', content: arg, effort: 'direct' }))
+          wsRef.current?.send(JSON.stringify({
+            role: 'user', content: arg, effort: 'direct',
+            ...(conversationId ? { conversation_id: conversationId } : {}),
+          }))
           return
         }
       }
@@ -777,6 +881,13 @@ export default function Chat({
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
+    <div className="flex flex-1 overflow-hidden">
+      <ConversationList
+        courante={conversationId}
+        onOuvrir={ouvrirConversation}
+        onNouvelle={() => void nouvelleConversation()}
+        rafraichir={rafraichirConvs}
+      />
     <main className="flex flex-col flex-1 overflow-hidden">
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
         {messages.length === 0 && (
@@ -891,6 +1002,7 @@ export default function Chat({
 
       <ModuleBar
         module="chat"
+        conversationId={conversationId}
         showFile
         showMic
         showSkills
@@ -1073,5 +1185,6 @@ export default function Chat({
         )}
       </div>
     </main>
+    </div>
   )
 }

@@ -8,6 +8,7 @@ import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
 import { API, apiFetch } from '../api'
 import { useModules } from '../modules'
+import { dico, liste, texte } from '../normaliser'
 import { chargerRecherche, relancerRecherche, useRecherche } from '../recherche'
 import { useVoix } from '../voix'
 import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
@@ -115,39 +116,6 @@ const PROVIDER_TEXT: Record<string, string> = {
 }
 
 /**
- * Tableau sûr depuis un corps de réponse. À utiliser à CHAQUE `.json()`.
- *
- * `r.json() as { files: string[] }` est une **affirmation**, pas une
- * vérification : TypeScript la croit sur parole et ne peut rien dire de la
- * réalité. Or trois réponses parfaitement normales d'une application locale
- * n'ont pas cette forme — le 500 du gestionnaire d'exceptions
- * (`{"detail": …, "type": …}`), le 401 tant que le token n'est pas appairé, le
- * 404 sur une instance qui n'a pas la route. Le champ annoncé est alors
- * `undefined`, l'état devient `undefined`, et le `.catch()` ne voit rien
- * puisque `r.json()` a parfaitement réussi. La faute n'apparaît qu'au rendu
- * suivant, sur un `.length` — et dans un bundle minifié la trace ne nomme même
- * pas la ligne.
- *
- * C'est l'incident : `GET /rag/files` répondait 500 dans un paquet livré (le
- * moteur d'embedding n'y est pas prêt au premier lancement, et le premier accès
- * le construit), `availableFiles` passait à `undefined`, et l'ouverture du panneau
- * fichiers du module Docs levait « Cannot read properties of undefined (reading
- * 'length') ». Vérifié par ModuleBar.test.tsx.
- *
- * Cette route répond 503 depuis le 2026-08-23, avec un état d'installation
- * (`core/embedding_install.py`) — et la normalisation reste tout aussi
- * nécessaire : le corps d'un 503 n'a pas plus de champ `files` que celui d'un
- * 500. Ce qui a changé, c'est qu'on sait maintenant quoi AFFICHER à la place
- * (cf. `recherche.ts`) ; un panneau vide restait correct et incompréhensible.
- *
- * `Array.isArray` et non `?? []` : le second laisse passer `null` transformé en
- * tableau, mais aussi une chaîne ou un objet, qui replantent plus loin.
- */
-function liste<T>(v: unknown): T[] {
-  return Array.isArray(v) ? (v as T[]) : []
-}
-
-/**
  * Les trois catégories cloud, garanties tableaux.
  *
  * `d.cloud ?? { rapide: [], … }` ne suffit pas : `cloud: {}` est **truthy**,
@@ -165,12 +133,6 @@ function categories(v: unknown): CloudCategories {
   }
 }
 
-/** Dictionnaire sûr : `'x' in "une chaîne"` lève, un tableau ne dit rien. */
-function dico(v: unknown): Record<string, boolean> {
-  return v && typeof v === 'object' && !Array.isArray(v)
-    ? (v as Record<string, boolean>)
-    : {}
-}
 
 /**
  * Extensions acceptées à l'upload. **Une seule liste**, et c'est le point.
@@ -217,6 +179,16 @@ interface FileSummary {
 
 export interface ModuleBarProps {
   module: string
+  /**
+   * Conversation dont on gère les fichiers attachés.
+   *
+   * Les « fichiers actifs » étaient une liste GLOBALE d'instance, écrasée à
+   * chaque import et relue à chaque message ; ils appartiennent désormais à une
+   * conversation (docs/conversations-persistees.md §2). Vide = aucune
+   * conversation ouverte : le panneau montre le corpus indexé en lecture seule,
+   * puisqu'il n'y a rien à quoi attacher.
+   */
+  conversationId?: string
   showFile?: boolean
   showMic?: boolean
   showSkills?: boolean
@@ -235,6 +207,7 @@ export interface ModuleBarProps {
 
 export default function ModuleBar({
   module,
+  conversationId = '',
   showFile,
   showMic,
   showSkills,
@@ -374,17 +347,38 @@ export default function ModuleBar({
     } catch { /* backend qui démarre, token pas encore appairé : sans gravité */ }
   }, [])
 
+  /**
+   * Fichiers ATTACHÉS à la conversation courante.
+   *
+   * Remplace la lecture de `context_session.fichiers_actifs`, liste globale
+   * retirée le 2026-08-27. Sans conversation ouverte il n'y a rien à attacher :
+   * on vide plutôt que d'afficher les fichiers d'un autre fil.
+   *
+   * `présent: false` = le fichier a été désindexé depuis ; `null` = le corpus
+   * n'est pas interrogeable (modèle d'embedding pas encore téléchargé). On ne
+   * les filtre PAS — un attachement qui disparaît sans un mot rendrait la
+   * réponse du modèle inexplicable.
+   */
+  const chargerAttachements = useCallback(async () => {
+    if (!conversationId) { setActiveFiles([]); setSelectedFiles([]); return }
+    try {
+      const res = await apiFetch(`${API}/chat/conversations/${conversationId}`)
+      if (!res.ok) { setActiveFiles([]); setSelectedFiles([]); return }
+      const d = await res.json() as Record<string, unknown>
+      const chemins = liste<Record<string, unknown>>(d['fichiers_attachés'])
+        .map(f => texte(f.chemin))
+        .filter(Boolean)
+      setActiveFiles(chemins)
+      setSelectedFiles(chemins)
+    } catch { /* backend qui démarre : panneau vide, sans gravité */ }
+  }, [conversationId])
+
   useEffect(() => {
-    if (showFile) void chargerFichiers()
+    if (showFile) { void chargerFichiers(); void chargerAttachements() }
 
     apiFetch(`${API}/context`)
       .then(r => r.json())
       .then((d: Record<string, unknown>) => {
-        if (showFile) {
-          const files = liste<string>(d['fichiers_actifs'])
-          setActiveFiles(files)
-          setSelectedFiles(files)
-        }
         setStrictMode((d['strict_mode'] as boolean) ?? false)
         // `?? true` et non `?? false` : la clé est absente des
         // `context_session.json` écrits avant ce réglage, et son absence doit
@@ -417,7 +411,7 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort, chargerFichiers])
+  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements])
 
   /**
    * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.
@@ -535,18 +529,34 @@ export default function ModuleBar({
       const res = await apiFetch(`${API}/files/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths: selectedFiles }),
+        body: JSON.stringify({ paths: selectedFiles, conversation_id: conversationId }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res, selectedFiles)
+      await chargerAttachements()
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }
-  }, [selectedFiles, consumeLoadStream])
+  }, [selectedFiles, conversationId, consumeLoadStream, chargerAttachements])
 
+  /**
+   * Détache tout de la conversation courante.
+   *
+   * `DELETE /files/active` n'existe plus : « les fichiers actifs » n'étaient pas
+   * une propriété de l'instance. Un `PUT` avec une liste vide dit la même chose
+   * sans réintroduire une notion globale.
+   */
   const clearActiveFiles = useCallback(async () => {
-    await apiFetch(`${API}/files/active`, { method: 'DELETE' })
+    if (conversationId) {
+      try {
+        await apiFetch(`${API}/chat/conversations/${conversationId}/fichiers`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: [] }),
+        })
+      } catch { /* ignore */ }
+    }
     setActiveFiles([]); setSelectedFiles([]); setSummary(null); setSummaryText('')
-  }, [])
+  }, [conversationId])
 
   const uploadFiles = useCallback(async (files: File[]) => {
     const supported = files.filter(f => {
@@ -558,6 +568,10 @@ export default function ModuleBar({
     try {
       const form = new FormData()
       supported.forEach(f => form.append('files', f, f.name))
+      // Champ de formulaire et non paramètre d'URL : la route est en
+      // multipart, et `Form("")` côté backend le rend optionnel — un import
+      // hors conversation reste légitime (alimenter le corpus).
+      form.append('conversation_id', conversationId)
       const res = await apiFetch(`${API}/files/upload`, { method: 'POST', body: form })
       // 503 = la pile d'embedding s'installe ; l'import ne peut pas aboutir, mais
       // c'est un état à annoncer, pas une erreur à avaler. Le bandeau du panneau
@@ -571,13 +585,10 @@ export default function ModuleBar({
       // corps n'avait pas de `files` — d'où `chargerFichiers`, qui normalise et
       // sait lire le 503.
       await chargerFichiers()
-      const ctxData = await apiFetch(`${API}/context`)
-        .then(r => r.json()) as Record<string, unknown>
-      const active = liste<string>(ctxData['fichiers_actifs'])
-      setActiveFiles(active); setSelectedFiles(active)
+      await chargerAttachements()
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }
-  }, [consumeLoadStream, chargerFichiers])
+  }, [conversationId, consumeLoadStream, chargerFichiers, chargerAttachements])
 
   // ── STT ───────────────────────────────────────────────────────────────────
 
