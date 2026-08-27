@@ -176,12 +176,16 @@ class AjoutTest(_Base):
 
 
 class MetadonneesParMessageTest(_Base):
-    """`horodatage` sur tout message, `modèle` sur les réponses SEULEMENT.
+    """`horodatage` et `modèle` sur TOUT message, quel que soit le rôle.
 
-    Un message tapé par l'utilisateur n'est produit par aucun modèle : lui coller
-    le modèle actif dirait quelque chose de faux, et rendrait indistinguables
-    deux situations que l'interface doit séparer — « pas de modèle par nature »
-    et « antérieur à ce champ, on ne sait pas ».
+    Le `modèle` n'a pas le même sens des deux côtés, et c'est l'interface qui
+    porte la nuance dans son libellé : « modèle » sous une réponse (celui qui l'a
+    produite), « envoyé à » sous une question (celui à qui elle est posée).
+
+    La première version ne le posait que sur les réponses, au motif qu'un message
+    tapé n'est produit par aucun modèle. Vrai de la formulation, faux du besoin :
+    dans un fil où l'on change de modèle en cours de route, savoir à qui une
+    question donnée a été posée est précisément ce qu'on cherche.
     """
 
     def test_chaque_message_recoit_un_horodatage(self):
@@ -194,16 +198,33 @@ class MetadonneesParMessageTest(_Base):
             with self.subTest(role=m["role"]):
                 self.assertRegex(m["horodatage"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 
-    def test_seule_la_reponse_porte_un_modele(self):
+    def test_les_deux_roles_portent_le_modele_du_tour(self):
         conv = self.moteur.create_conversation()
         self.moteur.append_messages(conv["id"], [
             {"role": "user", "content": "question"},
             {"role": "assistant", "content": "réponse"},
         ], model="qwen2.5:7b")
         utilisateur, assistant = self._brut(conv["id"])["messages"]
-        self.assertNotIn("modèle", utilisateur,
-                         "un message tapé n'est produit par aucun modèle")
-        self.assertEqual(assistant["modèle"], "qwen2.5:7b")
+        self.assertEqual(utilisateur["modèle"], "qwen2.5:7b",
+                         "le modèle À QUI la question a été posée")
+        self.assertEqual(assistant["modèle"], "qwen2.5:7b",
+                         "le modèle QUI a produit la réponse")
+
+    def test_une_question_garde_le_modele_auquel_elle_a_ete_posee(self):
+        """Le cas qui justifie de le poser sur les questions.
+
+        On change de modèle en cours de fil : chaque question doit rester
+        attachée à celui à qui elle est réellement partie, sinon on ne peut plus
+        savoir laquelle est allée où.
+        """
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "user", "content": "à Ollama"}], model="qwen2.5:7b")
+        self.moteur.append_messages(conv["id"], [
+            {"role": "user", "content": "à Gemini"}], model="gemini-2.0-flash")
+
+        self.assertEqual([m["modèle"] for m in self._brut(conv["id"])["messages"]],
+                         ["qwen2.5:7b", "gemini-2.0-flash"])
 
     def test_le_modele_par_message_survit_a_un_changement_de_modele(self):
         """LE point : la conversation ne porte que le DERNIER modèle utilisé.

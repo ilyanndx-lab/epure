@@ -393,7 +393,7 @@ class HistoryEngine:
         que d'en perdre un.
 
         ⚠️ ``horodatage`` et ``modèle`` sont **repris s'ils sont là, jamais
-        inventés**. Ces messages viennent d'un stockage antérieur à ces champs :
+        inventés** — quel que soit le rôle. Ces messages viennent d'un stockage antérieur à ces champs :
         leur donner l'instant présent daterait de ce soir une conversation
         d'avant-hier, et leur coller le modèle actif attribuerait des réponses à
         un modèle qui ne les a pas produites. L'absence est une information, et
@@ -415,7 +415,7 @@ class HistoryEngine:
             if isinstance(horodatage, str) and horodatage:
                 entree["horodatage"] = horodatage
             modele = m.get("modèle")
-            if entree["role"] == "assistant" and isinstance(modele, str) and modele:
+            if isinstance(modele, str) and modele:
                 entree["modèle"] = modele
             propres.append(entree)
         return propres
@@ -467,14 +467,21 @@ class HistoryEngine:
 
         ── Métadonnées par message ───────────────────────────────────────────
 
-        Chaque message écrit ici gagne un ``horodatage``. Les messages
-        d'**assistant** gagnent en plus un ``modèle`` — pas les messages
-        d'utilisateur, et ce n'est pas un oubli : un message tapé par
-        l'utilisateur n'est produit par aucun modèle. Y coller le modèle actif
-        dirait quelque chose de faux (« ce texte vient de qwen2.5 »), et
-        surtout rendrait indistinguables deux situations que l'interface doit
-        séparer — « ce message n'a pas de modèle par nature » et « ce message
-        est antérieur à ce champ, on ne sait pas ».
+        Chaque message écrit ici gagne un ``horodatage`` **et** un ``modèle``.
+
+        Le ``modèle`` ne veut pas dire la même chose selon le rôle, et c'est
+        l'interface qui porte la nuance dans son libellé :
+
+        * sur une **réponse**, c'est le modèle qui l'a produite ;
+        * sur un **message d'utilisateur**, c'est le modèle à qui la question a
+          été posée.
+
+        La première version ne le posait que sur les réponses, au motif qu'un
+        message tapé n'est produit par aucun modèle. C'était vrai de la
+        formulation « produit par », faux du besoin : savoir à qui on a posé une
+        question donnée est utile, surtout dans un fil où le modèle change. Le
+        libellé de l'interface (« modèle » / « envoyé à ») fait que rien n'est
+        affirmé de faux.
 
         Le ``modèle`` de la conversation reste à côté et ne les remplace pas :
         il dit *le dernier modèle utilisé*, pas celui de chaque tour, et il a
@@ -491,7 +498,7 @@ class HistoryEngine:
                         "content": m.get("content", ""),
                         "horodatage": instant,
                     }
-                    if role == "assistant" and model:
+                    if model:
                         entree["modèle"] = model
                     conv["messages"].append(entree)
                 if model:

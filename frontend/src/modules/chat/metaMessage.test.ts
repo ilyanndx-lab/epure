@@ -53,31 +53,37 @@ describe('metaAffichable — horodatage', () => {
   })
 })
 
-describe('metaAffichable — modèle, et LA distinction', () => {
-  it('un message utilisateur n’a PAS de ligne modèle', () => {
-    expect(metaAffichable('2026-08-27T14:03:11', undefined, true).modele).toBeNull()
+describe('metaAffichable — modèle : la valeur, et le LIBELLÉ qui la qualifie', () => {
+  it('une réponse affiche son modèle sous le libellé « modèle »', () => {
+    const m = metaAffichable('2026-08-27T14:03:11', 'gemini-2.0-flash', false)
+    expect(m.modele).toBe('gemini-2.0-flash')
+    expect(m.libelleModele).toBe('modèle')
   })
 
-  it('un message utilisateur n’en a pas non plus si un modèle traîne dans les données', () => {
-    // Ceinture : même si un jour un `modèle` se retrouvait posé sur un message
-    // utilisateur, l'affirmation « ce texte vient de ce modèle » resterait fausse.
-    expect(metaAffichable('2026-08-27T14:03:11', 'qwen2.5:7b', true).modele).toBeNull()
+  it('un message utilisateur affiche le modèle sous « envoyé à »', () => {
+    // Ce que le libellé évite : écrire « modèle : qwen2.5 » sous un texte tapé
+    // par l'utilisateur laisserait entendre que ce texte vient du modèle.
+    // « envoyé à » dit exactement ce qui s'est passé.
+    const m = metaAffichable('2026-08-27T14:03:11', 'qwen2.5:7b', true)
+    expect(m.modele).toBe('qwen2.5:7b')
+    expect(m.libelleModele).toBe('envoyé à')
   })
 
-  it('une réponse récente affiche son modèle', () => {
-    expect(metaAffichable('2026-08-27T14:03:11', 'gemini-2.0-flash', false).modele)
-      .toBe('gemini-2.0-flash')
+  it('seul le libellé dépend du rôle, jamais la valeur', () => {
+    const question = metaAffichable('2026-08-27T14:03:11', 'qwen2.5:7b', true)
+    const reponse = metaAffichable('2026-08-27T14:03:12', 'qwen2.5:7b', false)
+    expect(question.modele).toBe(reponse.modele)
+    expect(question.libelleModele).not.toBe(reponse.libelleModele)
   })
 
-  it('une réponse ANCIENNE dit « non disponible » — et non rien', () => {
-    // L'autre moitié de la distinction : ici un modèle a bien existé, on ne le
-    // connaît plus. Rendre `null` la ferait passer pour un message utilisateur.
+  it('un message d’avant ce champ dit « non disponible », des deux côtés', () => {
+    // Rétrocompatibilité : rien n'est deviné, et surtout pas depuis le `modèle`
+    // de la conversation, qui n'est que le DERNIER utilisé.
+    expect(metaAffichable(undefined, undefined, true).modele).toBe(NON_DISPONIBLE)
     expect(metaAffichable(undefined, undefined, false).modele).toBe(NON_DISPONIBLE)
   })
 
-  it('les deux absences ne se ressemblent pas', () => {
-    const utilisateur = metaAffichable(undefined, undefined, true)
-    const ancienneReponse = metaAffichable(undefined, undefined, false)
-    expect(utilisateur.modele).not.toBe(ancienneReponse.modele)
+  it('une chaîne vide vaut « non disponible », pas une ligne vide', () => {
+    expect(metaAffichable('2026-08-27T14:03:11', '', false).modele).toBe(NON_DISPONIBLE)
   })
 })
