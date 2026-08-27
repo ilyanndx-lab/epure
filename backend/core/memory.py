@@ -39,7 +39,15 @@ _SESSIONS_DEFAULT = {"sessions": []}
 _CONTEXT_DEFAULT = {
     "modèle_actif": "qwen2.5:7b",
     "strict_mode": False,
-    "session_instruction": "",
+    # Consigne libre valant pour toute l'instance. S'appelait
+    # `session_instruction` jusqu'au 2026-08-27, et le nom disait vrai : elle
+    # était remise à zéro à chaque démarrage. Elle ne l'est plus (cf.
+    # `_CLES_PERSISTANTES`), donc « session » serait devenu un contresens.
+    #
+    # Portée et position dans le prompt inchangées : toute l'instance, et AVANT
+    # la consigne de la conversation — de deux consignes qui se contredisent, la
+    # plus spécifique doit être lue en dernier.
+    "instruction_générale": "",
     # Raisonnement du modele affiche/produit. `True` = comportement historique :
     # les modeles qui pensent pensent. Toujours lu par `.get("raisonnement", True)`
     # et jamais par indexation directe — un `context_session.json` deja sur le
@@ -47,6 +55,21 @@ _CONTEXT_DEFAULT = {
     # fusionner ce defaut.
     "raisonnement": True,
 }
+
+#: Clés de `context_session.json` qui SURVIVENT au redémarrage.
+#:
+#: ⚠️ Ce fichier est réinitialisé à chaque démarrage — c'est sa raison d'être, et
+#: son nom le dit. Cette liste est l'exception, et elle doit rester une liste
+#: NOMMÉE plutôt qu'une condition noyée dans `__init__` : quelqu'un qui
+#: « simplifierait » la réinitialisation effacerait sinon en silence une consigne
+#: que l'utilisateur a écrite et croit permanente.
+#:
+#: Pourquoi ici et pas dans `profile.json`, qui est le stockage permanent : cette
+#: clé est lue et écrite par le chemin du contexte (`GET /context`,
+#: `PATCH /context/settings`, le panneau Compétences). La déplacer élargirait le
+#: changement bien au-delà de sa durabilité. Le prix à en payer est ce
+#: commentaire, et le test qui le verrouille.
+_CLES_PERSISTANTES = ("instruction_générale",)
 
 # Le cache LRU des sections retenues (clé : `message[:100]`) a disparu avec
 # l'appel LLM qu'il servait à amortir : `retrieve_relevant_context` ne dépend plus
@@ -73,8 +96,27 @@ class MemoryEngine:
             self._write(self._profile_path, _PROFILE_DEFAULT)
         if not self._sessions_path.exists():
             self._write(self._sessions_path, _SESSIONS_DEFAULT)
-        # Always reset context on startup
-        self._write(self._context_path, _CONTEXT_DEFAULT)
+        # Le contexte de session est réinitialisé à chaque démarrage — SAUF les
+        # clés de `_CLES_PERSISTANTES`, reprises du fichier existant.
+        #
+        # Le reset reste le comportement par défaut, et c'est voulu : le modèle
+        # actif, le mode strict, le raisonnement sont des réglages de séance, et
+        # les retrouver posés d'un lancement à l'autre a déjà surpris. La consigne
+        # générale, elle, est un texte que l'utilisateur a écrit : la lui effacer
+        # au redémarrage était défendable tant qu'elle s'appelait « instruction de
+        # session » et qu'aucune consigne ne persistait ; ça ne l'est plus depuis
+        # que la conversation en porte une qui, elle, survit.
+        #
+        # Lecture AVANT écriture, et repli sur le défaut clé par clé : un fichier
+        # absent, vide ou illisible ne doit pas faire échouer le démarrage — il
+        # rend simplement une instance neuve.
+        ancien = self._read(self._context_path)
+        contexte = dict(_CONTEXT_DEFAULT)
+        for cle in _CLES_PERSISTANTES:
+            valeur = ancien.get(cle)
+            if isinstance(valeur, str) and valeur:
+                contexte[cle] = valeur
+        self._write(self._context_path, contexte)
 
     # ── I/O helpers ────────────────────────────────────────────────────────
 
@@ -308,10 +350,17 @@ class MemoryEngine:
         # conversation est connue. Ce moteur redevient ce que son nom annonce : le
         # PROFIL de l'utilisateur, et rien d'autre.
 
-        # Session instruction — always injected
-        instruction = ctx.get("session_instruction", "")
+        # Consigne générale — toujours injectée, et AVANT celle de la
+        # conversation, que le routeur du chat ajoute après (`sys_parts`). De deux
+        # consignes qui se contredisent, la plus spécifique doit être lue en
+        # dernier.
+        #
+        # Le libellé du prompt reprend le vocabulaire de sa jumelle
+        # (`[INSTRUCTION DE CETTE CONVERSATION]`) : côté modèle « instruction »,
+        # côté interface « consigne ». Deux vocabulaires, chacun cohérent.
+        instruction = ctx.get("instruction_générale", "")
         if instruction:
-            parts.append(f"[INSTRUCTION DE SESSION]\n{instruction}")
+            parts.append(f"[INSTRUCTION GÉNÉRALE]\n{instruction}")
 
         # Strict mode — always injected
         if ctx.get("strict_mode"):

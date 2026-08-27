@@ -545,7 +545,7 @@ class InstructionDeFilTest(_Base):
     def test_une_conversation_ancienne_a_une_consigne_VIDE(self):
         """Rétrocompatibilité : absent → vide, jamais hérité.
 
-        Surtout pas de `session_instruction` ni du profil : ce sont trois portées
+        Surtout pas de `instruction_générale` ni du profil : ce sont trois portées
         différentes, et recopier l'une dans l'autre appliquerait à un fil précis
         une consigne écrite pour tout autre chose.
         """

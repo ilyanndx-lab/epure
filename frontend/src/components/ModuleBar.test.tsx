@@ -97,7 +97,7 @@ const ERREUR_503 = { detail: CAPACITES_EN_COURS.message, ...CAPACITES_EN_COURS }
 const CONTEXTE_OK = {
   'modèle_actif': 'qwen2.5:7b',
   strict_mode: false,
-  session_instruction: '',
+  'instruction_générale': '',
 }
 
 /** `GET /chat/conversations/{id}` nominal, fichiers marqués `présent`. */
