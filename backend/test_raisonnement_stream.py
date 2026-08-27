@@ -267,11 +267,31 @@ class ProtocoleWebSocketTest(unittest.TestCase):
         routeur_chat.llm.stream = faux_stream
 
     def _echanger(self, ws, texte="17 x 23 ?"):
-        """Envoie un message et collecte les trames jusqu'au `done`."""
+        """Envoie un message et collecte les trames de FLUX jusqu'au `done`.
+
+        L'événement d'intendance ``{"type": "conversation", "id": …}`` est mis à
+        part dans ``self.conversation_id`` au lieu d'être rendu. Il est émis
+        quand le serveur ouvre une conversation pour un client qui n'en a pas
+        fourni (création paresseuse, étape 4 du chantier conversations), donc il
+        précède le flux sans en faire partie.
+
+        Le retirer ici plutôt que d'allonger chaque liste attendue garde ces
+        tests sur leur sujet — l'ordre et le type du canal de raisonnement. Mais
+        on ne le retire pas en aveugle : **son unique position légitime est en
+        tête**, et c'est vérifié. Un `conversation` qui apparaîtrait au milieu
+        d'un flux serait un vrai défaut de protocole, pas de l'intendance.
+        """
         ws.send_text(json.dumps({"role": "user", "content": texte, "direct": True}))
         trames = []
         while True:
             trame = json.loads(ws.receive_text())
+            if trame["type"] == "conversation":
+                self.assertEqual(
+                    trames, [],
+                    "`conversation` ne peut arriver qu'AVANT le flux, jamais dedans",
+                )
+                self.conversation_id = trame["id"]
+                continue
             trames.append(trame)
             if trame["type"] in ("done", "error"):
                 return trames

@@ -380,7 +380,7 @@ livrables et testables **sans changement visible à l'usage**.
 | 1 | Prérequis : `resolve_history_dir()`, `_test_env`, `REAL_DIRS` | ✅ fait le 2026-08-27 (`4a1aa1d`) |
 | 2 | `HistoryEngine` : nouvelles méthodes, lecture tolérante des anciens fichiers, `fsync` | ✅ fait le 2026-08-27 |
 | 3 | Endpoints `/chat/conversations*` + `PUT …/fichiers` | ✅ fait le 2026-08-27 |
-| 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | à faire |
+| 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | ✅ fait le 2026-08-27 |
 | 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | à faire |
 | 6 | Frontend : `ConversationList`, recâblage `Component.tsx` et `ModuleBar.tsx`, tests vitest | à faire |
 | 7 | Reprise de `epure.chat.messages` (migration one-shot) | à faire |
@@ -510,3 +510,66 @@ Après correction : `GET /history` → **200**, `GET /history/abc` → **404**.
 27 tests ajoutés (`test_chat_conversations.py` 22, `test_history_engine.py` +5) ;
 705 au total sous Windows. Les fichiers exécutables sans fastapi rejoués sous
 Linux ; `test_chat_conversations.py` ne l'est pas — cette WSL n'a pas `pip`.
+
+### Étape 4 — ce qui a été fait
+
+La liste `history` en fermeture du handler a **disparu**. L'historique du prompt
+est relu sur le disque à chaque tour ; écran et modèle ont enfin la même source
+(constat §0.4). Deux transactions par tour, jamais une seule qui enjamberait le
+streaming — elle garderait le fichier verrouillé pendant toute la génération.
+
+**« Pas d'identifiant » veut dire « poursuis », jamais « recommence ».** C'est le
+piège que les tests ont attrapé pendant l'écriture : sans repli sur la
+conversation de la connexion, chaque message ouvrait un fil neuf, le modèle
+perdait tout le contexte au deuxième tour et la liste se remplissait d'un fil par
+message. Le repli préserve aussi à l'identique le comportement des clients
+d'avant le chantier — une conversation par connexion. Pour en ouvrir une
+nouvelle, le client appelle `POST /chat/conversations` et envoie l'id rendu.
+
+Un identifiant **inconnu** (supprimé ailleurs, client désynchronisé) ne fait pas
+échouer le tour : on repart sur une conversation neuve et on l'**annonce**. Le
+message vient d'être tapé — le perdre serait le pire comportement.
+
+Les trois traitements accrochés à `WebSocketDisconnect` sont rejoués après le
+tour, dans un thread :
+
+| | Avant | Après |
+|---|---|---|
+| Sauvegarde | déconnexion, ≥ 3 messages | chaque tour, sur le disque |
+| Titre | déconnexion | après le premier tour, événement `{"type": "titre"}` |
+| Consolidation | déconnexion, ≥ 10 messages | franchissement du seuil, marqué idempotent |
+
+L'ancien déclencheur ne partait **qu'au plus une fois par connexion**, et jamais
+pour qui laisse son onglet ouvert. Fermer l'onglet autrement qu'en se
+déconnectant proprement perdait la conversation entière.
+
+**L'indexation vectorielle n'est pas par tour**, et c'est délibéré : elle calcule
+un embedding sur 8 000 caractères, ce que CLAUDE.md §8 interdit sur le chemin du
+message. Elle suit la cadence de la consolidation, plus un rattrapage à la
+déconnexion. Conséquence assumée : `@historique` ne retrouve une conversation
+qu'à partir de son dixième message.
+
+Le garde d'idempotence compare `n - dernière_consolidation >= 10` et **non** un
+multiple exact : un tour ajoute deux messages, donc `n % 10 == 0` sauterait le
+franchissement dès qu'un tour n'en ajoute qu'un (erreur de streaming, message
+sans réponse).
+
+#### Deux défauts trouvés en écrivant les tests
+
+- **Le stub de titrage ne prenait pas.** `history_engine` est un `_LazyEngine`,
+  donc un proxy : lui poser un attribut le pose sur le proxy, que le moteur réel
+  ne consulte jamais — ses méthodes s'appellent entre elles via `self`. Un **vrai
+  appel Ollama** partait donc pendant la suite (titre « Salut », 28 s au lieu de
+  2,5 s). Le remplacement se fait sur la **classe**. À retenir pour tout test qui
+  neutralise un moteur de `core.runtime`.
+- **Les assertions couraient contre les threads de fond.** Titrage et
+  consolidation sont lancés après le `done` — c'est tout leur intérêt. Assertion
+  immédiate = course perdue. D'où `_attendre(prédicat)`, et un `sleep` explicite
+  là où le test doit prouver qu'il **ne** se passe rien.
+
+`test_raisonnement_stream.py` : son collecteur de trames met l'événement
+d'intendance `conversation` à part **et vérifie qu'il ne peut apparaître qu'en
+tête** — l'écarter en aveugle aurait masqué un `conversation` surgissant au
+milieu d'un flux, qui serait un vrai défaut de protocole.
+
+11 tests ajoutés (`test_chat_ws_conversation.py`) ; 716 au total sous Windows.

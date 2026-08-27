@@ -2,6 +2,7 @@ import logging
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from typing import Optional
 
 from core.instance import modele_local_defaut
 from core.jsonstore import read_json, transaction, write_json
@@ -491,6 +492,64 @@ class HistoryEngine:
             conv.get("fichiers_attachés", []), sources_indexees
         )
         return vue
+
+    def generer_titre(self, conv_id: str) -> Optional[str]:
+        """Titre automatique d'une conversation qui n'en a pas encore. Appel LLM.
+
+        Rend le titre posé, ou ``None`` si rien n'a été fait (conversation
+        absente, titre déjà présent, pas encore d'échange à résumer).
+
+        ⚠️ **Jamais sur le chemin d'un message.** C'est un appel au modèle, donc
+        des secondes ; l'appelant le lance dans un thread après avoir rendu la
+        main. Le modèle est LOCAL et non négociable (CLAUDE.md §3.7) : le titrage
+        tourne sans que personne ne l'ait demandé, c'est une tâche de fond au sens
+        strict — `_generate_title` passe déjà `modele_local_defaut()`.
+
+        Le seuil de deux messages n'est pas cosmétique : titrer une conversation
+        qui ne contient que la question de l'utilisateur produit une paraphrase de
+        cette question, pas un titre.
+        """
+        conv = self.get_conversation(conv_id)
+        if conv is None or conv.get("titre") or len(conv.get("messages", [])) < 2:
+            return None
+        titre = self._generate_title(conv["messages"])
+        if not titre or not self.rename_conversation(conv_id, titre):
+            return None
+        return titre.strip()[:80]
+
+    def marquer_consolidation(self, conv_id: str, n_messages: int) -> bool:
+        """Note qu'une consolidation a eu lieu à ce nombre de messages.
+
+        C'est ce qui rend le déclenchement **idempotent** : sans cette marque,
+        deux tours consécutifs au-delà du seuil relanceraient la consolidation à
+        chaque fois, donc un appel LLM par message. Comparer à un multiple exact
+        ne suffirait pas — un tour ajoute deux messages, donc `n % 10 == 0`
+        sauterait la moitié des franchissements dès qu'un tour n'en ajoute qu'un
+        (erreur de streaming, message sans réponse).
+        """
+        try:
+            with self._conversation_transaction(conv_id) as conv:
+                conv["dernière_consolidation"] = int(n_messages)
+            return True
+        except (_ConversationAbsente, PathOutsideDataError):
+            return False
+
+    def indexer_vectoriel(self, conv_id: str) -> bool:
+        """Rend la conversation trouvable par ``@historique``. Best-effort.
+
+        Enveloppe publique de :meth:`_indexer_vectoriel` — le routeur n'a pas à
+        appeler un attribut privé, et surtout pas à charger la conversation
+        lui-même pour le faire.
+
+        Rend ``False`` sans lever si la conversation est absente ; l'indexation
+        elle-même absorbe déjà l'absence du modèle d'embedding (recherche
+        sémantique indisponible ≠ panne).
+        """
+        conv = self.get_conversation(conv_id)
+        if conv is None:
+            return False
+        self._indexer_vectoriel(conv)
+        return True
 
     def rebuild_index(self) -> int:
         """Reconstruit ``conversations.json`` depuis les fichiers. Rend leur nombre.

@@ -546,20 +546,118 @@ async def conversation_fichiers(conv_id: str, req: FichiersRequest):
 
 # ── WebSocket de chat ────────────────────────────────────────────────────────
 
+#: Nombre de messages entre deux consolidations d'une même conversation.
+#: Ancien déclencheur : `len(history) >= 10` à la déconnexion, donc AU PLUS UNE
+#: fois par connexion, et jamais pour qui laisse son onglet ouvert des heures.
+_SEUIL_CONSOLIDATION = 10
+
+
+def _travaux_apres_tour(conv_id: str, use_cloud: bool, annoncer_titre) -> None:
+    """Titrage, consolidation, indexation vectorielle — **hors** du chemin du message.
+
+    Les trois étaient accrochés à ``WebSocketDisconnect``, qui n'est plus une
+    frontière signifiante : la conversation est désormais écrite à chaque tour,
+    et une déconnexion n'est qu'un onglet qu'on ferme. Ils sont donc rejoués ici,
+    dans un thread, APRÈS que la réponse est partie.
+
+    ⚠️ **L'indexation vectorielle n'est pas par tour, et c'est le point.**
+    ``_indexer_vectoriel`` calcule un embedding sur 8 000 caractères ; l'appeler
+    à chaque message mettrait un modèle sur le trajet de la réponse, ce que
+    CLAUDE.md §8 interdit explicitement (« ne rien mettre de bloquant sur ce
+    chemin »). Elle suit donc la cadence de la consolidation. Conséquence
+    assumée : ``@historique`` ne retrouve une conversation qu'à partir de son
+    dixième message, plus le rattrapage de la déconnexion.
+
+    Tout est best-effort : ce thread ne doit jamais faire tomber une réponse déjà
+    livrée à l'utilisateur.
+    """
+    try:
+        titre = history_engine.generer_titre(conv_id)
+        if titre:
+            annoncer_titre(titre)
+    except Exception:
+        logger.exception("Titrage automatique impossible (%s)", conv_id)
+
+    try:
+        conv = history_engine.get_conversation(conv_id)
+        if conv is None:
+            return
+        n = len(conv.get("messages", []))
+        if n < _SEUIL_CONSOLIDATION:
+            return
+        if (n - conv.get("dernière_consolidation", 0)) < _SEUIL_CONSOLIDATION:
+            return
+        # Marquer AVANT de travailler : si la consolidation échoue, on ne veut pas
+        # la relancer à chaque message suivant. C'est une tâche d'agrément, pas
+        # une transaction dont il faudrait garantir l'exécution.
+        history_engine.marquer_consolidation(conv_id, n)
+        history_engine.indexer_vectoriel(conv_id)
+        consolidation_engine.consolidate_history(conv_id, use_cloud)
+    except Exception:
+        logger.exception("Travaux de fin de tour impossibles (%s)", conv_id)
+
+
 @router.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
     if not await ws_require_token(websocket):
         return
     await websocket.accept()
-    history: list[dict] = []
     loop = asyncio.get_running_loop()
     _last_model: list[str] = [llm._model]
+    #: Dernière conversation touchée sur CETTE connexion — sert au rattrapage de
+    #: la déconnexion. L'identifiant de travail, lui, est relu à CHAQUE message :
+    #: le client peut changer de conversation sans rouvrir le socket, et une
+    #: variable de connexion figerait la première ouverte.
+    _derniere_conv: list[Optional[str]] = [None]
+
+    def _annoncer_titre_depuis_thread(conv_id: str):
+        """Renvoie une closure qui pousse `{"type": "titre"}` vers ce socket.
+
+        Passer par ``run_coroutine_threadsafe`` : l'appelant est un ``Thread``,
+        et toucher le WebSocket depuis un autre fil sans repasser par la boucle
+        corromprait le protocole. L'échec est avalé — le socket peut avoir été
+        fermé entre-temps, ce qui est normal et sans conséquence : le titre est
+        déjà sur le disque, la liste le montrera au prochain chargement.
+        """
+        def _pousser(titre: str) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    websocket.send_text(json.dumps(
+                        {"type": "titre", "id": conv_id, "titre": titre},
+                        ensure_ascii=False,
+                    )),
+                    loop,
+                )
+            except Exception:
+                logger.debug("Titre non annoncé (socket fermé ?) pour %s", conv_id)
+        return _pousser
+
+    async def _enregistrer_reponse(conv_id: str, texte: str) -> None:
+        """Seconde transaction du tour : la réponse, puis les travaux de fond.
+
+        Séparée de l'ajout du message utilisateur, et pas par commodité : entre
+        les deux il y a le streaming, c'est-à-dire des secondes. Une transaction
+        unique qui enjamberait le flux garderait le fichier verrouillé pendant
+        toute la génération, et un envoi concurrent dans la même conversation
+        attendrait la fin de la réponse précédente.
+        """
+        await loop.run_in_executor(
+            None, lambda: history_engine.append_messages(
+                conv_id, [{"role": "assistant", "content": texte}],
+                model=_last_model[0],
+            )
+        )
+        use_cloud = bool(memory.get_context().get("consolidation_cloud", False))
+        Thread(
+            target=_travaux_apres_tour,
+            args=(conv_id, use_cloud, _annoncer_titre_depuis_thread(conv_id)),
+            daemon=True,
+        ).start()
 
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-            history.append({"role": msg["role"], "content": msg["content"]})
 
             rag_override: str | None = msg.get("rag_override")
             strict_override: bool = bool(msg.get("strict_override", False))
@@ -580,6 +678,57 @@ async def ws_chat(websocket: WebSocket):
             _req_start = time.time()
             user_text = msg["content"]
 
+            # ── Quelle conversation ? ─────────────────────────────────────────
+            #
+            # Relu à CHAQUE message et non une fois par connexion : le client
+            # change de conversation sans rouvrir le socket. Un seul `/ws/chat`
+            # subsiste donc, ce qui évite de reconnecter à chaque bascule — la
+            # logique de reconnexion du frontend est déjà délicate.
+            #
+            # CRÉATION PARESSEUSE : sans identifiant, la conversation naît ici,
+            # au premier message, et jamais à l'ouverture d'un onglet vide. Sinon
+            # la liste se remplit de coquilles sans contenu, que l'utilisateur
+            # devrait nettoyer à la main.
+            conv_id = (msg.get("conversation_id") or "").strip()
+            if not conv_id:
+                # Pas d'identifiant → on CONTINUE la conversation de cette
+                # connexion, on n'en ouvre pas une seconde.
+                #
+                # Sans cette ligne, un client qui n'envoie pas d'identifiant
+                # obtient une conversation NEUVE à chaque message : le modèle perd
+                # tout le contexte au deuxième tour, et la liste se remplit d'un
+                # fil par message. Mesuré — c'est ce qu'ont attrapé les tests de
+                # protocole, dont le prompt du second tour ne contenait plus la
+                # réponse du premier.
+                #
+                # « Pas d'identifiant » veut dire « poursuis », jamais
+                # « recommence » : pour ouvrir une nouvelle conversation, le
+                # client appelle `POST /chat/conversations` et envoie l'id rendu.
+                # C'est aussi ce qui préserve à l'identique le comportement des
+                # clients d'avant ce chantier — une conversation par connexion.
+                conv_id = _derniere_conv[0] or ""
+            if conv_id:
+                existe = await loop.run_in_executor(
+                    None, history_engine.get_conversation, conv_id
+                )
+                if existe is None:
+                    # Identifiant inconnu : supprimée ailleurs, ou client
+                    # désynchronisé. On n'échoue PAS — le message vient d'être
+                    # tapé, le perdre serait le pire des comportements. On repart
+                    # sur une conversation neuve, et on l'ANNONCE pour que le
+                    # client se recale au lieu d'écrire dans le vide.
+                    logger.warning("Conversation inconnue %r — création d'une neuve", conv_id)
+                    conv_id = ""
+            if not conv_id:
+                neuve = await loop.run_in_executor(
+                    None, lambda: history_engine.create_conversation(model=_last_model[0])
+                )
+                conv_id = neuve["id"]
+                await websocket.send_text(json.dumps({
+                    "type": "conversation", "id": conv_id,
+                }))
+            _derniere_conv[0] = conv_id
+
             # @historique skill
             hist_ctx = ""
             if "@historique" in user_text:
@@ -594,7 +743,7 @@ async def ws_chat(websocket: WebSocket):
                     )
                     hist_ctx = f"Extraits de conversations précédentes pertinentes :\n{extraits}"
                 user_text = hist_query if hist_query != user_text else user_text.replace("@historique", "").strip()
-                history[-1]["content"] = user_text or msg["content"]
+                user_text = user_text or msg["content"]
 
             # @web skill
             web_ctx = ""
@@ -648,7 +797,35 @@ async def ws_chat(websocket: WebSocket):
                     "Réponds à la question en te basant sur ce contexte si pertinent."
                 )
 
-            messages = list(history)
+            # Le message de l'utilisateur entre sur le DISQUE ici, et pas plus
+            # tôt : son texte a pu être réécrit juste au-dessus (`@historique`
+            # retire sa balise), et c'est le texte réellement soumis au modèle qui
+            # doit être conservé — sinon le tour suivant relit une question que
+            # personne n'a posée.
+            #
+            # Cet ajout rend la conversation à jour, donc l'historique du prompt
+            # avec : une seule lecture-écriture au lieu d'un `append` puis d'un
+            # `get`. Le tour d'assistant sera une SECONDE transaction, plus bas —
+            # deux écritures distinctes, jamais une seule qui les enjamberait
+            # (docs/conversations-persistees.md §6).
+            conv = await loop.run_in_executor(
+                None, lambda: history_engine.append_messages(
+                    conv_id, [{"role": msg.get("role", "user"), "content": user_text}],
+                    model=_last_model[0],
+                )
+            )
+            if conv is None:
+                # La conversation a disparu entre sa résolution et cet ajout
+                # (suppression depuis un autre onglet). Rare, mais le message de
+                # l'utilisateur ne doit pas être perdu en silence.
+                logger.warning("Conversation %s disparue en cours de tour", conv_id)
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "content": "Cette conversation n'existe plus. Ouvrez-en une nouvelle.",
+                }))
+                continue
+
+            messages = list(conv["messages"])
             if sys_parts:
                 messages = [{"role": "system", "content": "\n\n".join(sys_parts)}] + messages
 
@@ -691,7 +868,7 @@ async def ws_chat(websocket: WebSocket):
                             _final = _event.get("final_output", "")
                         await websocket.send_text(json.dumps(_event))
                     if _final:
-                        history.append({"role": "assistant", "content": _final})
+                        await _enregistrer_reponse(conv_id, _final)
                     await websocket.send_text(json.dumps({"type": "done"}))
                     continue
                 elif not _direct_mode:
@@ -763,18 +940,23 @@ async def ws_chat(websocket: WebSocket):
                 await websocket.send_text(json.dumps({"type": "token", "content": item}))
 
             if accumulated:
-                history.append({"role": "assistant", "content": accumulated})
+                await _enregistrer_reponse(conv_id, accumulated)
             await websocket.send_text(json.dumps({"type": "done"}))
 
     except WebSocketDisconnect:
-        if len(history) >= 3:
-            model = _last_model[0]
-            msgs = list(history)
-            use_cloud = memory.get_context().get("consolidation_cloud", False)
-
-            def _save_and_consolidate():
-                conv_id = history_engine.save_conversation(msgs, model, ["chat"])
-                if len(msgs) >= 10:
-                    consolidation_engine.consolidate_history(conv_id, use_cloud)
-
-            Thread(target=_save_and_consolidate, daemon=True).start()
+        # RATTRAPAGE, plus une sauvegarde. Tout est déjà sur le disque : la
+        # déconnexion ne sert qu'à rendre la conversation trouvable par
+        # `@historique` sans attendre le dixième message, puisque l'indexation
+        # vectorielle suit la cadence de la consolidation (cf.
+        # `_travaux_apres_tour`).
+        #
+        # L'ancien bloc faisait tout ici — `save_conversation` de l'historique
+        # accumulé en mémoire, puis consolidation. C'était le SEUL moment où quoi
+        # que ce soit était écrit : fermer l'onglet autrement qu'en se
+        # déconnectant proprement, ou laisser le processus mourir, perdait la
+        # conversation entière.
+        conv_id = _derniere_conv[0]
+        if conv_id:
+            Thread(
+                target=history_engine.indexer_vectoriel, args=(conv_id,), daemon=True
+            ).start()
