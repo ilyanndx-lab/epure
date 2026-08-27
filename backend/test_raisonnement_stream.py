@@ -269,14 +269,24 @@ class ProtocoleWebSocketTest(unittest.TestCase):
     def _echanger(self, ws, texte="17 x 23 ?"):
         """Envoie un message et collecte les trames de FLUX jusqu'au `done`.
 
-        Deux événements d'INTENDANCE sont mis à part au lieu d'être rendus :
+        Les événements d'INTENDANCE sont mis à part au lieu d'être rendus, et
+        ils ne se valent pas :
 
-        * ``{"type": "conversation", "id": …}`` — le serveur ouvre une
-          conversation pour un client qui n'en a pas fourni (création paresseuse) ;
-        * ``{"type": "meta_message", "role": "user", "horodatage": …}`` — l'heure
-          que le serveur vient de poser sur le message reçu.
+        * ``conversation`` et ``meta_message`` sont **synchrones du tour** : le
+          serveur les émet avant de commencer à streamer. Leur position est donc
+          un vrai invariant, et elle est vérifiée ;
+        * ``titre`` est **asynchrone**, et c'est tout l'intérêt du titrage : il
+          part d'un thread de fond, après que la réponse a été livrée. Il peut
+          donc tomber n'importe où, y compris au milieu du tour SUIVANT. Lui
+          assigner une position serait intenable.
 
-        Tous deux précèdent le flux sans en faire partie.
+        ⚠️ Ce n'est pas une précaution théorique. La première version de ce
+        collecteur laissait ``titre`` dans les trames et exigeait que rien ne
+        précède ``meta_message`` : vert sur ce poste, ROUGE en CI. La cause est
+        l'écart d'environnement que CLAUDE.md documente — ici Ollama répond en
+        ~1 s et le titre arrive après la fin du test ; en CI il n'y a pas
+        d'Ollama, l'appel échoue instantanément, et le titre de repli atterrit au
+        beau milieu du second tour.
 
         Le retirer ici plutôt que d'allonger chaque liste attendue garde ces
         tests sur leur sujet — l'ordre et le type du canal de raisonnement. Mais
@@ -288,6 +298,10 @@ class ProtocoleWebSocketTest(unittest.TestCase):
         trames = []
         while True:
             trame = json.loads(ws.receive_text())
+            if trame["type"] == "titre":
+                # Asynchrone : aucune position à vérifier (cf. docstring).
+                self.titre_recu = trame.get("titre", "")
+                continue
             if trame["type"] in ("conversation", "meta_message"):
                 self.assertEqual(
                     trames, [],
