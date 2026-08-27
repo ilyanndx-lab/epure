@@ -337,6 +337,24 @@ def safe_upload_name(filename: str, default: str) -> str:
     return name
 
 
+def cle_chemin(chemin: str) -> str:
+    """Clé de comparaison de deux chemins de fichier, correcte sous Windows.
+
+    ``normcase`` **et** ``normpath`` : sous Windows le premier abaisse la casse et
+    convertit ``/`` en ``\\``, le second réduit ``a/./b`` et ``a/b/../c``. Sous
+    POSIX les deux sont quasi neutres, ce qui est le comportement voulu — la
+    casse y est significative.
+
+    Sans ça, le croisement de :func:`croiser_fichiers` déclarerait absent un
+    fichier bel et bien indexé au seul motif que l'un des deux côtés porte
+    ``C:/Users/...`` et l'autre ``C:\\Users\\...``, ou une majuscule de lecteur
+    différente. Le symptôme serait un fichier attaché qui cesse silencieusement
+    de contribuer au contexte — exactement la classe de panne que le
+    ``présent: bool`` est censé rendre visible.
+    """
+    return os.path.normcase(os.path.normpath(chemin))
+
+
 def resolve_user_path(path: str) -> Path:
     """Résout un chemin venant du client, ou lève :class:`PathOutsideDataError`.
 

@@ -1,12 +1,11 @@
 import logging
-import os
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from core.instance import modele_local_defaut
 from core.jsonstore import read_json, transaction, write_json
-from core.paths import PathOutsideDataError, resolve_history_dir
+from core.paths import PathOutsideDataError, cle_chemin, resolve_history_dir
 
 logger = logging.getLogger(__name__)
 
@@ -39,24 +38,6 @@ def _horodatage() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _cle_chemin(chemin: str) -> str:
-    """Clé de comparaison de deux chemins de fichier, correcte sous Windows.
-
-    ``normcase`` **et** ``normpath`` : sous Windows le premier abaisse la casse et
-    convertit ``/`` en ``\\``, le second réduit ``a/./b`` et ``a/b/../c``. Sous
-    POSIX les deux sont quasi neutres, ce qui est le comportement voulu — la
-    casse y est significative.
-
-    Sans ça, le croisement de :func:`croiser_fichiers` déclarerait absent un
-    fichier bel et bien indexé au seul motif que l'un des deux côtés porte
-    ``C:/Users/...`` et l'autre ``C:\\Users\\...``, ou une majuscule de lecteur
-    différente. Le symptôme serait un fichier attaché qui cesse silencieusement
-    de contribuer au contexte — exactement la classe de panne que le
-    ``présent: bool`` est censé rendre visible.
-    """
-    return os.path.normcase(os.path.normpath(chemin))
-
-
 def croiser_fichiers(attaches, indexes) -> list[dict]:
     """``[{"chemin": str, "présent": bool}]`` — jamais un filtrage silencieux.
 
@@ -72,15 +53,29 @@ def croiser_fichiers(attaches, indexes) -> list[dict]:
 
     L'ordre des attachements est conservé : c'est celui que l'utilisateur a posé.
 
+    ⚠️ **Trois états, pas deux.** ``indexes`` vaut ``None`` quand le corpus n'est
+    pas interrogeable — cas réel et fréquent : dans un paquet fraîchement
+    installé, les 90 Mo du modèle d'embedding ne sont pas encore là, et
+    ``rag.get_indexed_files()`` lève ``EmbeddingIndisponible``. ``présent`` vaut
+    alors ``None``, qui se lit « on ne sait pas ».
+
+    Répondre ``False`` dans ce cas serait une affirmation fausse, et pire qu'un
+    filtrage silencieux : l'interface annoncerait « ce fichier n'est plus indexé »
+    à propos de fichiers parfaitement présents, et l'utilisateur les
+    ré-importerait pour rien. Une liste vide, elle, reste un vrai ``False`` — un
+    corpus réellement vide est une information, pas une ignorance.
+
     Pure et hors de la classe **exprès** : ``HistoryEngine`` ne doit pas
     connaître le RAG. Lui injecter ``rag`` en construction le coupleraient à un
     ``_LazyEngine`` dont le premier accès construit ``RAGEngine`` — donc peut
     déclencher 90 Mo de téléchargement (CLAUDE.md §3.2). L'appelant fournit les
     deux listes, personne n'instancie rien.
     """
-    connus = {_cle_chemin(str(s)) for s in (indexes or [])}
+    if indexes is None:
+        return [{"chemin": str(a), "présent": None} for a in (attaches or [])]
+    connus = {cle_chemin(str(s)) for s in indexes}
     return [
-        {"chemin": str(a), "présent": _cle_chemin(str(a)) in connus}
+        {"chemin": str(a), "présent": cle_chemin(str(a)) in connus}
         for a in (attaches or [])
     ]
 
@@ -106,7 +101,37 @@ class HistoryEngine:
         self._dir = resolve_history_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self._dir / "conversations.json"
-        self._col = store.collection("history")
+        self._store = store
+        self._col_cache = None
+
+    @property
+    def _col(self):
+        """Collection vectorielle, obtenue AU PREMIER USAGE — pas à la construction.
+
+        ⚠️ Ce n'est pas une optimisation, c'est une correction de panne, et elle
+        est mesurée. ``store.collection(...)`` construit le ``VectorStore``, dont
+        le ``__init__`` construit ``MoteurEmbedding`` — qui lève
+        ``EmbeddingIndisponible`` tant que les 90 Mo du modèle ne sont pas
+        téléchargés. Le faire depuis ``__init__`` rendait **tout** le moteur
+        dépendant de la pile d'embedding, y compris ses opérations purement JSON.
+
+        Conséquence, vérifiée en exécutant la configuration d'un paquet
+        fraîchement installé : ``GET /history`` répondait **503**, donc le module
+        Historique était mort chez tout destinataire n'ayant pas encore
+        téléchargé le modèle. Bug antérieur à ce chantier ; il aurait été hérité
+        tel quel par les conversations, où il aurait empêché d'ouvrir le moindre
+        fil de discussion.
+
+        Ce que le vecteur sert réellement : ``search_history`` (le skill
+        ``@historique``) et ``_indexer_vectoriel``. Deux fonctions de recherche
+        sémantique — il est normal qu'elles soient indisponibles sans modèle, et
+        leurs appelants l'absorbent déjà (``except Exception`` → liste vide ou
+        avertissement). Il n'est pas normal que **lister ses conversations** en
+        dépende.
+        """
+        if self._col_cache is None:
+            self._col_cache = self._store.collection("history")
+        return self._col_cache
 
     # ── Chemins ───────────────────────────────────────────────────────────────
 
@@ -435,7 +460,7 @@ class HistoryEngine:
         vus: set[str] = set()
         propres: list[str] = []
         for p in paths or []:
-            cle = _cle_chemin(str(p))
+            cle = cle_chemin(str(p))
             if cle not in vus:
                 vus.add(cle)
                 propres.append(str(p))

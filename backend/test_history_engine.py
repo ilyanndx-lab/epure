@@ -278,11 +278,27 @@ class CroisementFichiersTest(unittest.TestCase):
         chemins = ["/a/c.pdf", "/a/a.pdf", "/a/b.pdf"]
         self.assertEqual([f["chemin"] for f in croiser_fichiers(chemins, chemins)], chemins)
 
-    def test_listes_vides_et_none(self):
+    def test_listes_vides(self):
         self.assertEqual(croiser_fichiers([], ["/a/x.pdf"]), [])
         self.assertEqual(croiser_fichiers(None, None), [])
-        self.assertEqual(croiser_fichiers(["/a/x.pdf"], None),
+
+    def test_corpus_vide_et_corpus_inconnu_ne_disent_pas_la_meme_chose(self):
+        """Trois états, pas deux — et la nuance est la raison d'être du champ.
+
+        ``[]`` : le corpus est vraiment vide, donc le fichier est vraiment
+        absent → ``False``, une information.
+
+        ``None`` : le corpus n'est pas interrogeable (paquet neuf, les 90 Mo du
+        modèle d'embedding pas encore téléchargés, ``EmbeddingIndisponible``)
+        → ``None``, une ignorance. Répondre ``False`` ici serait pire qu'un
+        filtrage silencieux : l'interface annoncerait « plus indexé » à propos de
+        fichiers parfaitement présents, et l'utilisateur les ré-importerait pour
+        rien.
+        """
+        self.assertEqual(croiser_fichiers(["/a/x.pdf"], []),
                          [{"chemin": "/a/x.pdf", "présent": False}])
+        self.assertEqual(croiser_fichiers(["/a/x.pdf"], None),
+                         [{"chemin": "/a/x.pdf", "présent": None}])
 
     def test_les_separateurs_ne_font_pas_mentir_le_croisement(self):
         """``a/b`` et ``a\\b`` désignent le même fichier — sous Windows.
@@ -338,6 +354,79 @@ class AttachementTest(_Base):
 
     def test_la_vue_d_une_conversation_absente_rend_none(self):
         self.assertIsNone(self.moteur.conversation_view("11111111-2222-3333-4444-555555555555", []))
+
+
+class SansPileEmbeddingTest(unittest.TestCase):
+    """Le stockage JSON ne doit dépendre en RIEN du modèle d'embedding.
+
+    Bug ANTÉRIEUR à ce chantier, mesuré avant correction : `HistoryEngine.__init__`
+    appelait `store.collection("history")`, ce qui construit le `VectorStore`,
+    donc `MoteurEmbedding`, qui lève `EmbeddingIndisponible` tant que les 90 Mo
+    du modèle ne sont pas là. Résultat dans un paquet fraîchement installé —
+    vérifié en exécutant l'app dans cette configuration :
+
+        GET /history      -> 503
+        GET /history/abc  -> 503
+
+    Autrement dit le module Historique était mort chez tout destinataire n'ayant
+    pas téléchargé le modèle, et les conversations en auraient hérité : plus
+    moyen d'ouvrir le moindre fil de discussion.
+
+    La collection est donc obtenue au PREMIER USAGE. Ce qui en dépend vraiment —
+    `search_history`, `_indexer_vectoriel` — reste indisponible sans modèle, ce
+    qui est normal : c'est de la recherche sémantique. Lister ses conversations
+    n'en est pas.
+    """
+
+    class _StoreIndisponible:
+        def __init__(self):
+            self.appels = 0
+
+        def collection(self, nom):
+            self.appels += 1
+            raise RuntimeError("EmbeddingIndisponible simulé")
+
+    def setUp(self):
+        self._prev = os.environ.get("EPURE_HISTORY_DIR")
+        self.tmp = Path(tempfile.mkdtemp(prefix="epure-histsans-"))
+        os.environ["EPURE_HISTORY_DIR"] = str(self.tmp)
+        self.addCleanup(self._restaurer)
+        self.store = self._StoreIndisponible()
+        self.moteur = HistoryEngine(_FauxLLM(), self.store)
+
+    def _restaurer(self):
+        if self._prev is None:
+            os.environ.pop("EPURE_HISTORY_DIR", None)
+        else:
+            os.environ["EPURE_HISTORY_DIR"] = self._prev
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_construire_le_moteur_ne_touche_pas_le_vecteur(self):
+        self.assertEqual(self.store.appels, 0,
+                         "la collection a été demandée dès la construction")
+
+    def test_le_cycle_json_complet_fonctionne_sans_modele(self):
+        conv = self.moteur.create_conversation(titre="Sans modèle")
+        self.assertIsNotNone(self.moteur.append_messages(
+            conv["id"], [{"role": "user", "content": "bonjour"}]))
+        self.assertTrue(self.moteur.rename_conversation(conv["id"], "Renommée"))
+        self.assertIsNotNone(self.moteur.set_conversation_files(conv["id"], []))
+        self.assertEqual(self.moteur.get_conversation(conv["id"])["titre"], "Renommée")
+        self.assertEqual(len(self.moteur.list_conversations(0)), 1)
+        self.assertEqual(self.store.appels, 0,
+                         "une opération JSON a réclamé la collection vectorielle")
+
+    def test_la_recherche_semantique_degrade_au_lieu_de_lever(self):
+        """Elle, en revanche, a VRAIMENT besoin du modèle — liste vide, pas 500."""
+        self.assertEqual(self.moteur.search_history("quoi que ce soit"), [])
+        self.assertGreater(self.store.appels, 0)
+
+    def test_supprimer_reste_possible_sans_modele(self):
+        """Le fichier et l'index partent ; seul le nettoyage vectoriel est perdu."""
+        conv = self.moteur.create_conversation()
+        self.assertTrue(self.moteur.delete_conversation(conv["id"]))
+        self.assertFalse((self.tmp / f"{conv['id']}.json").exists())
+        self.assertEqual(self.moteur.list_conversations(0), [])
 
 
 class ReconstructionIndexTest(_Base):

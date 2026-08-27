@@ -379,7 +379,7 @@ livrables et testables **sans changement visible à l'usage**.
 |---|---|---|
 | 1 | Prérequis : `resolve_history_dir()`, `_test_env`, `REAL_DIRS` | ✅ fait le 2026-08-27 (`4a1aa1d`) |
 | 2 | `HistoryEngine` : nouvelles méthodes, lecture tolérante des anciens fichiers, `fsync` | ✅ fait le 2026-08-27 |
-| 3 | Endpoints `/chat/conversations*` + `PUT …/fichiers` | à faire |
+| 3 | Endpoints `/chat/conversations*` + `PUT …/fichiers` | ✅ fait le 2026-08-27 |
 | 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | à faire |
 | 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | à faire |
 | 6 | Frontend : `ConversationList`, recâblage `Component.tsx` et `ModuleBar.tsx`, tests vitest | à faire |
@@ -450,3 +450,63 @@ les conversations l'ont.
 34 tests ajoutés — `test_history_engine.py` (29) et `test_jsonstore.py` (+5).
 678 au total sous Windows ; les trois fichiers touchés rejoués sous Linux (WSL)
 puisque la CI y tourne.
+
+### Étape 3 — ce qui a été fait, et la panne qu'elle a découverte
+
+Six routes dans le module **chat** (`prefix: ""`, donc `/chat/` écrit à la main) :
+`POST`/`GET` sur la collection, `GET`/`PATCH`/`DELETE` sur une conversation,
+`PUT …/fichiers`. `/history*` reste la vue de parcours, sur le même moteur.
+
+**Une asymétrie assumée, et c'est la décision de l'étape.** `rag` est un
+`_LazyEngine` dont le premier accès peut lever `EmbeddingIndisponible`, que
+`main.py` traduit en 503 par un gestionnaire **global** :
+
+- **lire ne 503 jamais.** `GET /chat/conversations/{id}` rattrape et répond
+  `corpus_interrogeable: false`, avec `présent: null` sur chaque fichier. Sans ce
+  rattrapage, ouvrir une conversation aurait été impossible tant que les 90 Mo du
+  modèle ne sont pas téléchargés — c'est-à-dire dans tout paquet neuf.
+- **attacher peut 503.** `PUT …/fichiers` laisse remonter l'exception au
+  gestionnaire global, qui rend l'état d'installation. C'est une action explicite
+  de l'utilisateur : lui devoir une explication vaut mieux qu'un attachement
+  invérifiable accepté en silence.
+
+D'où le **troisième état de `présent`** (`true`/`false`/`null`), qui amende le
+contrat posé à l'étape 2 : `[]` est un corpus réellement vide donc un vrai
+`false` ; `None` est une ignorance. Annoncer `false` faute de corpus ferait
+croire à une désindexation et pousserait à ré-importer pour rien.
+
+`cle_chemin` a migré de `core/history.py` vers `core/paths.py` en devenant
+publique : le routeur en a besoin, et importer un `_privé` d'un autre module est
+un mauvais signal. `paths.py` est le domicile des questions de chemin.
+
+#### La panne préexistante que l'étape a mise au jour
+
+Tous les tests de routes ont d'abord répondu 503 — **y compris `POST` et `GET`
+sur la collection, qui ne touchent pas `rag`**. Cause :
+`HistoryEngine.__init__` appelait `store.collection("history")`, ce qui construit
+le `VectorStore`, donc `MoteurEmbedding`, qui lève tant que le modèle n'est pas
+là.
+
+Mesuré en exécutant l'application dans la configuration d'un paquet fraîchement
+installé, **avant toute correction** :
+
+```
+GET /history      -> 503
+GET /history/abc  -> 503
+```
+
+Le module **Historique est donc mort aujourd'hui** chez tout destinataire n'ayant
+pas téléchargé les 90 Mo. Bug antérieur au chantier, sans rapport avec lui, mais
+que les conversations auraient hérité tel quel.
+
+Correction à la racine plutôt que route par route : la collection vectorielle est
+obtenue **au premier usage**, plus à la construction. Ce qui en dépend vraiment —
+`search_history` (le skill `@historique`) et `_indexer_vectoriel` — reste
+indisponible sans modèle, ce qui est normal pour de la recherche sémantique, et
+leurs appelants l'absorbent déjà. Lister ses conversations n'en dépend plus.
+
+Après correction : `GET /history` → **200**, `GET /history/abc` → **404**.
+
+27 tests ajoutés (`test_chat_conversations.py` 22, `test_history_engine.py` +5) ;
+705 au total sous Windows. Les fichiers exécutables sans fastapi rejoués sous
+Linux ; `test_chat_conversations.py` ne l'est pas — cette WSL n'a pas `pip`.

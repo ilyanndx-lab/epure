@@ -15,14 +15,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
+from pathlib import Path
 from threading import Thread
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from core.auth import ws_require_token
+from core.embedding_install import EmbeddingIndisponible
 from core.instance import modele_local_defaut
+from core.paths import PathOutsideDataError, cle_chemin, resolve_user_path
 from core.rag import RAGEngine
 from core.runtime import (
     SSE_HEADERS,
@@ -351,6 +355,193 @@ async def skills_résumé():
     return StreamingResponse(
         _stream_résumé_sse(), media_type="text/event-stream", headers=SSE_HEADERS
     )
+
+
+# ── Conversations ────────────────────────────────────────────────────────────
+#
+# Ces routes vivent dans le module CHAT et non dans le module Historique, qui
+# manipule pourtant le même magasin. La raison est son manifeste :
+# `history` porte `removable: true`. Y loger le cycle de vie des conversations
+# voudrait dire que désactiver l'Historique depuis les Réglages décapite le chat.
+# `/history*` reste la VUE de parcours et de recherche sémantique ; le cycle de
+# vie est ici. Un seul moteur derrière les deux (`core.runtime.history_engine`),
+# donc pas de second magasin — cf. docs/conversations-persistees.md §3.
+#
+# ⚠️ Le module chat est monté avec `prefix: ""` (son manifeste), donc chaque
+# route s'écrit préfixée À LA MAIN. Sans le `/chat/`, collision silencieuse avec
+# une route du cœur (CLAUDE.md §3.3).
+
+
+class ConversationCreate(BaseModel):
+    titre: str = ""
+    fichiers: list[str] | None = None
+
+
+class ConversationPatch(BaseModel):
+    titre: str
+
+
+class FichiersRequest(BaseModel):
+    paths: list[str]
+
+
+def _corpus_ou_inconnu() -> Optional[list]:
+    """Chemins indexés, ou ``None`` si le corpus n'est pas interrogeable.
+
+    **Pour la LECTURE seulement.** Ouvrir une conversation ne doit jamais
+    dépendre de la pile d'embedding : dans un paquet fraîchement installé les
+    90 Mo du modèle ne sont pas encore là, et `rag` est un `_LazyEngine` dont le
+    premier accès lève `EmbeddingIndisponible` — que `main.py` traduit en 503 par
+    un gestionnaire GLOBAL. Sans cette rattrapage, `GET /chat/conversations/{id}`
+    répondrait 503 et l'utilisateur ne pourrait plus lire ses conversations parce
+    que la recherche documentaire n'est pas prête. Ce serait l'incident du §8
+    (« la recherche documentaire répond 500 dans un paquet livré ») déplacé d'un
+    cran, sur une fonction qui n'a rien à voir.
+
+    `None` n'est pas une liste vide : il se propage en `présent: None` jusqu'au
+    client (cf. `core.history.croiser_fichiers`), c'est-à-dire « on ne sait pas »
+    et non « ce fichier a disparu ».
+    """
+    try:
+        return rag.get_indexed_files()
+    except EmbeddingIndisponible:
+        return None
+    except Exception:
+        logger.exception("Corpus indexé illisible — fichiers marqués « inconnu »")
+        return None
+
+
+def _valider_fichiers(paths: list) -> list[str]:
+    """Confine les chemins puis exige leur présence dans le corpus indexé.
+
+    Deux refus distincts, et les confondre serait une faute :
+
+    * hors des dossiers de données → **403**, c'est une tentative de sortie
+      (`resolve_user_path`, CLAUDE.md §6). On renvoie le chemin RÉSOLU, jamais la
+      chaîne d'origine, sinon la vérification ne porte pas sur ce qui sera lu ;
+    * dans les dossiers mais absent du corpus → **400**, c'est une demande
+      absurde : attacher un fichier que le moteur n'a pas indexé produirait une
+      conversation dont le contexte ne contient rien, sans que rien ne le dise —
+      exactement le symptôme « indexé à zéro chunk, en silence » (§3.3 bis).
+
+    ⚠️ Contrairement à :func:`_corpus_ou_inconnu`, on ne rattrape PAS
+    `EmbeddingIndisponible` : elle remonte au gestionnaire global, qui rend un 503
+    porteur de l'état d'installation. C'est volontaire et c'est l'asymétrie du
+    chantier — **lire une conversation ne doit jamais échouer, y attacher un
+    fichier peut attendre que le corpus existe.** Le second est une action
+    explicite de l'utilisateur, à qui l'on doit une explication, pas un silence.
+    """
+    resolus: list[str] = []
+    for p in paths:
+        try:
+            resolus.append(str(resolve_user_path(p)))
+        except PathOutsideDataError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+
+    connus = {cle_chemin(str(s)) for s in rag.get_indexed_files()}
+    inconnus = [p for p in resolus if cle_chemin(p) not in connus]
+    if inconnus:
+        raise HTTPException(
+            status_code=400,
+            detail=("Fichiers non indexés (les importer d'abord) : "
+                    + ", ".join(Path(p).name for p in inconnus)),
+        )
+    return resolus
+
+
+@router.post("/chat/conversations")
+async def conversation_create(req: ConversationCreate | None = None):
+    loop = asyncio.get_running_loop()
+    req = req or ConversationCreate()
+    fichiers = _valider_fichiers(req.fichiers) if req.fichiers else []
+    conv = await loop.run_in_executor(
+        None, lambda: history_engine.create_conversation(titre=req.titre, fichiers=fichiers)
+    )
+    return {"id": conv["id"], "titre": conv["titre"], "créée": conv["créée"],
+            "modifiée": conv["modifiée"], "fichiers_attachés": conv["fichiers_attachés"],
+            "messages": []}
+
+
+@router.get("/chat/conversations")
+async def conversation_list(days: int = 0, limit: int = 100, offset: int = 0):
+    """Liste l'INDEX — jamais les messages, qui pèsent ~6,7 Ko par conversation.
+
+    ``days=0`` par défaut, c'est-à-dire tout : une liste de conversations sert à
+    retrouver un fil ancien, la borner à 30 jours en cacherait la moitié. Le
+    module Historique garde son défaut à 30, il répond à un autre besoin.
+    """
+    loop = asyncio.get_running_loop()
+    toutes = await loop.run_in_executor(None, history_engine.list_conversations, days)
+    debut = max(0, offset)
+    fin = debut + max(0, min(limit, 500))
+    return {"conversations": toutes[debut:fin], "total": len(toutes)}
+
+
+@router.get("/chat/conversations/{conv_id}")
+async def conversation_get(conv_id: str):
+    """La conversation entière, fichiers attachés marqués ``présent``.
+
+    Ne 503 jamais : cf. :func:`_corpus_ou_inconnu`. ``corpus_interrogeable`` dit
+    au client si les ``présent`` valent quelque chose, pour qu'il puisse afficher
+    « état inconnu » plutôt qu'une croix mensongère.
+    """
+    loop = asyncio.get_running_loop()
+    corpus = await loop.run_in_executor(None, _corpus_ou_inconnu)
+    vue = await loop.run_in_executor(
+        None, history_engine.conversation_view, conv_id, corpus
+    )
+    if vue is None:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    vue["corpus_interrogeable"] = corpus is not None
+    return vue
+
+
+@router.patch("/chat/conversations/{conv_id}")
+async def conversation_patch(conv_id: str, req: ConversationPatch):
+    titre = req.titre.strip()
+    if not titre:
+        raise HTTPException(status_code=400, detail="Titre vide")
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(
+        None, history_engine.rename_conversation, conv_id, titre
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    return {"ok": True, "titre": titre[:80]}
+
+
+@router.delete("/chat/conversations/{conv_id}")
+async def conversation_delete(conv_id: str):
+    """404 sur une conversation absente, plutôt qu'un ``{"ok": true}`` menteur.
+
+    `delete_conversation` est idempotent et rend `True` même sur un identifiant
+    inconnu (il nettoie l'index et le vecteur au cas où) ; l'existence est donc
+    vérifiée ici. Un client qui supprime deux fois doit voir la différence,
+    sinon un bug d'identifiant passe pour un succès.
+    """
+    loop = asyncio.get_running_loop()
+    if await loop.run_in_executor(None, history_engine.get_conversation, conv_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    await loop.run_in_executor(None, history_engine.delete_conversation, conv_id)
+    return {"ok": True}
+
+
+@router.put("/chat/conversations/{conv_id}/fichiers")
+async def conversation_fichiers(conv_id: str, req: FichiersRequest):
+    """Remplace l'ENSEMBLE des fichiers attachés.
+
+    Un `PUT` de l'ensemble et non un `POST`/`DELETE` par fichier : l'interface est
+    une liste à cocher, donc c'est la forme de l'interaction réelle, et ça
+    supprime toute question d'ordre entre deux requêtes concurrentes.
+    """
+    resolus = _valider_fichiers(req.paths)
+    loop = asyncio.get_running_loop()
+    rendus = await loop.run_in_executor(
+        None, history_engine.set_conversation_files, conv_id, resolus
+    )
+    if rendus is None:
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    return {"fichiers_attachés": [{"chemin": p, "présent": True} for p in rendus]}
 
 
 # ── WebSocket de chat ────────────────────────────────────────────────────────
