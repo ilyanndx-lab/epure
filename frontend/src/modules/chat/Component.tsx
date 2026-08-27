@@ -8,7 +8,7 @@ import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
 import { AT_COMMANDS, allSlashCommands, moduleCommands } from './commands'
 import ConversationList from './ConversationList'
-import { creerConversation } from './conversations'
+import { creerConversation, reprendreAncienChat } from './conversations'
 import { liste, texte } from '../../normaliser'
 import { useModules } from '../../modules'
 
@@ -515,6 +515,27 @@ export default function Chat({
     connect()
     return () => wsRef.current?.close()
   }, [onAssistantDone])
+
+  /**
+   * Reprise UNIQUE de ce qui était à l'écran au moment de la mise à jour.
+   *
+   * Le chantier n'a rien à migrer côté serveur ; la seule chose qui
+   * disparaîtrait est `localStorage['epure.chat.messages']`, que ce composant ne
+   * lit plus. On la reverse en conversation, une fois, puis la clé est effacée.
+   *
+   * `dejaTente` protège du double montage de `StrictMode` en développement, qui
+   * exécuterait l'effet deux fois et créerait deux conversations reprises. La
+   * ref plutôt qu'un état : elle ne doit provoquer aucun rendu.
+   */
+  const repriseTenteeRef = useRef(false)
+  useEffect(() => {
+    if (conversationId || repriseTenteeRef.current) return
+    repriseTenteeRef.current = true
+    void (async () => {
+      const id = await reprendreAncienChat()
+      if (id) setConversationId(id)
+    })()
+  }, [conversationId, setConversationId])
 
   /**
    * Charge les messages d'une conversation depuis le DISQUE.

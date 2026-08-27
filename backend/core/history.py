@@ -380,16 +380,48 @@ class HistoryEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _messages_propres(messages) -> list[dict]:
+        """Réduit des messages venant du client à ``{role, content}``.
+
+        Deux rôles seulement, et ``content`` forcé en chaîne : ces messages
+        partent tels quels dans le prompt du tour suivant, où un rôle inventé
+        ferait échouer l'appel au modèle et un contenu non-textuel lèverait à la
+        concaténation. On filtre plutôt que de refuser : la seule source de
+        messages fournis par le client est la reprise de l'ancien chat (étape 7),
+        et perdre la conversation entière pour un message malformé serait pire
+        que d'en perdre un.
+        """
+        propres: list[dict] = []
+        for m in messages or []:
+            if not isinstance(m, dict):
+                continue
+            contenu = m.get("content")
+            if not isinstance(contenu, str) or not contenu:
+                continue
+            role = m.get("role")
+            propres.append({
+                "role": "assistant" if role == "assistant" else "user",
+                "content": contenu,
+            })
+        return propres
+
     def create_conversation(
         self, titre: str = "", fichiers: list | None = None,
         model: str = "", modules: list | None = None,
+        messages: list | None = None,
     ) -> dict:
-        """Crée une conversation vide et la renvoie. Ne génère aucun titre.
+        """Crée une conversation et la renvoie. Ne génère aucun titre.
 
         Le titre est laissé vide **exprès** : le générer demande un appel LLM, et
         une conversation sans message n'a rien à résumer. Il est produit après le
         premier tour d'assistant (étape 4), et l'interface affiche d'ici là un
         libellé provisoire.
+
+        ``messages`` sert à UN seul appelant : la reprise de ce qui était affiché
+        au moment de la mise à jour (étape 7). Les conversations naissent
+        normalement vides et se remplissent tour par tour ; ce paramètre existe
+        parce que ces messages-là n'ont jamais eu de fichier où vivre.
         """
         conv = {
             "id": str(uuid.uuid4()),
@@ -397,14 +429,14 @@ class HistoryEngine:
             "titre": titre,
             "modèle": model,
             "modules": modules if modules is not None else ["chat"],
-            "messages": [],
+            "messages": self._messages_propres(messages),
             "fichiers_attachés": [str(f) for f in (fichiers or [])],
             "résumé_contexte": "",
             "dernière_consolidation": 0,
             "créée": _horodatage(),
             "modifiée": _horodatage(),
-            "n_messages": 0,
         }
+        conv["n_messages"] = len(conv["messages"])
         write_json(self._conv_path(conv["id"]), conv, fsync=True)
         self._maj_index(conv)
         logger.info("Conversation créée : %s", conv["id"])

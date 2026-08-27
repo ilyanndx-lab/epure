@@ -94,3 +94,89 @@ export async function supprimerConversation(id: string): Promise<boolean> {
     return false
   }
 }
+
+/** Clé sous laquelle le chat persistait TOUS ses messages, avant ce chantier. */
+const CLE_ANCIENS_MESSAGES = 'epure.chat.messages'
+
+/**
+ * Reprise unique de la conversation affichée au moment de la mise à jour.
+ *
+ * ── Pourquoi cette fonction existe ────────────────────────────────────────────
+ *
+ * Le chantier n'a rien à migrer côté serveur : `context_session.json` était
+ * réinitialisé à chaque démarrage, et les fichiers de `backend/history/` étaient
+ * déjà au bon format. **La seule chose qui disparaîtrait est ce qui est à
+ * l'écran** — les messages que `Component.tsx` persistait sous
+ * `epure.chat.messages` et qu'il ne lit plus.
+ *
+ * On les poste donc comme une conversation neuve, une fois, puis on efface la
+ * clé. Sans ça, quelqu'un en pleine discussion au moment de la mise à jour
+ * perdrait son fil sans le moindre avertissement.
+ *
+ * ── Ce que la fonction ne fait pas ────────────────────────────────────────────
+ *
+ * Elle ne s'exécute que si AUCUNE conversation n'est ouverte : c'est l'appelant
+ * qui le vérifie. Reprendre alors qu'un fil est déjà en cours créerait un
+ * doublon à chaque montage du composant.
+ *
+ * La clé n'est effacée qu'en cas de SUCCÈS — ou quand son contenu ne donne aucun
+ * message exploitable. Un backend momentanément injoignable laisse donc la
+ * reprise possible au lancement suivant, au lieu de jeter le contenu au premier
+ * échec.
+ *
+ * @returns l'identifiant de la conversation créée, ou `''` s'il n'y avait rien
+ *          à reprendre (ou si la reprise a échoué).
+ */
+export async function reprendreAncienChat(): Promise<string> {
+  let brut: string | null
+  try {
+    brut = localStorage.getItem(CLE_ANCIENS_MESSAGES)
+  } catch {
+    return ''  // mode privé : rien à reprendre, et rien à nettoyer
+  }
+  if (!brut) return ''
+
+  let analyse: unknown
+  try {
+    analyse = JSON.parse(brut)
+  } catch {
+    // JSON illisible : la clé ne sera jamais exploitable, on la retire pour ne
+    // pas retenter à chaque lancement.
+    oublierAncienChat()
+    return ''
+  }
+
+  const messages = liste<Record<string, unknown>>(analyse)
+    .map(m => ({
+      role: texte(m.role) === 'assistant' ? 'assistant' : 'user',
+      content: texte(m.content),
+    }))
+    .filter(m => m.content)
+
+  if (messages.length === 0) {
+    oublierAncienChat()
+    return ''
+  }
+
+  try {
+    const res = await apiFetch(`${API}/chat/conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ titre: 'Conversation reprise', messages }),
+    })
+    if (!res.ok) return ''  // on garde la clé : réessai au prochain lancement
+    const d = await res.json() as Record<string, unknown>
+    const id = texte(d.id)
+    if (!id) return ''
+    oublierAncienChat()
+    return id
+  } catch {
+    return ''  // backend injoignable : la clé reste, la reprise aussi
+  }
+}
+
+function oublierAncienChat(): void {
+  try {
+    localStorage.removeItem(CLE_ANCIENS_MESSAGES)
+  } catch { /* mode privé : rien à faire */ }
+}

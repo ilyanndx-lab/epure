@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { chargerConversations, creerConversation, entree } from './conversations'
+import {
+  chargerConversations, creerConversation, entree, reprendreAncienChat,
+} from './conversations'
 
 /**
  * Les frontières `.json()` des conversations, éprouvées sur la FORME des
@@ -129,5 +131,90 @@ describe('creerConversation', () => {
     // `conversation_id: "undefined"` parte ensuite dans chaque message.
     globalThis.fetch = vi.fn(async () => reponse({})) as unknown as typeof fetch
     await expect(creerConversation()).resolves.toBe('')
+  })
+})
+
+describe('reprendreAncienChat', () => {
+  const CLE = 'epure.chat.messages'
+
+  it('ne fait rien quand la clé est absente', async () => {
+    globalThis.fetch = vi.fn() as unknown as typeof fetch
+    await expect(reprendreAncienChat()).resolves.toBe('')
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('reverse les messages en conversation et efface la clé', async () => {
+    localStorage.setItem(CLE, JSON.stringify([
+      { role: 'user', content: 'ma question' },
+      { role: 'assistant', content: 'ma réponse' },
+    ]))
+    let corpsEnvoye: unknown = null
+    globalThis.fetch = vi.fn(async (_u: unknown, init?: RequestInit) => {
+      corpsEnvoye = JSON.parse(String(init?.body))
+      return reponse({ id: 'reprise-1' })
+    }) as unknown as typeof fetch
+
+    await expect(reprendreAncienChat()).resolves.toBe('reprise-1')
+    expect(localStorage.getItem(CLE)).toBeNull()
+    expect(corpsEnvoye).toMatchObject({
+      titre: 'Conversation reprise',
+      messages: [
+        { role: 'user', content: 'ma question' },
+        { role: 'assistant', content: 'ma réponse' },
+      ],
+    })
+  })
+
+  it('GARDE la clé si le backend refuse — réessai au prochain lancement', async () => {
+    // Le point du test : un backend momentanément injoignable ne doit pas faire
+    // jeter le contenu. C'est la seule copie qui existe.
+    localStorage.setItem(CLE, JSON.stringify([{ role: 'user', content: 'x' }]))
+    globalThis.fetch = vi.fn(async () => reponse({ detail: 'non' }, 503)) as unknown as typeof fetch
+
+    await expect(reprendreAncienChat()).resolves.toBe('')
+    expect(localStorage.getItem(CLE)).not.toBeNull()
+  })
+
+  it('garde aussi la clé si le réseau lève', async () => {
+    localStorage.setItem(CLE, JSON.stringify([{ role: 'user', content: 'x' }]))
+    globalThis.fetch = vi.fn(async () => { throw new Error('éteint') }) as unknown as typeof fetch
+
+    await expect(reprendreAncienChat()).resolves.toBe('')
+    expect(localStorage.getItem(CLE)).not.toBeNull()
+  })
+
+  it('efface une clé illisible sans appeler le backend', async () => {
+    // Ni exploitable maintenant ni plus tard : la garder ferait retenter à
+    // chaque lancement, pour rien.
+    localStorage.setItem(CLE, '{ceci n’est pas du JSON')
+    globalThis.fetch = vi.fn() as unknown as typeof fetch
+
+    await expect(reprendreAncienChat()).resolves.toBe('')
+    expect(localStorage.getItem(CLE)).toBeNull()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('efface une clé qui ne donne aucun message exploitable', async () => {
+    for (const inutile of ['[]', 'null', '"une chaîne"', '[{"role":"user"}]']) {
+      localStorage.setItem(CLE, inutile)
+      globalThis.fetch = vi.fn() as unknown as typeof fetch
+      await expect(reprendreAncienChat()).resolves.toBe('')
+      expect(localStorage.getItem(CLE)).toBeNull()
+      expect(globalThis.fetch).not.toHaveBeenCalled()
+    }
+  })
+
+  it('normalise un rôle inconnu en `user` plutôt que de le propager', async () => {
+    // Ces messages repartent tels quels dans le prompt du tour suivant : un rôle
+    // inventé ferait échouer l'appel au modèle.
+    localStorage.setItem(CLE, JSON.stringify([{ role: 'systeme', content: 'x' }]))
+    let corps: unknown = null
+    globalThis.fetch = vi.fn(async (_u: unknown, init?: RequestInit) => {
+      corps = JSON.parse(String(init?.body))
+      return reponse({ id: 'r' })
+    }) as unknown as typeof fetch
+
+    await reprendreAncienChat()
+    expect(corps).toMatchObject({ messages: [{ role: 'user', content: 'x' }] })
   })
 })

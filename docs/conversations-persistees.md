@@ -7,8 +7,8 @@ fichiers attachés. Un fichier déjà indexé se ré-attache à une nouvelle
 conversation sans être ré-uploadé ; un fichier attaché ici n'apparaît pas
 ailleurs.
 
-**Validé le 2026-08-27.** Ce document est la référence du chantier ; l'ordre de
-travail du §7 est celui qui est suivi, une étape par commit.
+**Validé le 2026-08-27, terminé le 2026-08-27.** Les sept étapes du §7 sont
+faites, une par commit, sur la branche `chat-conversations`.
 
 ---
 
@@ -383,7 +383,7 @@ livrables et testables **sans changement visible à l'usage**.
 | 4 | WebSocket : `conversation_id`, chargement disque, ré-accrochage titre/consolidation/vecteur | ✅ fait le 2026-08-27 |
 | 5 | Retrait de `fichiers_actifs`/`résumé_contexte` + `/files/active` | ✅ fait le 2026-08-27 |
 | 6 | Frontend : `ConversationList`, recâblage `Component.tsx` et `ModuleBar.tsx`, tests vitest | ✅ fait le 2026-08-27 |
-| 7 | Reprise de `epure.chat.messages` (migration one-shot) | à faire |
+| 7 | Reprise de `epure.chat.messages` (migration one-shot) | ✅ fait le 2026-08-27 |
 
 ### Étape 1 — ce qui a été fait, et pourquoi c'était bloquant
 
@@ -686,3 +686,89 @@ bug qui a déjà mordu ce dépôt et que `tsc` ne peut pas voir.
 
 ⚠️ La dégradation signalée à l'étape 5 est **levée** : le panneau attache de
 nouveau, et à la bonne conversation.
+
+### Étape 7 — ce qui a été fait
+
+La seule migration réelle du chantier, et elle est côté navigateur.
+
+Rien à migrer côté serveur : `context_session.json` était réinitialisé à chaque
+démarrage, et les fichiers de `backend/history/` étaient déjà au bon format. **La
+seule chose qui disparaîtrait est ce qui était à l'écran** — les messages que
+`Component.tsx` persistait sous `epure.chat.messages` et qu'il ne lit plus depuis
+l'étape 6. Quelqu'un en pleine discussion au moment de la mise à jour perdrait
+son fil sans le moindre avertissement.
+
+`reprendreAncienChat()` les reverse en conversation (« Conversation reprise »),
+une fois, au montage du chat et seulement si aucun fil n'est ouvert. Une ref
+garde du double montage de `StrictMode`, qui créerait deux conversations reprises.
+
+Trois décisions dans la gestion d'échec, toutes dictées par le même fait : **cet
+état est la seule copie qui existe.**
+
+| Situation | Décision |
+|---|---|
+| Backend refuse (503) ou injoignable | **la clé est gardée** — réessai au prochain lancement |
+| JSON illisible | la clé est effacée : jamais exploitable, la garder ferait retenter à chaque lancement |
+| Aucun message exploitable | la clé est effacée, sans appeler le backend |
+| Rôle inconnu | normalisé en `user` — ces messages repartent dans le prompt, un rôle inventé ferait échouer l'appel |
+
+`POST /chat/conversations` accepte désormais `messages`. Le champ est typé
+**`list` nue et non `list[dict]`**, délibérément : le contenu vient d'un
+`localStorage` écrit par une version antérieure du frontend, sa forme n'est pas
+garantie, et `list[dict]` fait répondre 422 dès qu'une seule entrée n'est pas un
+objet — donc **perd toute la conversation** pour un message abîmé. Mesuré en
+écrivant le test : une chaîne dans la liste suffisait. Le moteur réduit chaque
+entrée à `{role, content}` et écarte le reste.
+
+11 tests ajoutés (7 vitest, 4 backend) ; **35 tests vitest** et **734 tests
+backend** au total.
+
+---
+
+## §8 — Le chantier, une fois fini
+
+| | Avant | Après |
+|---|---|---|
+| Conversations | aucune ne survit à un redémarrage | une par fil, sur le disque, écrites à chaque tour |
+| Fichiers | une liste globale unique, écrasée à chaque import | attachés par conversation, ré-attachables sans ré-upload |
+| Contexte du modèle | perdu au rechargement, sans le dire | relu du disque, identique à l'écran |
+| Consolidation | au plus une fois par connexion | tous les 10 messages |
+
+**Trois pannes préexistantes trouvées en chemin**, toutes antérieures au chantier
+et sans rapport avec lui :
+
+1. **`GET /history` répondait 503** dans tout paquet où le modèle d'embedding
+   n'était pas téléchargé — le module Historique était mort chez le destinataire.
+   `HistoryEngine.__init__` réclamait une collection vectorielle pour des
+   opérations purement JSON (étape 3).
+2. **La CI était rouge sur `main`** depuis au moins trois pushes : `openai` était
+   déclaré dans `requirements.txt` mais absent de la liste d'installation du
+   workflow, et `test_raisonnement_stream.py` l'importe au niveau module — donc
+   erreur de collecte, pas test sauté (corrigé sur `main`, `043ebd8`).
+3. **Le cliquet eslint bloquait le job frontend** : `usePersistentState.ts`
+   affectait ses refs pendant le rendu (étape 6).
+
+**Deux pièges de plateforme**, à retenir pour la suite :
+
+- **Le backslash n'est un séparateur que sous Windows.** Un test de confinement
+  écrit sur ce poste passait ici et échouait sur `ubuntu-latest`. Les attentes
+  qui dépendent de la sémantique de `pathlib` doivent suivre la plateforme, ou
+  être marquées `skipUnless`.
+- **Remplacer un attribut sur un `_LazyEngine` ne remplace rien.** C'est un
+  proxy ; le moteur réel ne consulte jamais l'attribut posé dessus, ses méthodes
+  s'appelant entre elles via `self`. Un stub de titrage silencieusement ignoré a
+  fait partir un **vrai appel Ollama** pendant la suite (28 s au lieu de 2,5).
+  Remplacer sur la **classe**.
+
+**Ce qui reste ouvert**, et qui n'est pas une omission :
+
+- **Deux onglets sur la même conversation** divergent (pas de corruption : même
+  process, même verrou). Limite documentée au §6, non résolue.
+- **`@historique` ne retrouve une conversation qu'à partir de son dixième
+  message**, plus le rattrapage à la déconnexion : l'indexation vectorielle ne
+  peut pas être par tour sans mettre un embedding sur le chemin du message.
+- **L'index est réécrit à chaque tour**, O(N) en nombre de conversations. Fil de
+  détente au §1 : au-delà de ~1 Mo, déplacer l'index seul vers SQLite.
+- **Un `RuntimeWarning: coroutine never awaited`** apparaît quand le socket se
+  ferme avant l'envoi d'un titre. Avalé proprement, aucun test n'échoue dessus ;
+  signalé par Ilyann le 2026-08-27, laissé tel quel.

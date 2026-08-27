@@ -399,6 +399,19 @@ async def skills_résumé(req: ResumeRequest | None = None):
 class ConversationCreate(BaseModel):
     titre: str = ""
     fichiers: list[str] | None = None
+    #: Messages préexistants — UN seul appelant : la reprise de ce qui était à
+    #: l'écran au moment de la mise à jour (étape 7 du chantier). Les
+    #: conversations naissent normalement vides et se remplissent tour par tour.
+    #:
+    #: `list` NUE et non `list[dict]`, délibérément. Le contenu vient d'un
+    #: `localStorage` écrit par une version ANTÉRIEURE du frontend : sa forme
+    #: n'est pas garantie, et `list[dict]` fait répondre 422 à Pydantic dès
+    #: qu'une seule entrée n'est pas un objet — donc **perd toute la
+    #: conversation** pour un message abîmé. Le moteur réduit chaque entrée à
+    #: `{role, content}` et écarte le reste (`_messages_propres`) : filtrer est
+    #: ici la bonne réponse, refuser ne l'est pas. Mesuré en écrivant le test :
+    #: une chaîne dans la liste suffisait à faire échouer la reprise entière.
+    messages: list | None = None
 
 
 class ConversationPatch(BaseModel):
@@ -479,11 +492,12 @@ async def conversation_create(req: ConversationCreate | None = None):
     req = req or ConversationCreate()
     fichiers = _valider_fichiers(req.fichiers) if req.fichiers else []
     conv = await loop.run_in_executor(
-        None, lambda: history_engine.create_conversation(titre=req.titre, fichiers=fichiers)
+        None, lambda: history_engine.create_conversation(
+            titre=req.titre, fichiers=fichiers, messages=req.messages)
     )
     return {"id": conv["id"], "titre": conv["titre"], "créée": conv["créée"],
             "modifiée": conv["modifiée"], "fichiers_attachés": conv["fichiers_attachés"],
-            "messages": []}
+            "messages": conv["messages"], "n_messages": conv["n_messages"]}
 
 
 @router.get("/chat/conversations")

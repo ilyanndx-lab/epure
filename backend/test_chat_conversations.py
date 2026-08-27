@@ -47,6 +47,7 @@ import modules.chat.router as routeur_chat  # noqa: E402
 from core import paths as core_paths  # noqa: E402
 from core.auth import get_api_token  # noqa: E402
 from core.embedding_install import EmbeddingIndisponible  # noqa: E402
+from core.runtime import history_engine  # noqa: E402
 
 
 class _RagStub:
@@ -153,6 +154,54 @@ class CreationListeTest(_Base):
         routeur_chat.rag = _RagStub([f])
         conv = self._creer(fichiers=[f])
         self.assertEqual(conv["fichiers_attachés"], [f])
+
+
+class RepriseAncienChatTest(_Base):
+    """`POST /chat/conversations` avec des messages — étape 7 du chantier.
+
+    Un seul appelant : la reprise de ce qui était à l'écran au moment de la mise
+    à jour. Les messages n'avaient jusque-là aucun fichier où vivre — ils étaient
+    dans `localStorage['epure.chat.messages']`, que le chat ne lit plus.
+    """
+
+    def test_les_messages_fournis_sont_conserves(self):
+        conv = self._creer(titre="Conversation reprise", messages=[
+            {"role": "user", "content": "ma question"},
+            {"role": "assistant", "content": "ma réponse"},
+        ])
+        stocke = history_engine.get_conversation(conv["id"])
+        self.assertEqual(
+            [(m["role"], m["content"]) for m in stocke["messages"]],
+            [("user", "ma question"), ("assistant", "ma réponse")],
+        )
+        self.assertEqual(stocke["n_messages"], 2)
+        self.assertEqual(stocke["titre"], "Conversation reprise")
+
+    def test_un_role_inconnu_devient_user(self):
+        """Ces messages repartent tels quels dans le prompt du tour suivant : un
+        rôle inventé ferait échouer l'appel au modèle."""
+        conv = self._creer(messages=[{"role": "systeme", "content": "x"}])
+        stocke = history_engine.get_conversation(conv["id"])
+        self.assertEqual(stocke["messages"], [{"role": "user", "content": "x"}])
+
+    def test_les_entrees_inexploitables_sont_ecartees_pas_fatales(self):
+        """Filtrer plutôt que refuser : perdre la conversation entière pour un
+        message malformé serait pire que d'en perdre un."""
+        conv = self._creer(messages=[
+            {"role": "user", "content": "bon"},
+            {"role": "user"},                      # pas de contenu
+            {"role": "user", "content": ""},       # contenu vide
+            {"role": "user", "content": 42},       # contenu non textuel
+            "pas un objet",
+        ])
+        stocke = history_engine.get_conversation(conv["id"])
+        self.assertEqual(stocke["messages"], [{"role": "user", "content": "bon"}])
+
+    def test_sans_messages_la_conversation_naît_vide(self):
+        """Le cas normal : les conversations se remplissent tour par tour."""
+        conv = self._creer()
+        self.assertEqual(conv["messages"], [])
+        self.assertEqual(conv["n_messages"], 0)
 
 
 class LectureTest(_Base):
