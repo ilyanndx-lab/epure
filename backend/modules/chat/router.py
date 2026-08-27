@@ -415,7 +415,12 @@ class ConversationCreate(BaseModel):
 
 
 class ConversationPatch(BaseModel):
-    titre: str
+    #: Les deux champs sont OPTIONNELS et distingués par `None` : envoyer
+    #: `{"instruction": ""}` doit EFFACER la consigne, pas être confondu avec
+    #: « champ non fourni ». Une valeur par défaut `""` rendrait les deux
+    #: indistinguables et empêcherait de vider le champ.
+    titre: Optional[str] = None
+    instruction: Optional[str] = None
 
 
 class FichiersRequest(BaseModel):
@@ -534,18 +539,58 @@ async def conversation_get(conv_id: str):
     return vue
 
 
+#: Longueur maximale de la consigne d'un fil.
+#:
+#: Elle part dans le prompt système à CHAQUE tour de cette conversation. Sans
+#: borne, y coller un document entier coûterait sa place à tous les messages
+#: suivants, sans que rien ne le signale — et le premier symptôme serait une
+#: fenêtre de contexte pleine, loin de sa cause. 4 000 caractères laissent de
+#: quoi écrire un cadrage précis (~1 000 tokens).
+MAX_INSTRUCTION = 4000
+
+
 @router.patch("/chat/conversations/{conv_id}")
 async def conversation_patch(conv_id: str, req: ConversationPatch):
-    titre = req.titre.strip()
-    if not titre:
-        raise HTTPException(status_code=400, detail="Titre vide")
+    """Renomme et/ou pose la consigne du fil. Au moins l'un des deux.
+
+    Refuse au-delà de `MAX_INSTRUCTION` au lieu de TRONQUER : une consigne
+    coupée au milieu reste une consigne, que le modèle suivrait à moitié. Mieux
+    vaut un refus visible qu'une obéissance partielle à un texte que
+    l'utilisateur croit complet.
+    """
+    if req.titre is None and req.instruction is None:
+        raise HTTPException(status_code=400, detail="Rien à modifier")
+
     loop = asyncio.get_running_loop()
-    ok = await loop.run_in_executor(
-        None, history_engine.rename_conversation, conv_id, titre
-    )
-    if not ok:
-        raise HTTPException(status_code=404, detail="Conversation introuvable")
-    return {"ok": True, "titre": titre[:80]}
+    rendu: dict = {"ok": True}
+
+    if req.titre is not None:
+        titre = req.titre.strip()
+        if not titre:
+            raise HTTPException(status_code=400, detail="Titre vide")
+        ok = await loop.run_in_executor(
+            None, history_engine.rename_conversation, conv_id, titre
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="Conversation introuvable")
+        rendu["titre"] = titre[:80]
+
+    if req.instruction is not None:
+        instruction = req.instruction.strip()
+        if len(instruction) > MAX_INSTRUCTION:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Consigne trop longue ({len(instruction)} caractères, "
+                        f"maximum {MAX_INSTRUCTION})."),
+            )
+        ok = await loop.run_in_executor(
+            None, history_engine.set_instruction, conv_id, instruction
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="Conversation introuvable")
+        rendu["instruction"] = instruction
+
+    return rendu
 
 
 @router.delete("/chat/conversations/{conv_id}")
@@ -877,6 +922,18 @@ async def ws_chat(websocket: WebSocket):
             resume_conv = (conv.get("résumé_contexte") or "").strip()
             if resume_conv:
                 sys_parts.append(f"[CONTEXTE ACTIF]\n{resume_conv}")
+            # Consigne libre de CE fil, écrite par l'utilisateur. Même endroit et
+            # même raison que le résumé : la conversation est connue ici, pas
+            # dans `MemoryEngine`, qui ne parle que du profil.
+            #
+            # APRÈS l'instruction de session — celle-ci est injectée par
+            # `build_system_context`, donc déjà dans `mem_ctx` juste au-dessus.
+            # De deux consignes qui se contredisent, la plus spécifique doit être
+            # lue en dernier : « réponds en anglais » posé sur un fil doit
+            # l'emporter sur un réglage qui vaut pour toute l'instance.
+            instruction_conv = (conv.get("instruction") or "").strip()
+            if instruction_conv:
+                sys_parts.append(f"[INSTRUCTION DE CETTE CONVERSATION]\n{instruction_conv}")
             if hist_ctx:
                 sys_parts.append(hist_ctx)
             if web_ctx:

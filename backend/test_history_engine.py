@@ -512,6 +512,59 @@ class AttachementTest(_Base):
         self.assertIsNone(self.moteur.conversation_view("11111111-2222-3333-4444-555555555555", []))
 
 
+class InstructionDeFilTest(_Base):
+    """Consigne libre par conversation — trois portées à ne pas confondre."""
+
+    def test_une_conversation_neuve_a_une_consigne_vide(self):
+        self.assertEqual(self.moteur.create_conversation()["instruction"], "")
+
+    def test_poser_et_relire(self):
+        conv = self.moteur.create_conversation()
+        self.assertTrue(self.moteur.set_instruction(conv["id"], "Réponds en anglais."))
+        self.assertEqual(
+            self.moteur.get_conversation(conv["id"])["instruction"], "Réponds en anglais.")
+
+    def test_effacer_est_possible(self):
+        """Vider doit marcher : une consigne qu'on ne peut plus retirer est un
+        piège, surtout dans un fil qu'on garde."""
+        conv = self.moteur.create_conversation()
+        self.moteur.set_instruction(conv["id"], "Une consigne")
+        self.moteur.set_instruction(conv["id"], "")
+        self.assertEqual(self._brut(conv["id"])["instruction"], "")
+
+    def test_la_consigne_ne_fuit_pas_d_un_fil_a_l_autre(self):
+        a = self.moteur.create_conversation()
+        b = self.moteur.create_conversation()
+        self.moteur.set_instruction(a["id"], "Uniquement pour A")
+        self.assertEqual(self.moteur.get_conversation(b["id"])["instruction"], "")
+
+    def test_conversation_absente_rend_false(self):
+        self.assertFalse(self.moteur.set_instruction(
+            "11111111-2222-3333-4444-555555555555", "x"))
+
+    def test_une_conversation_ancienne_a_une_consigne_VIDE(self):
+        """Rétrocompatibilité : absent → vide, jamais hérité.
+
+        Surtout pas de `session_instruction` ni du profil : ce sont trois portées
+        différentes, et recopier l'une dans l'autre appliquerait à un fil précis
+        une consigne écrite pour tout autre chose.
+        """
+        ancienne = {
+            "id": "b94332fe-4c8d-4a9e-8a2f-7d1e6c9b0a55",
+            "date": "2026-06-13", "titre": "Avant la consigne",
+            "modèle": "qwen2.5:7b", "modules": ["chat"], "n_messages": 0,
+            "messages": [],
+        }
+        (self.tmp / f"{ancienne['id']}.json").write_text(
+            json.dumps(ancienne, ensure_ascii=False), encoding="utf-8")
+
+        conv = self.moteur.get_conversation(ancienne["id"])
+        self.assertEqual(conv["instruction"], "")
+        # Et la LECTURE n'a rien réécrit sur le disque.
+        self.assertNotIn("instruction",
+                         json.loads((self.tmp / f"{ancienne['id']}.json").read_text(encoding="utf-8")))
+
+
 class SansPileEmbeddingTest(unittest.TestCase):
     """Le stockage JSON ne doit dépendre en RIEN du modèle d'embedding.
 

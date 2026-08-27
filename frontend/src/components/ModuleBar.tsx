@@ -201,6 +201,15 @@ function detail(v: unknown): DetailFichier {
   }
 }
 
+/**
+ * Longueur maximale de la consigne d'un fil — miroir de `MAX_INSTRUCTION` côté
+ * backend, qui REFUSE au-delà plutôt que de tronquer.
+ *
+ * Affichée en compteur et utilisée pour désactiver le bouton : sans elle, le
+ * refus n'arriverait qu'après l'envoi, sur une consigne déjà écrite.
+ */
+const MAX_INSTRUCTION_FIL = 4000
+
 export interface ModuleBarProps {
   module: string
   /**
@@ -296,6 +305,19 @@ export default function ModuleBar({
   const [raisonnement, setRaisonnement] = useState(true)
   const [sessionInstruction, setSessionInstruction] = useState('')
   const [instructionDraft, setInstructionDraft] = useState('')
+  /**
+   * Consigne libre de LA CONVERSATION courante, distincte de l'instruction de
+   * session juste au-dessus.
+   *
+   * Trois portées coexistent dans le prompt, et les confondre est l'erreur à
+   * éviter : le profil (permanent, toute l'instance), l'instruction de session
+   * (l'instance, jusqu'au prochain démarrage), et celle-ci (ce fil, tant qu'il
+   * existe). Elles sont volontairement côte à côte dans ce panneau : les séparer
+   * rendrait leur différence invisible au moment où l'on choisit laquelle
+   * remplir.
+   */
+  const [instructionFil, setInstructionFil] = useState('')
+  const [instructionFilDraft, setInstructionFilDraft] = useState('')
 
   // Model state
   const [localModels, setLocalModels] = useState<ModelInfo[]>([])
@@ -434,7 +456,11 @@ export default function ModuleBar({
    * réponse du modèle inexplicable.
    */
   const chargerAttachements = useCallback(async () => {
-    if (!conversationId) { setActiveFiles([]); setSelectedFiles([]); return }
+    if (!conversationId) {
+      setActiveFiles([]); setSelectedFiles([])
+      setInstructionFil(''); setInstructionFilDraft('')
+      return
+    }
     try {
       const res = await apiFetch(`${API}/chat/conversations/${conversationId}`)
       if (!res.ok) { setActiveFiles([]); setSelectedFiles([]); return }
@@ -444,6 +470,11 @@ export default function ModuleBar({
         .filter(Boolean)
       setActiveFiles(chemins)
       setSelectedFiles(chemins)
+      // Absente sur les conversations d'avant ce champ : `texte()` rend `''`,
+      // ce qui est exactement le bon défaut — pas d'invention.
+      const consigne = texte(d.instruction)
+      setInstructionFil(consigne)
+      setInstructionFilDraft(consigne)
     } catch { /* backend qui démarre : panneau vide, sans gravité */ }
   }, [conversationId])
 
@@ -526,6 +557,22 @@ export default function ModuleBar({
     setSessionInstruction(instructionDraft)
     pushSettings({ session_instruction: instructionDraft })
   }, [instructionDraft, pushSettings])
+
+  const enregistrerInstructionFil = useCallback(async () => {
+    if (!conversationId) return
+    try {
+      const res = await apiFetch(`${API}/chat/conversations/${conversationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: instructionFilDraft }),
+      })
+      // 400 = consigne trop longue (le backend refuse plutôt que de tronquer).
+      // On ne touche pas à l'état : le brouillon reste tel quel, donc le bouton
+      // reste actif et l'utilisateur peut raccourcir sans avoir rien perdu.
+      if (!res.ok) return
+      setInstructionFil(instructionFilDraft)
+    } catch { /* le brouillon reste : l'utilisateur peut réessayer */ }
+  }, [conversationId, instructionFilDraft])
 
   const handleModelSelect = useCallback((model: string) => {
     setSelectedModel(model)
@@ -1007,9 +1054,42 @@ export default function ModuleBar({
               rows={2}
               className="w-full text-xs"
             />
+            <p className="text-xs text-muted">S'applique à tout, jusqu'au prochain démarrage.</p>
             <Button variant="secondary" size="sm" onClick={handleInstructionSave} disabled={instructionDraft === sessionInstruction}>
               Sauvegarder
             </Button>
+          </div>
+
+          {/* Consigne du fil — juste sous l'instruction de session, exprès : leur
+              différence est une différence de PORTÉE, et elle ne se voit que si
+              les deux sont côte à côte au moment de choisir laquelle remplir. */}
+          <div className="space-y-2">
+            <p className="text-xs text-muted uppercase tracking-wide">Consigne de cette conversation</p>
+            {conversationId ? (
+              <>
+                <Textarea
+                  value={instructionFilDraft}
+                  onChange={e => setInstructionFilDraft(e.target.value)}
+                  placeholder="Ex : dans ce fil, réponds en anglais et cite tes sources..."
+                  rows={3}
+                  className="w-full text-xs"
+                />
+                <p className="text-xs text-muted">
+                  Ne s'applique qu'à ce fil, et le suit tant qu'il existe.
+                  {' '}{instructionFilDraft.length}/{MAX_INSTRUCTION_FIL}
+                </p>
+                <Button variant="secondary" size="sm"
+                        onClick={() => void enregistrerInstructionFil()}
+                        disabled={instructionFilDraft === instructionFil
+                                  || instructionFilDraft.length > MAX_INSTRUCTION_FIL}>
+                  Sauvegarder
+                </Button>
+              </>
+            ) : (
+              <p className="text-xs text-muted">
+                Aucune conversation ouverte : écrivez un message pour en commencer une.
+              </p>
+            )}
           </div>
         </div>
       )}

@@ -263,6 +263,12 @@ class HistoryEngine:
         resume = conv.get("résumé_contexte")
         conv["résumé_contexte"] = resume if isinstance(resume, str) else ""
 
+        # Consigne libre de CE fil. Absente des conversations d'avant ce champ :
+        # vide, et surtout pas héritée de `session_instruction` ni du profil —
+        # ce sont trois portées différentes (cf. `set_instruction`).
+        instruction = conv.get("instruction")
+        conv["instruction"] = instruction if isinstance(instruction, str) else ""
+
         consol = conv.get("dernière_consolidation")
         conv["dernière_consolidation"] = consol if isinstance(consol, int) else 0
 
@@ -446,6 +452,7 @@ class HistoryEngine:
             "messages": self._messages_propres(messages),
             "fichiers_attachés": [str(f) for f in (fichiers or [])],
             "résumé_contexte": "",
+            "instruction": "",
             "dernière_consolidation": 0,
             "créée": _horodatage(),
             "modifiée": _horodatage(),
@@ -575,6 +582,36 @@ class HistoryEngine:
         except (_ConversationAbsente, PathOutsideDataError):
             logger.warning("Ajout de fichiers impossible : %r", conv_id)
             return None
+
+    def set_instruction(self, conv_id: str, texte: str) -> bool:
+        """Consigne libre de CE fil, écrite par l'utilisateur.
+
+        ── Trois portées, à ne pas confondre ─────────────────────────────────
+
+        ``profile.préférences_interaction.style``
+            permanent, vaut pour toute l'instance. « Réponds sans reformuler ».
+        ``context_session.session_instruction``
+            global, mais remis à zéro à chaque démarrage — l'instance entière,
+            pour la durée d'un lancement.
+        ``instruction`` (ici)
+            **cette conversation**, et elle seule, tant qu'elle existe. « Dans ce
+            fil, réponds en anglais » ne doit pas contaminer les autres.
+
+        Les trois s'additionnent dans le prompt : c'est voulu, elles répondent à
+        des questions différentes. Ce qui ne l'est pas, ce serait d'en déduire
+        une des autres — d'où la normalisation qui laisse ce champ VIDE sur les
+        conversations d'avant, plutôt que d'y recopier l'instruction de session.
+
+        ⚠️ Le contenu part dans le prompt système à **chaque tour** de ce fil.
+        C'est pourquoi l'appelant HTTP en borne la longueur : une consigne
+        démesurée coûterait sa place à chaque message sans que rien ne le dise.
+        """
+        try:
+            with self._conversation_transaction(conv_id) as conv:
+                conv["instruction"] = texte or ""
+            return True
+        except (_ConversationAbsente, PathOutsideDataError):
+            return False
 
     def set_resume_contexte(self, conv_id: str, texte: str) -> bool:
         """Résumé des fichiers de CETTE conversation, injecté dans son prompt.
