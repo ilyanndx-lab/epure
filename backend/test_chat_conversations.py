@@ -416,6 +416,70 @@ class ModuleHistoriqueRetireTest(_Base):
         self.assertEqual(residus, [], f"routes résiduelles : {residus}")
 
 
+class ConsigneDeFilTest(_Base):
+    """`PATCH /chat/conversations/{id}` accepte titre ET/OU consigne."""
+
+    def test_poser_une_consigne(self):
+        conv = self._creer()
+        r = self.client.patch(f"/chat/conversations/{conv['id']}",
+                              json={"instruction": "  Réponds en anglais.  "},
+                              headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["instruction"], "Réponds en anglais.")
+        vue = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth).json()
+        self.assertEqual(vue["instruction"], "Réponds en anglais.")
+
+    def test_une_consigne_vide_EFFACE(self):
+        """`None` = champ non fourni, `""` = efface. Les confondre rendrait la
+        consigne impossible à retirer."""
+        conv = self._creer()
+        self.client.patch(f"/chat/conversations/{conv['id']}",
+                          json={"instruction": "quelque chose"}, headers=self.auth)
+        r = self.client.patch(f"/chat/conversations/{conv['id']}",
+                              json={"instruction": ""}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        vue = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth).json()
+        self.assertEqual(vue["instruction"], "")
+
+    def test_renommer_seul_ne_touche_pas_la_consigne(self):
+        conv = self._creer()
+        self.client.patch(f"/chat/conversations/{conv['id']}",
+                          json={"instruction": "gardée"}, headers=self.auth)
+        self.client.patch(f"/chat/conversations/{conv['id']}",
+                          json={"titre": "Nouveau titre"}, headers=self.auth)
+        vue = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth).json()
+        self.assertEqual(vue["instruction"], "gardée")
+        self.assertEqual(vue["titre"], "Nouveau titre")
+
+    def test_les_deux_a_la_fois(self):
+        conv = self._creer()
+        r = self.client.patch(f"/chat/conversations/{conv['id']}",
+                              json={"titre": "T", "instruction": "C"}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["titre"], r.json()["instruction"]), ("T", "C"))
+
+    def test_un_corps_vide_est_refuse(self):
+        conv = self._creer()
+        r = self.client.patch(f"/chat/conversations/{conv['id']}", json={},
+                              headers=self.auth)
+        self.assertEqual(r.status_code, 400, r.text)
+
+    def test_une_consigne_trop_longue_est_REFUSEE_pas_tronquee(self):
+        """Une consigne coupée reste une consigne, que le modèle suivrait à
+        moitié. Un refus visible vaut mieux qu'une obéissance partielle."""
+        conv = self._creer()
+        r = self.client.patch(f"/chat/conversations/{conv['id']}",
+                              json={"instruction": "x" * 4001}, headers=self.auth)
+        self.assertEqual(r.status_code, 400, r.text)
+        vue = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth).json()
+        self.assertEqual(vue["instruction"], "", "rien ne doit avoir été écrit")
+
+    def test_conversation_inconnue_rend_404(self):
+        r = self.client.patch("/chat/conversations/11111111-2222-3333-4444-555555555555",
+                              json={"instruction": "x"}, headers=self.auth)
+        self.assertEqual(r.status_code, 404, r.text)
+
+
 class SuppressionDuCorpusTest(_Base):
     """`DELETE /rag/files` — retrait de l'INDEX, jamais du disque.
 

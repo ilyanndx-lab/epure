@@ -189,6 +189,77 @@ class BasculeDuRagTest(_Base):
         self.assertNotIn("SECRET DE L AUTRE FIL", systeme)
 
 
+class InstructionDeFilTest(_Base):
+    """La consigne du fil entre dans le prompt, et n'en sort pas.
+
+    Trois portées coexistent dans le prompt système et répondent à des questions
+    différentes ; ce qui compte est qu'elles ne se contaminent pas :
+
+      profil                permanent, toute l'instance
+      session_instruction   l'instance, jusqu'au prochain démarrage
+      instruction (ici)     CE fil, tant qu'il existe
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.prompts: list = []
+        original = routeur_chat.llm.stream
+        self.addCleanup(setattr, routeur_chat.llm, "stream", original)
+
+        def faux_stream(messages, model=None, raisonnement=True, **kw):
+            self.prompts.append([dict(m) for m in messages])
+            return iter(["ok"])
+        routeur_chat.llm.stream = faux_stream
+
+        espion = _RagEspion()
+        rag_original = routeur_chat.rag
+        routeur_chat.rag = espion
+        self.addCleanup(setattr, routeur_chat, "rag", rag_original)
+
+    def _tour(self, conv_id, texte="question"):
+        corps = {"role": "user", "content": texte, "direct": True,
+                 "conversation_id": conv_id}
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            ws.send_text(json.dumps(corps))
+            while json.loads(ws.receive_text())["type"] != "done":
+                pass
+        return "\n".join(m["content"] for m in self.prompts[-1] if m["role"] == "system")
+
+    def test_la_consigne_entre_dans_le_prompt_systeme(self):
+        conv = history_engine.create_conversation()
+        history_engine.set_instruction(conv["id"], "Réponds uniquement en anglais.")
+        systeme = self._tour(conv["id"])
+        self.assertIn("[INSTRUCTION DE CETTE CONVERSATION]", systeme)
+        self.assertIn("Réponds uniquement en anglais.", systeme)
+
+    def test_sans_consigne_aucun_bloc_n_est_ajoute(self):
+        conv = history_engine.create_conversation()
+        self.assertNotIn("[INSTRUCTION DE CETTE CONVERSATION]", self._tour(conv["id"]))
+
+    def test_la_consigne_d_un_autre_fil_ne_fuit_pas(self):
+        """Le défaut que la portée par conversation existe pour éviter."""
+        autre = history_engine.create_conversation()
+        history_engine.set_instruction(autre["id"], "CONSIGNE DE L AUTRE FIL")
+        conv = history_engine.create_conversation()
+        self.assertNotIn("CONSIGNE DE L AUTRE FIL", self._tour(conv["id"]))
+
+    def test_elle_est_lue_APRES_l_instruction_de_session(self):
+        """De deux consignes qui se contredisent, la plus spécifique en dernier.
+
+        L'instruction de session vaut pour toute l'instance ; celle du fil vise
+        ce fil précis. Un modèle qui lit les deux doit rencontrer la seconde en
+        dernier.
+        """
+        routeur_chat.memory.update_context(session_instruction="CONSIGNE GLOBALE")
+        self.addCleanup(routeur_chat.memory.update_context, session_instruction="")
+
+        conv = history_engine.create_conversation()
+        history_engine.set_instruction(conv["id"], "CONSIGNE DU FIL")
+        systeme = self._tour(conv["id"])
+
+        self.assertLess(systeme.index("CONSIGNE GLOBALE"), systeme.index("CONSIGNE DU FIL"))
+
+
 class ImportVersUneConversationTest(_Base):
     """`/files/load` attache à la conversation visée, et complète au lieu de
     remplacer."""
