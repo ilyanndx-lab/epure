@@ -206,6 +206,40 @@ def resolve_vector_dir() -> Path:
     return base.resolve()
 
 
+def resolve_history_dir() -> Path:
+    """Dossier des conversations sauvegardées (l'ancien ``backend/history/`` en dur).
+
+    Priorité : ``$EPURE_HISTORY_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/history``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Pourquoi cette fonction n'existait pas, et pourquoi elle doit exister
+    maintenant : ``core/history.py`` calculait ``Path(__file__).parent.parent /
+    "history"`` **au niveau module**, exactement le motif que
+    :func:`resolve_data_dir` interdit. Ça n'a jamais mordu parce que ce dossier
+    n'était écrit qu'à un seul moment — la déconnexion du WebSocket de chat, une
+    fois par conversation — et qu'aucun test n'atteint ce chemin. L'invariant
+    tenait par accident, pas par construction.
+
+    Il cesse de tenir dès que ``history/`` devient le magasin VIVANT des
+    conversations (une écriture par tour d'assistant au lieu d'une par
+    conversation) : les tests du chantier écriraient alors dans les vraies
+    conversations de l'utilisateur, et ``test_zz_donnees_reelles`` ne le verrait
+    même pas, ``history/`` n'ayant jamais été dans sa liste surveillée.
+
+    ⚠️ Contrairement à :func:`resolve_models_dir` et :func:`resolve_embedding_dir`,
+    ce sont des **données utilisateur** et non un cache : le contenu n'est
+    reconstructible par rien. Il est donc à la fois **détourné** par
+    ``_test_env`` (sur un temporaire VIDE, pour que le décompte des
+    conversations ne dépende pas de l'historique du poste) **et surveillé** par
+    ``REAL_DIRS`` — le régime de ``backend/memory/``, pas celui des caches.
+    """
+    env = os.environ.get("EPURE_HISTORY_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "history")
+    return base.resolve()
+
+
 def resolve_data_dir() -> Path:
     """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
 
@@ -301,6 +335,24 @@ def safe_upload_name(filename: str, default: str) -> str:
     if name != raw or name in (".", ".."):
         raise PathOutsideDataError(f"Nom de fichier invalide : {filename!r}")
     return name
+
+
+def cle_chemin(chemin: str) -> str:
+    """Clé de comparaison de deux chemins de fichier, correcte sous Windows.
+
+    ``normcase`` **et** ``normpath`` : sous Windows le premier abaisse la casse et
+    convertit ``/`` en ``\\``, le second réduit ``a/./b`` et ``a/b/../c``. Sous
+    POSIX les deux sont quasi neutres, ce qui est le comportement voulu — la
+    casse y est significative.
+
+    Sans ça, le croisement de :func:`croiser_fichiers` déclarerait absent un
+    fichier bel et bien indexé au seul motif que l'un des deux côtés porte
+    ``C:/Users/...`` et l'autre ``C:\\Users\\...``, ou une majuscule de lecteur
+    différente. Le symptôme serait un fichier attaché qui cesse silencieusement
+    de contribuer au contexte — exactement la classe de panne que le
+    ``présent: bool`` est censé rendre visible.
+    """
+    return os.path.normcase(os.path.normpath(chemin))
 
 
 def resolve_user_path(path: str) -> Path:

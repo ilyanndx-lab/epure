@@ -33,6 +33,7 @@ jamais un fichier à moitié écrit, même par un autre process.
 
 import json
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -119,7 +120,7 @@ def _replace_with_retry(tmp: Path, dest: Path, attempts: int = 20, pause: float 
             time.sleep(pause)
 
 
-def write_json(path: Path | str, data: Any) -> None:
+def write_json(path: Path | str, data: Any, fsync: bool = False) -> None:
     """Écrit ``data`` en JSON (utf-8 sans BOM, indenté), dossiers créés au besoin.
 
     Écriture ATOMIQUE : sérialisation dans un ``.tmp`` voisin puis ``replace()``,
@@ -138,9 +139,36 @@ def write_json(path: Path | str, data: Any) -> None:
     Ne masque pas les erreurs : les appelants qui veulent une écriture
     best-effort gardent leur try/except (et leur message contextualisé).
 
-    Note d'honnêteté : atomique vis-à-vis des lecteurs concurrents, pas
-    vis-à-vis d'une coupure de courant (pas de ``fsync`` — ce serait payé sur
-    chaque màj de contexte de session, très fréquente).
+    Atomique vis-à-vis des lecteurs concurrents. Vis-à-vis d'une **coupure de
+    courant**, seulement si ``fsync=True`` — cf. ci-dessous.
+
+    ``fsync`` (défaut ``False``, le comportement historique et celui de tous les
+    appelants sauf un) force les octets du ``.tmp`` sur le disque **avant** le
+    ``replace``. Sans lui, l'écriture peut n'exister que dans le cache de l'OS :
+    le fichier est complet pour tout lecteur, et perdu si la machine s'arrête
+    brutalement.
+
+    Pourquoi ce n'est pas le défaut, et pourquoi un appelant le demande : le
+    coût se paie à chaque écriture, or le site le plus chaud du dépôt est
+    ``update_context`` — appelé à chaque message pour un ``context_session.json``
+    que ``MemoryEngine.__init__`` réinitialise de toute façon au démarrage. Payer
+    une synchronisation disque pour un état reconstruit à chaque lancement n'a
+    aucun sens.
+
+    Les **conversations** sont l'exact inverse : du contenu produit par
+    l'utilisateur, que rien ne reconstruit, désormais écrit à chaque tour
+    d'assistant (cf. ``docs/conversations-persistees.md`` §1). Quelques écritures
+    par minute, contre la perte visible du dernier échange. C'est le seul
+    appelant qui passe ``True``, et il doit le rester : ce paramètre n'est pas une
+    amélioration à généraliser, c'est un arbitrage par fichier.
+
+    ⚠️ Ce que ``fsync=True`` ne garantit PAS : la durabilité de l'ENTRÉE DE
+    RÉPERTOIRE créée par le ``replace``. Sous POSIX il faudrait aussi
+    ``fsync`` le dossier ; sous Windows, la plateforme primaire, on ne peut pas
+    ouvrir un répertoire pour le synchroniser. Le contenu du fichier est donc
+    durable, son apparition sous son nom final ne l'est pas formellement. C'est
+    déjà l'écart qui compte : le cas perdu n'est plus « la conversation entière
+    est vide » mais « le dernier remplacement n'a pas pris ».
     """
     p = Path(path)
     with _lock_for(p):
@@ -149,13 +177,26 @@ def write_json(path: Path | str, data: Any) -> None:
         # with_name et non with_suffix : `conversations.json` → `.json.tmp`, mais
         # with_suffix écraserait le suffixe d'un nom à points multiples.
         tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
+        # `open` explicite plutôt que `write_text` : c'est le seul moyen d'obtenir
+        # le descripteur que réclame `os.fsync`. Comportement identique sinon —
+        # `write_text` est exactement cet `open(...).write(...)`, mêmes défauts de
+        # traduction de fin de ligne.
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
         _replace_with_retry(tmp, p)
 
 
 @contextmanager
-def transaction(path: Path | str, default: Any) -> Iterator[Any]:
+def transaction(path: Path | str, default: Any, fsync: bool = False) -> Iterator[Any]:
     """Charge, cède la main, réécrit — sous verrou.
+
+    ``fsync`` est passé tel quel à :func:`write_json` : un read-modify-write sur
+    un fichier de conversation doit avoir la même durabilité qu'une écriture
+    directe, sans quoi la garantie dépendrait de la forme de l'appel plutôt que
+    du fichier visé.
 
     LE SEUL CHEMIN CORRECT pour un read-modify-write sur un JSON de runtime.
     Écrit ``read_json`` + modification + ``write_json`` à la main laisse une
@@ -177,4 +218,4 @@ def transaction(path: Path | str, default: Any) -> Iterator[Any]:
     with _lock_for(p):
         data = read_json(p, default)
         yield data
-        write_json(p, data)
+        write_json(p, data, fsync=fsync)

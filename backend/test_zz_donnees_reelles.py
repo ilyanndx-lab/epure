@@ -54,18 +54,27 @@ import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de co
 from core.paths import (  # noqa: E402
     resolve_data_dir,
     resolve_generated_dir,
+    resolve_history_dir,
     resolve_modules_dir,
 )
 
 
 class RealDataUntouchedTest(unittest.TestCase):
-    """Les trois arborescences réelles doivent être identiques à leur empreinte.
+    """Les arborescences réelles doivent être identiques à leur empreinte.
 
     ``backend/memory/`` seul ne suffit plus : ``DELETE /settings/modules/{id}``
     fait un ``rmtree`` sur ``backend/modules/<id>`` et
     ``frontend/src/modules/generated/<id>``. Un test de suppression mal isolé
     n'écrit pas un fichier parasite, il en efface de vrais — d'où la surveillance
     des suppressions autant que des créations.
+
+    ``backend/history/`` a rejoint la liste le 2026-08-27. Son absence ne se
+    voyait pas et ne pouvait pas se voir : le dossier n'était atteignable que par
+    un chemin figé à l'import de ``core/history.py``, donc aucun test ne pouvait
+    ni l'atteindre ni le détourner. Le chantier « conversations persistées » en
+    fait le magasin vivant du chat — une écriture par tour d'assistant — ce qui
+    transforme une lacune théorique en écriture certaine dans les vraies
+    conversations de l'utilisateur.
     """
 
     def _comparer(self, dossier):
@@ -89,6 +98,10 @@ class RealDataUntouchedTest(unittest.TestCase):
     def test_le_vrai_dossier_de_donnees_est_intact(self):
         self._comparer(_test_env.REAL_DATA_DIR)
 
+    def test_le_vrai_dossier_historique_est_intact(self):
+        """Les conversations de l'utilisateur : irremplaçables, donc surveillées."""
+        self._comparer(_test_env.REAL_HISTORY_DIR)
+
     def test_le_vrai_dossier_de_modules_est_intact(self):
         self._comparer(_test_env.REAL_MODULES_DIR)
 
@@ -100,13 +113,14 @@ class RealDataUntouchedTest(unittest.TestCase):
         self._comparer(_test_env.REAL_CATALOGUE_DIR)
 
     def test_la_suite_ecrit_bien_ailleurs(self):
-        """Contrôle du contrôle : les trois variables pointent ailleurs.
+        """Contrôle du contrôle : les variables pointent ailleurs.
 
         Sans ça, un garde-fou vert pourrait simplement signifier qu'aucune
         variable n'a été posée et que tout le monde écrit… ailleurs par hasard.
         """
         for resolveur, reel in (
             (resolve_data_dir, _test_env.REAL_DATA_DIR),
+            (resolve_history_dir, _test_env.REAL_HISTORY_DIR),
             (resolve_modules_dir, _test_env.REAL_MODULES_DIR),
             (resolve_generated_dir, _test_env.REAL_FRONTEND_MODULES / "generated"),
         ):

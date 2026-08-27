@@ -21,7 +21,7 @@ from typing import Optional
 
 import pypdf
 from dotenv import load_dotenv, set_key as dotenv_set_key
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -36,6 +36,7 @@ from core.runtime import (
     PIPER_VOICE,
     SSE_HEADERS,
     consolidation_engine,
+    history_engine,
     llm,
     memory,
     models_registry,
@@ -326,8 +327,22 @@ async def context_settings(request: Request):
 
 # ── Files ────────────────────────────────────────────────────────────────────
 
-async def _stream_load_sse(paths: list[str]):
-    """Async generator: index files, stream summary tokens as SSE, send done event."""
+async def _stream_load_sse(paths: list[str], conversation_id: str = ""):
+    """Indexe des fichiers, diffuse le résumé en SSE, puis émet `done`.
+
+    ``conversation_id`` est OPTIONNEL, et l'asymétrie est voulue :
+
+    * fourni → les chemins indexés sont **ajoutés** aux attachements de cette
+      conversation (jamais un remplacement : un import complète le contexte en
+      cours, il ne détache pas ce que l'utilisateur y avait mis), et le résumé
+      produit y est rangé ;
+    * absent → on se contente d'indexer. C'est le cas légitime d'un import fait
+      depuis les Réglages, qui alimente le corpus sans viser un fil précis.
+
+    Remplace ``memory.update_context(fichiers_actifs=…, résumé_contexte=…)``, qui
+    ÉCRASAIT une liste globale : importer un fichier détachait en silence tout ce
+    qui l'avait été avant, pour toutes les conversations à la fois.
+    """
     loop = asyncio.get_running_loop()
     total_pages = 0
     text_parts: list[str] = []
@@ -352,7 +367,10 @@ async def _stream_load_sse(paths: list[str]):
         except Exception:
             logger.exception("Erreur chargement fichier %s", path)
 
-    memory.update_context(fichiers_actifs=indexed_paths, résumé_contexte="")
+    if conversation_id and indexed_paths:
+        await loop.run_in_executor(
+            None, history_engine.add_conversation_files, conversation_id, indexed_paths
+        )
 
     accumulated = ""
     if text_parts:
@@ -407,7 +425,10 @@ async def _stream_load_sse(paths: list[str]):
             accumulated += item
             yield f"data: {json.dumps({'type': 'token', 'content': item}, ensure_ascii=False)}\n\n"
 
-    memory.update_context(résumé_contexte=accumulated)
+    if conversation_id:
+        await loop.run_in_executor(
+            None, history_engine.set_resume_contexte, conversation_id, accumulated
+        )
 
     chunks_count = 0
     if indexed_paths:
@@ -424,6 +445,9 @@ async def _stream_load_sse(paths: list[str]):
 
 class LoadFilesRequest(BaseModel):
     paths: list[str]
+    #: Conversation à laquelle attacher les fichiers indexés. Vide = indexation
+    #: seule, sans attachement (import depuis les Réglages).
+    conversation_id: str = ""
 
 
 @router.post("/files/load")
@@ -442,12 +466,14 @@ async def files_load(req: LoadFilesRequest):
     except PathOutsideDataError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return StreamingResponse(
-        _stream_load_sse(paths), media_type="text/event-stream", headers=SSE_HEADERS
+        _stream_load_sse(paths, req.conversation_id),
+        media_type="text/event-stream", headers=SSE_HEADERS
     )
 
 
 @router.post("/files/upload")
-async def files_upload(files: list[UploadFile] = File(...)):
+async def files_upload(files: list[UploadFile] = File(...),
+                       conversation_id: str = Form("")):
     """Dépose des fiches dans la racine des fiches, puis les indexe.
 
     ``upload.filename`` vient du client. ``_fiches_dir / filename`` acceptait
@@ -485,19 +511,19 @@ async def files_upload(files: list[UploadFile] = File(...)):
                     + ", ".join(sorted(e.lstrip(".").upper() for e in _SUPPORTED_EXT))),
         )
     return StreamingResponse(
-        _stream_load_sse(saved_paths), media_type="text/event-stream", headers=SSE_HEADERS
+        _stream_load_sse(saved_paths, conversation_id),
+        media_type="text/event-stream", headers=SSE_HEADERS
     )
 
 
-@router.get("/files/active")
-async def files_active():
-    return memory.get_context()
-
-
-@router.delete("/files/active")
-async def files_active_delete():
-    memory.update_context(fichiers_actifs=[], résumé_contexte="")
-    return {"ok": True}
+# `GET /files/active` et `DELETE /files/active` ont été RETIRÉES le 2026-08-27.
+#
+# Elles lisaient et vidaient `context_session.fichiers_actifs`, la liste globale
+# qui n'existe plus : « les fichiers actifs » n'est plus une propriété de
+# l'instance mais de la conversation. Leurs remplaçantes sont
+# `GET /chat/conversations/{id}` (qui les rend marqués `présent`) et
+# `PUT /chat/conversations/{id}/fichiers` (qui remplace l'ensemble, donc vide
+# avec une liste nulle).
 
 
 # ── RAG ──────────────────────────────────────────────────────────────────────

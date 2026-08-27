@@ -24,15 +24,35 @@ export function usePersistentState<T>(
   })
 
   const latest = useRef(value)
-  latest.current = value
   const keyRef = useRef(key)
-  keyRef.current = key
+
+  /**
+   * Les refs sont rafraîchies dans un EFFET, pas pendant le rendu.
+   *
+   * `latest.current = value` en plein corps de fonction est ce que la règle
+   * `react-hooks/refs` signale (« Cannot update ref during render ») : sous le
+   * rendu concurrent, un rendu peut être abandonné, et la ref garderait alors la
+   * valeur d'un rendu qui n'a jamais été commité. C'est aussi ce qui faisait
+   * passer le cliquet eslint de 61 à 63 avertissements et bloquait la CI.
+   *
+   * Personne ne lit ces refs PENDANT un rendu : elles servent au seul
+   * gestionnaire `flush` ci-dessous, appelé au déchargement de la page, donc
+   * toujours après que les effets ont tourné.
+   */
+  useEffect(() => {
+    latest.current = value
+    keyRef.current = key
+  }, [key, value])
 
   // Écriture debouncée à chaque changement de valeur.
+  //
+  // Lit `value` directement plutôt que `latest.current` : cet effet se rejoue à
+  // chaque changement de valeur (il en dépend), donc la fermeture est toujours
+  // fraîche. La ref n'y a jamais rien apporté.
   useEffect(() => {
     const id = setTimeout(() => {
       try {
-        localStorage.setItem(key, JSON.stringify(latest.current))
+        localStorage.setItem(key, JSON.stringify(value))
       } catch { /* quota / privé : tant pis */ }
     }, 400)
     return () => clearTimeout(id)

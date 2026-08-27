@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { usePersistentState } from '../../usePersistentState'
-import { ArrowLeft, Clock, Search, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Clock, MessageSquare, Search, Trash2, X } from 'lucide-react'
 import { Badge, Button, Card, Input } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import { API, apiFetch } from '../../api'
@@ -32,7 +32,31 @@ interface SearchResult {
   extrait: string
 }
 
-export default function History() {
+interface HistoryProps {
+  /** Fourni par App à tous les modules (`sharedProps`). */
+  onNavigate?: (module: string) => void
+}
+
+/**
+ * Rouvre une conversation DANS le chat.
+ *
+ * Pose l'identifiant sous la clé que `Component.tsx` lit au montage
+ * (`usePersistentState('epure.chat.conversationId')`), puis navigue. Le chat est
+ * démonté tant qu'on est dans l'Historique : il relira donc la clé en arrivant,
+ * et chargera les messages depuis le disque.
+ *
+ * Écriture directe dans `localStorage` plutôt qu'un état partagé : les deux
+ * modules ne coexistent jamais à l'écran, et remonter cette notion jusqu'à `App`
+ * ferait connaître les conversations du chat à toute l'application.
+ */
+function rouvrirDansLeChat(id: string, onNavigate?: (m: string) => void) {
+  try {
+    localStorage.setItem('epure.chat.conversationId', JSON.stringify(id))
+  } catch { /* mode privé : la navigation reste utile */ }
+  onNavigate?.('chat')
+}
+
+export default function History({ onNavigate }: HistoryProps) {
   const [conversations, setConversations] = useState<ConvSummary[]>([])
   const [searchQuery, setSearchQuery] = usePersistentState<string>('epure.history.searchQuery', '')
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null)
@@ -105,6 +129,10 @@ export default function History() {
               {selected.date} · {selected.modèle} · {selected.n_messages} messages
             </p>
           </div>
+          <Button variant="secondary" size="sm" icon={<MessageSquare size={13} />}
+                  onClick={() => rouvrirDansLeChat(selected.id, onNavigate)}>
+            reprendre
+          </Button>
         </div>
 
         <div className="space-y-4">

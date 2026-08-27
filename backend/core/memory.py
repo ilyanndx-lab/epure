@@ -23,9 +23,20 @@ _PROFILE_DEFAULT = {
     "lacunes_confirmées": [],
 }
 _SESSIONS_DEFAULT = {"sessions": []}
+# `fichiers_actifs` et `résumé_contexte` ont été RETIRÉS le 2026-08-27 et ne
+# doivent pas être recréés ici (cf. docs/conversations-persistees.md §2).
+#
+# C'étaient deux notions de conversation logées dans un état global : une liste
+# UNIQUE de fichiers, écrasée à chaque import et relue à chaque message, sans
+# aucun moyen de choisir lesquels servir — et le résumé de ces fichiers, partagé
+# par tous les fils. Elles appartiennent désormais à la conversation
+# (`fichiers_attachés`, `résumé_contexte` dans `backend/history/<id>.json`), qui
+# est la seule portée où « les fichiers de ce contexte » veut dire quelque chose.
+#
+# Leur absence n'a rien coûté en migration : ce fichier est réinitialisé à chaque
+# démarrage (voir `__init__` plus bas), donc elles ne survivaient déjà à aucun
+# lancement.
 _CONTEXT_DEFAULT = {
-    "fichiers_actifs": [],
-    "résumé_contexte": "",
     "modèle_actif": "qwen2.5:7b",
     "strict_mode": False,
     "session_instruction": "",
@@ -285,10 +296,17 @@ class MemoryEngine:
             if errors:
                 parts.append("[ERREURS RÉCENTES]\n" + "\n".join(errors))
 
-        # Active file context — always injected
-        résumé = ctx.get("résumé_contexte", "")
-        if résumé:
-            parts.append(f"[CONTEXTE ACTIF]\n{résumé}")
+        # Le bloc [CONTEXTE ACTIF] a quitté cette fonction le 2026-08-27.
+        #
+        # Il injectait `ctx["résumé_contexte"]`, c'est-à-dire le résumé des
+        # fichiers d'une conversation — une notion que `MemoryEngine` n'a aucun
+        # moyen de connaître, puisqu'il ne sait pas de quelle conversation il
+        # s'agit. Tant que le résumé était global, l'incohérence ne se voyait pas ;
+        # elle devient une faute dès qu'il y en a un par fil.
+        #
+        # C'est désormais le routeur du chat qui l'ajoute à ses `sys_parts`, où la
+        # conversation est connue. Ce moteur redevient ce que son nom annonce : le
+        # PROFIL de l'utilisateur, et rien d'autre.
 
         # Session instruction — always injected
         instruction = ctx.get("session_instruction", "")

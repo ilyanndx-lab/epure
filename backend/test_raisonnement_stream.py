@@ -267,11 +267,31 @@ class ProtocoleWebSocketTest(unittest.TestCase):
         routeur_chat.llm.stream = faux_stream
 
     def _echanger(self, ws, texte="17 x 23 ?"):
-        """Envoie un message et collecte les trames jusqu'au `done`."""
+        """Envoie un message et collecte les trames de FLUX jusqu'au `done`.
+
+        L'événement d'intendance ``{"type": "conversation", "id": …}`` est mis à
+        part dans ``self.conversation_id`` au lieu d'être rendu. Il est émis
+        quand le serveur ouvre une conversation pour un client qui n'en a pas
+        fourni (création paresseuse, étape 4 du chantier conversations), donc il
+        précède le flux sans en faire partie.
+
+        Le retirer ici plutôt que d'allonger chaque liste attendue garde ces
+        tests sur leur sujet — l'ordre et le type du canal de raisonnement. Mais
+        on ne le retire pas en aveugle : **son unique position légitime est en
+        tête**, et c'est vérifié. Un `conversation` qui apparaîtrait au milieu
+        d'un flux serait un vrai défaut de protocole, pas de l'intendance.
+        """
         ws.send_text(json.dumps({"role": "user", "content": texte, "direct": True}))
         trames = []
         while True:
             trame = json.loads(ws.receive_text())
+            if trame["type"] == "conversation":
+                self.assertEqual(
+                    trames, [],
+                    "`conversation` ne peut arriver qu'AVANT le flux, jamais dedans",
+                )
+                self.conversation_id = trame["id"]
+                continue
             trames.append(trame)
             if trame["type"] in ("done", "error"):
                 return trames
@@ -365,12 +385,16 @@ class ResumeSseTest(unittest.TestCase):
         fichier = os.path.join(self._dossier, "cours.txt")
         with open(fichier, "w", encoding="utf-8") as sortie:
             sortie.write("Contenu de cours pour le resume.")
-        self._contexte = routeur_chat.memory.get_context().get("fichiers_actifs", [])
-        routeur_chat.memory.update_context(fichiers_actifs=[fichier])
+        # Les fichiers appartiennent a la CONVERSATION depuis le 2026-08-27 :
+        # `context_session.fichiers_actifs` n'existe plus (une liste globale
+        # ecrasee a chaque import, sans moyen de choisir). Le flux exige donc un
+        # `conversation_id`, et deviner serait reproduire le defaut retire.
+        self._conv = routeur_chat.history_engine.create_conversation(
+            fichiers=[fichier])
 
     def tearDown(self):
         routeur_chat.llm.stream = self._original
-        routeur_chat.memory.update_context(fichiers_actifs=self._contexte)
+        routeur_chat.history_engine.delete_conversation(self._conv["id"])
         shutil.rmtree(self._dossier, ignore_errors=True)
 
     def test_seul_le_texte_part_en_token(self):
@@ -383,8 +407,9 @@ class ResumeSseTest(unittest.TestCase):
             ])
         routeur_chat.llm.stream = faux_stream
 
-        reponse = self.client.post("/skills/résumé",
-                                   headers={"Authorization": f"Bearer {self.token}"})
+        reponse = self.client.post(
+            "/skills/résumé", json={"conversation_id": self._conv["id"]},
+            headers={"Authorization": f"Bearer {self.token}"})
         self.assertEqual(reponse.status_code, 200, reponse.text)
         evenements = [json.loads(ligne[6:]) for ligne in reponse.text.splitlines()
                       if ligne.startswith("data: ")]
