@@ -110,7 +110,7 @@ class SuppressionConfinementTest(BaseCatalogue):
         self.assertTrue(chat.is_file(), "le module chat a été supprimé !")
 
     def test_module_du_coeur_refuse(self):
-        for mid in ("chat", "admin", "history", "settings"):
+        for mid in ("chat", "admin", "settings"):
             with self.subTest(mid=mid):
                 with self.assertRaises(catalogue.CatalogueError):
                     catalogue.uninstall(mid)

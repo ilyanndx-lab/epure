@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -279,12 +280,19 @@ class RAGEngine:
         except OSError:
             mtime = 0.0
 
+        # `indexé_le` : quand CE passage d'indexation a eu lieu. Distinct du
+        # `mtime`, qui dit quand le FICHIER a changé — deux dates différentes,
+        # et déduire l'une de l'autre serait faux. Absent des chunks indexés
+        # avant son ajout : l'interface affiche alors « non disponible » plutôt
+        # que d'inventer.
+        indexe_le = datetime.now().isoformat(timespec="seconds")
         base_id = str(path).replace("\\", "/")
         ids = [f"{base_id}::{i}" for i in range(len(chunks))]
         self._col.upsert(
             documents=chunks,
             ids=ids,
-            metadatas=[{"source": str(path), "chunk": i, "mtime": mtime} for i in range(len(chunks))],
+            metadatas=[{"source": str(path), "chunk": i, "mtime": mtime,
+                        "indexé_le": indexe_le} for i in range(len(chunks))],
         )
 
         # Invalidate query caches since the index has changed
@@ -339,6 +347,69 @@ class RAGEngine:
         result = self._col.get(include=["metadatas"])
         sources = {m["source"] for m in result["metadatas"] if m and "source" in m}
         return sorted(sources)
+
+    def describe_indexed_files(self) -> list[dict]:
+        """Un descriptif par fichier indexé : chemins, chunks, mtime, indexation.
+
+        Sert à choisir quoi retirer du corpus. Le **nombre de chunks** est la
+        mesure qui compte : c'est ce que le fichier occupe réellement dans
+        l'index, et pas sa taille sur le disque — un PDF de 40 Mo tout en images
+        peut ne peser qu'un chunk. C'est aussi ce qui rend visible le symptôme du
+        §3.3 bis : un fichier accepté que le moteur ne sait pas lire s'indexe à
+        **zéro chunk**, en silence. Il n'apparaît alors pas ici du tout, faute de
+        métadonnée — et c'est précisément l'information utile.
+
+        ``indexé_le`` n'existe que pour ce qui a été indexé depuis son ajout :
+        rien ne permet de le reconstituer pour l'existant, et le déduire du
+        ``mtime`` du fichier serait faux (celui-ci dit quand le fichier a été
+        modifié, pas quand on l'a lu). Absent = l'appelant affiche
+        « non disponible ».
+
+        Une seule lecture de l'index pour tous les fichiers : un appel par
+        fichier relirait tout le magasin à chaque fois.
+        """
+        try:
+            result = self._col.get(include=["metadatas"])
+        except Exception:
+            logger.exception("Erreur lecture de l'index pour le descriptif")
+            return []
+
+        par_source: dict[str, dict] = {}
+        for m in result.get("metadatas", []) or []:
+            if not m or "source" not in m:
+                continue
+            fiche = par_source.setdefault(
+                m["source"], {"chemin": m["source"], "chunks": 0,
+                              "mtime": m.get("mtime", 0.0), "indexé_le": ""})
+            fiche["chunks"] += 1
+            if not fiche["indexé_le"] and m.get("indexé_le"):
+                fiche["indexé_le"] = m["indexé_le"]
+        return sorted(par_source.values(), key=lambda f: f["chemin"])
+
+    def remove_source(self, path: str) -> int:
+        """Retire un fichier du corpus. Rend le nombre de chunks supprimés.
+
+        ⚠️ **Ne touche pas au fichier sur le disque.** C'est un retrait de
+        l'INDEX : le fichier reste là où il est et se réindexera si on le
+        réimporte. Un bouton dans un panneau ne doit pas effacer les fichiers de
+        quelqu'un, et l'irréversible ne doit jamais être le comportement par
+        défaut d'une action nommée « supprimer » dans une liste.
+
+        Les caches de requête sont invalidés, comme après une indexation : sans
+        ça, `query()` continuerait de servir des extraits d'un fichier retiré —
+        une réponse fondée sur un document que l'utilisateur croit supprimé.
+
+        Rend ``0`` si le fichier n'était pas indexé ; l'appelant en fait un 404.
+        """
+        cible = str(path)
+        avant = sum(1 for f in self.describe_indexed_files() if f["chemin"] == cible)
+        if avant == 0:
+            return 0
+        self._col.delete(where={"source": cible})
+        self._query_lru.cache_clear()
+        self._query_filtered_lru.cache_clear()
+        logger.info("Fichier retiré du corpus : %s (%d chunks)", cible, avant)
+        return avant
 
     @staticmethod
     def read_file_text(path: str) -> str:

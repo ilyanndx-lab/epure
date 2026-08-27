@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import {
   Paperclip, Mic, Zap, Bot, X, ChevronLeft, ChevronRight, Check,
   AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
-  FileSpreadsheet, File as FileIcon, Save,
+  FileSpreadsheet, File as FileIcon, Save, Trash2,
 } from 'lucide-react'
 import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
@@ -177,6 +177,30 @@ interface FileSummary {
   chunks_indexés: number
 }
 
+/**
+ * Ce que le backend sait dire d'un fichier indexé.
+ *
+ * `indexé_le` est vide pour tout ce qui a été indexé avant l'ajout du champ :
+ * rien ne permet de le reconstituer, et le déduire du `mtime` du fichier serait
+ * faux — celui-ci dit quand le fichier a changé, pas quand on l'a lu.
+ */
+interface DetailFichier {
+  chemin: string
+  chunks: number
+  mtime: number
+  indexeLe: string
+}
+
+function detail(v: unknown): DetailFichier {
+  const o = (v ?? {}) as Record<string, unknown>
+  return {
+    chemin: texte(o.chemin),
+    chunks: typeof o.chunks === 'number' ? o.chunks : 0,
+    mtime: typeof o.mtime === 'number' ? o.mtime : 0,
+    indexeLe: texte(o['indexé_le']),
+  }
+}
+
 export interface ModuleBarProps {
   module: string
   /**
@@ -244,6 +268,17 @@ export default function ModuleBar({
 
   // Files state
   const [availableFiles, setAvailableFiles] = useState<string[]>([])
+  /**
+   * Descriptif par fichier (chunks, indexation), indexé par chemin.
+   *
+   * Séparé de `availableFiles` : celui-ci vient de `/rag/files`, appelé après
+   * chaque import et à chaque ouverture du panneau. Le descriptif vient d'une
+   * route distincte pour ne pas faire payer une agrégation de tout l'index aux
+   * appelants qui ne veulent que des chemins.
+   */
+  const [detailsFichiers, setDetailsFichiers] = useState<Record<string, DetailFichier>>({})
+  /** Fichier dont la suppression attend confirmation. `''` = aucune. */
+  const [suppressionEnAttente, setSuppressionEnAttente] = useState('')
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
   const [activeFiles, setActiveFiles] = useState<string[]>([])
   const [summary, setSummary] = useState<FileSummary | null>(null)
@@ -345,6 +380,45 @@ export default function ModuleBar({
       const d = await res.json() as { files?: unknown }
       setAvailableFiles(liste<string>(d.files))
     } catch { /* backend qui démarre, token pas encore appairé : sans gravité */ }
+
+    // Le descriptif est accessoire : son échec ne doit pas priver le panneau de
+    // sa liste de fichiers, qui vient d'aboutir juste au-dessus.
+    try {
+      const res = await apiFetch(`${API}/rag/files/details`)
+      if (!res.ok) return
+      const d = await res.json() as Record<string, unknown>
+      const carte: Record<string, DetailFichier> = {}
+      for (const brut of liste<unknown>(d.files)) {
+        const f = detail(brut)
+        if (f.chemin) carte[f.chemin] = f
+      }
+      setDetailsFichiers(carte)
+    } catch { /* sans gravité : la liste reste utilisable sans les détails */ }
+  }, [])
+
+  /**
+   * Retire un fichier du CORPUS INDEXÉ — pas du disque.
+   *
+   * Le fichier reste là où il est et se réindexera si on le réimporte. Rien
+   * n'est fait aux conversations qui l'avaient attaché : elles le montreront
+   * simplement `présent: false`, ce que `croiser_fichiers` gère déjà. Le
+   * détacher d'office serait pire — l'utilisateur verrait son contexte rétrécir
+   * sans trace de ce qui a disparu.
+   */
+  const supprimerDuCorpus = useCallback(async (chemin: string) => {
+    setSuppressionEnAttente('')
+    try {
+      const res = await apiFetch(`${API}/rag/files?path=${encodeURIComponent(chemin)}`,
+                                 { method: 'DELETE' })
+      if (!res.ok) return
+      setAvailableFiles(prev => prev.filter(f => f !== chemin))
+      setSelectedFiles(prev => prev.filter(f => f !== chemin))
+      setDetailsFichiers(prev => {
+        const copie = { ...prev }
+        delete copie[chemin]
+        return copie
+      })
+    } catch { /* le panneau reste tel quel : l'utilisateur peut réessayer */ }
   }, [])
 
   /**
@@ -773,18 +847,58 @@ export default function ModuleBar({
           {availableFiles.length > 0 && (
             <div className="space-y-1">
               <p className="text-xs text-muted uppercase tracking-wide mb-2">Fichiers indexés</p>
-              {availableFiles.map(f => (
-                <label key={f} className="flex items-center gap-2 cursor-pointer group">
-                  <input type="checkbox" checked={selectedFiles.includes(f)}
-                    onChange={e => setSelectedFiles(prev => e.target.checked ? [...prev, f] : prev.filter(x => x !== f))}
-                    className="accent-[--accent-primary] shrink-0"
-                  />
-                  <FileTypeIcon name={basename(f)} />
-                  <span className="text-xs font-mono text-secondary group-hover:text-primary transition-colors duration-150 truncate">
-                    {basename(f)}
-                  </span>
-                </label>
-              ))}
+              {availableFiles.map(f => {
+                const d = detailsFichiers[f]
+                const enAttente = suppressionEnAttente === f
+                return (
+                  <div key={f} className="flex items-center gap-2 group">
+                    <label className="flex items-center gap-2 cursor-pointer min-w-0 flex-1">
+                      <input type="checkbox" checked={selectedFiles.includes(f)}
+                        onChange={e => setSelectedFiles(prev => e.target.checked ? [...prev, f] : prev.filter(x => x !== f))}
+                        className="accent-[--accent-primary] shrink-0"
+                      />
+                      <FileTypeIcon name={basename(f)} />
+                      <span className="text-xs font-mono text-secondary group-hover:text-primary transition-colors duration-150 truncate">
+                        {basename(f)}
+                      </span>
+                      {d && (
+                        // Le décompte de chunks, pas la taille sur le disque :
+                        // c'est ce que le fichier occupe dans l'index, et un PDF
+                        // de 40 Mo tout en images peut ne peser qu'un chunk.
+                        <span className="text-xs font-mono text-muted shrink-0"
+                              title={d.indexeLe
+                                ? `Indexé le ${d.indexeLe.replace('T', ' à ')}`
+                                : "Date d'indexation non disponible (indexé avant ce champ)"}>
+                          {d.chunks} ch.
+                        </span>
+                      )}
+                    </label>
+                    {enAttente ? (
+                      // Confirmation EN LIGNE plutôt qu'un `confirm()` : le
+                      // panneau se ferme au clic extérieur, et une boîte native
+                      // le ferait disparaître sous la question.
+                      <span className="flex items-center gap-1 shrink-0">
+                        <button className="text-xs text-error hover:underline"
+                                onClick={() => void supprimerDuCorpus(f)}>
+                          retirer
+                        </button>
+                        <button className="text-xs text-muted hover:underline"
+                                onClick={() => setSuppressionEnAttente('')}>
+                          annuler
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-error p-0.5 shrink-0"
+                        title="Retirer du corpus indexé (le fichier reste sur le disque)"
+                        aria-label={`Retirer ${basename(f)} du corpus indexé`}
+                        onClick={() => setSuppressionEnAttente(f)}>
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
 
