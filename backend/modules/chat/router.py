@@ -670,7 +670,7 @@ async def ws_chat(websocket: WebSocket):
                 logger.debug("Titre non annoncé (socket fermé ?) pour %s", conv_id)
         return _pousser
 
-    async def _enregistrer_reponse(conv_id: str, texte: str) -> None:
+    async def _enregistrer_reponse(conv_id: str, texte: str) -> dict:
         """Seconde transaction du tour : la réponse, puis les travaux de fond.
 
         Séparée de l'ajout du message utilisateur, et pas par commodité : entre
@@ -679,7 +679,7 @@ async def ws_chat(websocket: WebSocket):
         toute la génération, et un envoi concurrent dans la même conversation
         attendrait la fin de la réponse précédente.
         """
-        await loop.run_in_executor(
+        conv = await loop.run_in_executor(
             None, lambda: history_engine.append_messages(
                 conv_id, [{"role": "assistant", "content": texte}],
                 model=_last_model[0],
@@ -691,6 +691,13 @@ async def ws_chat(websocket: WebSocket):
             args=(conv_id, use_cloud, _annoncer_titre_depuis_thread(conv_id)),
             daemon=True,
         ).start()
+        # Les métadonnées du message qu'on vient d'écrire, pour que le client les
+        # affiche sans relire la conversation entière après chaque tour. C'est le
+        # SERVEUR qui fait foi : il vient de les poser sur le disque, et une
+        # horloge de navigateur qui diverge donnerait deux heures différentes pour
+        # le même message selon qu'on le regarde avant ou après un rechargement.
+        dernier = (conv or {}).get("messages", [])
+        return dict(dernier[-1]) if dernier else {}
 
     try:
         while True:
@@ -881,6 +888,20 @@ async def ws_chat(websocket: WebSocket):
                     "Réponds à la question en te basant sur ce contexte si pertinent."
                 )
 
+            # Horodatage du message qu'on vient d'écrire, renvoyé au client.
+            #
+            # Le client l'a affiché optimistement dès la frappe, sans heure. Il
+            # pourrait en poser une lui-même — mais alors l'heure affichée avant
+            # un rechargement viendrait de l'horloge du navigateur et celle
+            # d'après du disque, donc deux valeurs pour le même message dès que
+            # les deux horloges divergent. Le serveur fait foi, ici comme dans
+            # l'événement `done`.
+            _meta_user = (conv["messages"] or [{}])[-1]
+            await websocket.send_text(json.dumps({
+                "type": "meta_message", "role": "user",
+                "horodatage": _meta_user.get("horodatage", ""),
+            }, ensure_ascii=False))
+
             messages = list(conv["messages"])
             if sys_parts:
                 messages = [{"role": "system", "content": "\n\n".join(sys_parts)}] + messages
@@ -923,9 +944,12 @@ async def ws_chat(websocket: WebSocket):
                         if _event.get("type") == "pipeline_done":
                             _final = _event.get("final_output", "")
                         await websocket.send_text(json.dumps(_event))
-                    if _final:
-                        await _enregistrer_reponse(conv_id, _final)
-                    await websocket.send_text(json.dumps({"type": "done"}))
+                    _meta = await _enregistrer_reponse(conv_id, _final) if _final else {}
+                    await websocket.send_text(json.dumps({
+                        "type": "done",
+                        "horodatage": _meta.get("horodatage", ""),
+                        "modèle": _meta.get("modèle", ""),
+                    }, ensure_ascii=False))
                     continue
                 elif not _direct_mode:
                     _direct_mode = True  # empty pipeline → fall through to direct
@@ -995,9 +1019,12 @@ async def ws_chat(websocket: WebSocket):
                 accumulated += item
                 await websocket.send_text(json.dumps({"type": "token", "content": item}))
 
-            if accumulated:
-                await _enregistrer_reponse(conv_id, accumulated)
-            await websocket.send_text(json.dumps({"type": "done"}))
+            _meta = await _enregistrer_reponse(conv_id, accumulated) if accumulated else {}
+            await websocket.send_text(json.dumps({
+                "type": "done",
+                "horodatage": _meta.get("horodatage", ""),
+                "modèle": _meta.get("modèle", ""),
+            }, ensure_ascii=False))
 
     except WebSocketDisconnect:
         # RATTRAPAGE, plus une sauvegarde. Tout est déjà sur le disque : la

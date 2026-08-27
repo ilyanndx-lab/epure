@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { MessageSquarePlus, Pencil, Trash2 } from 'lucide-react'
+import { MessageSquarePlus, PanelLeftClose, PanelLeftOpen, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '../../components/ui'
 import {
   chargerConversations, renommerConversation, supprimerConversation,
@@ -33,6 +33,9 @@ interface Props {
   onNouvelle: () => void
   /** Incrémenté par le parent pour forcer un rechargement (titre, nouveau tour). */
   rafraichir: number
+  /** Replié : le panneau se réduit à un rail, la largeur est rendue au chat. */
+  replie: boolean
+  onBasculerRepli: () => void
 }
 
 /** Libellé d'une conversation sans titre : le titrage arrive après le 1er tour. */
@@ -42,7 +45,9 @@ function libelle(c: ConvEntry): string {
   return 'Nouvelle conversation'
 }
 
-export default function ConversationList({ courante, onOuvrir, onNouvelle, rafraichir }: Props) {
+export default function ConversationList({
+  courante, onOuvrir, onNouvelle, rafraichir, replie, onBasculerRepli,
+}: Props) {
   const [conversations, setConversations] = useState<ConvEntry[]>([])
   const [enEdition, setEnEdition] = useState<string>('')
   const [brouillon, setBrouillon] = useState<string>('')
@@ -69,14 +74,51 @@ export default function ConversationList({ courante, onOuvrir, onNouvelle, rafra
     if (id === courante) onNouvelle()
   }, [courante, onNouvelle, recharger])
 
+  /**
+   * Replié : un RAIL, pas un panneau caché.
+   *
+   * La largeur est réellement rendue au chat (224 px → 32 px) — ce n'est pas un
+   * `hidden` qui garderait la boîte. Un rail plutôt qu'une disparition totale :
+   * le bouton qui ramène le panneau doit rester là où le panneau était, sinon il
+   * faut le chercher. C'est le motif des barres latérales d'éditeurs, et il
+   * évite d'ajouter une barre d'en-tête au chat, qui coûterait de la hauteur en
+   * permanence pour un réglage qu'on touche rarement.
+   */
+  if (replie) {
+    return (
+      <aside className="w-8 shrink-0 border-r border-subtle flex flex-col items-center py-2 gap-2 h-full">
+        <button className="text-muted hover:text-primary p-1"
+                title="Afficher les conversations"
+                aria-label="Afficher les conversations"
+                aria-expanded={false}
+                onClick={onBasculerRepli}>
+          <PanelLeftOpen size={16} />
+        </button>
+        <button className="text-muted hover:text-primary p-1"
+                title="Nouvelle conversation"
+                aria-label="Nouvelle conversation"
+                onClick={onNouvelle}>
+          <MessageSquarePlus size={16} />
+        </button>
+      </aside>
+    )
+  }
+
   return (
     <aside className="w-56 shrink-0 border-r border-subtle flex flex-col h-full">
-      <div className="p-2 border-b border-subtle">
-        <Button variant="secondary" size="sm" className="w-full justify-start gap-2"
+      <div className="p-2 border-b border-subtle flex items-center gap-1">
+        <Button variant="secondary" size="sm" className="flex-1 justify-start gap-2"
                 onClick={onNouvelle}>
           <MessageSquarePlus size={14} />
           Nouvelle conversation
         </Button>
+        <button className="text-muted hover:text-primary p-1 shrink-0"
+                title="Réduire les conversations"
+                aria-label="Réduire les conversations"
+                aria-expanded={true}
+                onClick={onBasculerRepli}>
+          <PanelLeftClose size={16} />
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto">

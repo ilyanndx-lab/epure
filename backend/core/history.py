@@ -391,6 +391,13 @@ class HistoryEngine:
         messages fournis par le client est la reprise de l'ancien chat (étape 7),
         et perdre la conversation entière pour un message malformé serait pire
         que d'en perdre un.
+
+        ⚠️ ``horodatage`` et ``modèle`` sont **repris s'ils sont là, jamais
+        inventés**. Ces messages viennent d'un stockage antérieur à ces champs :
+        leur donner l'instant présent daterait de ce soir une conversation
+        d'avant-hier, et leur coller le modèle actif attribuerait des réponses à
+        un modèle qui ne les a pas produites. L'absence est une information, et
+        l'interface sait l'afficher (« non disponible »).
         """
         propres: list[dict] = []
         for m in messages or []:
@@ -400,10 +407,17 @@ class HistoryEngine:
             if not isinstance(contenu, str) or not contenu:
                 continue
             role = m.get("role")
-            propres.append({
+            entree = {
                 "role": "assistant" if role == "assistant" else "user",
                 "content": contenu,
-            })
+            }
+            horodatage = m.get("horodatage")
+            if isinstance(horodatage, str) and horodatage:
+                entree["horodatage"] = horodatage
+            modele = m.get("modèle")
+            if entree["role"] == "assistant" and isinstance(modele, str) and modele:
+                entree["modèle"] = modele
+            propres.append(entree)
         return propres
 
     def create_conversation(
@@ -450,13 +464,36 @@ class HistoryEngine:
         ``model`` n'écrase l'existant que s'il est non vide : le modèle actif peut
         changer en cours de conversation, et le dernier utilisé est celui qui
         décrit le mieux l'échange dans la liste.
+
+        ── Métadonnées par message ───────────────────────────────────────────
+
+        Chaque message écrit ici gagne un ``horodatage``. Les messages
+        d'**assistant** gagnent en plus un ``modèle`` — pas les messages
+        d'utilisateur, et ce n'est pas un oubli : un message tapé par
+        l'utilisateur n'est produit par aucun modèle. Y coller le modèle actif
+        dirait quelque chose de faux (« ce texte vient de qwen2.5 »), et
+        surtout rendrait indistinguables deux situations que l'interface doit
+        séparer — « ce message n'a pas de modèle par nature » et « ce message
+        est antérieur à ce champ, on ne sait pas ».
+
+        Le ``modèle`` de la conversation reste à côté et ne les remplace pas :
+        il dit *le dernier modèle utilisé*, pas celui de chaque tour, et il a
+        pu changer plusieurs fois. C'est précisément pourquoi il ne faut jamais
+        s'en servir pour combler un message qui n'a pas le champ.
         """
         try:
             with self._conversation_transaction(conv_id) as conv:
-                conv["messages"].extend(
-                    {"role": m.get("role", "user"), "content": m.get("content", "")}
-                    for m in nouveaux
-                )
+                instant = _horodatage()
+                for m in nouveaux:
+                    role = m.get("role", "user")
+                    entree = {
+                        "role": role,
+                        "content": m.get("content", ""),
+                        "horodatage": instant,
+                    }
+                    if role == "assistant" and model:
+                        entree["modèle"] = model
+                    conv["messages"].append(entree)
                 if model:
                     conv["modèle"] = model
                 return conv

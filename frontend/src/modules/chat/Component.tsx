@@ -11,6 +11,7 @@ import ConversationList from './ConversationList'
 import { creerConversation, reprendreAncienChat } from './conversations'
 import { liste, texte } from '../../normaliser'
 import { useModules } from '../../modules'
+import { metaAffichable, type MetaAffichable } from './metaMessage'
 
 interface MsgStats {
   tps: number
@@ -58,6 +59,26 @@ interface Message {
    * dans `history` (cf. modules/chat/router.py).
    */
   raisonnement?: string
+  /**
+   * Instant d'écriture, tel que le SERVEUR l'a posé (ISO local, à la seconde).
+   *
+   * Optionnel, et il le restera : les messages écrits avant ce champ n'en ont
+   * pas, et rien ne permet de le reconstituer. L'interface affiche « non
+   * disponible » plutôt que de deviner.
+   */
+  horodatage?: string
+  /**
+   * Modèle qui a produit CE message. Présent sur les réponses seulement.
+   *
+   * Un message tapé par l'utilisateur n'est produit par aucun modèle : son
+   * absence ici est normale, pas une donnée manquante. C'est ce qui permet à
+   * l'interface de distinguer « pas de modèle par nature » (message utilisateur)
+   * de « on ne sait pas » (réponse d'avant ce champ).
+   *
+   * ⚠️ Ne JAMAIS combler depuis le `modèle` de la conversation : celui-ci dit le
+   * dernier modèle utilisé, et il a pu changer plusieurs fois depuis.
+   */
+  modele?: string
 }
 
 interface ChatProps {
@@ -73,6 +94,47 @@ interface ChatProps {
   onNavigate?: (module: string) => void
   ttsEnabled?: boolean
   onTtsToggle?: () => void
+}
+
+/**
+ * Petit menu d'un message : date, heure, et le modèle qui l'a produit.
+ *
+ * Au CLIC et non au survol, et c'est un choix : le survol déclencherait le menu
+ * en traversant la conversation à la souris, et sur un bloc de texte qu'on lit
+ * ce serait du bruit permanent. Le clic est aussi ce qui rend la chose
+ * atteignable au clavier.
+ *
+ * Positionné en `absolute` sous l'ancre, avec `z-20` : le message suivant est
+ * rendu après, donc au-dessus dans l'ordre de peinture sans lui.
+ */
+function MenuMeta({ meta, onFermer }: { meta: MetaAffichable; onFermer: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const auClic = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onFermer()
+    }
+    const auClavier = (e: KeyboardEvent) => { if (e.key === 'Escape') onFermer() }
+    // `mousedown` et non `click` : le clic qui a ouvert ce menu remonterait
+    // jusqu'au document et le refermerait aussitôt.
+    document.addEventListener('mousedown', auClic)
+    document.addEventListener('keydown', auClavier)
+    return () => {
+      document.removeEventListener('mousedown', auClic)
+      document.removeEventListener('keydown', auClavier)
+    }
+  }, [onFermer])
+
+  return (
+    <div ref={ref} role="dialog" aria-label="Détails du message"
+         className="absolute z-20 mt-1 bg-elevated border border-line rounded-md shadow-md px-3 py-2 text-xs font-mono whitespace-nowrap">
+      <div className="text-muted">date <span className="text-secondary">{meta.date}</span></div>
+      <div className="text-muted">heure <span className="text-secondary">{meta.heure}</span></div>
+      {meta.modele !== null && (
+        <div className="text-muted">modèle <span className="text-secondary">{meta.modele}</span></div>
+      )}
+    </div>
+  )
 }
 
 function fmtDuration(ms: number): string {
@@ -238,8 +300,20 @@ export default function Chat({
   const [messages, setMessages] = useState<Message[]>([])
   /** Seule chose qui reste persistée : QUELLE conversation est ouverte. */
   const [conversationId, setConversationId] = usePersistentState<string>('epure.chat.conversationId', '')
+  /** Index du message dont le menu de métadonnées est ouvert, ou `null`. */
+  const [menuMetaOuvert, setMenuMetaOuvert] = useState<number | null>(null)
   /** Incrémenté pour forcer `ConversationList` à relire l'index. */
   const [rafraichirConvs, setRafraichirConvs] = useState(0)
+  /**
+   * Panneau des conversations replié.
+   *
+   * `usePersistentState` et non le serveur : c'est une préférence d'affichage de
+   * CE navigateur, pas un état de l'instance. La faire voyager par
+   * `instance_config.json` la rendrait partagée entre deux fenêtres et
+   * impliquerait un aller-retour réseau pour un clic sur un chevron.
+   */
+  const [panneauReplie, setPanneauReplie] = usePersistentState<boolean>(
+    'epure.chat.panneauReplie', false)
   const [input, setInput] = usePersistentState<string>('epure.chat.input', '')
   const [connected, setConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
@@ -289,6 +363,22 @@ export default function Chat({
         // Après un arrêt manuel : on ignore les tokens encore en vol, mais on
         // laisse passer done/error pour réinitialiser proprement l'état.
         if (cancelledRef.current && data.type !== 'done' && data.type !== 'error') return
+
+        if (data.type === 'meta_message') {
+          // Horodatage du message utilisateur, posé par le serveur (cf. le
+          // commentaire du routeur : deux horloges donneraient deux heures pour
+          // le même message selon qu'on le regarde avant ou après un rechargement).
+          if (data.horodatage) {
+            setMessages(prev => {
+              const dernier = prev.length - 1
+              if (dernier < 0 || prev[dernier].role !== 'user') return prev
+              const copie = [...prev]
+              copie[dernier] = { ...copie[dernier], horodatage: data.horodatage }
+              return copie
+            })
+          }
+          return
+        }
 
         if (data.type === 'conversation') {
           // Création paresseuse côté serveur : le premier message d'un fil neuf
@@ -488,6 +578,24 @@ export default function Chat({
               return prev
             })
           }
+          // Métadonnées de la réponse, telles que le serveur vient de les écrire.
+          // Évite de relire la conversation entière après chaque tour, et garde
+          // l'heure affichée identique à celle du disque.
+          if (data.horodatage || data['modèle']) {
+            const h = data.horodatage as string | undefined
+            const mo = data['modèle'] as string | undefined
+            setMessages(prev => {
+              const dernier = prev.length - 1
+              if (dernier < 0 || prev[dernier].role !== 'assistant') return prev
+              const copie = [...prev]
+              copie[dernier] = {
+                ...copie[dernier],
+                ...(h ? { horodatage: h } : {}),
+                ...(mo ? { modele: mo } : {}),
+              }
+              return copie
+            })
+          }
           pendingOllamaStatsRef.current = null
           setStreaming(false)
           setStreamStats(null)
@@ -566,10 +674,20 @@ export default function Chat({
         if (!res.ok) return
         const d = await res.json() as Record<string, unknown>
         if (annule) return
-        setMessages(liste<Record<string, unknown>>(d.messages).map(m => ({
-          role: texte(m.role) === 'assistant' ? 'assistant' as const : 'user' as const,
-          content: texte(m.content),
-        })))
+        setMessages(liste<Record<string, unknown>>(d.messages).map(m => {
+          const role = texte(m.role) === 'assistant' ? 'assistant' as const : 'user' as const
+          const horodatage = texte(m['horodatage'])
+          const modele = texte(m['modèle'])
+          // Les champs ABSENTS restent absents : `texte()` rend `''`, qu'on ne
+          // recopie pas. Un `horodatage: ''` se distinguerait mal d'une vraie
+          // valeur vide, et l'interface doit pouvoir dire « non disponible ».
+          return {
+            role,
+            content: texte(m.content),
+            ...(horodatage ? { horodatage } : {}),
+            ...(modele ? { modele } : {}),
+          }
+        }))
       } catch { /* backend qui démarre : la liste reste vide */ }
     })()
     return () => { annule = true }
@@ -908,6 +1026,8 @@ export default function Chat({
         onOuvrir={ouvrirConversation}
         onNouvelle={() => void nouvelleConversation()}
         rafraichir={rafraichirConvs}
+        replie={panneauReplie}
+        onBasculerRepli={() => setPanneauReplie(v => !v)}
       />
     <main className="flex flex-col flex-1 overflow-hidden">
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
@@ -920,12 +1040,29 @@ export default function Chat({
         {messages.map((msg, i) => (
           <div key={i} className={`flex group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`max-w-[78%] ${
+              className={`relative max-w-[78%] cursor-pointer ${
                 msg.role === 'user'
                   ? 'px-4 py-3 rounded-lg bg-elevated border border-line text-sm leading-relaxed text-primary'
                   : 'text-sm leading-relaxed text-secondary'
               }`}
+              role="button"
+              tabIndex={0}
+              aria-label="Détails du message"
+              title="Détails du message"
+              onClick={() => setMenuMetaOuvert(v => (v === i ? null : i))}
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setMenuMetaOuvert(v => (v === i ? null : i))
+                }
+              }}
             >
+              {menuMetaOuvert === i && (
+                <MenuMeta
+                  meta={metaAffichable(msg.horodatage, msg.modele, msg.role === 'user')}
+                  onFermer={() => setMenuMetaOuvert(null)}
+                />
+              )}
               {msg.role === 'user' ? (
                 <>
                   <p className="whitespace-pre-wrap break-words m-0">{msg.content}</p>
