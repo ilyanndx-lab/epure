@@ -97,7 +97,6 @@ class DoitExclureTest(unittest.TestCase):
             "modules/chat/router.py",
             "modules/settings/router.py",
             "modules/admin/router.py",
-            "modules/history/router.py",
         ]:
             with self.subTest(chemin=chemin):
                 self.assertFalse(paquet.doit_exclure(Path(chemin)),

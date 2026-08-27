@@ -21,7 +21,7 @@ from typing import Optional
 
 import pypdf
 from dotenv import load_dotenv, set_key as dotenv_set_key
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -580,6 +580,55 @@ async def rag_files():
     loop = asyncio.get_running_loop()
     files = await loop.run_in_executor(None, rag.get_indexed_files)
     return {"files": files}
+
+
+@router.get("/rag/files/details")
+async def rag_files_details():
+    """Les fichiers indexés avec de quoi choisir lesquels retirer.
+
+    Route SÉPARÉE de `/rag/files` et non un enrichissement de celle-ci : cette
+    dernière est appelée à chaque ouverture du panneau et après chaque import,
+    par du code qui n'a besoin que des chemins. Lui faire porter un décompte de
+    chunks ferait payer une agrégation de tout l'index à des appelants qui n'en
+    veulent pas — et changerait la forme d'une réponse dont plusieurs
+    consommateurs dépendent.
+
+    `chunks` est la mesure qui compte pour un ménage de corpus : ce que le
+    fichier occupe réellement dans l'index, pas sa taille sur le disque — un PDF
+    de 40 Mo tout en images peut ne peser qu'un chunk.
+    """
+    loop = asyncio.get_running_loop()
+    fichiers = await loop.run_in_executor(None, rag.describe_indexed_files)
+    return {"files": fichiers}
+
+
+@router.delete("/rag/files")
+async def rag_file_delete(path: str = Query(..., description="Chemin indexé à retirer")):
+    """Retire un fichier du corpus indexé. **Ne touche pas au disque.**
+
+    ── Deux choix qui ne se déduisent pas ────────────────────────────────────
+
+    **Le chemin passe en paramètre de REQUÊTE, pas de chemin.** Un chemin
+    Windows contient `\` et `:` ; en segment d'URL il faudrait l'encoder, et un
+    paramètre de chemin Starlette n'accepte de toute façon pas de séparateur.
+
+    **La validation porte sur l'appartenance au CORPUS, pas sur le confinement
+    disque.** On ne peut retirer que ce qui est déjà indexé — c'est plus strict
+    que `resolve_user_path` (l'ensemble des chemins indexés est un
+    sous-ensemble de ce qu'il autorise), et ça évite de refuser le nettoyage
+    d'un fichier venu d'un dossier surveillé retiré de la configuration depuis.
+    Aucun accès au système de fichiers n'a lieu ici, donc rien à confiner : la
+    seule chose touchée est une ligne de la base vectorielle.
+
+    404 sur un chemin inconnu, et pas un `{"ok": true}` complaisant : sans ça,
+    une faute de frappe ou un chemin déjà retiré passerait pour un succès et le
+    panneau afficherait une suppression qui n'a pas eu lieu.
+    """
+    loop = asyncio.get_running_loop()
+    supprimes = await loop.run_in_executor(None, rag.remove_source, path)
+    if supprimes == 0:
+        raise HTTPException(status_code=404, detail="Ce fichier n'est pas dans le corpus indexé")
+    return {"ok": True, "chemin": path, "chunks_supprimés": supprimes}
 
 
 # ── Orchestrator presets ─────────────────────────────────────────────────────

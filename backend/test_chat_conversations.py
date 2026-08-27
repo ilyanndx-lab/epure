@@ -60,9 +60,21 @@ class _RagStub:
 
     def __init__(self, fichiers):
         self.fichiers = list(fichiers)
+        self.retires: list = []
 
     def get_indexed_files(self):
         return list(self.fichiers)
+
+    def describe_indexed_files(self):
+        return [{"chemin": f, "chunks": 3, "mtime": 0.0, "indexé_le": ""}
+                for f in self.fichiers]
+
+    def remove_source(self, chemin):
+        if chemin not in self.fichiers:
+            return 0
+        self.fichiers.remove(chemin)
+        self.retires.append(chemin)
+        return 3
 
 
 class _RagIndisponible:
@@ -348,29 +360,130 @@ class AttachementTest(_Base):
         self.assertEqual(r.status_code, 503, r.text)
 
 
-class HistoriqueSansModeleTest(_Base):
-    """`GET /history` répondait 503 sans le modèle d'embedding — mesuré.
+class SansModeleDEmbeddingTest(_Base):
+    """Lister ses conversations ne doit PAS dépendre du modèle d'embedding.
 
-    Ce test ne porte pas sur une route du chantier mais sur celle du module
-    Historique, et c'est délibéré : le bug était le même et sa correction est
-    commune (la collection vectorielle de `HistoryEngine` est obtenue au premier
-    usage, plus à la construction). Le vérifier ici, sur la surface HTTP, est ce
-    qui empêche la panne de revenir en silence — c'est sous cette forme qu'elle
-    se voyait, pas au niveau du moteur.
+    Ce garde-fou visait `GET /history` — la panne mesurée à l'étape 3 : le module
+    Historique répondait 503 chez tout destinataire n'ayant pas téléchargé les
+    90 Mo, parce que `HistoryEngine.__init__` réclamait une collection
+    vectorielle pour des opérations purement JSON.
+
+    Ce module a été supprimé (ses routes sont remplacées par
+    `/chat/conversations*`), mais **le mécanisme protégé est le même** : ces
+    routes passent par le même moteur. Le garde-fou est donc repointé, pas
+    retiré — c'est sous cette forme, au niveau HTTP, que la panne se voyait.
+    Le pendant côté moteur vit dans `test_history_engine.SansPileEmbeddingTest`.
 
     La suite tourne précisément dans la configuration qui la déclenchait :
-    `EPURE_EMBEDDING_DIR` est un temporaire VIDE et `EPURE_EMBEDDING_AUTOINSTALL=0`.
+    `EPURE_EMBEDDING_DIR` est un temporaire VIDE et
+    `EPURE_EMBEDDING_AUTOINSTALL=0`.
     """
 
-    def test_lister_l_historique_ne_503_pas(self):
-        r = self.client.get("/history", headers=self.auth)
+    def test_lister_les_conversations_ne_503_pas(self):
+        r = self.client.get("/chat/conversations", headers=self.auth)
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertIsInstance(r.json(), list)
+
+    def test_ouvrir_une_conversation_ne_503_pas(self):
+        conv = self._creer()
+        r = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["corpus_interrogeable"],
+                         "sans modèle, le corpus n'est pas interrogeable — mais on lit quand même")
 
     def test_une_conversation_inconnue_rend_404_et_non_503(self):
-        r = self.client.get("/history/11111111-2222-3333-4444-555555555555",
+        r = self.client.get("/chat/conversations/11111111-2222-3333-4444-555555555555",
                             headers=self.auth)
         self.assertEqual(r.status_code, 404, r.text)
+
+
+class ModuleHistoriqueRetireTest(_Base):
+    """Le module Historique n'existe plus — ses routes non plus.
+
+    Vérifié plutôt que supposé : un `modules/history/` oublié dans un paquet, ou
+    une entrée résiduelle dans `modules_activés`, remonterait le routeur sans
+    que rien ne le signale.
+    """
+
+    def test_les_routes_du_module_ont_disparu(self):
+        for url in ("/history", "/history/abc"):
+            with self.subTest(url=url):
+                self.assertEqual(
+                    self.client.get(url, headers=self.auth).status_code, 404)
+
+    def test_aucune_route_history_n_est_montee(self):
+        chemins = {r.path for r in main.app.routes if hasattr(r, "path")}
+        residus = [c for c in chemins if c == "/history" or c.startswith("/history/")]
+        self.assertEqual(residus, [], f"routes résiduelles : {residus}")
+
+
+class SuppressionDuCorpusTest(_Base):
+    """`DELETE /rag/files` — retrait de l'INDEX, jamais du disque.
+
+    Et la vérification demandée explicitement : un fichier retiré du corpus doit
+    ressortir `présent: false` dans les conversations qui l'avaient attaché,
+    **sans que `croiser_fichiers` ait eu besoin de changer**. C'est déjà son
+    comportement : elle croise l'attachement avec le corpus courant, donc retirer
+    du corpus suffit.
+    """
+
+    def _corpus(self, fichiers):
+        routeur_reglages = sys.modules["modules.settings.router"]
+        original = routeur_reglages.rag
+        routeur_reglages.rag = _RagStub(fichiers)
+        self.addCleanup(setattr, routeur_reglages, "rag", original)
+        return routeur_reglages.rag
+
+    def test_retirer_un_fichier_absent_rend_404(self):
+        """Et non un `{"ok": true}` complaisant : une faute de frappe ou un
+        chemin déjà retiré passerait pour un succès."""
+        self._corpus([])
+        r = self.client.delete("/rag/files", params={"path": "/a/inconnu.pdf"},
+                               headers=self.auth)
+        self.assertEqual(r.status_code, 404, r.text)
+
+    def test_retirer_rend_le_nombre_de_chunks(self):
+        stub = self._corpus(["/a/cours.pdf"])
+        r = self.client.delete("/rag/files", params={"path": "/a/cours.pdf"},
+                               headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["chunks_supprimés"], 3)
+        self.assertEqual(stub.retires, ["/a/cours.pdf"])
+
+    def test_le_chemin_passe_en_parametre_de_requete(self):
+        r"""Un chemin Windows contient `\` et `:` — inutilisable en segment d'URL.
+
+        Le test le prouve avec un vrai chemin Windows plutôt qu'un chemin POSIX
+        commode : c'est la forme réelle sur la plateforme primaire, et c'est elle
+        qui justifie le paramètre de requête.
+        """
+        chemin = r"C:\Users\Ilyan\fiches\thermo.pdf"
+        stub = self._corpus([chemin])
+        r = self.client.delete("/rag/files", params={"path": chemin}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(stub.retires, [chemin])
+
+    def test_un_fichier_retire_ressort_absent_des_conversations(self):
+        """LE point de vigilance : rien à changer dans `croiser_fichiers`."""
+        f = self._fichier("attache.pdf")
+        routeur_chat.rag = _RagStub([f])
+        conv = self._creer(fichiers=[f])
+
+        vue = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth).json()
+        self.assertEqual(vue["fichiers_attachés"], [{"chemin": f, "présent": True}])
+
+        # Le fichier sort du corpus — la conversation, elle, n'est pas touchée.
+        routeur_chat.rag = _RagStub([])
+        vue = self.client.get(f"/chat/conversations/{conv['id']}", headers=self.auth).json()
+        self.assertEqual(vue["fichiers_attachés"], [{"chemin": f, "présent": False}],
+                         "l'attachement doit RESTER, marqué absent — pas disparaître")
+
+    def test_le_descriptif_donne_de_quoi_choisir(self):
+        self._corpus(["/a/cours.pdf"])
+        r = self.client.get("/rag/files/details", headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        fiche = r.json()["files"][0]
+        self.assertEqual(fiche["chemin"], "/a/cours.pdf")
+        self.assertEqual(fiche["chunks"], 3)
 
 
 class PrefixeTest(_Base):

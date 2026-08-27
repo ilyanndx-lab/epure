@@ -57,7 +57,6 @@ function lazyComponent(loader: ModuleLoader): ComponentType<SharedModuleProps> {
 const CORE_DEFS: ModuleDef[] = [
   { id: 'chat',       label: 'Chat',        icon: 'MessageSquare', core: true, component: lazyComponent(() => import('./chat/Component')) },
   { id: 'admin',      label: 'Admin',       icon: 'FolderCog',     core: true, component: lazyComponent(() => import('./admin/Component')) },
-  { id: 'history',    label: 'Historique',  icon: 'Clock',         core: true, component: lazyComponent(() => import('./history/Component')) },
   { id: 'settings',   label: 'Réglages',    icon: 'Settings',      core: true, component: lazyComponent(() => import('./settings/Component')) },
   // Atelier : outil transverse (pas un module backend), composant dans components/.
   // Absent d'un paquet distribué — et absent du BUNDLE, pas seulement caché :

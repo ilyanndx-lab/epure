@@ -69,7 +69,7 @@ def _default_config() -> dict:
         "instance_id": str(uuid.uuid4()),
         "nom_affiché": "Épure",
         # Vide et NON une liste de modules en dur. L'ancien défaut était
-        # ["chat","kholle","flashcards","code","docs","admin","history"] : tout
+        # ["chat","kholle","flashcards","code","docs","admin"] : tout
         # module ajouté au dépôt après l'écriture de cette constante n'y entrait
         # jamais — c'est ainsi que `reviseur` était installé, monté, et pourtant
         # absent de la barre. Vide signifie « jamais initialisée » et déclenche

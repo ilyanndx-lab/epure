@@ -830,7 +830,7 @@ def doit_exclure(relatif: Path) -> bool:
 
 #: Modules du cœur, livrés avec Épure et non désinstallables. Seuls ceux-là sont
 #: copiés depuis `backend/modules/` ; les autres viennent du catalogue.
-MODULES_COEUR = frozenset({"admin", "chat", "history", "settings"})
+MODULES_COEUR = frozenset({"admin", "chat", "settings"})
 
 
 def copier_backend(cible: Path, journal=print) -> int:
