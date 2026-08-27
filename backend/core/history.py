@@ -264,7 +264,7 @@ class HistoryEngine:
         conv["résumé_contexte"] = resume if isinstance(resume, str) else ""
 
         # Consigne libre de CE fil. Absente des conversations d'avant ce champ :
-        # vide, et surtout pas héritée de `session_instruction` ni du profil —
+        # vide, et surtout pas héritée de `instruction_générale` ni du profil —
         # ce sont trois portées différentes (cf. `set_instruction`).
         instruction = conv.get("instruction")
         conv["instruction"] = instruction if isinstance(instruction, str) else ""
@@ -590,9 +590,9 @@ class HistoryEngine:
 
         ``profile.préférences_interaction.style``
             permanent, vaut pour toute l'instance. « Réponds sans reformuler ».
-        ``context_session.session_instruction``
-            global, mais remis à zéro à chaque démarrage — l'instance entière,
-            pour la durée d'un lancement.
+        ``context_session.instruction_générale``
+            toute l'instance, et persistante depuis le 2026-08-27 (elle s'appelait
+            `session_instruction` et s'effaçait à chaque démarrage).
         ``instruction`` (ici)
             **cette conversation**, et elle seule, tant qu'elle existe. « Dans ce
             fil, réponds en anglais » ne doit pas contaminer les autres.

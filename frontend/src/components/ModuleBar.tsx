@@ -489,7 +489,7 @@ export default function ModuleBar({
         // `context_session.json` écrits avant ce réglage, et son absence doit
         // valoir « activé », pas « désactivé ».
         setRaisonnement((d['raisonnement'] as boolean) ?? true)
-        const instr = (d['session_instruction'] as string) ?? ''
+        const instr = (d['instruction_générale'] as string) ?? ''
         setSessionInstruction(instr)
         setInstructionDraft(instr)
         setSelectedModel((d['modèle_actif'] as string) ?? 'qwen2.5:7b')
@@ -555,7 +555,7 @@ export default function ModuleBar({
 
   const handleInstructionSave = useCallback(() => {
     setSessionInstruction(instructionDraft)
-    pushSettings({ session_instruction: instructionDraft })
+    pushSettings({ 'instruction_générale': instructionDraft })
   }, [instructionDraft, pushSettings])
 
   const enregistrerInstructionFil = useCallback(async () => {
@@ -1046,7 +1046,7 @@ export default function ModuleBar({
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs text-muted uppercase tracking-wide">Instruction de session</p>
+            <p className="text-xs text-muted uppercase tracking-wide">Consigne générale</p>
             <Textarea
               value={instructionDraft}
               onChange={e => setInstructionDraft(e.target.value)}
@@ -1054,7 +1054,7 @@ export default function ModuleBar({
               rows={2}
               className="w-full text-xs"
             />
-            <p className="text-xs text-muted">S'applique à tout, jusqu'au prochain démarrage.</p>
+            <p className="text-xs text-muted">S'applique à toutes les conversations, et se garde.</p>
             <Button variant="secondary" size="sm" onClick={handleInstructionSave} disabled={instructionDraft === sessionInstruction}>
               Sauvegarder
             </Button>

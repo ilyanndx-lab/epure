@@ -196,7 +196,7 @@ class InstructionDeFilTest(_Base):
     différentes ; ce qui compte est qu'elles ne se contaminent pas :
 
       profil                permanent, toute l'instance
-      session_instruction   l'instance, jusqu'au prochain démarrage
+      instruction_générale  toute l'instance, et persistante
       instruction (ici)     CE fil, tant qu'il existe
     """
 
@@ -243,15 +243,15 @@ class InstructionDeFilTest(_Base):
         conv = history_engine.create_conversation()
         self.assertNotIn("CONSIGNE DE L AUTRE FIL", self._tour(conv["id"]))
 
-    def test_elle_est_lue_APRES_l_instruction_de_session(self):
+    def test_elle_est_lue_APRES_la_consigne_generale(self):
         """De deux consignes qui se contredisent, la plus spécifique en dernier.
 
         L'instruction de session vaut pour toute l'instance ; celle du fil vise
         ce fil précis. Un modèle qui lit les deux doit rencontrer la seconde en
         dernier.
         """
-        routeur_chat.memory.update_context(session_instruction="CONSIGNE GLOBALE")
-        self.addCleanup(routeur_chat.memory.update_context, session_instruction="")
+        routeur_chat.memory.update_context(**{"instruction_générale": "CONSIGNE GLOBALE"})
+        self.addCleanup(lambda: routeur_chat.memory.update_context(**{"instruction_générale": ""}))
 
         conv = history_engine.create_conversation()
         history_engine.set_instruction(conv["id"], "CONSIGNE DU FIL")
