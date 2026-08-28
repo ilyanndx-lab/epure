@@ -1033,6 +1033,10 @@ async def ws_chat(websocket: WebSocket):
             ).start()
 
             accumulated = ""
+            #: La génération a-t-elle été COUPÉE par le plafond de tokens ?
+            #: Renseigné par la sentinelle `__stats__` (`done_reason == "length"`
+            #: côté Ollama, `finish_reason` côté API compatible OpenAI).
+            _tronque = False
             _first_token = True
             while True:
                 item = await queue.get()
@@ -1061,6 +1065,7 @@ async def ws_chat(websocket: WebSocket):
                     }, ensure_ascii=False))
                     continue
                 if isinstance(item, dict) and "__stats__" in item:
+                    _tronque = bool(item.get("tronqué"))
                     usage_tracker.track(
                         _provider_of(_last_model[0]),
                         item.get("prompt_tokens", 0),
@@ -1072,6 +1077,7 @@ async def ws_chat(websocket: WebSocket):
                         "output_tokens": item.get("output_tokens", 0),
                         "eval_duration_ms": (item.get("eval_duration_ns", 0) or 0) // 1_000_000,
                         "prompt_duration_ms": (item.get("prompt_duration_ns", 0) or 0) // 1_000_000,
+                        "tronqué": _tronque,
                     }))
                     continue
                 if _first_token:
@@ -1079,6 +1085,26 @@ async def ws_chat(websocket: WebSocket):
                     _first_token = False
                 accumulated += item
                 await websocket.send_text(json.dumps({"type": "token", "content": item}))
+
+            # Coupé AVANT d'avoir écrit un seul caractère de réponse.
+            #
+            # C'est le symptôme mesuré chez un destinataire : 613 tokens
+            # d'entrée, 2048 produits, réponse VIDE. La réflexion avait consommé
+            # tout le budget — les deux puisent au même `num_predict`, aucune API
+            # n'expose de quota séparé.
+            #
+            # Sans ce message, le chat affiche une bulle vide, indiscernable d'un
+            # modèle qui n'aurait rien à dire. On nomme la panne et on donne le
+            # geste qui la lève, plutôt que de laisser chercher.
+            if _tronque and not accumulated:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "content": (
+                        "Le modèle a épuisé son budget de génération en réfléchissant, "
+                        "sans produire de réponse. Désactivez le raisonnement dans le "
+                        "panneau Compétences, ou posez une question plus simple."
+                    ),
+                }, ensure_ascii=False))
 
             _meta = await _enregistrer_reponse(conv_id, accumulated) if accumulated else {}
             await websocket.send_text(json.dumps({

@@ -127,6 +127,28 @@ class LLMEngine:
         self._model = cfg["model"]["name"]
         self._gen = cfg["generation"]
 
+    def _budget(self, max_tokens: Optional[int], raisonnement: bool) -> int:
+        """Plafond de génération pour cet appel.
+
+        Un ``max_tokens`` explicite l'emporte toujours : les appelants qui en
+        passent un (résumés, agent de code, étapes du pipeline) l'ont
+        dimensionné pour leur tâche, et le raisonnement n'y change rien.
+
+        Sinon, ``max_tokens_raisonnement`` quand la réflexion est active. Les
+        deux API ne connaissent qu'un plafond UNIQUE — la réflexion et la
+        réponse y puisent au même endroit — donc le seul levier disponible est
+        de le relever quand on sait qu'il devra couvrir les deux.
+
+        ``.get()`` avec repli sur ``max_tokens`` : un ``config.yaml`` écrit avant
+        ce réglage ne doit pas faire échouer le démarrage, il retombe simplement
+        sur l'ancien comportement.
+        """
+        if max_tokens:
+            return max_tokens
+        if raisonnement:
+            return self._gen.get("max_tokens_raisonnement") or self._gen["max_tokens"]
+        return self._gen["max_tokens"]
+
     @staticmethod
     def _parse_model(model: str) -> tuple[str, str]:
         """'provider:model_id' → (provider, model_id).  Falls back to ('ollama', model)."""
@@ -170,17 +192,24 @@ class LLMEngine:
         """
         m = model or self._model
         provider, model_id = self._parse_model(m)
-        mt = max_tokens or self._gen["max_tokens"]
+        # `max_tokens` est passé TEL QUEL aux deux chemins qui gèrent le
+        # raisonnement : c'est `_budget` qui tranche chez eux, et il a besoin de
+        # savoir si l'appelant en a fourni un ou non. Le résoudre ici — ce que
+        # faisait `mt = max_tokens or self._gen["max_tokens"]` — le rendait
+        # toujours non nul, donc rendait `_budget` inopérant.
         if provider == "gemini":
             # Pas de bascule ici : `google-generativeai` n'expose rien
-            # d'équivalent sur ce chemin, et rien n'a été mesuré. Ne pas inventer.
-            yield from self._stream_gemini(messages, m, mt)
+            # d'équivalent sur ce chemin, et rien n'a été mesuré. Ne pas inventer
+            # — y compris pour le budget : relever le plafond de Gemini parce que
+            # `raisonnement` est vrai par défaut changerait un chemin dont on ne
+            # sait rien.
+            yield from self._stream_gemini(messages, m, max_tokens or self._gen["max_tokens"])
         elif provider in _OPENAI_COMPAT:
             client = self._openai_client(provider)  # raises if key missing
-            yield from self._stream_openai(messages, model_id, client, provider, mt,
+            yield from self._stream_openai(messages, model_id, client, provider, max_tokens,
                                           raisonnement=raisonnement)
         else:
-            yield from self._stream_ollama(messages, m, mt, raisonnement=raisonnement)
+            yield from self._stream_ollama(messages, m, max_tokens, raisonnement=raisonnement)
 
     def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
         m = model or self._model
@@ -264,7 +293,7 @@ class LLMEngine:
             "options": {
                 "temperature": self._gen["temperature"],
                 "top_p": self._gen["top_p"],
-                "num_predict": max_tokens or self._gen["max_tokens"],
+                "num_predict": self._budget(max_tokens, raisonnement),
                 "num_thread": 8,
             },
         }
@@ -288,12 +317,25 @@ class LLMEngine:
                 yield content
             try:
                 if chunk["done"]:
+                    # `done_reason == "length"` = le plafond `num_predict` a été
+                    # atteint, donc la génération est COUPÉE, pas terminée.
+                    #
+                    # Il était ignoré, et c'est ce qui rendait le bug muet : sur
+                    # un modèle qui pense, la réflexion peut consommer tout le
+                    # budget et la réponse n'être jamais produite. Le chat
+                    # affichait alors une bulle vide, indiscernable d'un modèle
+                    # qui n'aurait rien à dire.
+                    #
+                    # `.get()` sur un `SubscriptableBaseModel` : le champ existe
+                    # dans le schéma, mais un serveur plus ancien peut le laisser
+                    # à `None` — auquel cas on ne prétend pas savoir.
                     yield {
                         "__stats__": True,
                         "prompt_tokens": chunk["prompt_eval_count"] or 0,
                         "output_tokens": chunk["eval_count"] or 0,
                         "eval_duration_ns": chunk["eval_duration"] or 0,
                         "prompt_duration_ns": chunk["prompt_eval_duration"] or 0,
+                        "tronqué": chunk.get("done_reason") == "length",
                     }
             except Exception:
                 pass
@@ -464,7 +506,8 @@ class LLMEngine:
         stream_start = time.time()
         prompt_tokens = 0
         output_tokens = 0
-        mt = max_tokens or self._gen["max_tokens"]
+        tronque = False
+        mt = self._budget(max_tokens, raisonnement)
 
         def _create(with_usage: bool):
             kwargs = dict(
@@ -505,6 +548,17 @@ class LLMEngine:
                             yield {"__reasoning__": True, "content": reasoning}
                     if delta.content:
                         yield delta.content
+                # `finish_reason == "length"` : le plafond `max_tokens` a été
+                # atteint, donc la génération est COUPÉE. Pendant OpenAI du
+                # `done_reason` d'Ollama, et même conséquence — sur FLM, dont le
+                # raisonnement puise dans le même budget, la réponse peut ne
+                # jamais être produite.
+                #
+                # `getattr` en cascade : `choices` peut être vide sur le chunk
+                # d'usage final, et `finish_reason` absent selon le fournisseur.
+                if chunk.choices:
+                    if getattr(chunk.choices[0], "finish_reason", None) == "length":
+                        tronque = True
                 if getattr(chunk, "usage", None):
                     prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
                     output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
@@ -519,6 +573,7 @@ class LLMEngine:
             "output_tokens": output_tokens,
             "eval_duration_ns": int((time.time() - stream_start) * 1e9),
             "prompt_duration_ns": 0,
+            "tronqué": tronque,
         }
 
     def _generate_openai(self, messages: list[dict], model_id: str, client, provider: str = "") -> str:

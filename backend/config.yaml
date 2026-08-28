@@ -13,6 +13,25 @@ generation:
   temperature: 0.7
   top_p: 0.9
   max_tokens: 2048
+  # Plafond utilisé quand le raisonnement est actif.
+  #
+  # `num_predict` (Ollama) et `max_tokens` (API compatible OpenAI) sont des
+  # plafonds UNIQUES : la réflexion et la réponse y puisent au même endroit, et
+  # aucune des deux API n'expose de quota dédié à la réflexion. Un modèle qui
+  # pense longtemps peut donc épuiser le budget AVANT d'écrire sa réponse —
+  # mesuré chez un destinataire : 613 tokens d'entrée, 2048 produits, réponse
+  # finale VIDE.
+  #
+  # 2048 avait été dimensionné pour une réponse seule, avant que des modèles à
+  # raisonnement soient utilisables ici. Quand la réflexion est active, le
+  # plafond doit couvrir DEUX productions.
+  #
+  # Conséquence assumée : ce plafond s'applique dès l'appel, donc aussi aux
+  # modèles qui ne pensent pas (le raisonnement est actif par défaut). Ça ne leur
+  # coûte rien — `num_predict` est un plafond, pas une allocation : un modèle qui
+  # a fini s'arrête. Le seul effet est qu'une réponse longue n'est plus coupée à
+  # 2048.
+  max_tokens_raisonnement: 4096
 
 rag:
   # Réglages techniques uniquement. Les dossiers de fiches (racine +
