@@ -362,12 +362,30 @@ jamais une exception. Verrouillé par `test_vision_images.py`.
 **Coût mesuré, à garder en tête** : `index_file` est appelé par fichier depuis
 le flux de chargement du chat (`_stream_load_sse`) — attacher une image à une
 conversation bloque donc ce flux le temps de l'appel vision. Mesuré sur ce
-poste, modèle déjà chargé : ~2 s (Ollama/`moondream`) à 26 s
-(`flm:qwen3vl-it:4b`, image simple) — jusqu'à 12 s pour `flm` sur une image plus
-chargée (diagramme + formule). Rien ne borne l'attente en cas de panne autre
-que les délais par défaut des clients (SDK `openai` : 600 s ; `ollama_client` :
-300 s en lecture) — la dégradation ci-dessus finit donc par se produire, mais
-pas vite.
+poste : ~2 s pour Ollama/`moondream` une fois le modèle chargé (25 s au premier
+appel après le pull). Pour `flm:qwen3vl-it:4b`, **6 à 19 s sur la MÊME image**
+rejouée trois fois (12,0 s / 6,2 s / 18,8 s) — la variance vient du run-to-run
+sur le NPU, pas de la complexité de l'image ; 26 s mesuré au tout premier appel
+après chargement du modèle. Ne pas lire une relation « image simple = rapide,
+image chargée = lent » dans ces chiffres, il n'y en a pas.
+
+**IMPÉRATIF — `describe_image` a son propre timeout (`_VISION_TIMEOUT_S`,
+60 s dans `core/llm.py`), jamais `model.timeout_s`.** Cette méthode tourne en
+synchrone dans le chargement d'un fichier, pas dans une conversation active :
+elle doit échouer vite et retomber sur le placeholder, pas bloquer jusqu'aux
+défauts globaux des clients (600 s SDK openai, 300 s en lecture pour
+`ollama_client`, le client PARTAGÉ du chat). Deux mécanismes différents, parce
+qu'aucun des deux SDK ne se pose pareil :
+
+- **Ollama** : `Client.chat()` n'a pas de paramètre `timeout` par appel — un
+  second client, `_vision_ollama_client`, est construit une fois avec ce
+  timeout court, distinct de `ollama_client`.
+- **openai (flm)** : `create(timeout=...)` existe, mais **la retry policy par
+  défaut (2 essais) MULTIPLIE l'attente sur un timeout au lieu de la borner** —
+  mesuré : un `timeout=0.5` seul relève à 5,4 s avant de lever, contre 1,9 s
+  avec `max_retries=0`. `describe_image` pose donc les deux ensemble via
+  `.with_options(timeout=..., max_retries=0)`. Sans `max_retries=0`, le
+  timeout affiché ne borne rien — le pire cas réel serait ~3x plus long.
 
 **Qualité mesurée, pas supposée — `moondream` transcrit mais décrit mal.** Sur
 un texte simple (« THALES 42 » seul), les deux providers transcrivent

@@ -31,7 +31,19 @@ Ce que ces tests gardent, dans l'ordre du besoin :
    modèle vision disponible, ou l'appel échoue → le placeholder d'avant, jamais
    une exception qui ferait échouer l'indexation d'un fichier par ailleurs
    valide (même convention que les extracteurs `.docx`/`.pptx`/`.xlsx`,
-   `test_ingestion_documents.py`).
+   `test_ingestion_documents.py`) ;
+4. **`describe_image` a un timeout COURT et DÉDIÉ (60 s), sur les deux
+   chemins** — jamais `model.timeout_s` (300 s, pensé pour le chat) : cette
+   méthode tourne en synchrone dans le chargement d'un fichier
+   (`_stream_load_sse`), pas une conversation active. Deux mécanismes
+   différents, vérifiés par appel réel :
+   - Ollama : `Client.chat()` n'a pas de `timeout` par appel → un second
+     client dédié, `_vision_ollama_client` ;
+   - flm (openai) : `create(timeout=...)` existe, mais la retry policy PAR
+     DÉFAUT (2 essais) multiplie l'attente au lieu de la borner — mesuré,
+     5,4 s pour lever sur un `timeout=0.5` seul, contre 1,9 s avec
+     `max_retries=0`. `describe_image` pose donc les deux via
+     `.with_options(timeout=..., max_retries=0)`.
 
 Usage :
     python test_vision_images.py
@@ -222,13 +234,16 @@ class DescribeImageDispatchTest(unittest.TestCase):
             appels.update(kwargs)
             return {"message": {"content": "Un schéma de Thalès."}}
 
-        original = module_llm.ollama_client.chat
-        module_llm.ollama_client.chat = faux_chat
+        # Le client DÉDIÉ à la vision, pas `ollama_client` (le partagé, dont le
+        # timeout est `model.timeout_s` — 300 s, pensé pour un chargement à
+        # froid de modèle de chat, pas pour cette méthode synchrone).
+        original = module_llm._vision_ollama_client.chat
+        module_llm._vision_ollama_client.chat = faux_chat
         try:
             moteur = LLMEngine(config_path=_CONFIG)
             resultat = moteur.describe_image(r"C:\cours\schema.png", "moondream")
         finally:
-            module_llm.ollama_client.chat = original
+            module_llm._vision_ollama_client.chat = original
 
         self.assertEqual(resultat, "Un schéma de Thalès.")
         self.assertEqual(appels["model"], "moondream")
@@ -237,6 +252,20 @@ class DescribeImageDispatchTest(unittest.TestCase):
         # Le chemin TEL QUEL, aucun encodage manuel — `ollama._types.Image` lit
         # et encode lui-même le fichier (vérifié : accepte str/bytes/Path).
         self.assertEqual(message["images"], [r"C:\cours\schema.png"])
+
+    def test_le_client_ollama_dedie_a_un_timeout_court_et_independant(self):
+        """`_vision_ollama_client` n'est PAS `ollama_client` : il a son propre
+        timeout, court, sans toucher à celui du chat (`model.timeout_s`).
+
+        Vérifié par appel réel (cf. docstring du module) : un timeout de
+        lecture de 0,3 s sur un client dédié lève en 0,35 s sur un vrai appel
+        à `moondream`, indépendamment du client partagé. Ici on fige la
+        VALEUR configurée plutôt que de rejouer l'appel réseau à chaque run.
+        """
+        self.assertIsNot(module_llm._vision_ollama_client, module_llm.ollama_client)
+        self.assertEqual(module_llm._vision_ollama_client._client.timeout.read,
+                         module_llm._VISION_TIMEOUT_S)
+        self.assertEqual(module_llm._VISION_TIMEOUT_S, 60.0)
 
     def test_flm_envoie_le_bloc_image_url_en_base64(self):
         vus = {}
@@ -260,6 +289,12 @@ class DescribeImageDispatchTest(unittest.TestCase):
 
         class _Client:
             chat = _Chat()
+
+            def with_options(_self, **kw):
+                # `.with_options(timeout=..., max_retries=0)` rend le client
+                # LUI-MÊME dans le vrai SDK — cf. le test dédié ci-dessous pour
+                # la vérification des valeurs passées.
+                return _self
 
         dossier = Path(tempfile.mkdtemp(prefix="epure-test-vision-flm-"))
         try:
@@ -285,6 +320,47 @@ class DescribeImageDispatchTest(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(dossier, ignore_errors=True)
+
+    def test_flm_utilise_un_timeout_court_et_desactive_les_relances(self):
+        """`max_retries=0` est le point qui aurait pu passer inaperçu.
+
+        Mesuré (cf. docstring du module) : la politique de relance PAR DÉFAUT
+        du SDK openai (2 essais) MULTIPLIE l'attente sur un timeout au lieu de
+        la borner — 5,4 s pour un `timeout=0.5` seul, 1,9 s avec
+        `max_retries=0`. Sans ce réglage, `_VISION_TIMEOUT_S` ne bornerait
+        rien : le pire cas réel serait environ 3x la valeur affichée.
+        """
+        options_vus = {}
+
+        class _Completions:
+            def create(_self, **kw):
+                return type("R", (), {"choices": [
+                    type("C", (), {"message": type("M", (), {"content": "ok"})()})()
+                ]})()
+
+        class _Chat:
+            completions = _Completions()
+
+        class _ClientAvecOptions:
+            chat = _Chat()
+
+            def with_options(_self, **kw):
+                options_vus.update(kw)
+                return _self
+
+        dossier = Path(tempfile.mkdtemp(prefix="epure-test-vision-timeout-"))
+        try:
+            chemin = dossier / "photo.png"
+            chemin.write_bytes(b"x")
+            moteur = LLMEngine(config_path=_CONFIG)
+            moteur._openai_client = lambda provider: _ClientAvecOptions()
+            moteur.describe_image(str(chemin), "flm:qwen3vl-it:4b")
+        finally:
+            import shutil
+            shutil.rmtree(dossier, ignore_errors=True)
+
+        self.assertEqual(options_vus, {"timeout": module_llm._VISION_TIMEOUT_S,
+                                       "max_retries": 0})
 
     def test_un_provider_non_vision_leve_clairement(self):
         """Aucun des deux chemins câblés : pas de tentative silencieuse dans un
