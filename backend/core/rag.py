@@ -296,15 +296,34 @@ class RAGEngine:
             return f"Image : {name} (analyse vision non disponible sans modèle vision)"
         return ""
 
-    def index_file(self, path: str) -> None:
+    def index_file(self, path: str) -> Optional[str]:
+        """Indexe le fichier et rend le texte RÉELLEMENT indexé (ou ``None``).
+
+        Le retour existe pour que l'appelant qui a aussi besoin du contenu —
+        `_stream_load_sse` (`modules/settings/router.py`), qui construit le
+        résumé affiché à l'import — réutilise CE texte au lieu de le
+        recalculer avec `read_file_text`. Avant ce retour, cet appelant faisait
+        une extraction séparée, et c'était plus qu'un doublon de travail pour
+        les images : `read_file_text` est **statique**, donc n'appelle jamais
+        `_texte_image`/le modèle vision — le résumé affiché à l'import disait
+        systématiquement « je n'ai pas accès à l'image » alors que l'index
+        avait la vraie description, produite juste au-dessus par le même appel
+        à `index_file`. Pour les autres formats (pdf/docx/…), le contenu était
+        identique des deux côtés : seule la seconde lecture/parsing était
+        gaspillée, pas le résultat.
+
+        Rend ``None`` quand rien n'a été indexé (extension non supportée,
+        texte extrait vide après strip) — l'appelant ne doit pas construire de
+        contenu à partir de rien.
+        """
         ext = Path(path).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
-            return
+            return None
 
         full_text = (self._texte_image(path) if ext in _IMAGE_EXTENSIONS
                     else self._extract_text_from_path(path))
         if not full_text.strip():
-            return
+            return None
 
         # Remove stale chunks before re-indexing to avoid duplicates
         try:
@@ -348,9 +367,11 @@ class RAGEngine:
         self._query_lru.cache_clear()
         self._query_filtered_lru.cache_clear()
 
-    def index_pdf(self, path: str) -> None:
+        return full_text
+
+    def index_pdf(self, path: str) -> Optional[str]:
         """Backward-compat alias for index_file."""
-        self.index_file(path)
+        return self.index_file(path)
 
     def _do_query(self, text: str, n: int) -> str:
         count = self._col.count()
