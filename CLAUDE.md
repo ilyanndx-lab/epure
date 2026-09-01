@@ -91,6 +91,7 @@ python test_dev_epure.py          # stderr non fatal dans tools/dev-epure.ps1 (�
 python test_mise_a_jour.py        # l'archive s'applique sans s'imbriquer (§8)
 python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté (§8)
 python test_ingestion_documents.py   # formats lus par le RAG : pptx/xlsx/docx réels
+python test_vision_images.py      # indexation d'une image : décrite par un modèle vision, pas un placeholder (§3.3 bis)
 python test_taches_locales.py     # aucune tâche de fond ne part en cloud (§3.7)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime + le vrai store vectoriel
@@ -337,6 +338,54 @@ Convention des extracteurs : paquet **absent** → avertissement + chaîne vide
 (dégradation, le paquet livré peut l'avoir perdu) ; fichier **illisible** →
 l'exception remonte, comme `.pdf` depuis toujours. Ne pas confondre les deux :
 l'un est une installation incomplète, l'autre un mauvais fichier.
+
+**Les images (`.png`/`.jpg`/`.jpeg`/`.webp`) ont, depuis le 2026-09-01, un
+troisième comportement — et lui non plus n'est pas uniforme entre les deux
+usages de `_extract_text_from_path` :**
+
+- **`index_file`** (l'indexation RAG) bascule vers `RAGEngine._texte_image`,
+  qui appelle un modèle vision (`LLMEngine.describe_image`, choisi par
+  `core.models.premier_modele_vision_disponible()` — FLM d'abord, sinon
+  l'Ollama de `config.yaml:vision.ollama_model`, défaut `moondream`) pour
+  produire une description ET transcrire le texte visible, remplaçant le
+  placeholder muet d'avant.
+- **`read_file_text`/`read_pdf_text`** (lecture ad hoc d'un fichier — `/skills/
+  résumé`, l'aperçu d'upload de Réglages) restent sur `_extract_text_from_path`
+  et son placeholder statique. **C'est un choix de périmètre assumé, pas un
+  oubli** : seule l'indexation appelle un modèle vision.
+
+Dégradation à trois niveaux, même esprit que les extracteurs ci-dessus mais un
+cran de plus : aucun `llm` injecté (scripts, tests légers), aucun modèle
+vision disponible, ou l'appel échoue (timeout, réponse vide) → le placeholder,
+jamais une exception. Verrouillé par `test_vision_images.py`.
+
+**Coût mesuré, à garder en tête** : `index_file` est appelé par fichier depuis
+le flux de chargement du chat (`_stream_load_sse`) — attacher une image à une
+conversation bloque donc ce flux le temps de l'appel vision. Mesuré sur ce
+poste, modèle déjà chargé : ~2 s (Ollama/`moondream`) à 26 s
+(`flm:qwen3vl-it:4b`, image simple) — jusqu'à 12 s pour `flm` sur une image plus
+chargée (diagramme + formule). Rien ne borne l'attente en cas de panne autre
+que les délais par défaut des clients (SDK `openai` : 600 s ; `ollama_client` :
+300 s en lecture) — la dégradation ci-dessus finit donc par se produire, mais
+pas vite.
+
+**Qualité mesurée, pas supposée — `moondream` transcrit mais décrit mal.** Sur
+un texte simple (« THALES 42 » seul), les deux providers transcrivent
+correctement. Sur une image plus proche d'un cours réel (triangle annoté +
+formule « AB/AC = AM/AN = 3/5 ») : `flm:qwen3vl-it:4b` transcrit le titre ET
+la formule mot pour mot, en français ; `moondream` décrit la forme du triangle
+mais **ne transcrit pas la formule** (« a list of numbers and letters ») et
+répond en anglais à un prompt français. `moondream` reste le repli retenu
+(seul modèle vision Ollama vérifié, se pull et tourne vite) mais son résultat
+sur du texte structuré est plus faible que celui de `flm` — à garder en tête
+avant de compter sur la transcription Ollama pour des formules.
+
+**`_VISION_PROMPT` (`core/llm.py`) est délibérément COURT.** Mesuré sur
+`moondream` : une formulation plus longue, énumérant titres/légendes/formules/
+annotations entre parenthèses, fait dégénérer ce modèle — réponse VIDE
+(`eval_count: 1`) ou boucle de répétition (1265 tokens de charabia pour la même
+image). La forme courte est robuste sur les deux providers câblés ; ne pas
+l'étoffer sans rejouer la mesure sur `moondream`.
 
 ### 3.7 Le cloud ne part jamais sans qu'on l'ait demandé
 

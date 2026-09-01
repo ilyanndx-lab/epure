@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import time
@@ -68,6 +69,20 @@ _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
     "deepseek": ("https://api.deepseek.com/v1",         "DEEPSEEK_API_KEY"),
     "flm":      ("http://localhost:11435/v1",           None),
 }
+
+
+#: Prompt de description d'image, partagé entre les deux chemins de
+#: `describe_image`. Volontairement COURT — mesuré sur `moondream` (le repli
+#: Ollama, cf. `core/models.py:_ollama_vision_model`) : une formulation plus
+#: longue et détaillée, demandant explicitement titres/légendes/formules/
+#: annotations entre parenthèses, fait dégénérer ce modèle — soit une réponse
+#: VIDE (`eval_count: 1`, arrêt immédiat), soit une boucle de répétition
+#: (mesuré : 1265 tokens de charabia thaï en 65 s pour la même image). La forme
+#: courte ci-dessous a été rejouée quatre fois sur `moondream` sans variation
+#: (~2 s, description correcte, transcription exacte) et vérifiée aussi sur
+#: `qwen3vl-it:4b` (8,8 s, transcription exacte) — donc commune aux deux
+#: providers plutôt que deux prompts à maintenir.
+_VISION_PROMPT = "Décris cette image et transcris tout texte visible."
 
 
 def _provider_error_message(provider: str, model_id: str, exc: Exception) -> str:
@@ -223,6 +238,53 @@ class LLMEngine:
 
     def reload_dotenv(self) -> None:
         load_dotenv(_ENV_FILE, override=True)
+
+    def describe_image(self, path: str, model: str) -> str:
+        """Décrit une image et transcrit son texte visible, via un modèle vision.
+
+        Dispatch par provider — même principe que :meth:`stream` (``_parse_model``
+        décide) — parce que le format du message est **radicalement différent**
+        d'un chemin à l'autre, vérifié par appel réel et non lu dans une doc :
+
+        * **Ollama** accepte le CHEMIN du fichier tel quel dans
+          ``images=[...]`` : ``ollama._types.Image`` le lit et l'encode lui-même.
+          Rien à préparer ici.
+        * **flm** (OpenAI-compatible) exige le bloc ``image_url`` en base64
+          (``data:image/<ext>;base64,...``) — mesuré sur ``qwen3vl-it:4b`` :
+          7,5 s, transcription exacte d'un texte photographié.
+
+        Seuls ces deux providers sont câblés, et c'est délibéré :
+        ``core.models.premier_modele_vision_disponible()`` ne rend jamais que
+        ``flm:...`` ou un nom Ollama nu — deviner un troisième format non mesuré
+        serait exactement l'erreur que ce fichier évite ailleurs (cf. la bascule
+        ``raisonnement``, réservée à ``flm`` pour la même raison).
+        """
+        provider, model_id = self._parse_model(model)
+        if provider == "ollama":
+            response = ollama_client.chat(
+                model=model_id,
+                messages=[{"role": "user", "content": _VISION_PROMPT, "images": [str(path)]}],
+            )
+            return response["message"]["content"] or ""
+        if provider in _OPENAI_COMPAT:
+            client = self._openai_client(provider)
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            ext = Path(path).suffix.lstrip(".").lower()
+            mime = "jpeg" if ext == "jpg" else (ext or "png")
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _VISION_PROMPT},
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:image/{mime};base64,{b64}"}},
+                    ],
+                }],
+            )
+            return response.choices[0].message.content or ""
+        raise ValueError(f"describe_image : provider '{provider}' non pris en charge pour la vision")
 
     # ── Ollama ───────────────────────────────────────────────────────────────
 

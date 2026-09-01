@@ -154,7 +154,7 @@ vector_store = _LazyEngine(
     "Store vectoriel (embeddings, ONNX Runtime)",
 )
 rag = _LazyEngine(
-    lambda: RAGEngine(store=vector_store),
+    lambda: RAGEngine(store=vector_store, llm=llm),
     "RAG (embeddings, ONNX Runtime)",
 )
 # docanalysis/history partagent le même store → paresseux eux aussi (sinon ils

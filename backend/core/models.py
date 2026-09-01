@@ -13,9 +13,13 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from core.llm import ollama_host as _ollama_host
 
 logger = logging.getLogger(__name__)
+
+_CONFIG_FILE = Path(__file__).parent.parent / "config.yaml"
 
 # ── Qualitative metadata ─────────────────────────────────────────────────────
 
@@ -98,6 +102,11 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "categorie": "puissant",
         "description": "Code spécialisé · local CPU",
         "usages": ["Code"],
+    },
+    "moondream": {
+        "categorie": "rapide",
+        "description": "Vision + OCR léger · local CPU",
+        "usages": ["Vision"],
     },
     "mistral-small:24b": {
         "categorie": "puissant",
@@ -236,6 +245,10 @@ FLM_MODELS_STATIC: list[dict] = [
         "description": "Vision + OCR · NPU",
         "_categorie": "rapide",
         "_usages": ["Vision", "Chat rapide"],
+        # Flag consommé par `premier_modele_vision_disponible()` — la SEULE
+        # lecture qui doit connaître ce nom, pour que `core/rag.py` n'ait jamais
+        # à écrire "qwen3vl-it:4b" en dur.
+        "vision": True,
     },
     {
         "id": "flm:gpt-oss:20b",
@@ -338,6 +351,56 @@ def flm_model_ids() -> Optional[set[str]]:
         return {m.get("id", "") for m in data.get("data", []) if m.get("id")}
     except Exception:
         return None
+
+
+def _ollama_vision_model() -> str:
+    """``vision.ollama_model`` de config.yaml, même registre que ``model.name``.
+
+    Défaut ``moondream`` — vérifié empiriquement le 2026-09-01 : existe dans la
+    bibliothèque Ollama, se pull sans erreur, et répond en quelques secondes sur
+    ce poste. Pas un nom en dur au sens où le compte `core/rag.py` : il ne le lit
+    jamais, il n'appelle que `premier_modele_vision_disponible()`.
+    """
+    try:
+        with open(_CONFIG_FILE, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return (cfg.get("vision") or {}).get("ollama_model") or "moondream"
+    except Exception:
+        logger.warning("vision.ollama_model illisible dans config.yaml — défaut 'moondream'")
+        return "moondream"
+
+
+def premier_modele_vision_disponible() -> Optional[str]:
+    """Premier modèle capable de décrire une image, RÉELLEMENT disponible.
+
+    **Source unique de ce choix** — `core/rag.py` et `core/llm.py` n'ont aucun
+    nom de modèle vision en dur, ils appellent cette fonction. FLM est essayé
+    d'abord : c'est le chemin NPU dédié de ce poste, déjà répertorié dans
+    `FLM_MODELS_STATIC` (flag `vision`), sans téléchargement à froid tant que
+    le modèle est installé. L'Ollama configuré (`vision.ollama_model`,
+    `moondream` par défaut) est le repli — c'est ce qui couvre une machine sans
+    FLM (ARM64, pas de NPU AMD).
+
+    Rend ``None`` si aucun des deux n'est disponible : `core/rag.py` retombe
+    alors sur le placeholder existant, comme un paquet d'extraction absent
+    (§3.3 bis de CLAUDE.md) — dégradation, jamais d'exception.
+    """
+    if check_flm():
+        installed = get_flm_installed()
+        live = flm_model_ids()
+        for m in FLM_MODELS_STATIC:
+            if not m.get("vision"):
+                continue
+            model_name = m["id"].split("flm:", 1)[1]
+            if model_name in installed and (live is None or model_name in live):
+                return m["id"]
+
+    ollama_model = _ollama_vision_model()
+    ollama_installed = get_ollama_installed()
+    if ollama_installed and ollama_model in ollama_installed:
+        return ollama_model
+
+    return None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
