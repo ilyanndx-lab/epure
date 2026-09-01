@@ -57,6 +57,30 @@ indexé, et `_stream_load_sse` le réutilise au lieu de relire/reparser le
 fichier — corrige le résumé ET élimine une double extraction pour tous les
 formats (pdf/docx/pptx/xlsx…), pas seulement les images.
 
+**Angle mort trouvé en usage réel, corrigé ici** : `describe_image` peut
+réussir (pas de timeout, pas d'exception) tout en rendant une chaîne vide —
+observé sur `flm:qwen3vl-it:4b`. Seul le `except Exception` était logué ;
+`_texte_image` log désormais aussi ce cas (et celui, tout aussi silencieux,
+d'aucun modèle vision disponible), et `describe_image` logue en plus le
+diagnostic brut : `done_reason`/`eval_count` côté Ollama, `finish_reason`/
+`refusal`/`model_extra`/`usage` côté openai.
+
+**Le mécanisme, retrouvé ailleurs dans cette même session** : `finish_reason`
+NE DISTINGUE PAS ce cas d'un succès — mesuré sur `moondream` (prompt trop
+long, avant que `_VISION_PROMPT` soit raccourci) : `done_reason='stop'`,
+`eval_count=1`, réponse en 0,08 s, `content=''`. Le modèle a émis l'EOS comme
+PREMIER token. `"stop"` est donc un succès aussi bien qu'un contenu vide — le
+discriminant réel est le nombre de tokens produits (`eval_count`/`usage.
+completion_tokens` proche de 0-1), pas `finish_reason`. `refusal` et
+`model_extra` étaient vides/nuls sur chaque réponse `flm` inspectée : gratuits
+à logger, mais rien n'indique qu'ils soient la cause chez `flm`.
+
+Reproduction sur `flm:qwen3vl-it:4b` spécifiquement tentée sans succès (image
+blanche/noire/bruitée/RGBA/panoramique 4000×200, `.webp`, `.jpeg`, `think=True`
+forcé) : tout est rendu avec un contenu correct. La cause précise chez `flm`
+reste ouverte — ces logs, avec le nombre de tokens qu'ils portent, sont ce qui
+la révélera à la prochaine occurrence réelle.
+
 Usage :
     python test_vision_images.py
 """
@@ -76,6 +100,7 @@ os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
 os.environ.setdefault("EPURE_CORS_ORIGINS", "http://localhost:5173")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+import ollama  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import core.models as core_models  # noqa: E402
@@ -147,9 +172,13 @@ class TexteImageTest(_Fichiers):
         faux_llm = _FakeLLM()
         moteur = _moteur_sans_init(llm=faux_llm)
         with patch("core.rag.premier_modele_vision_disponible", return_value=None):
-            texte = moteur._texte_image(str(self.image))
+            with self.assertLogs("core.rag", level="WARNING") as journal:
+                texte = moteur._texte_image(str(self.image))
         self.assertIn("analyse vision non disponible", texte)
         self.assertEqual(faux_llm.appels, [], "describe_image n'aurait pas dû être appelé")
+        # Ce cas était SILENCIEUX avant ce correctif : aucun moyen de
+        # distinguer « aucun modèle vision installé » d'un bug ailleurs.
+        self.assertIn(str(self.image), journal.output[0])
 
     def test_succes_cote_flm_remplace_le_placeholder(self):
         faux_llm = _FakeLLM(retour="Un schéma de Thalès : AB/AC = AM/AN.")
@@ -182,12 +211,20 @@ class TexteImageTest(_Fichiers):
         self.assertIn("analyse vision non disponible", texte)
 
     def test_une_reponse_vide_retombe_sur_le_placeholder(self):
-        """Un modèle vision qui répond une chaîne vide n'est pas un succès."""
+        """Un modèle vision qui répond une chaîne vide n'est pas un succès.
+
+        C'était l'angle mort trouvé en usage réel : `describe_image` réussit
+        (pas de timeout, pas d'exception) mais rend une chaîne vide — seul le
+        `except Exception` était logué, ce cas ne l'était pas du tout.
+        """
         faux_llm = _FakeLLM(retour="   ")
         moteur = _moteur_sans_init(llm=faux_llm)
         with patch("core.rag.premier_modele_vision_disponible", return_value="moondream"):
-            texte = moteur._texte_image(str(self.image))
+            with self.assertLogs("core.rag", level="WARNING") as journal:
+                texte = moteur._texte_image(str(self.image))
         self.assertIn("analyse vision non disponible", texte)
+        self.assertIn(str(self.image), journal.output[0])
+        self.assertIn("moondream", journal.output[0])
 
 
 class _FakeCollection:
@@ -259,7 +296,17 @@ class DescribeImageDispatchTest(unittest.TestCase):
 
         def faux_chat(**kwargs):
             appels.update(kwargs)
-            return {"message": {"content": "Un schéma de Thalès."}}
+            # La VRAIE classe d'Ollama, pas un dict maison — `ChatResponse` est
+            # un `SubscriptableBaseModel` dont l'indexation ne se comporte pas
+            # comme celle d'un `dict` (même idiome que `test_raisonnement_
+            # stream.py`, qui documente pourquoi un double dict validerait un
+            # accès que le vrai type pourrait refuser).
+            return ollama.ChatResponse(
+                model="moondream", created_at="2026-09-01T00:00:00Z", done=True,
+                done_reason="stop",
+                message=ollama.Message(role="assistant", content="Un schéma de Thalès."),
+                eval_count=42,
+            )
 
         # Le client DÉDIÉ à la vision, pas `ollama_client` (le partagé, dont le
         # timeout est `model.timeout_s` — 300 s, pensé pour un chargement à
@@ -397,6 +444,98 @@ class DescribeImageDispatchTest(unittest.TestCase):
         moteur = LLMEngine(config_path=_CONFIG)
         with self.assertRaises(ValueError):
             moteur.describe_image("photo.png", "gemini:gemini-2.5-flash")
+
+    def test_ollama_content_vide_logue_le_done_reason(self):
+        """L'angle mort trouvé en usage réel : un modèle vision qui répond
+        SANS erreur mais avec un contenu vide ne laissait aucune trace.
+        `done_reason` distingue une génération coupée (`"length"` — le piège
+        déjà documenté pour le chat, la réflexion épuise le budget avant la
+        réponse) d'un modèle qui n'a simplement rien eu à dire (`"stop"`).
+        """
+        def faux_chat(**kwargs):
+            return ollama.ChatResponse(
+                model="moondream", created_at="2026-09-01T00:00:00Z", done=True,
+                done_reason="length",
+                message=ollama.Message(role="assistant", content=""),
+                eval_count=512,
+            )
+
+        original = module_llm._vision_ollama_client.chat
+        module_llm._vision_ollama_client.chat = faux_chat
+        try:
+            moteur = LLMEngine(config_path=_CONFIG)
+            with self.assertLogs("core.llm", level="WARNING") as journal:
+                resultat = moteur.describe_image(r"C:\cours\schema.png", "moondream")
+        finally:
+            module_llm._vision_ollama_client.chat = original
+
+        self.assertEqual(resultat, "")
+        self.assertIn("moondream", journal.output[0])
+        self.assertIn("length", journal.output[0])
+
+    def test_flm_content_vide_logue_finish_reason_et_refusal(self):
+        class _Message:
+            content = ""
+            refusal = None
+            model_extra = {}
+
+        class _Choice:
+            message = _Message()
+            finish_reason = "content_filter"
+
+        class _Reponse:
+            choices = [_Choice()]
+            usage = None
+
+        class _Completions:
+            def create(_self, **kw):
+                return _Reponse()
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            chat = _Chat()
+
+            def with_options(_self, **kw):
+                return _self
+
+        dossier = Path(tempfile.mkdtemp(prefix="epure-test-vision-vide-"))
+        try:
+            chemin = dossier / "photo.png"
+            chemin.write_bytes(b"x")
+            moteur = LLMEngine(config_path=_CONFIG)
+            moteur._openai_client = lambda provider: _Client()
+            with self.assertLogs("core.llm", level="WARNING") as journal:
+                resultat = moteur.describe_image(str(chemin), "flm:qwen3vl-it:4b")
+        finally:
+            import shutil
+            shutil.rmtree(dossier, ignore_errors=True)
+
+        self.assertEqual(resultat, "")
+        self.assertIn("qwen3vl-it:4b", journal.output[0])
+        self.assertIn("content_filter", journal.output[0])
+
+    def test_un_contenu_non_vide_ne_logue_rien(self):
+        """Le diagnostic ne doit apparaître QUE dans le cas vide — sinon
+        chaque appel réussi pollue les logs pour rien.
+        """
+        def faux_chat(**kwargs):
+            return ollama.ChatResponse(
+                model="moondream", created_at="2026-09-01T00:00:00Z", done=True,
+                done_reason="stop",
+                message=ollama.Message(role="assistant", content="Une description."),
+                eval_count=12,
+            )
+
+        original = module_llm._vision_ollama_client.chat
+        module_llm._vision_ollama_client.chat = faux_chat
+        try:
+            moteur = LLMEngine(config_path=_CONFIG)
+            with self.assertNoLogs("core.llm", level="WARNING"):
+                moteur.describe_image(r"C:\cours\schema.png", "moondream")
+        finally:
+            module_llm._vision_ollama_client.chat = original
 
 
 class PremierModeleVisionDisponibleTest(unittest.TestCase):

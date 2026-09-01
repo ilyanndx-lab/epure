@@ -253,6 +253,7 @@ class RAGEngine:
             return placeholder
         modele = premier_modele_vision_disponible()
         if modele is None:
+            logger.warning("Aucun modèle vision disponible pour décrire %s — placeholder conservé", path)
             return placeholder
         try:
             description = self._llm.describe_image(path, modele)
@@ -260,6 +261,7 @@ class RAGEngine:
             logger.exception("Échec description vision de %s (modèle %s)", path, modele)
             return placeholder
         if not description or not description.strip():
+            logger.warning("Description vision vide pour %s (modèle %s) — placeholder conservé", path, modele)
             return placeholder
         return f"Image : {Path(path).name}\n\n{description.strip()}"
 

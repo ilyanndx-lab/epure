@@ -376,6 +376,36 @@ cran de plus : aucun `llm` injecté (scripts, tests légers), aucun modèle
 vision disponible, ou l'appel échoue (timeout, réponse vide) → le placeholder,
 jamais une exception. Verrouillé par `test_vision_images.py`.
 
+**IMPÉRATIF — les deux cas dégradés SANS exception sont logués, pas seulement
+le `except`.** Angle mort trouvé en usage réel : `describe_image` peut réussir
+(pas de timeout, pas d'erreur) tout en rendant une chaîne vide — observé sur
+`flm:qwen3vl-it:4b`, sans qu'aucune trace n'indique pourquoi. `_texte_image`
+logue désormais ce cas et celui, tout aussi silencieux, d'aucun modèle vision
+disponible (`logger.warning`, pas `exception` : ce n'est pas une erreur).
+`describe_image` va plus loin et logue le diagnostic BRUT quand le contenu est
+vide, pour la prochaine occurrence :
+
+- Ollama : `done_reason` et `eval_count` de la réponse ;
+- openai (flm) : `finish_reason`, `refusal` (champ du schéma OpenAI pour un
+  refus de contenu — jamais observé sur flm, mais gratuit à logger),
+  `model_extra` (un champ non modélisé par le SDK, comme `reasoning_content`
+  sur le chemin streaming, s'y retrouverait) et `usage`.
+
+**`finish_reason`/`done_reason` NE DISTINGUE PAS ce cas d'un succès — mesuré,
+pas supposé.** Sur `moondream` (avant que `_VISION_PROMPT` soit raccourci,
+prompt trop long) : `done_reason='stop'`, `eval_count=1`, réponse en 0,08 s,
+contenu vide. Le modèle a émis l'EOS comme PREMIER token — `"stop"` couvre
+donc aussi bien un succès qu'un contenu vide. **Le vrai discriminant est le
+nombre de tokens produits** (`eval_count`/`usage.completion_tokens` proche de
+0-1), pas `finish_reason`. C'est pour ça que les deux sont loggués ensemble.
+
+**Non résolu à ce jour, spécifiquement sur `flm:qwen3vl-it:4b`** :
+reproduction tentée sans succès le 2026-09-01 (image blanche/noire/bruitée/
+RGBA/panoramique 4000×200, `.webp`, `.jpeg`, `think=True` forcé — tout est
+rendu avec un contenu correct et un nombre de tokens normal). La cause précise
+chez flm reste ouverte ; ces logs, avec le nombre de tokens qu'ils portent,
+sont ce qui la révélera à la prochaine occurrence réelle.
+
 **Coût mesuré, à garder en tête** : `index_file` est appelé par fichier depuis
 le flux de chargement du chat (`_stream_load_sse`) — attacher une image à une
 conversation bloque donc ce flux le temps de l'appel vision. Mesuré sur ce
