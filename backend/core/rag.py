@@ -12,6 +12,7 @@ import yaml
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from core.models import premier_modele_vision_disponible
 from core.paths import resolve_vector_dir
 from core.vector_store import VectorStore
 
@@ -34,6 +35,14 @@ SUPPORTED_EXTENSIONS = {
     '.pdf', '.docx', '.pptx', '.xlsx', '.txt', '.md', '.csv', '.json',
     '.png', '.jpg', '.jpeg', '.webp',
 }
+
+#: Sous-ensemble image de `SUPPORTED_EXTENSIONS`, utilisé par `index_file` pour
+#: basculer vers `_texte_image` (modèle vision) au lieu du placeholder statique.
+#: `_extract_text_from_path` garde son propre tuple littéral pour ces mêmes
+#: extensions : `test_ingestion_documents.py` vérifie par lecture de son SOURCE
+#: que chaque extension y apparaît en toutes lettres, une garantie qu'une
+#: référence à cette constante ne satisferait pas.
+_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
 
 #: Nombre de lignes lues par feuille d'un classeur. Même borne que le `nrows=500`
 #: du `.csv` juste en dessous, et pour la même raison : au-delà, on indexe un
@@ -62,7 +71,8 @@ class RAGEngine:
       écrit dans l'index réel de l'utilisateur (cf. ``core/paths.py``).
     """
 
-    def __init__(self, config_path: str = "config.yaml", store: VectorStore | None = None):
+    def __init__(self, config_path: str = "config.yaml", store: VectorStore | None = None,
+                 llm=None):
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
         rag_cfg = cfg.get("rag", {})
@@ -72,6 +82,13 @@ class RAGEngine:
 
         self._store = store if store is not None else VectorStore(resolve_vector_dir())
         self._col = self._store.collection("fiches")
+
+        # Injecté comme dans DocAnalysisEngine/HistoryEngine (core/runtime.py) —
+        # jamais importé directement (§3.2 CLAUDE.md). Optionnel : les scripts et
+        # tests légers qui construisent un RAGEngine sans vision (la majorité)
+        # n'ont rien à passer, et une image s'indexe alors avec le placeholder,
+        # exactement comme avant ce moteur.
+        self._llm = llm
 
         # Per-instance LRU caches — cleared on index_file to avoid stale results
         self._query_lru = functools.lru_cache(maxsize=50)(self._do_query)
@@ -215,6 +232,37 @@ class RAGEngine:
             # ré-indexation après modification échoue sur un fichier occupé.
             classeur.close()
 
+    def _texte_image(self, path: str) -> str:
+        """Description + transcription d'une image par un modèle vision.
+
+        Remplace le placeholder muet de `_extract_text_from_path` pour les
+        images : sans lui, `.png/.jpg/.jpeg/.webp` s'indexaient avec un texte
+        FIXE, qui ne rendait cherchable ni un schéma ni un texte photographié —
+        vérifié, aucun chemin du code n'envoyait jamais l'image à un modèle.
+
+        Dégrade PROPREMENT vers le placeholder, jamais vers une exception — même
+        convention que les extracteurs `.docx`/`.pptx`/`.xlsx` (§3.3 bis de
+        CLAUDE.md : paquet/moteur absent → dégradation, fichier illisible →
+        exception), et pour la même raison : un module généré ou un test léger
+        qui construit ce moteur sans `llm` ne doit pas planter sur une image, et
+        un modèle vision indisponible ou en panne ne doit jamais faire échouer
+        l'indexation d'un fichier par ailleurs valide.
+        """
+        placeholder = RAGEngine._extract_text_from_path(path)
+        if self._llm is None:
+            return placeholder
+        modele = premier_modele_vision_disponible()
+        if modele is None:
+            return placeholder
+        try:
+            description = self._llm.describe_image(path, modele)
+        except Exception:
+            logger.exception("Échec description vision de %s (modèle %s)", path, modele)
+            return placeholder
+        if not description or not description.strip():
+            return placeholder
+        return f"Image : {Path(path).name}\n\n{description.strip()}"
+
     @staticmethod
     def _extract_text_from_path(path: str) -> str:
         ext = Path(path).suffix.lower()
@@ -253,7 +301,8 @@ class RAGEngine:
         if ext not in SUPPORTED_EXTENSIONS:
             return
 
-        full_text = self._extract_text_from_path(path)
+        full_text = (self._texte_image(path) if ext in _IMAGE_EXTENSIONS
+                    else self._extract_text_from_path(path))
         if not full_text.strip():
             return
 

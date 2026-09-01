@@ -45,3 +45,11 @@ voice:
   whisper_model: small
   piper_voice: fr_FR-upmc-medium
   language: fr
+
+vision:
+  # Modèle Ollama utilisé pour décrire une image du corpus (schémas, texte
+  # photographié) quand FLM (le chemin NPU, cf. core/models.py:FLM_MODELS_STATIC)
+  # n'est pas disponible sur ce poste — cas d'une machine ARM64 sans NPU AMD.
+  # Même registre que model.name : le nom se change ici, jamais en dur dans le
+  # code (core/models.py:premier_modele_vision_disponible).
+  ollama_model: moondream

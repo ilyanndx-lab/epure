@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import time
@@ -58,6 +59,28 @@ ollama_client = ollama.Client(
     timeout=httpx.Timeout(_ollama_timeout_s(), connect=5.0),
 )
 
+#: Timeout dédié à `describe_image`, INDÉPENDANT de `model.timeout_s`
+#: (300 s par défaut — pensé pour le chargement à froid d'un modèle de CHAT).
+#: `describe_image` tourne en SYNCHRONE dans le chargement d'un fichier
+#: (`_stream_load_sse`, pas une conversation active) : elle doit échouer vite
+#: et retomber sur le placeholder (`RAGEngine._texte_image` filtre déjà toute
+#: exception) plutôt que bloquer jusqu'au défaut du SDK openai (600 s) ou du
+#: timeout de lecture d'`ollama_client` (300 s).
+#: 60 s = pire cas mesuré (26 s, `flm:qwen3vl-it:4b` sur ce poste) + marge.
+_VISION_TIMEOUT_S = 60.0
+
+#: Client Ollama DÉDIÉ à `describe_image`, distinct de `ollama_client`.
+#: `Client.chat()` n'accepte aucun paramètre `timeout` par appel — vérifié sur
+#: sa signature réelle, contrairement à `client.chat.completions.create()` du
+#: SDK openai, qui lui l'expose. Un second client, construit une fois avec le
+#: timeout court, est le seul moyen propre de borner CETTE méthode sans changer
+#: le timeout du reste (chat, résumés, agent de code…), qui a besoin des 300 s
+#: pour couvrir un chargement à froid de modèle de chat.
+_vision_ollama_client = ollama.Client(
+    host=ollama_host,
+    timeout=httpx.Timeout(_VISION_TIMEOUT_S, connect=5.0),
+)
+
 # OpenAI-compatible providers: name → (base_url, env_key | None)
 # env_key=None means no API key required (local server)
 _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
@@ -68,6 +91,20 @@ _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
     "deepseek": ("https://api.deepseek.com/v1",         "DEEPSEEK_API_KEY"),
     "flm":      ("http://localhost:11435/v1",           None),
 }
+
+
+#: Prompt de description d'image, partagé entre les deux chemins de
+#: `describe_image`. Volontairement COURT — mesuré sur `moondream` (le repli
+#: Ollama, cf. `core/models.py:_ollama_vision_model`) : une formulation plus
+#: longue et détaillée, demandant explicitement titres/légendes/formules/
+#: annotations entre parenthèses, fait dégénérer ce modèle — soit une réponse
+#: VIDE (`eval_count: 1`, arrêt immédiat), soit une boucle de répétition
+#: (mesuré : 1265 tokens de charabia thaï en 65 s pour la même image). La forme
+#: courte ci-dessous a été rejouée quatre fois sur `moondream` sans variation
+#: (~2 s, description correcte, transcription exacte) et vérifiée aussi sur
+#: `qwen3vl-it:4b` (8,8 s, transcription exacte) — donc commune aux deux
+#: providers plutôt que deux prompts à maintenir.
+_VISION_PROMPT = "Décris cette image et transcris tout texte visible."
 
 
 def _provider_error_message(provider: str, model_id: str, exc: Exception) -> str:
@@ -223,6 +260,78 @@ class LLMEngine:
 
     def reload_dotenv(self) -> None:
         load_dotenv(_ENV_FILE, override=True)
+
+    def describe_image(self, path: str, model: str) -> str:
+        """Décrit une image et transcrit son texte visible, via un modèle vision.
+
+        Dispatch par provider — même principe que :meth:`stream` (``_parse_model``
+        décide) — parce que le format du message est **radicalement différent**
+        d'un chemin à l'autre, vérifié par appel réel et non lu dans une doc :
+
+        * **Ollama** accepte le CHEMIN du fichier tel quel dans
+          ``images=[...]`` : ``ollama._types.Image`` le lit et l'encode lui-même.
+          Rien à préparer ici.
+        * **flm** (OpenAI-compatible) exige le bloc ``image_url`` en base64
+          (``data:image/<ext>;base64,...``) — mesuré sur ``qwen3vl-it:4b`` :
+          7,5 s, transcription exacte d'un texte photographié.
+
+        Seuls ces deux providers sont câblés, et c'est délibéré :
+        ``core.models.premier_modele_vision_disponible()`` ne rend jamais que
+        ``flm:...`` ou un nom Ollama nu — deviner un troisième format non mesuré
+        serait exactement l'erreur que ce fichier évite ailleurs (cf. la bascule
+        ``raisonnement``, réservée à ``flm`` pour la même raison).
+
+        **Timeout court et dédié sur les deux chemins** (``_VISION_TIMEOUT_S``,
+        60 s) — jamais ``model.timeout_s`` : cette méthode tourne en synchrone
+        dans le chargement d'un fichier, pas dans une conversation active, et
+        doit échouer vite plutôt que bloquer jusqu'aux défauts globaux (600 s
+        SDK openai, 300 s lecture ``ollama_client``). Un timeout qui expire lève
+        (``httpx.TimeoutException`` côté Ollama, ``openai.APITimeoutError`` côté
+        flm) : c'est `RAGEngine._texte_image` qui l'attrape et retombe sur le
+        placeholder, pas cette méthode.
+
+        Ni l'un ni l'autre n'accepte de le poser PROPREMENT de la même façon :
+        ``ollama.Client.chat()`` n'a pas de paramètre ``timeout`` par appel
+        (vérifié sur sa signature réelle) — d'où le second client dédié,
+        ``_vision_ollama_client``, construit une fois avec ce timeout. Le SDK
+        openai, lui, l'expose sur ``create()``, mais **la retry policy par
+        défaut (2 essais) MULTIPLIE l'attente au lieu de la borner** — mesuré :
+        un ``timeout=0.5`` seul relève à 5,4 s avant de lever, contre 1,9 s avec
+        ``max_retries=0``. Sans ce réglage, ``_VISION_TIMEOUT_S`` ne bornerait
+        rien — le pire cas réel serait ~3x plus long que la valeur affichée.
+        """
+        provider, model_id = self._parse_model(model)
+        if provider == "ollama":
+            response = _vision_ollama_client.chat(
+                model=model_id,
+                messages=[{"role": "user", "content": _VISION_PROMPT, "images": [str(path)]}],
+            )
+            return response["message"]["content"] or ""
+        if provider in _OPENAI_COMPAT:
+            # `max_retries=0` : mesuré, le comportement par défaut du SDK
+            # (2 essais) MULTIPLIE l'attente sur un timeout au lieu de la
+            # borner — un `timeout=0.5` seul relève à 5,4 s avant de lever ;
+            # avec `max_retries=0`, 1,9 s. Sans ce réglage, `_VISION_TIMEOUT_S`
+            # ne borne rien : le pire cas réel serait ~3x plus long.
+            client = self._openai_client(provider).with_options(
+                timeout=_VISION_TIMEOUT_S, max_retries=0)
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            ext = Path(path).suffix.lstrip(".").lower()
+            mime = "jpeg" if ext == "jpg" else (ext or "png")
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _VISION_PROMPT},
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:image/{mime};base64,{b64}"}},
+                    ],
+                }],
+            )
+            return response.choices[0].message.content or ""
+        raise ValueError(f"describe_image : provider '{provider}' non pris en charge pour la vision")
 
     # ── Ollama ───────────────────────────────────────────────────────────────
 
