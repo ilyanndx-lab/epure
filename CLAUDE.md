@@ -348,11 +348,28 @@ usages de `_extract_text_from_path` :**
   `core.models.premier_modele_vision_disponible()` — FLM d'abord, sinon
   l'Ollama de `config.yaml:vision.ollama_model`, défaut `moondream`) pour
   produire une description ET transcrire le texte visible, remplaçant le
-  placeholder muet d'avant.
+  placeholder muet d'avant. **`index_file` rend ce texte** (`Optional[str]`,
+  `None` si rien n'a été indexé) — voir le piège ci-dessous, c'est précisément
+  ce que son absence a cassé une première fois.
 - **`read_file_text`/`read_pdf_text`** (lecture ad hoc d'un fichier — `/skills/
   résumé`, l'aperçu d'upload de Réglages) restent sur `_extract_text_from_path`
   et son placeholder statique. **C'est un choix de périmètre assumé, pas un
   oubli** : seule l'indexation appelle un modèle vision.
+
+**IMPÉRATIF — ne jamais réextraire un fichier déjà passé par `index_file` :
+réutiliser sa valeur de retour.** Payé une fois : `_stream_load_sse`
+(`modules/settings/router.py`) appelait `rag.index_file(path)` PUIS
+`RAGEngine.read_file_text(path)` séparément pour construire le résumé affiché
+à l'import — un second appel qui passe par `_extract_text_from_path`,
+**statique**, donc qui ne voit jamais `_texte_image` ni le modèle vision. Le
+résumé d'une image importée disait donc systématiquement « je n'ai pas accès à
+l'image », alors que l'index, juste au-dessus dans la même boucle, avait la
+vraie description. Corrigé en faisant rendre à `index_file` le texte qu'il a
+réellement indexé ; `_stream_load_sse` le réutilise (`text or ""` pour le cas
+`None`, sans changer le comportement d'attachement d'avant). Pour les formats
+non-image, le bug ne changeait pas le RÉSULTAT (même texte des deux côtés) mais
+payait une relecture/reparsing en double à chaque import — éliminé par le même
+correctif. Verrouillé par `test_vision_images.py`.
 
 Dégradation à trois niveaux, même esprit que les extracteurs ci-dessus mais un
 cran de plus : aucun `llm` injecté (scripts, tests légers), aucun modèle

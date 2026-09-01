@@ -45,6 +45,18 @@ Ce que ces tests gardent, dans l'ordre du besoin :
      `max_retries=0`. `describe_image` pose donc les deux via
      `.with_options(timeout=..., max_retries=0)`.
 
+**Bug trouvé après le premier merge, corrigé ici** : `_stream_load_sse`
+(`modules/settings/router.py`) construisait le résumé affiché à l'import via
+un SECOND appel — `RAGEngine.read_file_text`, une méthode STATIQUE qui appelle
+`_extract_text_from_path` directement et ne passe donc jamais par
+`_texte_image`/le modèle vision. Résultat : le résumé d'une image importée
+disait systématiquement « je n'ai pas accès à l'image », même quand
+`rag.index_file` (appelé juste avant, dans la même boucle) avait produit la
+vraie description. `index_file` rend maintenant le texte qu'il a réellement
+indexé, et `_stream_load_sse` le réutilise au lieu de relire/reparser le
+fichier — corrige le résumé ET élimine une double extraction pour tous les
+formats (pdf/docx/pptx/xlsx…), pas seulement les images.
+
 Usage :
     python test_vision_images.py
 """
@@ -60,8 +72,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _test_env  # noqa: F401  — isole les chemins AVANT tout import de core.*
 
+os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
+os.environ.setdefault("EPURE_CORS_ORIGINS", "http://localhost:5173")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
 import core.models as core_models  # noqa: E402
+import main  # noqa: E402  — monte l'app entière ; cf. test_fichiers_par_conversation.py
+import modules.settings.router as routeur_reglages  # noqa: E402
 from core import llm as module_llm  # noqa: E402
+from core.auth import get_api_token  # noqa: E402
 from core.llm import LLMEngine  # noqa: E402
 from core.rag import RAGEngine  # noqa: E402
 
@@ -205,9 +226,14 @@ class IndexFileImageTest(_Fichiers):
         moteur = self._moteur()
         with patch.object(RAGEngine, "_texte_image",
                           return_value="Description vision indexée.") as m:
-            moteur.index_file(str(self.image))
+            resultat = moteur.index_file(str(self.image))
         m.assert_called_once_with(str(self.image))
         self.assertEqual(moteur._col.documents, ["Description vision indexée."])
+        # Le texte RÉELLEMENT indexé est rendu à l'appelant — c'est ce que
+        # `_stream_load_sse` (modules/settings/router.py) réutilise pour le
+        # résumé affiché à l'import, au lieu d'un second appel à
+        # `read_file_text` qui retombait sur le placeholder pour une image.
+        self.assertEqual(resultat, "Description vision indexée.")
 
     def test_un_placeholder_vide_n_indexe_rien(self):
         """Le cas dégradé au bout de la chaîne : `full_text` vide → sortie
@@ -216,8 +242,9 @@ class IndexFileImageTest(_Fichiers):
         """
         moteur = self._moteur()
         with patch.object(RAGEngine, "_texte_image", return_value="   "):
-            moteur.index_file(str(self.image))
+            resultat = moteur.index_file(str(self.image))
         self.assertIsNone(moteur._col.documents)
+        self.assertIsNone(resultat)
 
 
 class DescribeImageDispatchTest(unittest.TestCase):
@@ -459,6 +486,124 @@ class OllamaVisionModelConfigTest(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(dossier, ignore_errors=True)
+
+
+class _RagPourResume:
+    """Simule `RAGEngine` APRÈS le correctif : `index_file` rend le texte
+    qu'il a indexé — une description vision pour une image, comme le vrai
+    moteur depuis ce fix. `_col.get` est nécessaire : `files_load` compte les
+    chunks indexés après le flux.
+    """
+
+    class _Col:
+        def get(self, where=None, include=None):
+            return {"ids": []}
+
+    def __init__(self, textes: dict[str, str]):
+        self._textes = textes
+        self._col = self._Col()
+        self.appels_index: list[str] = []
+
+    def index_file(self, path):
+        self.appels_index.append(path)
+        return self._textes.get(path)
+
+
+class ResumeImportUtiliseLeTexteIndexeTest(unittest.TestCase):
+    """Le bug trouvé après le premier merge (PR #16) : le résumé affiché à
+    l'import d'une image disait systématiquement « je n'ai pas accès à
+    l'image », même quand `rag.index_file` — appelé juste avant, dans la même
+    boucle de `_stream_load_sse` — avait produit la vraie description. Cause :
+    le résumé était construit par un SECOND appel, `RAGEngine.read_file_text`
+    (statique), qui ne passe jamais par `_texte_image`/le modèle vision.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app, base_url="http://localhost",
+                                client=("127.0.0.1", 54321))
+        cls.token = get_api_token()
+
+    def setUp(self):
+        self.auth = {"Authorization": f"Bearer {self.token}"}
+        self.dossier = Path(tempfile.mkdtemp(prefix="epure-test-resume-image-"))
+
+        from core import paths as core_paths
+        original_roots = core_paths.user_data_roots
+        core_paths.user_data_roots = lambda: [self.dossier.resolve()]
+        self.addCleanup(setattr, core_paths, "user_data_roots", original_roots)
+
+        original_rag = routeur_reglages.rag
+        self.addCleanup(setattr, routeur_reglages, "rag", original_rag)
+
+        original_stream = routeur_reglages.llm.stream
+        self.addCleanup(setattr, routeur_reglages.llm, "stream", original_stream)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dossier, ignore_errors=True)
+
+    def _charger(self, chemin):
+        r = self.client.post("/files/load", json={"paths": [str(chemin)]},
+                             headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+
+    def test_le_resume_utilise_la_description_vision_pas_le_placeholder(self):
+        image = self.dossier / "schema.png"
+        image.write_bytes(b"\x89PNG fausse-image")
+        description_vision = "Un schéma de Thalès : AB/AC = AM/AN = 3/5."
+
+        routeur_reglages.rag = _RagPourResume({str(image.resolve()): description_vision})
+
+        prompts_recus = []
+
+        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True):
+            prompts_recus.append(messages)
+            return iter(["Résumé du schéma."])
+
+        routeur_reglages.llm.stream = faux_stream
+
+        self._charger(image)
+
+        self.assertEqual(len(prompts_recus), 1, "le résumé n'a pas été demandé")
+        contenu_prompt = prompts_recus[0][0]["content"]
+        # LE cœur du correctif : la vraie description est dans le prompt du
+        # résumé, sans second appel qui l'aurait remplacée par le placeholder.
+        self.assertIn(description_vision, contenu_prompt)
+        self.assertNotIn("analyse vision non disponible", contenu_prompt)
+        self.assertNotIn("je n'ai pas accès", contenu_prompt.lower())
+
+    def test_un_texte_indexe_vide_ne_casse_pas_et_marque_quand_meme_charge(self):
+        """`index_file` peut rendre `None` (rien indexé). `(text or "")[:3000]`
+        ne doit pas lever, et le fichier reste attaché — comportement identique
+        à avant ce correctif, où `read_file_text` pouvait aussi rendre une
+        chaîne vide sans empêcher l'attachement.
+        """
+        fichier = self.dossier / "vide.txt"
+        fichier.write_text("", encoding="utf-8")
+        routeur_reglages.rag = _RagPourResume({})  # index_file rend None pour tout
+
+        conv = routeur_reglages.history_engine.create_conversation()
+        self.addCleanup(routeur_reglages.history_engine.delete_conversation, conv["id"])
+        r = self.client.post(
+            "/files/load",
+            json={"paths": [str(fichier)], "conversation_id": conv["id"]},
+            headers=self.auth,
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(
+            routeur_reglages.history_engine.get_conversation(conv["id"])["fichiers_attachés"],
+            [str(fichier.resolve())],
+        )
+
+    def test_rag_index_file_reste_le_seul_appel_utilise(self):
+        """Contre-épreuve structurelle : la double extraction est ÉLIMINÉE,
+        pas seulement contournée pour les images — `RAGEngine` n'a plus besoin
+        d'être importé dans ce routeur du tout (pas de nom à grep : un
+        commentaire expliquant CE fix contient forcément le mot ``read_file_
+        text``, cf. `test_taches_locales.ResumeImportTest._code_seul`).
+        """
+        self.assertFalse(hasattr(routeur_reglages, "RAGEngine"))
 
 
 if __name__ == "__main__":

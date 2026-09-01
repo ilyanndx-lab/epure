@@ -103,8 +103,16 @@ class _RagEspion:
         `try/except` de la boucle d'indexation : aucun chemin n'entrait dans
         `indexed_paths`, donc rien n'était attaché, et le test échouait en
         accusant l'attachement plutôt que le double.
+
+        Rend un texte NON VIDE, et c'est délibéré depuis que le vrai
+        `RAGEngine.index_file` rend le texte qu'il a indexé (cf.
+        `test_vision_images.py` — le bug où un second appel, statique, ne
+        voyait jamais la description vision). Rendre `None` ici referait
+        diverger ce double du contrat réel exactement de la façon qui a coûté
+        ce bug : silencieusement, sur le seul champ qui comptait.
         """
         self.indexes.append(str(chemin))
+        return f"[contenu indexé de {chemin}]"
 
     def query(self, texte, n_results=None):
         self.globales.append(texte)

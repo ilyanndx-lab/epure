@@ -30,7 +30,7 @@ from core.codeagent import SecurityError
 from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config, modele_local_defaut
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
-from core.rag import SUPPORTED_EXTENSIONS, RAGEngine
+from core.rag import SUPPORTED_EXTENSIONS
 from core.runtime import (
     API_KEY_NAMES,
     PIPER_VOICE,
@@ -357,9 +357,17 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = ""):
             logger.warning("Fichier non trouvé : %s", path)
             continue
         try:
-            await loop.run_in_executor(None, rag.index_file, path)
-            text = await loop.run_in_executor(None, RAGEngine.read_file_text, path)
-            text_parts.append(text[:3000])
+            # `index_file` rend le texte QU'IL A INDEXÉ — pas un second appel à
+            # `read_file_text` (statique, donc jamais de modèle vision) pour le
+            # même fichier. Sans ce retour, le résumé affiché à l'import d'une
+            # image disait systématiquement « je n'ai pas accès à l'image »
+            # même quand l'index avait la vraie description (cf. `index_file`,
+            # `core/rag.py`) ; pour les autres formats, seule une relecture/
+            # reparsing inutile était gaspillée. `text or ""` : un texte vide
+            # (rien indexé) ne doit pas planter `[:3000]` sur `None`, et le
+            # fichier reste marqué « chargé » comme avant ce changement.
+            text = await loop.run_in_executor(None, rag.index_file, path)
+            text_parts.append((text or "")[:3000])
             if ext == '.pdf':
                 reader = pypdf.PdfReader(path)
                 total_pages += len(reader.pages)
