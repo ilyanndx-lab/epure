@@ -306,7 +306,20 @@ class LLMEngine:
                 model=model_id,
                 messages=[{"role": "user", "content": _VISION_PROMPT, "images": [str(path)]}],
             )
-            return response["message"]["content"] or ""
+            content = response["message"]["content"] or ""
+            if not content:
+                # Diagnostic AVANT de rendre la chaîne vide : `_texte_image`
+                # (core/rag.py) ne voit plus que le résultat, pas la réponse
+                # brute. `done_reason` distingue une génération COUPÉE
+                # (`"length"`, le piège déjà documenté pour le chat — la
+                # réflexion épuise le budget avant la réponse) d'un modèle qui
+                # a réellement décidé de ne rien dire (`"stop"`, 0 token émis).
+                logger.warning(
+                    "describe_image (ollama:%s) : content vide — done_reason=%r, "
+                    "eval_count=%r",
+                    model_id, response.get("done_reason"), response.get("eval_count"),
+                )
+            return content
         if provider in _OPENAI_COMPAT:
             # `max_retries=0` : mesuré, le comportement par défaut du SDK
             # (2 essais) MULTIPLIE l'attente sur un timeout au lieu de la
@@ -330,7 +343,23 @@ class LLMEngine:
                     ],
                 }],
             )
-            return response.choices[0].message.content or ""
+            message = response.choices[0].message
+            content = message.content or ""
+            if not content:
+                # Même diagnostic côté openai-compat : `finish_reason` (`stop`
+                # vs `length` vs `content_filter`), `refusal` (schéma OpenAI
+                # pour un refus de contenu — jamais vu sur flm, mais le champ
+                # existe et coûte rien à logger), et `model_extra` (un champ
+                # non modélisé par le SDK, comme `reasoning_content` sur le
+                # chemin streaming — cf. `_stream_openai` — se retrouve là).
+                logger.warning(
+                    "describe_image (%s:%s) : content vide — finish_reason=%r, "
+                    "refusal=%r, extra=%r, usage=%r",
+                    provider, model_id, response.choices[0].finish_reason,
+                    getattr(message, "refusal", None), message.model_extra,
+                    response.usage,
+                )
+            return content
         raise ValueError(f"describe_image : provider '{provider}' non pris en charge pour la vision")
 
     # ── Ollama ───────────────────────────────────────────────────────────────
