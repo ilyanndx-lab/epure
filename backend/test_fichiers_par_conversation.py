@@ -334,6 +334,165 @@ class ImportVersUneConversationTest(_Base):
         self.assertEqual(len(history_engine.list_conversations(0)), avant)
 
 
+class GenerateSummaryToggleTest(_Base):
+    """`generate_summary=False` : le résumé automatique est sauté, jamais
+    l'indexation ni l'attachement des fichiers.
+
+    Motivé par le repli vision Ollama (§3.3 bis de CLAUDE.md) : plusieurs gros
+    fichiers, sur un poste sans FLM, font une indexation séquentielle
+    potentiellement longue — le résumé (un appel LLM de plus, après coup)
+    n'est pas toujours voulu en plus de cette attente.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.racine = Path(tempfile.mkdtemp(prefix="epure-resume-toggle-"))
+        self.addCleanup(shutil.rmtree, self.racine, True)
+        from core import paths as core_paths
+        original = core_paths.user_data_roots
+        core_paths.user_data_roots = lambda: [self.racine.resolve()]
+        self.addCleanup(setattr, core_paths, "user_data_roots", original)
+
+        import modules.settings.router as routeur_reglages
+        self.reglages = routeur_reglages
+        original_rag = routeur_reglages.rag
+        routeur_reglages.rag = _RagEspion()
+        self.addCleanup(setattr, routeur_reglages, "rag", original_rag)
+
+        self.appels_stream = 0
+        original_llm = routeur_reglages.llm.stream
+        self.addCleanup(setattr, routeur_reglages.llm, "stream", original_llm)
+
+        def faux_stream(*a, **k):
+            self.appels_stream += 1
+            return iter(["Résumé."])
+        routeur_reglages.llm.stream = faux_stream
+
+        # Spy sur l'engin RÉEL (pas un double) : c'est l'ABSENCE d'appel qu'on
+        # vérifie, donc le comportement normal doit rester atteignable pour le
+        # cas `generate_summary=True` de ce même test.
+        self.appels_resume: list = []
+        original_resume = routeur_reglages.history_engine.set_resume_contexte
+        self.addCleanup(setattr, routeur_reglages.history_engine,
+                        "set_resume_contexte", original_resume)
+
+        def espion_resume(conv_id, texte):
+            self.appels_resume.append((conv_id, texte))
+            return original_resume(conv_id, texte)
+        routeur_reglages.history_engine.set_resume_contexte = espion_resume
+
+    def _fichier(self, nom):
+        p = self.racine / nom
+        p.write_text("contenu de cours", encoding="utf-8")
+        return str(p.resolve())
+
+    def _charger(self, chemins, conversation_id=None, generate_summary=None):
+        corps = {"paths": chemins}
+        if conversation_id is not None:
+            corps["conversation_id"] = conversation_id
+        if generate_summary is not None:
+            corps["generate_summary"] = generate_summary
+        r = self.client.post("/files/load", json=corps, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r
+
+    def test_generate_summary_false_n_appelle_pas_set_resume_contexte(self):
+        conv = history_engine.create_conversation()
+        f = self._fichier("cours.txt")
+        self._charger([f], conversation_id=conv["id"], generate_summary=False)
+        self.assertEqual(self.appels_resume, [])
+        self.assertEqual(self.appels_stream, 0)
+
+    def test_generate_summary_false_n_efface_pas_un_resume_existant(self):
+        """Le risque exact que ce toggle doit éviter : sauter le résumé ne doit
+        jamais écraser silencieusement celui déjà présent sur le fil."""
+        conv = history_engine.create_conversation()
+        history_engine.set_resume_contexte(conv["id"], "Résumé déjà là.")
+        f = self._fichier("cours.txt")
+        self._charger([f], conversation_id=conv["id"], generate_summary=False)
+        self.assertEqual(
+            history_engine.get_conversation(conv["id"])["résumé_contexte"],
+            "Résumé déjà là.")
+
+    def test_generate_summary_false_indexe_et_attache_quand_meme(self):
+        conv = history_engine.create_conversation()
+        f = self._fichier("cours.txt")
+        self._charger([f], conversation_id=conv["id"], generate_summary=False)
+        self.assertEqual(
+            history_engine.get_conversation(conv["id"])["fichiers_attachés"], [f])
+        self.assertEqual(self.reglages.rag.indexes, [f])
+
+    def test_generate_summary_true_reste_le_comportement_historique(self):
+        """Sans rien changer côté appelant, le résumé continue de se produire —
+        ce champ a un défaut à `True` justement pour ça."""
+        conv = history_engine.create_conversation()
+        f = self._fichier("cours.txt")
+        self._charger([f], conversation_id=conv["id"])
+        self.assertEqual(len(self.appels_resume), 1)
+        self.assertEqual(self.appels_resume[0][0], conv["id"])
+
+
+class ProgressionImportTest(_Base):
+    """Un événement SSE par fichier, avant son traitement — l'écran n'est plus
+    vide pendant toute la phase d'indexation."""
+
+    def setUp(self):
+        super().setUp()
+        self.racine = Path(tempfile.mkdtemp(prefix="epure-progress-"))
+        self.addCleanup(shutil.rmtree, self.racine, True)
+        from core import paths as core_paths
+        original = core_paths.user_data_roots
+        core_paths.user_data_roots = lambda: [self.racine.resolve()]
+        self.addCleanup(setattr, core_paths, "user_data_roots", original)
+
+        import modules.settings.router as routeur_reglages
+        self.reglages = routeur_reglages
+        original_rag = routeur_reglages.rag
+        routeur_reglages.rag = _RagEspion()
+        self.addCleanup(setattr, routeur_reglages, "rag", original_rag)
+        original_llm = routeur_reglages.llm.stream
+        self.addCleanup(setattr, routeur_reglages.llm, "stream", original_llm)
+        routeur_reglages.llm.stream = lambda *a, **k: iter(["Résumé."])
+
+    def _fichier(self, nom):
+        p = self.racine / nom
+        p.write_text("contenu de cours", encoding="utf-8")
+        return str(p.resolve())
+
+    def _evenements(self, chemins, **extra):
+        corps = {"paths": chemins, **extra}
+        r = self.client.post("/files/load", json=corps, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        return [json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
+
+    def test_un_evenement_progress_par_fichier_dans_l_ordre(self):
+        fichiers = [self._fichier("a.txt"), self._fichier("b.txt"),
+                   self._fichier("c.txt")]
+        progres = [e for e in self._evenements(fichiers, generate_summary=False)
+                  if e["type"] == "progress"]
+        self.assertEqual([e["index"] for e in progres], [1, 2, 3])
+        self.assertEqual([e["total"] for e in progres], [3, 3, 3])
+        self.assertEqual([e["fichier"] for e in progres], ["a.txt", "b.txt", "c.txt"])
+
+    def test_un_fichier_ignore_au_milieu_compte_quand_meme_dans_la_numerotation(self):
+        """Numérotation sur `paths` (la liste brute), pas `indexed_paths` — une
+        extension non supportée reste une étape visible pour l'utilisateur, même
+        si elle n'est pas indexée."""
+        ignore = self.racine / "ignore.xyz"
+        ignore.write_text("contenu", encoding="utf-8")
+        fichiers = [self._fichier("a.txt"), str(ignore.resolve()),
+                   self._fichier("c.txt")]
+        progres = [e for e in self._evenements(fichiers, generate_summary=False)
+                  if e["type"] == "progress"]
+        self.assertEqual([e["index"] for e in progres], [1, 2, 3])
+        self.assertEqual([e["total"] for e in progres], [3, 3, 3])
+        self.assertEqual([e["fichier"] for e in progres],
+                         ["a.txt", "ignore.xyz", "c.txt"])
+        # Le fichier ignoré ne doit tout de même pas s'indexer.
+        self.assertEqual(self.reglages.rag.indexes,
+                         [fichiers[0], fichiers[2]])
+
+
 class ResumeSkillTest(_Base):
     """`/skills/résumé` doit savoir DE QUELLE conversation il parle."""
 
