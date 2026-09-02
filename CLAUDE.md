@@ -376,12 +376,25 @@ cran de plus : aucun `llm` injecté (scripts, tests légers), aucun modèle
 vision disponible, ou l'appel échoue (timeout, réponse vide) → le placeholder,
 jamais une exception. Verrouillé par `test_vision_images.py`.
 
-**IMPÉRATIF — les deux cas dégradés SANS exception sont logués, pas seulement
+**IMPÉRATIF — les TROIS cas dégradés SANS exception sont logués, pas seulement
 le `except`.** Angle mort trouvé en usage réel : `describe_image` peut réussir
 (pas de timeout, pas d'erreur) tout en rendant une chaîne vide — observé sur
 `flm:qwen3vl-it:4b`, sans qu'aucune trace n'indique pourquoi. `_texte_image`
-logue désormais ce cas et celui, tout aussi silencieux, d'aucun modèle vision
-disponible (`logger.warning`, pas `exception` : ce n'est pas une erreur).
+logue désormais ce cas, celui d'aucun modèle vision disponible, et celui
+d'aucun `llm` injecté du tout (`self._llm is None`) — les trois étaient
+silencieux (`logger.warning`, pas `exception` : ce n'est pas une erreur).
+
+**La branche `self._llm is None` a été la dernière trouvée, et c'est elle qui
+a fini par expliquer un cas réel** : les deux premiers logs ajoutés ne se
+déclenchaient JAMAIS chez un utilisateur, sur plusieurs fichiers — par
+élimination, c'est forcément celle-ci qui tournait. En production il n'y a
+QU'UN SEUL site de construction (`core/runtime.py:157`,
+`RAGEngine(store=vector_store, llm=llm)`), donc si ce log apparaît : soit
+`core/runtime.py` sur le disque est resté sur une version d'avant ce
+paramètre, soit le process tourne depuis avant la mise à jour — `_LazyEngine`
+construit le moteur **une seule fois** et le garde pour toute la durée du
+process, donc un `git pull` seul ne suffit pas, il faut redémarrer.
+
 `describe_image` va plus loin et logue le diagnostic BRUT quand le contenu est
 vide, pour la prochaine occurrence :
 

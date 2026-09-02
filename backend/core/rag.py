@@ -250,6 +250,7 @@ class RAGEngine:
         """
         placeholder = RAGEngine._extract_text_from_path(path)
         if self._llm is None:
+            logger.warning("Aucun LLM injecté dans ce RAGEngine — impossible de décrire %s, placeholder conservé", path)
             return placeholder
         modele = premier_modele_vision_disponible()
         if modele is None:

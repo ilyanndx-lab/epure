@@ -163,10 +163,23 @@ class TexteImageTest(_Fichiers):
     def test_sans_llm_injecte_retombe_sur_le_placeholder(self):
         """Un moteur construit sans `llm=` (scripts, tests légers) ne doit pas
         planter — comportement identique à avant ce chantier.
+
+        Dernière branche silencieuse trouvée en usage réel : signalée par
+        Ilyann comme la vraie cause chez lui après que les trois autres logs
+        (aucun modèle, description vide, échec) ne se déclenchaient JAMAIS sur
+        plusieurs fichiers — par élimination, seule celle-ci restait muette.
+        En production il n'y a qu'un seul site de construction
+        (`core/runtime.py:157`, `RAGEngine(store=vector_store, llm=llm)`) :
+        si ce log apparaît chez un utilisateur, `core/runtime.py` est
+        probablement resté sur une version d'avant ce paramètre, ou le
+        process tourne depuis avant sa mise à jour (`_LazyEngine` construit
+        le moteur UNE FOIS et le garde pour la durée du process).
         """
         moteur = _moteur_sans_init(llm=None)
-        texte = moteur._texte_image(str(self.image))
+        with self.assertLogs("core.rag", level="WARNING") as journal:
+            texte = moteur._texte_image(str(self.image))
         self.assertIn("analyse vision non disponible", texte)
+        self.assertIn(str(self.image), journal.output[0])
 
     def test_aucun_modele_vision_disponible_retombe_sur_le_placeholder(self):
         faux_llm = _FakeLLM()
