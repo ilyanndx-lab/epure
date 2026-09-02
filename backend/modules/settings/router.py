@@ -30,7 +30,8 @@ from core.codeagent import SecurityError
 from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config, modele_local_defaut
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
-from core.rag import SUPPORTED_EXTENSIONS
+from core.models import premier_modele_vision_disponible
+from core.rag import SUPPORTED_EXTENSIONS, _IMAGE_EXTENSIONS
 from core.runtime import (
     API_KEY_NAMES,
     PIPER_VOICE,
@@ -358,11 +359,21 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = "",
     change est `generate_summary=False` : sauter le résumé ne doit jamais
     effacer un résumé déjà présent sur la conversation, donc l'appel est sauté
     entièrement, pas fait avec une chaîne vide.
+
+    ``done`` porte aussi ``fichiers_vision_degrades`` : les noms des images de
+    CE lot dont l'indexation est retombée sur le placeholder de
+    `RAGEngine._extract_text_from_path` (aucun modèle vision, ou modèle en
+    échec) plutôt que sur une vraie description. Détecté par égalité stricte
+    contre ce placeholder — les trois chemins de dégradation de `_texte_image`
+    rendent tous exactement ce texte, cf. `core/rag.py`. Scope volontairement
+    limité à ce flux SSE : rien n'est persisté, un rechargement de la
+    conversation ne montre plus ce marqueur.
     """
     loop = asyncio.get_running_loop()
     total_pages = 0
     text_parts: list[str] = []
     indexed_paths: list[str] = []
+    vision_degrades: list[str] = []
 
     for index, path in enumerate(paths, start=1):
         yield f"data: {json.dumps({'type': 'progress', 'fichier': Path(path).name, 'index': index, 'total': len(paths)}, ensure_ascii=False)}\n\n"
@@ -384,6 +395,17 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = "",
             # (rien indexé) ne doit pas planter `[:3000]` sur `None`, et le
             # fichier reste marqué « chargé » comme avant ce changement.
             text = await loop.run_in_executor(None, rag.index_file, path)
+            # `_texte_image` dégrade vers `_extract_text_from_path` (le
+            # placeholder) sur SES TROIS chemins d'échec — pas de LLM injecté,
+            # aucun modèle vision disponible, réponse vide. Les trois rendent
+            # exactement ce texte, donc l'égalité stricte suffit à détecter la
+            # dégradation sans comparaison de sous-chaîne fragile. `rag.` et
+            # non `RAGEngine.` : `_extract_text_from_path` est un staticmethod,
+            # accessible sur l'instance déjà importée — inutile de faire entrer
+            # le nom de la classe dans ce module (cf. `test_vision_images.py`,
+            # qui verrouille son absence).
+            if ext in _IMAGE_EXTENSIONS and text == rag._extract_text_from_path(path):
+                vision_degrades.append(Path(path).name)
             text_parts.append((text or "")[:3000])
             if ext == '.pdf':
                 reader = pypdf.PdfReader(path)
@@ -465,7 +487,7 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = "",
         except Exception:
             logger.exception("Erreur comptage chunks")
 
-    yield f"data: {json.dumps({'type': 'done', 'pages': total_pages, 'chunks': chunks_count})}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'pages': total_pages, 'chunks': chunks_count, 'fichiers_vision_degrades': vision_degrades}, ensure_ascii=False)}\n\n"
 
 
 class LoadFilesRequest(BaseModel):
@@ -570,13 +592,36 @@ async def rag_capabilities():
     et une `cause` qui distingue « pas de réseau » d'un vrai échec de `pip` —
     parce que ce n'est pas la même chose à dire à quelqu'un.
 
-    **Ne déclenche rien.** C'est une lecture (`find_spec` + un fichier d'état),
-    et c'est délibéré : le frontend interroge cette route en boucle pendant
-    l'installation, elle ne doit surtout pas en lancer une seconde. Le
-    déclenchement appartient à `VectorStore.__init__`, donc aux routes qui ont
-    réellement besoin du moteur.
+    **Ne déclenche rien** côté embedding — c'est une lecture (`find_spec` + un
+    fichier d'état), et c'est délibéré : le frontend interroge cette route en
+    boucle pendant l'installation, elle ne doit surtout pas en lancer une
+    seconde. Le déclenchement appartient à `VectorStore.__init__`, donc aux
+    routes qui ont réellement besoin du moteur.
+
+    Porte aussi l'état du modèle vision (`vision`), invisible ailleurs que dans
+    les logs backend avant cet ajout. `premier_modele_vision_disponible()`
+    (`core/models.py`) reste la SEULE source de ce choix — cette route ne fait
+    que lire son résultat, jamais une seconde détection. `source` réduit le
+    dispatch de `LLMEngine._parse_model` au strict nécessaire ici : ce que
+    cette fonction rend n'est jamais qu'un modèle FLM (préfixe `flm:`) ou un
+    nom Ollama installé (jamais de fournisseur cloud pour la vision).
+
+    Cette partie-là fait deux sondes locales BORNÉES (`check_flm`, 2 s ;
+    `get_ollama_installed`, 3 s) — donc plus tout à fait « ne déclenche rien » :
+    une connexion refusée répond en pratique immédiatement, mais un serveur qui
+    écoute sans répondre peut faire attendre cette route jusqu'à ces bornes,
+    y compris pendant le rythme d'interrogation en boucle de `recherche.ts`
+    (toutes les 4 s tant que l'embedding n'est pas prêt).
     """
-    return etat_installation()
+    etat = etat_installation()
+    modele_vision = premier_modele_vision_disponible()
+    etat["vision"] = (
+        {"disponible": True, "modele": modele_vision,
+         "source": "flm" if modele_vision.startswith("flm:") else "ollama"}
+        if modele_vision else
+        {"disponible": False, "modele": None, "source": None}
+    )
+    return etat
 
 
 @router.post("/rag/install")

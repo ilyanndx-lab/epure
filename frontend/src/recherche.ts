@@ -39,6 +39,13 @@ import { API, apiFetch } from './api'
  * appartient aux routes qui ont réellement besoin du moteur.
  */
 
+/** État du modèle vision, même forme que celle rendue par `GET /rag/capabilities`. */
+export interface EtatVision {
+  disponible: boolean
+  modele: string | null
+  source: 'flm' | 'ollama' | null
+}
+
 /** Ce que le backend renvoie, champs tels quels (accentués). */
 interface CapacitesRecherche {
   'état'?: string
@@ -46,9 +53,12 @@ interface CapacitesRecherche {
   message?: string
   cause?: string
   'taille_estimée_mo'?: number
+  vision?: { disponible?: boolean; modele?: string | null; source?: string | null }
 }
 
 export type EtatPreparation = 'inconnu' | 'absent' | 'en_cours' | 'prêt' | 'échec'
+
+const VISION_INCONNU: EtatVision = { disponible: false, modele: null, source: null }
 
 /** État exposé aux composants, en champs ASCII pour des sites d'appel lisibles. */
 export interface EtatRecherche {
@@ -61,6 +71,8 @@ export interface EtatRecherche {
   cause: string
   /** Poids annoncé du téléchargement, en Mo. */
   tailleMo: number
+  /** État du modèle vision — même appel réseau, pas une seconde requête. */
+  vision: EtatVision
 }
 
 /**
@@ -81,7 +93,7 @@ export interface EtatRecherche {
  * l'inverse serait un bandeau faux chez tout le monde.
  */
 const INCONNU: EtatRecherche = {
-  etat: 'inconnu', prete: true, message: '', cause: '', tailleMo: 0,
+  etat: 'inconnu', prete: true, message: '', cause: '', tailleMo: 0, vision: VISION_INCONNU,
 }
 
 /** Cadence d'interrogation pendant la préparation. */
@@ -128,12 +140,19 @@ function normaliser(corps: unknown): EtatRecherche {
   const connus: EtatPreparation[] = ['absent', 'en_cours', 'prêt', 'échec']
   if (!connus.includes(brut as EtatPreparation)) return INCONNU
   const e = brut as EtatPreparation
+  const v = c.vision ?? {}
+  const source = v.source === 'flm' || v.source === 'ollama' ? v.source : null
   return {
     etat: e,
     prete: e === 'prêt',
     message: typeof c.message === 'string' ? c.message : '',
     cause: typeof c.cause === 'string' ? c.cause : '',
     tailleMo: typeof c['taille_estimée_mo'] === 'number' ? c['taille_estimée_mo'] : 0,
+    vision: {
+      disponible: v.disponible === true,
+      modele: typeof v.modele === 'string' ? v.modele : null,
+      source,
+    },
   }
 }
 

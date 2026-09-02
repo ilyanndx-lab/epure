@@ -84,6 +84,21 @@ const CAPACITES_ECHEC_RESEAU = {
   cause: 'réseau', 'taille_estimée_mo': 91,
 }
 
+/**
+ * État du modèle vision, tel que rendu par `GET /rag/capabilities` depuis son
+ * champ `vision` — invisible ailleurs que dans les logs backend avant cet
+ * ajout. Recopié de `core/models.py::premier_modele_vision_disponible` : ces
+ * deux formes sont les deux seules que la route puisse produire.
+ */
+const CAPACITES_VISION_OLLAMA = {
+  ...CAPACITES_PRETES,
+  vision: { disponible: true, modele: 'moondream:latest', source: 'ollama' },
+}
+const CAPACITES_VISION_ABSENTE = {
+  ...CAPACITES_PRETES,
+  vision: { disponible: false, modele: null, source: null },
+}
+
 /** Le 503 que le backend rend pendant la préparation, corps compris. */
 const ERREUR_503 = { detail: CAPACITES_EN_COURS.message, ...CAPACITES_EN_COURS }
 
@@ -312,6 +327,31 @@ describe('ModuleBar — panneau fichiers', () => {
     await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
     expect(screen.queryByText(/Préparation du moteur/)).toBeNull()
     expect(screen.queryByText('Réessayer')).toBeNull()
+  })
+
+  it('annonce le modèle vision détecté', async () => {
+    poserFetch({ ...tableSaine(), '/rag/capabilities': { corps: CAPACITES_VISION_OLLAMA } })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText(/Vision : moondream:latest détecté \(Ollama\)/)).toBeTruthy())
+  })
+
+  it("propose d'installer un modèle vision quand aucun n'est détecté", async () => {
+    poserFetch({ ...tableSaine(), '/rag/capabilities': { corps: CAPACITES_VISION_ABSENTE } })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText(/aucun modèle détecté/)).toBeTruthy())
+  })
+
+  it('ne dit rien sur la vision quand /rag/capabilities est absente (backend plus ancien)', async () => {
+    // Même garde-fou que le bandeau de préparation juste au-dessus, et pour la
+    // même raison : `état: 'inconnu'` ne doit jamais s'afficher comme un
+    // verdict négatif — ici « aucun modèle détecté » sur un poste qui en a un.
+    poserFetch({ ...tableSaine(), '/rag/capabilities': { status: 404, corps: { detail: 'Not Found' } } })
+    await rendre()
+    await ouvrir('Fichiers')
+    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
+    expect(screen.queryByText(/Vision :/)).toBeNull()
   })
 
   it('propose les types de documents que le backend sait lire', async () => {
