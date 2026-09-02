@@ -738,6 +738,18 @@ class _RagPourResume:
         self.appels_index.append(path)
         return self._textes.get(path)
 
+    @staticmethod
+    def _extract_text_from_path(path):
+        """Même placeholder que le VRAI `RAGEngine._extract_text_from_path`
+        pour une image — nécessaire depuis que `_stream_load_sse` compare
+        contre cette méthode (marqueur `fichiers_vision_degrades`) : sans elle,
+        l'appel lève `AttributeError`, avalé par le `try/except` de la boucle,
+        et plus aucun fichier n'était traité — exactement la classe de bug
+        qu'un double qui diverge du contrat réel a déjà coûtée une fois
+        (cf. `_RagEspion.index_file`, `test_fichiers_par_conversation.py`).
+        """
+        return f"Image : {Path(path).name} (analyse vision non disponible sans modèle vision)"
+
 
 class ResumeImportUtiliseLeTexteIndexeTest(unittest.TestCase):
     """Le bug trouvé après le premier merge (PR #16) : le résumé affiché à
@@ -834,6 +846,126 @@ class ResumeImportUtiliseLeTexteIndexeTest(unittest.TestCase):
         text``, cf. `test_taches_locales.ResumeImportTest._code_seul`).
         """
         self.assertFalse(hasattr(routeur_reglages, "RAGEngine"))
+
+
+class RagCapabilitiesVisionTest(unittest.TestCase):
+    """`GET /rag/capabilities` porte l'état du modèle vision — invisible ailleurs
+    que dans les logs backend avant cet ajout. `premier_modele_vision_disponible`
+    reste l'unique source : cette route ne fait que lire son résultat.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app, base_url="http://localhost",
+                                client=("127.0.0.1", 54321))
+        cls.token = get_api_token()
+
+    def setUp(self):
+        self.auth = {"Authorization": f"Bearer {self.token}"}
+        original = routeur_reglages.premier_modele_vision_disponible
+        self.addCleanup(setattr, routeur_reglages,
+                        "premier_modele_vision_disponible", original)
+
+    def _capacites(self):
+        r = self.client.get("/rag/capabilities", headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()
+
+    def test_vision_disponible_cote_ollama(self):
+        routeur_reglages.premier_modele_vision_disponible = lambda: "moondream:latest"
+        self.assertEqual(
+            self._capacites()["vision"],
+            {"disponible": True, "modele": "moondream:latest", "source": "ollama"})
+
+    def test_vision_disponible_cote_flm(self):
+        routeur_reglages.premier_modele_vision_disponible = lambda: "flm:qwen3vl-it:4b"
+        self.assertEqual(
+            self._capacites()["vision"],
+            {"disponible": True, "modele": "flm:qwen3vl-it:4b", "source": "flm"})
+
+    def test_vision_indisponible(self):
+        routeur_reglages.premier_modele_vision_disponible = lambda: None
+        self.assertEqual(
+            self._capacites()["vision"],
+            {"disponible": False, "modele": None, "source": None})
+
+
+class FichiersVisionDegradesEvenementTest(unittest.TestCase):
+    """`done` porte `fichiers_vision_degrades` : les images de CE lot retombées
+    sur le placeholder de `_extract_text_from_path`, jamais celles décrites par
+    un vrai modèle vision. Détection par égalité stricte contre ce placeholder —
+    les trois chemins de dégradation de `_texte_image` rendent tous exactement
+    ce texte (cf. `core/rag.py`), donc pas de comparaison de sous-chaîne fragile.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(main.app, base_url="http://localhost",
+                                client=("127.0.0.1", 54321))
+        cls.token = get_api_token()
+
+    def setUp(self):
+        self.auth = {"Authorization": f"Bearer {self.token}"}
+        self.dossier = Path(tempfile.mkdtemp(prefix="epure-test-vision-degrade-"))
+
+        from core import paths as core_paths
+        original_roots = core_paths.user_data_roots
+        core_paths.user_data_roots = lambda: [self.dossier.resolve()]
+        self.addCleanup(setattr, core_paths, "user_data_roots", original_roots)
+
+        original_rag = routeur_reglages.rag
+        self.addCleanup(setattr, routeur_reglages, "rag", original_rag)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dossier, ignore_errors=True)
+
+    def _fichier(self, nom, contenu=b"\x89PNG fausse-image"):
+        p = self.dossier / nom
+        p.write_bytes(contenu)
+        return str(p.resolve())
+
+    def _charger(self, chemins):
+        import json as _json
+        r = self.client.post(
+            "/files/load",
+            json={"paths": chemins, "generate_summary": False},
+            headers=self.auth,
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        return [_json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
+
+    def test_une_image_degradee_est_marquee_une_avec_vraie_description_ne_l_est_pas(self):
+        avec_vision = self._fichier("avec_vision.png")
+        degradee = self._fichier("degradee.png")
+        routeur_reglages.rag = _RagPourResume({
+            avec_vision: "Un schéma de Thalès.",
+            degradee: _RagPourResume._extract_text_from_path(degradee),
+        })
+
+        evenements = self._charger([avec_vision, degradee])
+        done = next(e for e in evenements if e["type"] == "done")
+        self.assertEqual(done["fichiers_vision_degrades"], ["degradee.png"])
+
+    def test_aucune_image_degradee_rend_une_liste_vide(self):
+        avec_vision = self._fichier("avec_vision.png")
+        routeur_reglages.rag = _RagPourResume({avec_vision: "Un schéma de Thalès."})
+
+        evenements = self._charger([avec_vision])
+        done = next(e for e in evenements if e["type"] == "done")
+        self.assertEqual(done["fichiers_vision_degrades"], [])
+
+    def test_un_fichier_non_image_n_est_jamais_marque(self):
+        """Le marqueur est réservé aux extensions de `_IMAGE_EXTENSIONS` —
+        un `.txt` normalement indexé ne doit jamais apparaître dans la liste.
+        """
+        texte = self.dossier / "cours.txt"
+        texte.write_text("contenu de cours", encoding="utf-8")
+        routeur_reglages.rag = _RagPourResume({str(texte.resolve()): "contenu de cours"})
+
+        evenements = self._charger([str(texte.resolve())])
+        done = next(e for e in evenements if e["type"] == "done")
+        self.assertEqual(done["fichiers_vision_degrades"], [])
 
 
 if __name__ == "__main__":

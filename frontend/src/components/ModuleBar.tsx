@@ -299,6 +299,10 @@ export default function ModuleBar({
   // l'indexation (repli vision Ollama, séquentielle) est déjà longue en soi.
   const [generateSummary, setGenerateSummary] = useState(true)
   const [loadProgress, setLoadProgress] = useState<{ fichier: string; index: number; total: number } | null>(null)
+  // Scope volontairement limité à CETTE session de streaming : pas de
+  // persistance, un rechargement de la conversation ne montre plus ce
+  // marqueur (cf. `_stream_load_sse`, backend/modules/settings/router.py).
+  const [visionDegrades, setVisionDegrades] = useState<Set<string>>(new Set())
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -628,6 +632,7 @@ export default function ModuleBar({
     setSummaryText('')
     setSummary(null)
     setLoadProgress(null)
+    setVisionDegrades(new Set())
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -640,7 +645,10 @@ export default function ModuleBar({
           const ev = JSON.parse(part.slice(6))
           if (ev.type === 'progress') { setLoadProgress({ fichier: ev.fichier, index: ev.index, total: ev.total }) }
           else if (ev.type === 'token') { summaryAccRef.current += ev.content; setSummaryText(summaryAccRef.current) }
-          else if (ev.type === 'done') { finalPages = ev.pages; finalChunks = ev.chunks }
+          else if (ev.type === 'done') {
+            finalPages = ev.pages; finalChunks = ev.chunks
+            setVisionDegrades(new Set(liste<string>(ev.fichiers_vision_degrades)))
+          }
         } catch { /* skip */ }
       }
     }
@@ -883,6 +891,22 @@ export default function ModuleBar({
             </div>
           )}
 
+          {/* État du modèle vision — invisible ailleurs que dans les logs
+              backend avant cet ajout. Même appel que ci-dessus
+              (`GET /rag/capabilities`, `useRecherche()`), pas une seconde
+              requête réseau. `etat === 'inconnu'` (corps malformé, 401, ou
+              backend plus ancien sans ce champ) reste SILENCIEUX — même
+              principe que le bandeau de préparation juste au-dessus : une
+              incertitude ne doit jamais s'afficher comme un verdict négatif,
+              ici « aucun modèle détecté » sur un poste qui en a un. */}
+          {recherche.etat !== 'inconnu' && (
+            <p className="text-xs text-secondary">
+              {recherche.vision.disponible
+                ? `Vision : ${recherche.vision.modele} détecté (${recherche.vision.source === 'flm' ? 'FLM' : 'Ollama'})`
+                : 'Vision : aucun modèle détecté — installez-en un (ollama pull moondream)'}
+            </p>
+          )}
+
           <div
             onDragOver={e => { e.preventDefault(); setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
@@ -919,6 +943,13 @@ export default function ModuleBar({
                       <span className="text-xs font-mono text-secondary group-hover:text-primary transition-colors duration-150 truncate">
                         {basename(f)}
                       </span>
+                      {visionDegrades.has(basename(f)) && (
+                        // Scope de CETTE session de streaming seulement — pas
+                        // persisté, disparaît au rechargement de la conversation.
+                        <span className="shrink-0" title="Pas de description vision — modèle indisponible">
+                          ⚠️
+                        </span>
+                      )}
                       {d && (
                         // Le décompte de chunks, pas la taille sur le disque :
                         // c'est ce que le fichier occupe dans l'index, et un PDF
