@@ -294,6 +294,11 @@ export default function ModuleBar({
   const [summaryText, setSummaryText] = useState('')
   const summaryAccRef = useRef('')
   const [loadingFiles, setLoadingFiles] = useState(false)
+  // Coché par défaut : comportement historique inchangé pour qui n'y touche
+  // pas. À décocher pour plusieurs gros fichiers sur un poste sans FLM, où
+  // l'indexation (repli vision Ollama, séquentielle) est déjà longue en soi.
+  const [generateSummary, setGenerateSummary] = useState(true)
+  const [loadProgress, setLoadProgress] = useState<{ fichier: string; index: number; total: number } | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -622,6 +627,7 @@ export default function ModuleBar({
     summaryAccRef.current = ''
     setSummaryText('')
     setSummary(null)
+    setLoadProgress(null)
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -632,16 +638,20 @@ export default function ModuleBar({
         if (!part.startsWith('data: ')) continue
         try {
           const ev = JSON.parse(part.slice(6))
-          if (ev.type === 'token') { summaryAccRef.current += ev.content; setSummaryText(summaryAccRef.current) }
+          if (ev.type === 'progress') { setLoadProgress({ fichier: ev.fichier, index: ev.index, total: ev.total }) }
+          else if (ev.type === 'token') { summaryAccRef.current += ev.content; setSummaryText(summaryAccRef.current) }
           else if (ev.type === 'done') { finalPages = ev.pages; finalChunks = ev.chunks }
         } catch { /* skip */ }
       }
     }
-    setSummary({ résumé: summaryAccRef.current, pages_totales: finalPages, chunks_indexés: finalChunks })
+    setLoadProgress(null)
+    // Résumé désactivé : rien n'a rempli `summaryText`, donc pas de bloc résumé
+    // — mais `finalPages`/`finalChunks` viennent de `done` dans tous les cas.
+    if (generateSummary) setSummary({ résumé: summaryAccRef.current, pages_totales: finalPages, chunks_indexés: finalChunks })
     // `undefined` signifie « garder les fichiers actifs » (cas de l'upload, qui
     // les relit ensuite) ; toute autre valeur doit être un tableau.
     if (finalPaths !== undefined) setActiveFiles(liste<string>(finalPaths))
-  }, [])
+  }, [generateSummary])
 
   const loadSelectedFiles = useCallback(async () => {
     if (selectedFiles.length === 0) return
@@ -650,14 +660,14 @@ export default function ModuleBar({
       const res = await apiFetch(`${API}/files/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths: selectedFiles, conversation_id: conversationId }),
+        body: JSON.stringify({ paths: selectedFiles, conversation_id: conversationId, generate_summary: generateSummary }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await consumeLoadStream(res, selectedFiles)
       await chargerAttachements()
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }
-  }, [selectedFiles, conversationId, consumeLoadStream, chargerAttachements])
+  }, [selectedFiles, conversationId, generateSummary, consumeLoadStream, chargerAttachements])
 
   /**
    * Détache tout de la conversation courante.
@@ -693,6 +703,7 @@ export default function ModuleBar({
       // multipart, et `Form("")` côté backend le rend optionnel — un import
       // hors conversation reste légitime (alimenter le corpus).
       form.append('conversation_id', conversationId)
+      form.append('generate_summary', String(generateSummary))
       const res = await apiFetch(`${API}/files/upload`, { method: 'POST', body: form })
       // 503 = la pile d'embedding s'installe ; l'import ne peut pas aboutir, mais
       // c'est un état à annoncer, pas une erreur à avaler. Le bandeau du panneau
@@ -709,7 +720,7 @@ export default function ModuleBar({
       await chargerAttachements()
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }
-  }, [conversationId, consumeLoadStream, chargerFichiers, chargerAttachements])
+  }, [conversationId, generateSummary, consumeLoadStream, chargerFichiers, chargerAttachements])
 
   // ── STT ───────────────────────────────────────────────────────────────────
 
@@ -949,7 +960,7 @@ export default function ModuleBar({
             </div>
           )}
 
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
             <Button variant="secondary" size="sm" onClick={loadSelectedFiles} disabled={selectedFiles.length === 0 || loadingFiles}>
               {loadingFiles ? 'Chargement...' : `Charger${selectedFiles.length > 0 ? ` (${selectedFiles.length})` : ''}`}
             </Button>
@@ -958,7 +969,17 @@ export default function ModuleBar({
                 Vider le contexte
               </Button>
             )}
+            <span className="flex items-center gap-2">
+              <Toggle checked={generateSummary} onChange={setGenerateSummary} label="Résumer à l'import" />
+              <span className="text-xs text-secondary">Résumer à l'import</span>
+            </span>
           </div>
+
+          {loadProgress && (
+            <p className="text-xs text-secondary font-mono">
+              Indexation {loadProgress.index}/{loadProgress.total} — {loadProgress.fichier}
+            </p>
+          )}
 
           {(summaryText || summary) && (
             <div className="bg-elevated border border-line rounded-md px-3 py-3 space-y-1">

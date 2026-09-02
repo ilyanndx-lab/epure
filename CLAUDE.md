@@ -386,6 +386,20 @@ sur le NPU, pas de la complexité de l'image ; 26 s mesuré au tout premier appe
 après chargement du modèle. Ne pas lire une relation « image simple = rapide,
 image chargée = lent » dans ces chiffres, il n'y en a pas.
 
+**`_stream_load_sse` répond à ce coût par deux ajouts, sans toucher à
+l'indexation elle-même** (`backend/modules/settings/router.py`) : un événement
+SSE `{"type": "progress", "fichier", "index", "total"}` avant chaque fichier de
+la boucle (numéroté sur `paths`, la liste brute — un fichier ignoré compte quand
+même dans ce que voit l'utilisateur), et un paramètre `generate_summary: bool =
+True` (`LoadFilesRequest`, `POST /files/upload`) qui saute le résumé
+automatique sans jamais toucher à l'indexation/l'attachement. Coché par défaut
+dans `ModuleBar.tsx` — décoché, c'est pour plusieurs gros fichiers sur un poste
+sans FLM, où l'indexation séquentielle (repli Ollama ci-dessus) est déjà longue
+en soi. **`set_resume_contexte` n'est appelé que si `generate_summary` est
+vrai** : sauter le résumé ne doit jamais écraser un résumé déjà présent sur la
+conversation par une chaîne vide — ce que faisait, et continue de faire
+volontairement, le cas `generate_summary=True` avec `text_parts` vide.
+
 **IMPÉRATIF — `describe_image` a son propre timeout (`_VISION_TIMEOUT_S`,
 60 s dans `core/llm.py`), jamais `model.timeout_s`.** Cette méthode tourne en
 synchrone dans le chargement d'un fichier, pas dans une conversation active :

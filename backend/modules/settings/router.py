@@ -327,7 +327,8 @@ async def context_settings(request: Request):
 
 # ── Files ────────────────────────────────────────────────────────────────────
 
-async def _stream_load_sse(paths: list[str], conversation_id: str = ""):
+async def _stream_load_sse(paths: list[str], conversation_id: str = "",
+                            generate_summary: bool = True):
     """Indexe des fichiers, diffuse le résumé en SSE, puis émet `done`.
 
     ``conversation_id`` est OPTIONNEL, et l'asymétrie est voulue :
@@ -342,13 +343,29 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = ""):
     Remplace ``memory.update_context(fichiers_actifs=…, résumé_contexte=…)``, qui
     ÉCRASAIT une liste globale : importer un fichier détachait en silence tout ce
     qui l'avait été avant, pour toutes les conversations à la fois.
+
+    ``generate_summary`` (toggle « Résumer à l'import », coché par défaut) ne
+    conditionne QUE le résumé automatique — l'indexation et l'attachement des
+    fichiers sont inconditionnels. Motivé par le repli vision Ollama (§3.3 bis) :
+    plusieurs gros fichiers, sur un poste sans FLM, font une indexation
+    séquentielle potentiellement longue ; le résumé (un appel LLM de plus, après
+    coup) n'est pas toujours voulu en plus de cette attente.
+
+    **IMPÉRATIF — `set_resume_contexte` n'est appelé QUE si `generate_summary`
+    est vrai.** Le cas `generate_summary=True` avec `text_parts` vide (donc
+    `accumulated == ""`) continue d'écraser un résumé existant par une chaîne
+    vide — comportement HISTORIQUE conservé tel quel, pas une régression. Ce qui
+    change est `generate_summary=False` : sauter le résumé ne doit jamais
+    effacer un résumé déjà présent sur la conversation, donc l'appel est sauté
+    entièrement, pas fait avec une chaîne vide.
     """
     loop = asyncio.get_running_loop()
     total_pages = 0
     text_parts: list[str] = []
     indexed_paths: list[str] = []
 
-    for path in paths:
+    for index, path in enumerate(paths, start=1):
+        yield f"data: {json.dumps({'type': 'progress', 'fichier': Path(path).name, 'index': index, 'total': len(paths)}, ensure_ascii=False)}\n\n"
         ext = Path(path).suffix.lower()
         if ext not in _SUPPORTED_EXT:
             logger.warning("Extension non supportée : %s", path)
@@ -381,7 +398,7 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = ""):
         )
 
     accumulated = ""
-    if text_parts:
+    if generate_summary and text_parts:
         combined = "\n\n---\n\n".join(text_parts)[:12000]
         prompt = (
             "Résume en 100-150 mots maximum ces documents de cours. "
@@ -433,7 +450,7 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = ""):
             accumulated += item
             yield f"data: {json.dumps({'type': 'token', 'content': item}, ensure_ascii=False)}\n\n"
 
-    if conversation_id:
+    if conversation_id and generate_summary:
         await loop.run_in_executor(
             None, history_engine.set_resume_contexte, conversation_id, accumulated
         )
@@ -456,6 +473,10 @@ class LoadFilesRequest(BaseModel):
     #: Conversation à laquelle attacher les fichiers indexés. Vide = indexation
     #: seule, sans attachement (import depuis les Réglages).
     conversation_id: str = ""
+    #: Résumé automatique à l'import (cf. `_stream_load_sse`). Coché par défaut
+    #: dans l'interface — comportement historique inchangé pour qui n'y touche
+    #: pas.
+    generate_summary: bool = True
 
 
 @router.post("/files/load")
@@ -474,14 +495,15 @@ async def files_load(req: LoadFilesRequest):
     except PathOutsideDataError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return StreamingResponse(
-        _stream_load_sse(paths, req.conversation_id),
+        _stream_load_sse(paths, req.conversation_id, req.generate_summary),
         media_type="text/event-stream", headers=SSE_HEADERS
     )
 
 
 @router.post("/files/upload")
 async def files_upload(files: list[UploadFile] = File(...),
-                       conversation_id: str = Form("")):
+                       conversation_id: str = Form(""),
+                       generate_summary: bool = Form(True)):
     """Dépose des fiches dans la racine des fiches, puis les indexe.
 
     ``upload.filename`` vient du client. ``_fiches_dir / filename`` acceptait
@@ -519,7 +541,7 @@ async def files_upload(files: list[UploadFile] = File(...),
                     + ", ".join(sorted(e.lstrip(".").upper() for e in _SUPPORTED_EXT))),
         )
     return StreamingResponse(
-        _stream_load_sse(saved_paths, conversation_id),
+        _stream_load_sse(saved_paths, conversation_id, generate_summary),
         media_type="text/event-stream", headers=SSE_HEADERS
     )
 
