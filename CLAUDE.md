@@ -412,6 +412,23 @@ donc aussi bien un succès qu'un contenu vide. **Le vrai discriminant est le
 nombre de tokens produits** (`eval_count`/`usage.completion_tokens` proche de
 0-1), pas `finish_reason`. C'est pour ça que les deux sont loggués ensemble.
 
+**IMPÉRATIF — la correspondance avec un modèle Ollama installé tolère
+l'absence de tag, jamais une égalité stricte.** Bug confirmé en production,
+distinct de celui ci-dessus : `config.yaml:vision.ollama_model` porte
+`moondream` SANS tag, mais `get_ollama_installed()` restitue les noms tels
+qu'Ollama les expose via `/api/tags` — AVEC tag, `moondream:latest`. Une
+égalité stricte (`ollama_model in ollama_installed`) ne les faisait donc
+jamais coïncider : `premier_modele_vision_disponible()` rendait `None` même
+Ollama joignable et le modèle installé, et le seul log visible était « aucun
+modèle vision disponible » — indiscernable d'une vraie absence d'installation.
+`core.models._match_ollama_model()` corrige ça : égalité stricte d'abord, puis
+repli sur le nom de BASE (partie avant `:`) des deux côtés. Rend le nom
+RÉELLEMENT installé (avec son tag), pas la valeur brute de `config.yaml` :
+c'est ce nom qui doit partir dans `describe_image`, pas celui de la config —
+reste correct si le tag installé change un jour. Verrouillé par
+`MatchOllamaModelTest` et deux cas dans `PremierModeleVisionDisponibleTest`
+(`test_vision_images.py`).
+
 **Non résolu à ce jour, spécifiquement sur `flm:qwen3vl-it:4b`** :
 reproduction tentée sans succès le 2026-09-01 (image blanche/noire/bruitée/
 RGBA/panoramique 4000×200, `.webp`, `.jpeg`, `think=True` forcé — tout est

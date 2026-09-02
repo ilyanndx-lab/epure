@@ -340,6 +340,34 @@ class DescribeImageDispatchTest(unittest.TestCase):
         # et encode lui-même le fichier (vérifié : accepte str/bytes/Path).
         self.assertEqual(message["images"], [r"C:\cours\schema.png"])
 
+    def test_un_nom_de_modele_ollama_tagge_traverse_sans_etre_tronque(self):
+        """`_match_ollama_model` rend désormais un nom AVEC tag
+        (`moondream:latest`), jamais la valeur nue de `config.yaml` — c'est ce
+        nom qui part dans `describe_image`. `_parse_model` ne coupe qu'un
+        préfixe `provider:`, jamais un tag de version : vérifie que le tag
+        survit intact jusqu'à l'appel `chat(model=...)`.
+        """
+        appels = {}
+
+        def faux_chat(**kwargs):
+            appels.update(kwargs)
+            return ollama.ChatResponse(
+                model="moondream:latest", created_at="2026-09-01T00:00:00Z",
+                done=True, done_reason="stop",
+                message=ollama.Message(role="assistant", content="Une figure."),
+                eval_count=12,
+            )
+
+        original = module_llm._vision_ollama_client.chat
+        module_llm._vision_ollama_client.chat = faux_chat
+        try:
+            moteur = LLMEngine(config_path=_CONFIG)
+            moteur.describe_image(r"C:\cours\schema.png", "moondream:latest")
+        finally:
+            module_llm._vision_ollama_client.chat = original
+
+        self.assertEqual(appels["model"], "moondream:latest")
+
     def test_le_client_ollama_dedie_a_un_timeout_court_et_independant(self):
         """`_vision_ollama_client` n'est PAS `ollama_client` : il a son propre
         timeout, court, sans toucher à celui du chat (`model.timeout_s`).
@@ -609,6 +637,56 @@ class PremierModeleVisionDisponibleTest(unittest.TestCase):
         core_models.check_flm = lambda: False
         core_models.get_ollama_installed = lambda: None
         self.assertIsNone(core_models.premier_modele_vision_disponible())
+
+    def test_un_nom_configure_sans_tag_matche_le_nom_installe_avec_tag(self):
+        """LE bug confirmé en production : `config.yaml` porte `moondream`
+        (sans tag), `get_ollama_installed()` rend les noms tels qu'Ollama les
+        expose via `/api/tags` — avec tag, `moondream:latest`. Une égalité
+        stricte ne les faisait jamais coïncider : la fonction rendait `None`
+        même Ollama joignable et le modèle installé.
+        """
+        core_models.check_flm = lambda: False
+        core_models._ollama_vision_model = lambda: "moondream"
+        core_models.get_ollama_installed = lambda: ["qwen2.5:7b", "moondream:latest"]
+        self.assertEqual(core_models.premier_modele_vision_disponible(), "moondream:latest")
+
+    def test_un_nom_configure_deja_tagge_reste_matche_a_l_identique(self):
+        """Non-régression : le cas déjà couvert (config et installé identiques,
+        tag compris) ne doit pas passer par le repli sur le nom de base.
+        """
+        core_models.check_flm = lambda: False
+        core_models._ollama_vision_model = lambda: "moondream:latest"
+        core_models.get_ollama_installed = lambda: ["moondream:latest"]
+        self.assertEqual(core_models.premier_modele_vision_disponible(), "moondream:latest")
+
+
+class MatchOllamaModelTest(unittest.TestCase):
+    """`core.models._match_ollama_model` isolée, sans passer par la détection
+    FLM/Ollama — la fonction pure qui corrige le bug de tag.
+    """
+
+    def test_egalite_stricte_prioritaire(self):
+        """Un match exact ne doit pas être détourné par le repli sur le nom
+        de base, même si un autre tag du même modèle est aussi présent.
+        """
+        self.assertEqual(
+            core_models._match_ollama_model("moondream:latest",
+                                            ["moondream:1.8b", "moondream:latest"]),
+            "moondream:latest",
+        )
+
+    def test_repli_sur_le_nom_de_base_quand_le_tag_differe(self):
+        self.assertEqual(
+            core_models._match_ollama_model("moondream", ["qwen2.5:7b", "moondream:latest"]),
+            "moondream:latest",
+        )
+
+    def test_aucun_nom_de_base_ne_correspond_rend_none(self):
+        self.assertIsNone(
+            core_models._match_ollama_model("moondream", ["qwen2.5:7b", "llava:7b"]))
+
+    def test_liste_installee_vide(self):
+        self.assertIsNone(core_models._match_ollama_model("moondream", []))
 
 
 class OllamaVisionModelConfigTest(unittest.TestCase):

@@ -370,6 +370,33 @@ def _ollama_vision_model() -> str:
         return "moondream"
 
 
+def _match_ollama_model(configured: str, installed: list[str]) -> Optional[str]:
+    """Fait correspondre un nom configuré (``config.yaml``) à un nom RÉELLEMENT
+    installé, en tolérant un tag absent.
+
+    Bug confirmé en production : ``config.yaml`` porte ``moondream`` sans tag,
+    mais ``get_ollama_installed()`` restitue les noms TELS QU'OLLAMA LES
+    EXPOSE via ``/api/tags`` — avec tag, ``moondream:latest``. L'égalité
+    stricte d'avant (``configured in installed``) ne matchait donc jamais,
+    et ``premier_modele_vision_disponible()`` rendait ``None`` même Ollama
+    joignable et le modèle installé — silencieusement, `_texte_image` (core/
+    rag.py) retombant sur le placeholder sans qu'aucun log ne le distingue
+    d'une vraie absence de modèle.
+
+    Rend le nom RÉELLEMENT installé (avec son tag), pas la valeur brute de
+    config : reste correct même si le tag installé change un jour
+    (``moondream:1.8b`` plutôt que ``:latest``), et c'est ce nom qui doit
+    partir dans l'appel à `describe_image`, pas celui de `config.yaml`.
+    """
+    if configured in installed:
+        return configured
+    base = configured.split(":", 1)[0]
+    for name in installed:
+        if name.split(":", 1)[0] == base:
+            return name
+    return None
+
+
 def premier_modele_vision_disponible() -> Optional[str]:
     """Premier modèle capable de décrire une image, RÉELLEMENT disponible.
 
@@ -379,7 +406,9 @@ def premier_modele_vision_disponible() -> Optional[str]:
     `FLM_MODELS_STATIC` (flag `vision`), sans téléchargement à froid tant que
     le modèle est installé. L'Ollama configuré (`vision.ollama_model`,
     `moondream` par défaut) est le repli — c'est ce qui couvre une machine sans
-    FLM (ARM64, pas de NPU AMD).
+    FLM (ARM64, pas de NPU AMD). Matché via `_match_ollama_model` : `/api/tags`
+    rend les noms AVEC tag (`moondream:latest`), jamais nus comme
+    `config.yaml` — une égalité stricte ne les faisait donc jamais coïncider.
 
     Rend ``None`` si aucun des deux n'est disponible : `core/rag.py` retombe
     alors sur le placeholder existant, comme un paquet d'extraction absent
@@ -397,8 +426,8 @@ def premier_modele_vision_disponible() -> Optional[str]:
 
     ollama_model = _ollama_vision_model()
     ollama_installed = get_ollama_installed()
-    if ollama_installed and ollama_model in ollama_installed:
-        return ollama_model
+    if ollama_installed:
+        return _match_ollama_model(ollama_model, ollama_installed)
 
     return None
 
