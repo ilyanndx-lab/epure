@@ -625,3 +625,63 @@ class ModelsRegistry:
         self._catalog = await self._build()
         self._catalog_at = time.time()
         return self._catalog
+
+
+# ── Disponibilité, pour VALIDATION (pas seulement affichage) ────────────────
+
+async def ids_disponibles(registry: "ModelsRegistry") -> set[str]:
+    """Ensemble des IDs de modèles RÉELLEMENT disponibles, tous fournisseurs.
+
+    Même détection que `GET /models` (`main.py:list_models`), reprise ici pour
+    que tout site qui doit VALIDER un ID de modèle côté serveur (au lieu de
+    simplement l'afficher) la réutilise plutôt que de la redériver —
+    CLAUDE.md §3.7 : « ne jamais accepter un ID de modèle sans le confronter
+    à ce qui est réellement disponible ». Un modèle cloud n'est disponible que
+    si SA CLÉ est présente ET que son entrée de catalogue n'est pas
+    explicitement marquée indisponible (`_disponible is False`, clé refusée
+    par le fournisseur) — ni l'un ni l'autre seul ne suffit.
+    """
+    loop = asyncio.get_running_loop()
+    ids: set[str] = set()
+
+    ollama_models = await loop.run_in_executor(None, get_ollama_installed)
+    if ollama_models:
+        ids.update(ollama_models)
+
+    lmstudio_models = await loop.run_in_executor(None, get_lmstudio_installed)
+    if lmstudio_models:
+        ids.update(f"lmstudio:{name}" for name in lmstudio_models)
+
+    try:
+        flm_ok = await asyncio.wait_for(loop.run_in_executor(None, check_flm), timeout=2.5)
+    except Exception:
+        flm_ok = False
+    if flm_ok:
+        try:
+            flm_installed = await loop.run_in_executor(None, get_flm_installed)
+            flm_live = await loop.run_in_executor(None, flm_model_ids)
+        except Exception:
+            flm_installed, flm_live = set(), None
+        for m in FLM_MODELS_STATIC:
+            mid = m["id"].split("flm:", 1)[1]
+            if mid in flm_installed and (flm_live is None or mid in flm_live):
+                ids.add(m["id"])
+
+    key_ok = {
+        "gemini":   bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+        "groq":     bool(os.environ.get("GROQ_API_KEY", "").strip()),
+        "cerebras": bool(os.environ.get("CEREBRAS_API_KEY", "").strip()),
+        "mistral":  bool(os.environ.get("MISTRAL_API_KEY", "").strip()),
+        "nvidia":   bool(os.environ.get("NVIDIA_API_KEY", "").strip()),
+        "deepseek": bool(os.environ.get("DEEPSEEK_API_KEY", "").strip()),
+    }
+    catalog = await registry.get_catalog()
+    for modeles in catalog.values():
+        for m in modeles:
+            if not key_ok.get(m["provider"], False):
+                continue
+            if m.get("_disponible") is False:
+                continue
+            ids.add(m["id"])
+
+    return ids

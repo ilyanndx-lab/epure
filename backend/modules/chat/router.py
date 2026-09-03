@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from core.auth import ws_require_token
 from core.embedding_install import EmbeddingIndisponible
 from core.instance import modele_local_defaut
+from core.models import ids_disponibles
 from core.paths import PathOutsideDataError, cle_chemin, resolve_user_path
 from core.rag import RAGEngine
 from core.runtime import (
@@ -29,6 +30,7 @@ from core.runtime import (
     history_engine,
     llm,
     memory,
+    models_registry,
     orchestrator,
     provider_of as _provider_of,
     rag,
@@ -293,6 +295,40 @@ def _finaliser_citations_et_trace(
     if rapport is not None and rapport.aucune_citation_malgre_contexte:
         logger.warning("Réponse sans aucune citation malgré un contexte web fourni (conv=%s)", conv_id)
     return sources, trace
+
+
+# ── Comparaison multi-modèles (§ tâche 2026-09-03) ──────────────────────────
+#
+# Chemin PARALLÈLE au mono-modèle : mêmes primitives (`llm.stream`, la même
+# `queue`+`Thread` par flux), mais un vocabulaire d'événements disjoint
+# (`compare_*`) pour qu'un frontend qui n'envoie jamais `compare_models` ne
+# reçoive jamais rien d'inattendu.
+
+#: Nombre de modèles comparables simultanément — décision actée le
+#: 2026-09-03. En dessous de 2, ce n'est plus une comparaison.
+_COMPARE_MIN, _COMPARE_MAX = 2, 3
+
+
+async def _valider_compare_models(compare_models) -> list[str]:
+    """Valide `compare_models` : entre 2 et 3 IDs, tous réellement disponibles.
+
+    Erreur explicite et AUCUNE génération lancée au moindre problème — jamais
+    de troncature silencieuse du lot, jamais d'exécution partielle (certains
+    modèles valides démarrés, un autre refusé). La disponibilité réutilise
+    `core.models.ids_disponibles`, qui reprend exactement la détection de
+    `GET /models` (CLAUDE.md §3.7).
+    """
+    if not isinstance(compare_models, list) or not (_COMPARE_MIN <= len(compare_models) <= _COMPARE_MAX):
+        recu = len(compare_models) if isinstance(compare_models, list) else compare_models
+        raise ValueError(
+            f"compare_models doit contenir entre {_COMPARE_MIN} et {_COMPARE_MAX} "
+            f"modèles (reçu : {recu!r})"
+        )
+    disponibles = await ids_disponibles(models_registry)
+    absents = [m for m in compare_models if m not in disponibles]
+    if absents:
+        raise ValueError(f"Modèle(s) indisponible(s) : {', '.join(absents)}")
+    return list(compare_models)
 
 
 # ── Skill /résumé (SSE) ──────────────────────────────────────────────────────
@@ -719,6 +755,14 @@ async def ws_chat(websocket: WebSocket):
     #: le client peut changer de conversation sans rouvrir le socket, et une
     #: variable de connexion figerait la première ouverte.
     _derniere_conv: list[Optional[str]] = [None]
+    #: État de la comparaison EN COURS sur cette connexion (`None` si aucune) :
+    #: `{"conv_id", "accumulated": {model: texte}, "user_text", "web_resultats",
+    #: "urls_rag", "etapes_recherche"}`. Seule source de vérité pour un
+    #: `compare_choix` ultérieur — le client ne renvoie JAMAIS le texte
+    #: lui-même (même principe que l'horodatage serveur-fait-foi). Une seule
+    #: comparaison en vol à la fois sur une connexion : en lancer une nouvelle
+    #: remplace l'ancienne, qui n'a de toute façon plus de panneaux à choisir.
+    _comparaison_actuelle: list[Optional[dict]] = [None]
 
     def _annoncer_titre_depuis_thread(conv_id: str):
         """Renvoie une closure qui pousse `{"type": "titre"}` vers ce socket.
@@ -745,6 +789,7 @@ async def ws_chat(websocket: WebSocket):
     async def _enregistrer_reponse(
         conv_id: str, texte: str,
         sources: list[dict] | None = None, trace_recherche: list[dict] | None = None,
+        model: Optional[str] = None,
     ) -> dict:
         """Seconde transaction du tour : la réponse, puis les travaux de fond.
 
@@ -760,14 +805,21 @@ async def ws_chat(websocket: WebSocket):
         HistoryEngine.append_messages`), pour la même raison : un déroulé de
         recherche est de la PRÉSENTATION, pas du contenu que le modèle doit
         relire au tour suivant.
+
+        `model` (optionnel) : le modèle à attribuer à CETTE réponse. Défaut
+        `_last_model[0]`, qui n'a de sens que pour un tour mono-modèle — la
+        comparaison multi-modèles (`compare_choix`) passe explicitement le
+        modèle CHOISI par l'utilisateur après coup, distinct de celui qui a
+        démarré le tour.
         """
+        modele_a_persister = model if model is not None else _last_model[0]
         conv = await loop.run_in_executor(
             None, lambda: history_engine.append_messages(
                 conv_id, [{
                     "role": "assistant", "content": texte,
                     "sources": sources or [], "trace_recherche": trace_recherche or [],
                 }],
-                model=_last_model[0],
+                model=modele_a_persister,
             )
         )
         use_cloud = bool(memory.get_context().get("consolidation_cloud", False))
@@ -784,10 +836,68 @@ async def ws_chat(websocket: WebSocket):
         dernier = (conv or {}).get("messages", [])
         return dict(dernier[-1]) if dernier else {}
 
+    async def _traiter_compare_choix(msg: dict) -> None:
+        """Résout une comparaison en cours : persiste la réponse CHOISIE, et
+        elle seule — les autres ne touchent jamais le disque (§ tâche).
+
+        `conv_id` dans le message n'est vérifié que s'il est fourni : c'est un
+        garde-fou contre un état périmé (reconnexion, double clic après un
+        premier choix déjà traité), pas une clé de recherche — la seule
+        comparaison qu'une connexion peut résoudre est celle qu'elle vient de
+        lancer, gardée dans `_comparaison_actuelle`.
+        """
+        etat = _comparaison_actuelle[0]
+        modele_choisi = msg.get("model")
+        conv_id_msg = (msg.get("conv_id") or "").strip()
+        if (
+            etat is None
+            or not modele_choisi
+            or modele_choisi not in etat["accumulated"]
+            or (conv_id_msg and conv_id_msg != etat["conv_id"])
+        ):
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "content": "Comparaison introuvable ou déjà résolue pour ce modèle.",
+            }, ensure_ascii=False))
+            return
+
+        texte = etat["accumulated"][modele_choisi]
+        conv_id_cible = etat["conv_id"]
+        # Vidée AVANT toute autre chose : un second `compare_choix` (double
+        # clic, retour réseau tardif) doit retomber dans le cas « introuvable »
+        # ci-dessus, jamais persister deux fois.
+        _comparaison_actuelle[0] = None
+
+        if not texte:
+            await websocket.send_text(json.dumps({
+                "type": "error", "content": "Réponse vide, rien à conserver.",
+            }, ensure_ascii=False))
+            return
+
+        _last_model[0] = modele_choisi
+        _sources, _trace = _finaliser_citations_et_trace(
+            conv_id_cible, texte, etat["web_resultats"], etat["user_text"],
+            etat["urls_rag"], etat["etapes_recherche"],
+        )
+        _meta = await _enregistrer_reponse(
+            conv_id_cible, texte, _sources, _trace, model=modele_choisi,
+        )
+        await websocket.send_text(json.dumps({
+            "type": "done",
+            "horodatage": _meta.get("horodatage", ""),
+            "modèle": _meta.get("modèle", ""),
+            "sources": _meta.get("sources", []),
+            "trace_recherche": _meta.get("trace_recherche", []),
+        }, ensure_ascii=False))
+
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
+
+            if msg.get("type") == "compare_choix":
+                await _traiter_compare_choix(msg)
+                continue
 
             rag_override: str | None = msg.get("rag_override")
             strict_override: bool = bool(msg.get("strict_override", False))
@@ -1083,6 +1193,97 @@ async def ws_chat(websocket: WebSocket):
             messages = list(conv["messages"])
             if sys_parts:
                 messages = [{"role": "system", "content": "\n\n".join(sys_parts)}] + messages
+
+            # ── Comparaison multi-modèles ─────────────────────────────────────
+            #
+            # Priorité ABSOLUE sur `effort`/`steps` : un message qui fournit les
+            # deux suit ce chemin, le pipeline orchestrateur n'est jamais
+            # consulté (décision actée le 2026-09-03 — pas de pipeline en mode
+            # comparaison pour cette version). Réutilise `messages` tel que
+            # construit ci-dessus : les modèles comparés voient EXACTEMENT le
+            # même prompt qu'un tour mono-modèle (historique, @web, RAG).
+            _compare_models_req = msg.get("compare_models")
+            if _compare_models_req:
+                try:
+                    _compare_models = await _valider_compare_models(_compare_models_req)
+                except ValueError as exc:
+                    await websocket.send_text(json.dumps(
+                        {"type": "error", "content": str(exc)}, ensure_ascii=False,
+                    ))
+                    continue
+
+                _accumulated_par_modele: dict[str, str] = {m: "" for m in _compare_models}
+                _comparaison_actuelle[0] = {
+                    "conv_id": conv_id,
+                    "accumulated": _accumulated_par_modele,
+                    "user_text": user_text,
+                    "web_resultats": web_resultats,
+                    "urls_rag": urls_rag,
+                    "etapes_recherche": etapes_recherche,
+                }
+
+                _queue_cmp: asyncio.Queue = asyncio.Queue()
+
+                def _stream_compare(msgs, q, lp, model):
+                    try:
+                        for token in llm.stream(msgs, model=model, raisonnement=raisonnement):
+                            asyncio.run_coroutine_threadsafe(q.put((model, token)), lp)
+                    except Exception as exc:
+                        logger.exception("Erreur streaming comparaison (modèle=%s)", model)
+                        asyncio.run_coroutine_threadsafe(q.put((model, {"error": str(exc)})), lp)
+                    finally:
+                        # Toujours envoyé, erreur ou pas — c'est CE signal, pas
+                        # `compare_error`, qui marque la fin du flux d'un modèle
+                        # (cf. boucle ci-dessous : un `None` par thread, jamais
+                        # plus, jamais moins).
+                        asyncio.run_coroutine_threadsafe(q.put((model, None)), lp)
+
+                for _m in _compare_models:
+                    Thread(
+                        target=_stream_compare, args=(messages, _queue_cmp, loop, _m), daemon=True,
+                    ).start()
+
+                _termines: set[str] = set()
+                while len(_termines) < len(_compare_models):
+                    _modele, _item = await _queue_cmp.get()
+                    if _item is None:
+                        _termines.add(_modele)
+                        await websocket.send_text(json.dumps({
+                            "type": "compare_done", "model": _modele,
+                        }))
+                        continue
+                    if isinstance(_item, dict) and "error" in _item:
+                        await websocket.send_text(json.dumps({
+                            "type": "compare_error", "model": _modele, "content": _item["error"],
+                        }, ensure_ascii=False))
+                        continue
+                    if isinstance(_item, dict) and _item.get("__reasoning__"):
+                        # Même règle que le chemin mono-modèle : jamais versé
+                        # dans le texte accumulé/persistable, canal d'affichage
+                        # seulement.
+                        await websocket.send_text(json.dumps({
+                            "type": "compare_reasoning", "model": _modele, "content": _item["content"],
+                        }, ensure_ascii=False))
+                        continue
+                    if isinstance(_item, dict) and "__stats__" in _item:
+                        await websocket.send_text(json.dumps({
+                            "type": "compare_stats", "model": _modele,
+                            "prompt_tokens": _item.get("prompt_tokens", 0),
+                            "output_tokens": _item.get("output_tokens", 0),
+                            "eval_duration_ms": (_item.get("eval_duration_ns", 0) or 0) // 1_000_000,
+                            "prompt_duration_ms": (_item.get("prompt_duration_ns", 0) or 0) // 1_000_000,
+                            "tronqué": bool(_item.get("tronqué")),
+                        }))
+                        continue
+                    # Texte — jamais loggé en entier, même discipline que le
+                    # chemin mono-modèle.
+                    _accumulated_par_modele[_modele] += _item
+                    await websocket.send_text(json.dumps({
+                        "type": "compare_token", "model": _modele, "content": _item,
+                    }, ensure_ascii=False))
+
+                await websocket.send_text(json.dumps({"type": "compare_all_done"}))
+                continue
 
             # ── Orchestrator ──────────────────────────────────────────────────
             _effort = msg.get("effort", "direct")
