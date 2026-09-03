@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -19,9 +20,28 @@ logger = logging.getLogger(__name__)
 WORKSPACE = resolve_workspace()
 
 # Libs qui ouvrent une fenêtre : on les lance en process externe (sinon un
-# plt.show()/mainloop bloque jusqu'au timeout). matplotlib.pyplot compris.
-GUI_LIBS = frozenset(["pygame", "tkinter", "turtle", "wx", "PyQt", "pyglet", "kivy",
-                      "matplotlib", "pyplot"])
+# plt.show()/mainloop bloque jusqu'au timeout). matplotlib est un cas à part
+# depuis le rendu inline des figures (cf. _PLOT_SITECUSTOMIZE_DIR ci-dessous) :
+# `MPLBACKEND=Agg` + le hook `sitecustomize` évitent toute fenêtre, donc plus
+# besoin de la router vers `_launch_gui` — retirée d'ici, PAS des autres.
+GUI_LIBS = frozenset(["pygame", "tkinter", "turtle", "wx", "PyQt", "pyglet", "kivy"])
+
+# ── Rendu inline des figures matplotlib (module Code) ────────────────────────
+#
+# Dossier de code STATIQUE (comme BACKEND_DIR/REPO_ROOT dans core.paths), pas
+# un dossier de données : pas de surcharge d'environnement, dérivé de
+# `__file__` une fois pour toutes. Contient un unique `sitecustomize.py`, posé
+# en tête de PYTHONPATH de CHAQUE exécution `.py` (cf. execute_code) — jamais
+# dans WORKSPACE, pour rester invisible et non éditable depuis l'arbre de
+# fichiers de l'utilisateur.
+_PLOT_SITECUSTOMIZE_DIR = Path(__file__).resolve().parent / "_plot_support"
+
+# Plafonds de la Phase « figures inline » — protection réelle, pas cosmétique
+# (cf. leur usage dans `_collect_plot_images`) : une boucle utilisateur qui
+# génère des centaines de figures, ou une figure haute résolution, ne doit pas
+# gonfler démesurément la réponse WebSocket d'un tour d'exécution.
+_PLOT_MAX_IMAGES = 10
+_PLOT_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 Mo par image
 
 # On exécute avec le MÊME interpréteur que celui qui lance le backend
 # (sys.executable), pas un "python" ambigu du PATH. Sinon un package installé
@@ -277,6 +297,13 @@ def _make_exec_env(python: Optional[str] = None) -> dict:
     (repli 3.11), injecter ce PYTHONPATH lui ferait charger la stdlib de 3.14 →
     crash (`_thread.start_joinable_thread`). On le laisse alors utiliser sa
     propre stdlib. On ne pose jamais PYTHONHOME.
+
+    Cette restriction ne s'applique PAS à `_PLOT_SITECUSTOMIZE_DIR` (ajouté à
+    part, par `execute_code`, après cet appel) : ce dossier ne contient qu'un
+    unique fichier pur Python (`atexit`/`os`/`sys` de la stdlib, jamais résolus
+    via `sys.path`), sans aucune dépendance tierce ni extension compilée — rien
+    qui puisse faire charger la stdlib d'un autre interpréteur. Sûr quel que
+    soit l'interpréteur cible, contrairement au PYTHONPATH complet ci-dessus.
     """
     same_interp = python is None or (
         Path(python).resolve() == Path(sys.executable).resolve()
@@ -393,6 +420,56 @@ def _launch_gui(target: Path) -> dict:
         return {"external": True, "stdout": "", "stderr": "", "returncode": 0, "duration_ms": 0}
 
 
+def _collect_plot_images(plot_dir: str, out: dict) -> list[dict]:
+    """Lit les PNG déposés par `core/_plot_support/sitecustomize.py` dans
+    `plot_dir` (une exécution = un dossier dédié) et les encode en base64.
+
+    Deux plafonds — une protection RÉELLE, pas cosmétique : `_PLOT_MAX_IMAGES`
+    borne le NOMBRE d'images renvoyées (une boucle qui trace des centaines de
+    figures ne doit pas gonfler la réponse WebSocket d'un tour), et
+    `_PLOT_MAX_IMAGE_BYTES` la taille de CHACUNE (une figure haute résolution
+    isolée ne doit pas non plus la faire exploser). Un dépassement — nombre ou
+    taille — est signalé dans `stderr` de `out` (muté sur place), jamais avalé
+    en silence : l'utilisateur doit comprendre pourquoi une figure manque.
+
+    Tri par numéro (pas lexicographique) : `figure_10.png` ne doit pas se
+    retrouver avant `figure_2.png`.
+    """
+    images: list[dict] = []
+    try:
+        pngs = list(Path(plot_dir).glob("figure_*.png"))
+    except OSError:
+        return images
+
+    def _numero(p: Path) -> int:
+        m = re.search(r"\d+", p.stem)
+        return int(m.group()) if m else 0
+
+    pngs.sort(key=_numero)
+
+    for p in pngs[:_PLOT_MAX_IMAGES]:
+        try:
+            data = p.read_bytes()
+        except OSError:
+            continue
+        if len(data) > _PLOT_MAX_IMAGE_BYTES:
+            out["stderr"] = (
+                out.get("stderr", "")
+                + f"\n[figures] {p.name} ignorée : {len(data)} octets dépasse la "
+                  f"limite ({_PLOT_MAX_IMAGE_BYTES} octets)."
+            ).strip()
+            continue
+        images.append({"nom": p.name, "data_base64": base64.b64encode(data).decode("ascii")})
+
+    if len(pngs) > _PLOT_MAX_IMAGES:
+        out["stderr"] = (
+            out.get("stderr", "")
+            + f"\n[figures] {len(pngs)} figures produites, seules les "
+              f"{_PLOT_MAX_IMAGES} premières sont affichées."
+        ).strip()
+    return images
+
+
 def execute_code(path: str, args: str = "") -> dict:
     target = _safe_path(path)
     if target.suffix not in _EXEC_CMDS:
@@ -414,7 +491,9 @@ def execute_code(path: str, args: str = "") -> dict:
     if target.suffix == ".tex":
         return compile_latex(path)
 
-    # Python avec lib GUI → lancer dans une fenêtre externe
+    # Python avec lib GUI RÉELLE (tkinter, pygame, ...) → fenêtre externe.
+    # matplotlib N'EST PLUS dans GUI_LIBS : ses figures sont capturées et
+    # rendues inline (cf. plot_dir ci-dessous), plus besoin de fenêtre.
     if target.suffix == ".py":
         try:
             src = target.read_text(encoding="utf-8", errors="replace")
@@ -433,6 +512,21 @@ def execute_code(path: str, args: str = "") -> dict:
 
     env = _make_exec_env(_exec_python()) if target.suffix == ".py" else _make_exec_env()
 
+    # Rendu inline des figures matplotlib : dossier de sortie DÉDIÉ à CETTE
+    # exécution (jamais partagé entre deux tours), backend headless pour
+    # qu'aucune fenêtre ne soit tentée, et le hook `sitecustomize` trouvable
+    # par n'importe quel interpréteur cible (cf. son docstring et celui de
+    # `_make_exec_env` pour l'absence de risque de stdlib croisée). Seulement
+    # pour .py : matplotlib n'existe que là.
+    plot_dir: Optional[str] = None
+    if target.suffix == ".py":
+        plot_dir = tempfile.mkdtemp(prefix="epure_plots_")
+        env["MPLBACKEND"] = "Agg"
+        env["EPURE_PLOT_OUTPUT_DIR"] = plot_dir
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(_PLOT_SITECUSTOMIZE_DIR), env.get("PYTHONPATH", "")) if p
+        )
+
     t0 = time.time()
     try:
         result = subprocess.run(
@@ -441,15 +535,25 @@ def execute_code(path: str, args: str = "") -> dict:
         )
         dur = round((time.time() - t0) * 1000)
         logger.info("execute_code: %s → rc=%d in %dms", path, result.returncode, dur)
-        return {"stdout": result.stdout, "stderr": result.stderr,
-                "returncode": result.returncode, "duration_ms": dur}
+        out = {"stdout": result.stdout, "stderr": result.stderr,
+               "returncode": result.returncode, "duration_ms": dur}
+        if plot_dir is not None:
+            out["images"] = _collect_plot_images(plot_dir, out)
+        return out
     except subprocess.TimeoutExpired:
+        # Le script a pu sauvegarder des figures avant le timeout, mais on ne
+        # les retourne PAS ici : un timeout est déjà un signal d'erreur en soi,
+        # pas la peine de le mélanger avec un résultat partiel. Le dossier est
+        # quand même nettoyé (cf. finally ci-dessous).
         logger.warning("execute_code: timeout — %s", path)
         return {"stdout": "", "stderr": "Timeout (30s dépassé)", "returncode": -1,
                 "duration_ms": _EXEC_TIMEOUT * 1000}
     except Exception as exc:
         logger.exception("execute_code: %s", path)
         return {"stdout": "", "stderr": str(exc), "returncode": -1, "duration_ms": 0}
+    finally:
+        if plot_dir is not None:
+            shutil.rmtree(plot_dir, ignore_errors=True)
 
 
 _PKG_RE = re.compile(r'^[a-zA-Z0-9_\-\.\[\]>=<~!,\s]+$')
