@@ -157,12 +157,25 @@ def valider_citations(reponse: str, reference: ReferenceCitations) -> RapportCit
 
     Trois vérifications, sur `reponse` débarrassée du code et des maths
     (`_masquer_zones_non_citables`) :
-      1. chaque [n] cité doit être dans `reference.rangs_valides` ;
+      1. chaque [n] cité doit être dans `reference.rangs_valides` — MAIS
+         seulement si `reference.rangs_valides` est non vide (cf. ci-dessous) ;
       2. chaque URL écrite en dur doit être dans `reference.urls_valides` ;
       3. si des rangs étaient offerts (`reference.rangs_valides` non vide) et
          qu'aucun [n] n'apparaît DU TOUT — pas même hors plage — c'est un
          signal faible : la réponse n'a peut-être pas eu besoin du contexte,
          ou l'a ignoré sans le dire.
+
+    Même classe de faux positif que `_masquer_zones_non_citables`, un cran
+    plus haut : `[n]` n'est le marqueur d'une citation que dans un tour où une
+    liste de sources numérotée a été OFFERTE au modèle (le contrat de
+    citation n'est injecté au prompt que dans ce cas,
+    `modules/chat/router.py:_construire_web_ctx`). Sans liste offerte
+    (`reference.rangs_valides` vide), un `[1]` est une syntaxe de bracket
+    ordinaire — note de bas de page, renvoi bibliographique, numérotation de
+    prose — au même titre que `arr[0]` ou `v[1]`, et ne doit produire AUCUNE
+    anomalie. D'où la garde `if reference.rangs_valides` ci-dessous : quand
+    elle est vide, on ne peuple même pas `rangs_hors_plage`, on ne fait que
+    détecter la présence d'un [n] pour le signal faible du point 3.
     """
     if not reponse:
         return RapportCitations()
@@ -173,6 +186,8 @@ def valider_citations(reponse: str, reference: ReferenceCitations) -> RapportCit
     rangs_hors_plage: list[int] = []
     for m in _CITATION_RE.finditer(masque):
         rang_trouve = True
+        if not reference.rangs_valides:
+            continue
         n = int(m.group(1))
         if n not in reference.rangs_valides and n not in rangs_hors_plage:
             rangs_hors_plage.append(n)

@@ -150,6 +150,43 @@ class SignalFaibleTest(unittest.TestCase):
         self.assertTrue(rapport.a_des_anomalies())
 
 
+class SansContexteWebCrochetOrdinaireTest(unittest.TestCase):
+    """Correctif phase 3.5 (suite) : sans `reference.rangs_valides` (aucune
+    recherche ce tour, donc aucun contrat de citation injecté au prompt),
+    un `[n]` en prose normale — note de bas de page, renvoi bibliographique —
+    n'est pas une citation et ne doit produire aucune anomalie."""
+
+    def test_note_de_bas_de_page_sans_recherche_non_signalee(self):
+        reference = ReferenceCitations()  # rangs_valides vide : aucune recherche ce tour
+        rapport = valider_citations("Voir la référence [1] du cours.", reference)
+        self.assertEqual(rapport.rangs_hors_plage, [])
+        self.assertFalse(rapport.a_des_anomalies())
+        self.assertTrue(rapport.est_vide())
+
+    def test_url_inconnue_toujours_signalee_sans_recherche(self):
+        """Non-régression : la garde ne s'applique qu'aux rangs [n], jamais
+        aux URLs, vérifiables qu'il y ait eu recherche ou non."""
+        reference = ReferenceCitations()
+        rapport = valider_citations("Voir la référence [1] et https://invente.example/", reference)
+        self.assertEqual(rapport.rangs_hors_plage, [])
+        self.assertEqual(rapport.urls_non_reconnues, ["https://invente.example/"])
+        self.assertTrue(rapport.a_des_anomalies())
+
+    def test_rangs_valides_non_vide_citation_hors_plage_toujours_signalee(self):
+        """Non-régression phase 2 : quand une liste EST offerte, un [n] hors
+        plage reste une vraie anomalie."""
+        reference = ReferenceCitations(rangs_valides=frozenset({1, 2, 3}))
+        rapport = valider_citations("D'après [7], ...", reference)
+        self.assertEqual(rapport.rangs_hors_plage, [7])
+        self.assertTrue(rapport.a_des_anomalies())
+
+    def test_rangs_valides_non_vide_citation_dans_la_plage_toujours_valide(self):
+        reference = ReferenceCitations(rangs_valides=frozenset({1, 2, 3}))
+        rapport = valider_citations("D'après [2], ...", reference)
+        self.assertEqual(rapport.rangs_hors_plage, [])
+        self.assertEqual(rapport.rangs_cites, [2])
+
+
 class RangsCitesTest(unittest.TestCase):
     """Sert le bloc Sources (modules/chat/router.py) : uniquement les [n]
     réellement cités, dans l'ordre d'apparition."""

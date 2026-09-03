@@ -664,6 +664,35 @@ class VerifierCitationsTest(unittest.TestCase):
         self.assertFalse(rapport.a_des_anomalies())  # signal faible, PAS une anomalie
 
 
+class VerifierCitationsSansRechercheTest(unittest.TestCase):
+    """Correctif phase 3.5 (suite) : sans recherche ce tour, `[n]` n'est plus
+    un marqueur de citation (aucun contrat injecté au prompt, cf.
+    `_construire_web_ctx`) — un `[1]` de note de bas de page ne doit produire
+    aucune étape `citations_invalides`, contrairement à une URL inconnue."""
+
+    def test_note_de_bas_de_page_sans_web_aucune_anomalie(self):
+        rapport = chat_router._verifier_citations("Voir la référence [1] du cours.", [], "", set())
+        self.assertFalse(rapport.a_des_anomalies())
+        trace = chat_router._construire_trace_finale([], rapport, False)
+        self.assertEqual(trace, [])
+
+    def test_url_inconnue_sans_web_reste_signalee(self):
+        rapport = chat_router._verifier_citations(
+            "Réf [1] et voir https://invente.example/page.", [], "", set(),
+        )
+        self.assertEqual(rapport.rangs_hors_plage, [])
+        self.assertEqual(rapport.urls_non_reconnues, ["https://invente.example/page"])
+        trace = chat_router._construire_trace_finale([], rapport, False)
+        self.assertEqual([e["etape"] for e in trace], ["citations_invalides"])
+
+    def test_avec_recherche_rang_hors_plage_toujours_signale(self):
+        """Non-régression phase 2, rejouée depuis le point d'entrée du router."""
+        resultats = [ResultatWeb(rang=1, titre="Python", url="https://python.org/", extrait="", moteur="ddg-html")]
+        rapport = chat_router._verifier_citations("D'après [7], c'est vrai.", resultats, "", set())
+        self.assertEqual(rapport.rangs_hors_plage, [7])
+        self.assertTrue(rapport.a_des_anomalies())
+
+
 class TraceEtCitationsTest(unittest.TestCase):
     """`_construire_trace_finale` / `_finaliser_citations_et_trace` : la
     trace persistée réunit les étapes de recherche (poussées en direct
