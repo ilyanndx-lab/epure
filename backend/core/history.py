@@ -494,6 +494,38 @@ class HistoryEngine:
         il dit *le dernier modèle utilisé*, pas celui de chaque tour, et il a
         pu changer plusieurs fois. C'est précisément pourquoi il ne faut jamais
         s'en servir pour combler un message qui n'a pas le champ.
+
+        ── ``sources`` : métadonnée, jamais dans ``content`` ─────────────────
+
+        Un message peut porter ``sources`` (``[{"rang", "titre", "url"}, …]`)
+        — les résultats @web RÉELLEMENT cités par ce message (cf.
+        ``core.citations.extraire_rangs_cites``, appelé par
+        ``modules/chat/router.py``). Ce champ existe pour que ``content``
+        reste STRICTEMENT le texte produit par le modèle : la version d'avant
+        appendait un bloc « Sources » (avec URLs complètes) au contenu avant
+        de l'écrire ici, et ce contenu repartait tel quel dans l'historique du
+        prompt au tour suivant — l'endroit précis que la phase citations
+        (CLAUDE.md, chantier @web) retire les URLs pour éviter que le modèle
+        n'en recopie une variante légèrement fausse. Un bloc de présentation
+        stocké dans le contenu redevenait donc du contenu, et l'historique le
+        réinjectait par la porte de derrière.
+
+        Champ optionnel et par MESSAGE (pas par conversation) : les messages
+        d'avant ce champ, et ceux sans citation @web, n'en ont simplement pas
+        besoin — aucune migration, `_normaliser` n'a rien à combler ici, la
+        clé absente EST la bonne valeur pour un message qui n'a rien cité.
+
+        ── ``trace_recherche`` : même principe, même mécanisme ───────────────
+
+        Un message peut aussi porter ``trace_recherche`` — la liste d'étapes
+        du déroulé d'une recherche @web (requête envoyée mot pour mot, moteur,
+        résultats, exclusions publicitaires, erreurs ; cf. `core.websearch.
+        rechercher`, paramètre `on_etape`). Exactement le même raisonnement
+        que `sources` : c'est de la PRÉSENTATION (l'utilisateur doit pouvoir
+        auditer ce qui est sorti vers l'extérieur), jamais du contenu que le
+        modèle relirait au tour suivant — une trace de plusieurs centaines de
+        caractères par tour n'a rien à faire dans le prompt. Optionnelle,
+        absente si vide, aucune migration.
         """
         try:
             with self._conversation_transaction(conv_id) as conv:
@@ -507,6 +539,12 @@ class HistoryEngine:
                     }
                     if model:
                         entree["modèle"] = model
+                    sources = m.get("sources")
+                    if isinstance(sources, list) and sources:
+                        entree["sources"] = sources
+                    trace_recherche = m.get("trace_recherche")
+                    if isinstance(trace_recherche, list) and trace_recherche:
+                        entree["trace_recherche"] = trace_recherche
                     conv["messages"].append(entree)
                 if model:
                     conv["modèle"] = model

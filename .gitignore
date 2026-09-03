@@ -130,3 +130,4 @@ start.ps1
 
 # Paquets assemblés par tools/faire_paquet.py — artefacts de build, jamais versionnés
 dist-paquets/
+_scratch_corpus_hmer/

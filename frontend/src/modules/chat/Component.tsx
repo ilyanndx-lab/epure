@@ -12,6 +12,7 @@ import { creerConversation, reprendreAncienChat } from './conversations'
 import { liste, texte } from '../../normaliser'
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
+import { etapesDe, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 interface MsgStats {
   tps: number
@@ -79,6 +80,48 @@ interface Message {
    * dernier modèle utilisé, et il a pu changer plusieurs fois depuis.
    */
   modele?: string
+  /**
+   * Sources @web RÉELLEMENT citées par CE message — pas ce qui a été
+   * récupéré, ce sur quoi la réponse s'appuie. Métadonnée séparée du
+   * `content`, jamais un bloc de texte ajouté dedans : un bloc « Sources »
+   * dans le contenu repartirait tel quel dans l'historique du prompt au
+   * tour suivant, avec ses URLs complètes — exactement ce que le contrat de
+   * citation (domaine seulement, cf. `core/websearch.py`) retire du
+   * contexte. Rendu identique pendant la génération (événement `done`) et
+   * après rechargement (`GET /chat/conversations/{id}`), les deux lisant la
+   * même métadonnée persistée (`core/history.py`).
+   */
+  sources?: SourceCitee[]
+  /**
+   * Déroulé d'une recherche @web pour CE message — requête envoyée mot pour
+   * mot, résultats, exclusions publicitaires, erreurs, citations invalides.
+   * Même principe que `sources` : métadonnée séparée de `content`, jamais du
+   * texte ajouté dedans (ce serait relu par le modèle au tour suivant). Rendu
+   * identique en direct (événement `done`) et après rechargement — même
+   * donnée persistée (`core/history.py`), même composant de rendu
+   * (`TraceRechercheView`).
+   *
+   * Absent : ni bug ni recherche vide, juste un tour sans `@web` — ou un
+   * message plus ancien que ce champ (cf. CLAUDE.md, convention `sources`).
+   */
+  traceRecherche?: EtapeTrace[]
+}
+
+interface SourceCitee {
+  rang: number
+  titre: string
+  url: string
+}
+
+/**
+ * `sources` normalisé à CHAQUE frontière `.json()`/WebSocket, comme `liste`
+ * et `texte` (`../../normaliser`) : un champ absent ou de forme inattendue
+ * ne doit jamais atteindre le `.map()` du rendu.
+ */
+function sourcesDe(v: unknown): SourceCitee[] {
+  return liste<Record<string, unknown>>(v)
+    .map(s => ({ rang: Number(s.rang) || 0, titre: texte(s.titre), url: texte(s.url) }))
+    .filter(s => s.rang > 0 && s.url)
 }
 
 interface ChatProps {
@@ -308,6 +351,143 @@ function ThinkingBlockView({ thinking, collapsed, onToggle }: {
   )
 }
 
+/**
+ * Rendu d'UNE étape, dans le panneau déplié.
+ *
+ * `default` n'est pas une erreur de couverture : le schéma de la trace est
+ * délibérément extensible (§1 de la tâche, phase 4 ajoutera `page_recuperee`/
+ * `passages_retenus`) — un type non reconnu s'affiche en repli plutôt que de
+ * disparaître, pour qu'une étape future reste visible avant même qu'un rendu
+ * dédié existe pour elle.
+ */
+function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
+  switch (etape.etape) {
+    case 'recherche_debut':
+      // LE point central de l'exigence de confidentialité : la requête part
+      // ici mot pour mot, jamais résumée ni tronquée par le rendu lui-même
+      // (elle peut déjà l'être côté serveur, cf. TRACE_TEXTE_MAX — mais visible
+      // ici veut dire visible telle que réellement envoyée).
+      return (
+        <p className="m-0">
+          Requête envoyée ({texte(etape.moteur)}) :{' '}
+          <span className="font-mono text-secondary">« {texte(etape.requete)} »</span>
+        </p>
+      )
+    case 'recherche_cache':
+      return (
+        <p className="m-0">
+          Requête <span className="font-mono text-secondary">« {texte(etape.requete)} »</span> servie
+          depuis le cache — aucune requête envoyée cette fois.
+        </p>
+      )
+    case 'recherche_filtree':
+      return (
+        <p className="m-0">
+          {Number(etape.nombre_ecarte) || 0} résultat(s) écarté(s) — raison : {texte(etape.raison) || 'inconnue'}.
+        </p>
+      )
+    case 'recherche_resultats': {
+      const resultats = liste<Record<string, unknown>>(etape.resultats)
+      return (
+        <div>
+          <p className="m-0">
+            {Number(etape.nombre) || 0} résultat(s) via {texte(etape.moteur)} en {Number(etape.ms) || 0} ms
+          </p>
+          {resultats.length > 0 && (
+            <ul className="list-none m-0 mt-1 p-0 space-y-0.5">
+              {resultats.map((r, i) => (
+                <li key={i} className="truncate">
+                  [{Number(r.rang) || i + 1}] {texte(r.titre)} —{' '}
+                  <a href={texte(r.url)} target="_blank" rel="noreferrer"
+                     className="text-accent2 hover:underline break-all">
+                    {texte(r.url)}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )
+    }
+    case 'recherche_erreur':
+      return <p className="m-0 text-error">Échec : {texte(etape.message)}</p>
+    case 'citations_invalides': {
+      const rangs = liste<number>(etape.rangs)
+      const urls = liste<string>(etape.urls)
+      // Deux affirmations de force différente (cf. `verifieeContreRecherche`) :
+      // « hors sources » quand une vraie recherche dit que ce n'en est pas ;
+      // « non vérifié(es) » quand il n'y avait simplement rien à comparer —
+      // un badge qui crie au loup à chaque URL de mémoire finirait ignoré.
+      const contreRecherche = verifieeContreRecherche(etape)
+      return (
+        <p className="m-0 text-warning">
+          {contreRecherche ? 'Citation hors sources' : 'Lien non vérifié'}
+          {rangs.length > 0 && <> — numéro(s) hors liste : {rangs.join(', ')}</>}
+          {urls.length > 0 && (
+            <> — URL(s) {contreRecherche ? 'non reconnue(s)' : 'non vérifiée(s)'} : {urls.join(', ')}</>
+          )}
+        </p>
+      )
+    }
+    default:
+      return (
+        <p className="m-0 font-mono text-[11px] break-all">
+          {etape.etape} — {JSON.stringify(etape)}
+        </p>
+      )
+  }
+}
+
+/**
+ * Panneau de trace @web, replié par défaut — même langage visuel que
+ * `RaisonnementView` (`Card accent="secondary"`, chevron), pour la même
+ * raison : c'est la même idée pour l'utilisateur (« voici ce qui s'est
+ * passé pendant que tu attendais »), donc le même vocabulaire visuel.
+ *
+ * Sert DEUX usages avec le même composant — la trace transitoire pendant la
+ * recherche (avant même que la bulle assistant existe) et la trace finale,
+ * persistée, d'un message déjà terminé. « Même rendu » (tâche §3) n'est pas
+ * qu'une intention : c'est littéralement le même composant appelé deux fois.
+ */
+function TraceRechercheView({ etapes, collapsed, onToggle }: {
+  etapes: EtapeTrace[]
+  collapsed: boolean
+  onToggle: () => void
+}) {
+  const libelleBadge = libelleBadgeCitations(etapes)
+  return (
+    <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-elevated transition-colors duration-150"
+      >
+        <span className="text-xs text-secondary flex items-center gap-2 min-w-0">
+          <Globe size={14} className="text-accent2 shrink-0" />
+          <span className="truncate">{resumeTrace(etapes)}</span>
+          {libelleBadge && (
+            <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
+              {libelleBadge}
+            </span>
+          )}
+        </span>
+        <ChevronDown
+          size={14}
+          className={`text-muted shrink-0 transition-transform duration-150 ${collapsed ? '' : 'rotate-180'}`}
+        />
+      </button>
+      {!collapsed && (
+        <div className="border-t border-line divide-y divide-line">
+          {etapes.map((e, i) => (
+            <div key={i} className="px-3 py-2 text-xs text-muted">
+              <EtapeTraceView etape={e} />
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 export default function Chat({
   onAssistantDone,
   playSpeech,
@@ -368,6 +548,21 @@ export default function Chat({
    * qui referme, qui écraserait le clic de quelqu'un en train de lire.
    */
   const [collapsedRaisonnement, setCollapsedRaisonnement] = useState<Record<number, boolean>>({})
+  /**
+   * Repli du panneau de trace @web, par index de message. Absent = REPLIÉ
+   * (tâche §3) — contrairement à `collapsedRaisonnement`, qui s'ouvre tant
+   * que le raisonnement coule : la trace n'a pas cette urgence de lecture.
+   */
+  const [collapsedTrace, setCollapsedTrace] = useState<Record<number, boolean>>({})
+  /**
+   * Trace @web du tour EN COURS, avant même qu'un message assistant existe :
+   * la recherche a lieu avant le premier token (direct comme pipeline), donc
+   * rien à indexer par message pendant qu'elle tourne. Vidée à l'envoi d'un
+   * message et à `done`, où la trace définitive est fusionnée sur le message
+   * assistant (cf. handler `trace_recherche_etape` et `done`).
+   */
+  const [traceEnCours, setTraceEnCours] = useState<EtapeTrace[]>([])
+  const [traceEnCoursOuverte, setTraceEnCoursOuverte] = useState(false)
 
   // Recherche web : active = force une recherche avant la réponse.
   // Mode 'once' = réinitialisé après chaque message (défaut, non handicapant) ;
@@ -592,6 +787,16 @@ export default function Chat({
           const elapsed = (Date.now() - (streamStartRef.current ?? Date.now())) / 1000
           if (elapsed > 0) setStreamStats({ tps: tokenCountRef.current / elapsed, count: tokenCountRef.current })
 
+        } else if (data.type === 'trace_recherche_etape') {
+          // Étape de recherche @web EN DIRECT (core/websearch.py, callback
+          // `on_etape`) — remplit le panneau PENDANT la recherche, pas
+          // seulement après (tâche §2). Indépendant de `inPipelineRef` et de
+          // `messages` : la recherche a toujours lieu AVANT le premier token,
+          // direct comme pipeline, donc aucune bulle assistant n'existe
+          // encore forcément à ce stade. Fusionnée dans le message définitif
+          // à `done`, comme `sources`.
+          setTraceEnCours(prev => [...prev, data.etape as EtapeTrace])
+
         } else if (data.type === 'stats') {
           pendingOllamaStatsRef.current = {
             promptTokens: data.prompt_tokens as number,
@@ -627,7 +832,15 @@ export default function Chat({
           // Métadonnées de la réponse, telles que le serveur vient de les écrire.
           // Évite de relire la conversation entière après chaque tour, et garde
           // l'heure affichée identique à celle du disque.
-          if (data.horodatage || data['modèle']) {
+          //
+          // `sources`/`trace_recherche` suivent le même chemin, pour la même
+          // raison : sans ce merge, ils n'apparaîtraient qu'après un F5
+          // (relecture de `GET /chat/conversations/{id}`), pas pendant la
+          // génération — les deux doivent montrer la même chose, ils lisent
+          // la même métadonnée persistée (`core/history.py`).
+          const sourcesRecues = sourcesDe(data.sources)
+          const traceRecue = etapesDe(data.trace_recherche)
+          if (data.horodatage || data['modèle'] || sourcesRecues.length || traceRecue.length) {
             const h = data.horodatage as string | undefined
             const mo = data['modèle'] as string | undefined
             setMessages(prev => {
@@ -638,10 +851,17 @@ export default function Chat({
                 ...copie[dernier],
                 ...(h ? { horodatage: h } : {}),
                 ...(mo ? { modele: mo } : {}),
+                ...(sourcesRecues.length ? { sources: sourcesRecues } : {}),
+                ...(traceRecue.length ? { traceRecherche: traceRecue } : {}),
               }
               return copie
             })
           }
+          // La trace TRANSITOIRE a fait son office (elle s'est affichée
+          // pendant la recherche) ; la trace définitive vit désormais sur le
+          // message lui-même, fusionnée juste au-dessus.
+          setTraceEnCours([])
+          setTraceEnCoursOuverte(false)
           pendingOllamaStatsRef.current = null
           setStreaming(false)
           setStreamStats(null)
@@ -662,6 +882,8 @@ export default function Chat({
           streamStartRef.current = null
           pendingOllamaStatsRef.current = null
           lastAssistantRef.current = ''
+          setTraceEnCours([])
+          setTraceEnCoursOuverte(false)
         }
       }
       wsRef.current = ws
@@ -724,6 +946,8 @@ export default function Chat({
           const role = texte(m.role) === 'assistant' ? 'assistant' as const : 'user' as const
           const horodatage = texte(m['horodatage'])
           const modele = texte(m['modèle'])
+          const sources = sourcesDe(m['sources'])
+          const traceRecherche = etapesDe(m['trace_recherche'])
           // Les champs ABSENTS restent absents : `texte()` rend `''`, qu'on ne
           // recopie pas. Un `horodatage: ''` se distinguerait mal d'une vraie
           // valeur vide, et l'interface doit pouvoir dire « non disponible ».
@@ -732,6 +956,8 @@ export default function Chat({
             content: texte(m.content),
             ...(horodatage ? { horodatage } : {}),
             ...(modele ? { modele } : {}),
+            ...(sources.length ? { sources } : {}),
+            ...(traceRecherche.length ? { traceRecherche } : {}),
           }
         }))
       } catch { /* backend qui démarre : la liste reste vide */ }
@@ -937,6 +1163,8 @@ export default function Chat({
     setStreamStats(null)
     inPipelineRef.current = false
     pipelineUserMsgIdxRef.current = -1
+    setTraceEnCours([])
+    setTraceEnCoursOuverte(false)
 
     const wsMsg: Record<string, unknown> = { role: 'user', content: cleanText || rawText, effort }
     // Vide au tout premier message : le serveur ouvre alors une conversation et
@@ -1002,6 +1230,8 @@ export default function Chat({
           pendingOllamaStatsRef.current = null
           setStreamStats(null)
           inPipelineRef.current = false
+          setTraceEnCours([])
+          setTraceEnCoursOuverte(false)
           wsRef.current?.send(JSON.stringify({
             role: 'user', content: arg, effort: 'direct',
             ...(conversationId ? { conversation_id: conversationId } : {}),
@@ -1164,6 +1394,31 @@ export default function Chat({
                   {msg.stats.tps.toFixed(1)} tok/s · {msg.stats.durationMs}ms · {msg.stats.promptTokens}in / {msg.stats.outputTokens}out tokens
                 </div>
               )}
+              {msg.role === 'assistant' && msg.traceRecherche && msg.traceRecherche.length > 0 && (
+                <TraceRechercheView
+                  etapes={msg.traceRecherche}
+                  collapsed={collapsedTrace[i] ?? true}
+                  onToggle={() => setCollapsedTrace(prev => ({ ...prev, [i]: !(prev[i] ?? true) }))}
+                />
+              )}
+              {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                <div className="mt-2 text-xs text-muted space-y-0.5">
+                  <div className="font-medium text-secondary">Sources</div>
+                  {msg.sources.map(s => (
+                    <div key={s.rang} className="truncate">
+                      [{s.rang}] {s.titre} —{' '}
+                      <a
+                        href={s.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-accent2 hover:underline break-all"
+                      >
+                        {s.url}
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
               {msg.role === 'assistant' && playSpeech && (
                 <div className="mt-2 flex">
 {/* Trois états. Le bouton restait sur « Lire » pendant toute la
@@ -1202,6 +1457,23 @@ export default function Chat({
             </div>
           </div>
         ))}
+        {traceEnCours.length > 0 && (
+          // Trace TRANSITOIRE du tour en cours — la recherche @web a lieu
+          // AVANT le premier token (direct comme pipeline), donc avant même
+          // qu'une bulle assistant existe. Remplacée par la trace PERSISTÉE,
+          // attachée au message, dès que `done` arrive (cf. son handler) :
+          // même composant, même rendu, juste une source de données différente
+          // selon le moment (tâche §3).
+          <div className="flex justify-start">
+            <div className="max-w-[78%]">
+              <TraceRechercheView
+                etapes={traceEnCours}
+                collapsed={!traceEnCoursOuverte}
+                onToggle={() => setTraceEnCoursOuverte(v => !v)}
+              />
+            </div>
+          </div>
+        )}
         {streaming && messages[messages.length - 1]?.role !== 'assistant' && !inPipelineRef.current && (
           <div className="flex justify-start">
             <span className="text-xs font-mono text-accent2 animate-pulse">▍</span>

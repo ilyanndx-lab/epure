@@ -6,15 +6,9 @@ consolidation_engine, usage_tracker, provider_of) injectés via core.runtime.
 """
 
 import asyncio
-import html as _htmllib
 import json
 import logging
-import re
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from collections import OrderedDict
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -39,6 +33,17 @@ from core.runtime import (
     rag,
     usage_tracker,
 )
+from core.citations import RapportCitations, construire_reference, extraire_rangs_cites, valider_citations
+from core.websearch import (
+    PREFIXE_ERREUR,
+    TRACE_LISTE_MAX,
+    TRACE_MAX_ETAPES,
+    RechercheWebErreur,
+    ResultatWeb,
+    formater_pour_llm,
+    rechercher,
+    tronquer_champ,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,226 +51,225 @@ router = APIRouter()
 
 
 # ── Recherche web (@web) ─────────────────────────────────────────────────────
-
-_WEB_SEARCH_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-)
-_WEB_SEARCH_TIMEOUT = 8.0
-# User-Agent alternatifs essayés en cas de blocage (403 Cloudflare, etc.)
-_WEB_SEARCH_USER_AGENTS = [
-    _WEB_SEARCH_UA,
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-]
-
-# Cache mémoire LRU avec TTL court : évite de re-frapper DuckDuckGo pour une
-# même requête (utile quand l'utilisateur reformule peu ou relance @web).
-_WEB_SEARCH_CACHE_TTL = 300.0  # secondes
-_WEB_SEARCH_CACHE_MAX = 64
-_web_search_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
+# Logique de recherche déplacée dans core/websearch.py le 2026-09-02 (RAG et
+# Atelier en ont besoin aussi). `perform_web_search` reste ici comme point
+# d'entrée historique du websocket, pour ne rien changer côté chemin de
+# streaming des tokens.
 
 
-def _web_search_cache_get(key: str) -> Optional[str]:
-    """Retourne la valeur en cache si présente et non expirée, sinon None."""
-    entry = _web_search_cache.get(key)
-    if entry is None:
-        return None
-    ts, value = entry
-    if (time.time() - ts) > _WEB_SEARCH_CACHE_TTL:
-        _web_search_cache.pop(key, None)
-        return None
-    _web_search_cache.move_to_end(key)  # marque comme récemment utilisé
-    return value
+def _rechercher_pour_prompt(
+    query: str, on_etape=None,
+) -> tuple[str, list[ResultatWeb]]:
+    """Recherche + formatage, en conservant AUSSI les résultats structurés.
 
+    `perform_web_search` (ci-dessous) ne rend que le texte, pour ses
+    appelants historiques. La boucle websocket a besoin des deux : le texte
+    pour le prompt, et les `ResultatWeb` pour construire l'ensemble de
+    référence de `core.citations` puis le bloc Sources (§4) — deux usages en
+    aval qui n'existaient pas quand `perform_web_search` a été écrit.
 
-def _web_search_cache_set(key: str, value: str) -> None:
-    """Insère/rafraîchit une entrée et évince les plus anciennes (LRU)."""
-    _web_search_cache[key] = (time.time(), value)
-    _web_search_cache.move_to_end(key)
-    while len(_web_search_cache) > _WEB_SEARCH_CACHE_MAX:
-        _web_search_cache.popitem(last=False)
-
-
-def _web_search_fetch(url: str, accept: str) -> tuple[Optional[str], Optional[str]]:
-    """Récupère une URL en essayant plusieurs User-Agent.
-
-    Retourne ``(texte, None)`` en cas de succès, ``(None, erreur)`` sinon.
+    `on_etape` (optionnel) est transmis tel quel à `core.websearch.rechercher`
+    — c'est le canal de la trace de déroulé (§1) : cette fonction n'a rien à
+    en savoir, elle ne fait que le relayer.
     """
-    last_exc: Optional[str] = None
-    for ua in _WEB_SEARCH_USER_AGENTS:
-        req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": accept})
-        try:
-            with urllib.request.urlopen(req, timeout=_WEB_SEARCH_TIMEOUT) as resp:
-                if resp.status != 200:
-                    logger.warning("Web search HTTP %s pour %s (UA: %s)", resp.status, url, ua)
-                    last_exc = f"HTTP {resp.status}"
-                    continue  # essayer prochain UA
-                return resp.read().decode("utf-8", errors="replace"), None
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-            logger.warning("Web search impossible pour %s (UA: %s) : %s", url, ua, exc)
-            last_exc = str(exc)
-            continue
-        except Exception as exc:  # pragma: no cover - imprévisible
-            logger.exception("Web search erreur inattendue pour %s (UA: %s)", url, ua)
-            last_exc = str(exc)
-            continue
-    return None, (last_exc or "erreur inconnue")
-
-
-def _web_search_instant(q: str) -> tuple[list[str], list[str], Optional[str]]:
-    """Stratégie 1 : API DuckDuckGo Instant Answer (JSON).
-
-    Retourne ``(parties, lignes_source, erreur)``. ``parties`` est vide quand
-    l'API ne renvoie rien d'exploitable (cas qui déclenche le fallback HTML).
-    """
-    params = {
-        "q": q,
-        "format": "json",
-        "no_html": "1",
-        "skip_disambig": "1",
-        "t": "epure",
-    }
-    url = "https://api.duckduckgo.com/" + urllib.parse.urlencode(params)
-    raw, err = _web_search_fetch(url, "application/json")
-    if raw is None:
-        return [], [], err
-
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Web search JSON invalide pour %s", q)
-        return [], [], "réponse JSON invalide"
-
-    abstract = (data.get("Abstract") or "").strip()
-    abstract_source = (data.get("AbstractSource") or "").strip()
-    abstract_url = (data.get("AbstractURL") or "").strip()
-    definition = (data.get("Definition") or "").strip()
-    definition_source = (data.get("DefinitionSource") or "").strip()
-    definition_url = (data.get("DefinitionURL") or "").strip()
-    answer = (data.get("Answer") or "").strip()
-    answer_type = (data.get("AnswerType") or "").strip()
-
-    related: list[str] = []
-    for item in data.get("RelatedTopics", []) or []:
-        if not isinstance(item, dict):
-            continue
-        # Les RelatedTopics imbriqués (sous "Topics") sont groupés par sujet
-        if "Topics" in item and isinstance(item["Topics"], list):
-            for sub in item["Topics"]:
-                text = (sub.get("Text") or "").strip()
-                if text:
-                    related.append(text)
-        else:
-            text = (item.get("Text") or "").strip()
-            if text:
-                related.append(text)
-
-    parts: list[str] = []
-    if abstract:
-        parts.append(abstract)
-    if definition and definition != abstract:
-        parts.append(f"Définition : {definition}")
-    if answer:
-        prefix = f"Réponse ({answer_type})" if answer_type else "Réponse"
-        parts.append(f"{prefix} : {answer}")
-    for r in related[:5]:
-        parts.append(f"- {r}")
-
-    source_lines: list[str] = []
-    if abstract and abstract_source:
-        source_lines.append(f"Source abstract : {abstract_source}" + (f" ({abstract_url})" if abstract_url else ""))
-    if definition and definition_source:
-        source_lines.append(f"Source définition : {definition_source}" + (f" ({definition_url})" if definition_url else ""))
-    return parts, source_lines, None
-
-
-_HTML_RESULT_RE = re.compile(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE)
-_HTML_SNIPPET_RE = re.compile(r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE)
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def _strip_html(fragment: str) -> str:
-    """Retire les balises et déséchappe les entités d'un fragment HTML."""
-    return _htmllib.unescape(_HTML_TAG_RE.sub("", fragment)).strip()
-
-
-def _web_search_html(q: str) -> tuple[list[str], Optional[str]]:
-    """Stratégie 2 (fallback) : endpoint HTML html.duckduckgo.com.
-
-    Retourne ``(parties, erreur)``. Parse les résultats (titre + extrait) par
-    expression régulière — pas de dépendance HTML externe.
-    """
-    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": q})
-    raw, err = _web_search_fetch(url, "text/html")
-    if raw is None:
-        return [], err
-
-    titles = [_strip_html(m) for m in _HTML_RESULT_RE.findall(raw)]
-    snippets = [_strip_html(m) for m in _HTML_SNIPPET_RE.findall(raw)]
-
-    parts: list[str] = []
-    for i in range(max(len(titles), len(snippets))):
-        title = titles[i] if i < len(titles) else ""
-        snippet = snippets[i] if i < len(snippets) else ""
-        line = " — ".join(p for p in (title, snippet) if p)
-        if line:
-            parts.append(f"- {line}")
-        if len(parts) >= 5:
-            break
-    return parts, None
+        resultats = rechercher(query, on_etape=on_etape)
+    except RechercheWebErreur as exc:
+        return f"{PREFIXE_ERREUR}{exc}", []
+    return formater_pour_llm(resultats), resultats
 
 
 def perform_web_search(query: str) -> str:
-    """Recherche web via DuckDuckGo, avec fallback HTML et cache LRU.
+    """Recherche web DuckDuckGo, formatée pour un prompt LLM.
 
-    Stratégie : (1) API Instant Answer (JSON) ; (2) si rien d'exploitable,
-    fallback sur l'endpoint HTML html.duckduckgo.com. Le résultat formaté est
-    mis en cache (TTL court). En cas d'échec réseau total, retourne un message
-    d'erreur court pour informer l'utilisateur.
+    Délègue à `core.websearch` : ce module gardait, avant le 2026-09-02, sa
+    propre logique de recherche et de parsing HTML — une regex qui ne
+    capturait que le TEXTE des ancres de résultat, jamais leur `href`, d'où
+    des sources inventées par le LLM (aucune URL ne lui était jamais fournie).
     """
-    if not query or not query.strip():
-        return ""
-    q = query.strip()
+    texte, _resultats = _rechercher_pour_prompt(query)
+    return texte
 
-    cached = _web_search_cache_get(q)
-    if cached is not None:
-        logger.info("Web search « %s » : %d caractères servis depuis le cache", q, len(cached))
-        return cached
 
-    # Stratégie 1 : Instant Answer
-    parts, source_lines, err = _web_search_instant(q)
-    source = "DuckDuckGo Instant Answer"
+def _construire_web_ctx(web_results: str) -> str:
+    """Construit le contexte @web injecté au prompt à partir du retour de
+    `perform_web_search`.
 
-    # Stratégie 2 : fallback HTML si l'Instant Answer ne donne rien
-    if not parts:
-        html_parts, html_err = _web_search_html(q)
-        if html_parts:
-            parts = html_parts
-            source_lines = []
-            source = "DuckDuckGo HTML"
-        elif err and html_err:
-            # Les deux stratégies ont échoué au niveau réseau
-            logger.error("Web search échoué pour « %s » : instant=%s ; html=%s", q, err, html_err)
-            return f"Erreur de recherche web : {err}"
+    Trois cas, PAS deux : un échec (préfixe `PREFIXE_ERREUR`) doit rester
+    distinct d'un résultat réel ET d'une recherche légitimement vide. Les
+    confondre avec un résultat ferait présenter le message d'erreur lui-même
+    comme un « résultat récent à citer » — une fausse source fabriquée à
+    partir d'un texte d'erreur, pire que le silence corrigé par ailleurs. Les
+    confondre avec « aucun résultat » recréerait l'échec silencieux que la
+    correction du parsing HTML (core/websearch.py) visait à éliminer.
 
-    if not parts:
-        # Aucun résultat exploitable, mais pas d'erreur réseau
-        logger.info("Web search « %s » : 0 résultat (source: %s)", q, source)
-        return ""
-
-    sources_block = ("\n\n" + "\n".join(source_lines)) if source_lines else ""
-    result = (
-        f"Résultats de recherche web pour « {q} » ({source}) :\n"
-        + "\n".join(parts)
-        + sources_block
+    Le contrat de citation (branche « résultat ») est le premier des deux
+    verrous contre les sources inventées — le second est `core.citations`,
+    appliqué APRÈS génération (cf. `_verifier_citations`) : un
+    prompt ne garantit rien à lui seul, il ne fait que réduire la probabilité
+    d'une invention. D'où l'insistance sur « jamais d'URL » (le domaine que
+    `formater_pour_llm` fournit suffit à juger la crédibilité d'une source)
+    et « jamais un numéro absent » (répété explicitement : c'est justement ce
+    que `valider_citations` vérifiera ensuite).
+    """
+    if web_results.startswith(PREFIXE_ERREUR):
+        return (
+            f"Recherche web : {web_results} Ce n'est PAS un résultat de recherche, "
+            "ne le cite pas comme source. Signale à l'utilisateur que la recherche web "
+            "a échoué, et réponds à partir de tes connaissances si pertinent."
+        )
+    if web_results:
+        return (
+            "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
+            f"{web_results}\n\n"
+            "Si pertinent, intègre ces informations dans ta réponse. Cite tes sources "
+            "UNIQUEMENT par leur numéro entre crochets, par exemple [1] — n'écris "
+            "JAMAIS d'URL, et ne cite JAMAIS un numéro absent de la liste ci-dessus. "
+            "Si la liste ne permet pas de répondre à la question, dis-le explicitement "
+            "plutôt que de compléter avec tes connaissances sans le signaler."
+        )
+    return (
+        "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
+        "Réponds à partir de tes connaissances en le signalant."
     )
 
-    excerpt = result[:160].replace("\n", " ")
-    logger.info("Web search « %s » : %d résultat(s) via %s — extrait : %s", q, len(parts), source, excerpt)
 
-    _web_search_cache_set(q, result)
-    return result
+def _sources_citees(reponse: str, resultats_web: list[ResultatWeb]) -> list[dict]:
+    """Sources RÉELLEMENT citées dans `reponse`, sous forme STRUCTURÉE.
+
+    JAMAIS insérées dans le contenu persisté — c'est tout le point de ce
+    correctif. La version précédente ajoutait un bloc texte « Sources » (avec
+    URL complète) au `content` du message avant de l'écrire : ce `content`
+    repart tel quel dans l'historique du prompt au tour suivant, ce qui
+    réintroduisait par la porte de derrière les URLs complètes que le contrat
+    de citation (`_construire_web_ctx`, phase 2) retire justement du contexte
+    — et enseignait au modèle qu'écrire des URLs complètes est normal dans
+    cette conversation. Cette liste part en métadonnée séparée
+    (`core.history.HistoryEngine.append_messages`, paramètre `sources`), que
+    le frontend rend à côté du texte sans jamais la faire repasser par le
+    modèle.
+
+    UNIQUEMENT les [n] réellement cités, dans leur ordre d'apparition — les
+    résultats récupérés mais non cités n'y figurent pas (leur trace est la
+    phase 3, pas celle-ci). Extraction bon marché (une regex sur le texte
+    déjà généré) : sans rapport avec `valider_citations`, qui doit rester
+    après `done` (§3 de la tâche) — celle-ci reste sur le chemin normal de
+    fin de tour, c'est juste finir de composer ce qui part sur le disque.
+    """
+    if not reponse or not resultats_web:
+        return []
+    rangs = extraire_rangs_cites(reponse, {r.rang for r in resultats_web})
+    if not rangs:
+        return []
+    par_rang = {r.rang: r for r in resultats_web}
+    return [
+        {"rang": n, "titre": par_rang[n].titre, "url": par_rang[n].url}
+        for n in rangs if n in par_rang
+    ]
+
+
+def _verifier_citations(
+    reponse: str, resultats_web: list[ResultatWeb], user_text: str, urls_rag,
+) -> Optional[RapportCitations]:
+    """Second verrou (core.citations) — calcul PUR, sans effet de bord.
+
+    Appelée avant la persistance (contrairement à la phase 2, où cette
+    vérification tournait après l'événement `done`) : cette phase demande de
+    persister une éventuelle anomalie comme étape `citations_invalides` de
+    `trace_recherche` (§1), et `core/history.py` n'a qu'un `append_messages`
+    — pas de correctif de message déjà écrit. Le calcul devait donc précéder
+    l'écriture, pas la suivre.
+
+    Ce déplacement ne contredit pas l'esprit de la règle de la phase 2 (« ne
+    pas ralentir le chemin chaud du token ») : `valider_citations` est une
+    passe de regex pure, sans LLM ni réseau, déjà exécutée UNE FOIS APRÈS la
+    fin complète du streaming — la faire tourner quelques lignes plus tôt ne
+    coûte rien de plus. Ce que la règle protégeait réellement (le flux de
+    tokens) reste inchangé : rien ici ne touche `accumulated`/`_final` avant
+    que le dernier token soit parti.
+
+    N'agit JAMAIS sur `reponse` — signale, ne corrige pas (cf. docstring de
+    `core.citations` : une suppression silencieuse recrée la classe de bug
+    qu'on élimine).
+    """
+    if not reponse:
+        return None
+    reference = construire_reference(
+        urls_web=[r.url for r in resultats_web],
+        rangs_web=[r.rang for r in resultats_web],
+        urls_rag=urls_rag,
+        texte_utilisateur=user_text,
+    )
+    return valider_citations(reponse, reference)
+
+
+def _construire_trace_finale(
+    etapes: list[dict], rapport: Optional[RapportCitations], a_des_resultats_recherche: bool,
+) -> list[dict]:
+    """Assemble la trace persistée : les étapes de recherche (`core.websearch`,
+    poussées en direct pendant le tour, vide s'il n'y en a pas eu) + l'étape
+    `citations_invalides` si le second verrou a trouvé une anomalie — même
+    liste, même schéma extensible (§1 de la tâche initiale).
+
+    IMPÉRATIF (suivi immédiat) — cette étape est construite QUELLE QUE SOIT
+    la présence d'une recherche ce tour. La version précédente ne la
+    persistait/affichait que si `@web` avait été utilisé, au motif que
+    « la trace n'a pas de panneau où s'accrocher » sans recherche — c'était
+    l'inverse de la réalité : `@web` est un override manuel rare, et la
+    grande majorité des tours (aucune recherche) est précisément là où le
+    modèle invente le plus souvent une URL de mémoire. Détecter surtout là où
+    c'est rare et se taire là où c'est fréquent était le défaut d'origine.
+    `trace_recherche` peut donc ne contenir QUE cette étape, sans aucune
+    étape de recherche — le frontend doit l'afficher sans jamais annoncer une
+    recherche qui n'a pas eu lieu (cf. `resumeTrace`, Component.tsx).
+
+    `a_des_resultats_recherche` distingue deux affirmations de force
+    différente (§3) :
+      - une recherche a eu lieu et a rendu des résultats CETTE fois-ci
+        (`resultats_web` non vide) : une URL absente de ces résultats est une
+        anomalie contre une référence VÉRIFIÉE — affirmation forte,
+        `"verifiees_contre": "recherche"` ;
+      - aucun résultat de recherche à comparer (pas de `@web`, ou recherche
+        vide/en échec) : seules les sources RAG et le message utilisateur ont
+        été consultés. Une URL qui n'y figure pas n'est pas prouvée fausse —
+        seulement NON VÉRIFIÉE, `"verifiees_contre": "aucune_source"`. Un
+        badge qui affirme « faux » à chaque URL de mémoire non vérifiée
+        crierait au loup et finirait ignoré — la distinction existe pour ça.
+
+    Bornée à `TRACE_MAX_ETAPES` ICI, au moment de la persistance : c'est le
+    point où toutes les sources (recherche + citations) sont réunies, donc le
+    seul endroit qui connaît le total réel.
+    """
+    finale = list(etapes)
+    if rapport is not None and rapport.a_des_anomalies():
+        finale.append({
+            "etape": "citations_invalides",
+            "rangs": rapport.rangs_hors_plage[:TRACE_LISTE_MAX],
+            "urls": [tronquer_champ(u) for u in rapport.urls_non_reconnues[:TRACE_LISTE_MAX]],
+            "verifiees_contre": "recherche" if a_des_resultats_recherche else "aucune_source",
+        })
+    return finale[:TRACE_MAX_ETAPES]
+
+
+def _finaliser_citations_et_trace(
+    conv_id: str, reponse: str, resultats_web: list[ResultatWeb],
+    user_text: str, urls_rag, etapes_recherche: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Finalisation commune aux deux chemins de fin de tour (direct et
+    pipeline) : sources citées + trace à persister, anomalies journalisées.
+
+    `_verifier_citations` tourne à CHAQUE tour, avec ou sans `@web` — c'est
+    le point de cette révision (cf. `_construire_trace_finale`). Sans
+    recherche, l'ensemble de référence se réduit aux sources RAG et aux URLs
+    du message utilisateur (`urls_rag`/`user_text`, inchangés). La réponse
+    elle-même n'est jamais modifiée.
+    """
+    sources = _sources_citees(reponse, resultats_web)
+    rapport = _verifier_citations(reponse, resultats_web, user_text, urls_rag)
+    trace = _construire_trace_finale(etapes_recherche, rapport, bool(resultats_web))
+    if rapport is not None and rapport.aucune_citation_malgre_contexte:
+        logger.warning("Réponse sans aucune citation malgré un contexte web fourni (conv=%s)", conv_id)
+    return sources, trace
 
 
 # ── Skill /résumé (SSE) ──────────────────────────────────────────────────────
@@ -715,7 +719,10 @@ async def ws_chat(websocket: WebSocket):
                 logger.debug("Titre non annoncé (socket fermé ?) pour %s", conv_id)
         return _pousser
 
-    async def _enregistrer_reponse(conv_id: str, texte: str) -> dict:
+    async def _enregistrer_reponse(
+        conv_id: str, texte: str,
+        sources: list[dict] | None = None, trace_recherche: list[dict] | None = None,
+    ) -> dict:
         """Seconde transaction du tour : la réponse, puis les travaux de fond.
 
         Séparée de l'ajout du message utilisateur, et pas par commodité : entre
@@ -723,10 +730,20 @@ async def ws_chat(websocket: WebSocket):
         unique qui enjamberait le flux garderait le fichier verrouillé pendant
         toute la génération, et un envoi concurrent dans la même conversation
         attendrait la fin de la réponse précédente.
+
+        `sources` (optionnel) part en métadonnée du message, JAMAIS collée à
+        `texte` : cf. `_sources_citees`, dont c'est tout le sujet. `trace_recherche`
+        suit exactement le même principe et le même mécanisme (`core.history.
+        HistoryEngine.append_messages`), pour la même raison : un déroulé de
+        recherche est de la PRÉSENTATION, pas du contenu que le modèle doit
+        relire au tour suivant.
         """
         conv = await loop.run_in_executor(
             None, lambda: history_engine.append_messages(
-                conv_id, [{"role": "assistant", "content": texte}],
+                conv_id, [{
+                    "role": "assistant", "content": texte,
+                    "sources": sources or [], "trace_recherche": trace_recherche or [],
+                }],
                 model=_last_model[0],
             )
         )
@@ -865,22 +882,44 @@ async def ws_chat(websocket: WebSocket):
 
             # @web skill
             web_ctx = ""
+            #: Résultats STRUCTURÉS du tour, conservés pour `core.citations`
+            #: (ensemble de référence) et le bloc Sources (§4) — `web_results`
+            #: ci-dessous n'est que leur mise en forme texte pour le prompt.
+            web_resultats: list[ResultatWeb] = []
+            #: Déroulé de la recherche (requête envoyée mot pour mot, résultats,
+            #: exclusions publicitaires, erreurs) — rempli par le callback
+            #: `_on_etape_recherche` ci-dessous, PENDANT l'exécution de
+            #: `rechercher()` dans le thread de l'exécuteur.
+            etapes_recherche: list[dict] = []
             if web_search_override:
+                def _on_etape_recherche(etape: dict) -> None:
+                    """Appelé depuis le THREAD de l'exécuteur (`rechercher()` est
+                    synchrone). Pousse l'étape en direct sur le websocket — pour
+                    que le panneau se remplisse PENDANT la recherche, pas
+                    seulement à la fin (tâche §2) — via `run_coroutine_threadsafe`,
+                    comme `_annoncer_titre_depuis_thread` : toucher le websocket
+                    depuis un autre fil sans repasser par la boucle corromprait le
+                    protocole. Best-effort : le socket peut être fermé entre-temps.
+                    """
+                    etapes_recherche.append(etape)
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            websocket.send_text(json.dumps(
+                                {"type": "trace_recherche_etape", "etape": etape},
+                                ensure_ascii=False,
+                            )),
+                            loop,
+                        )
+                    except Exception:
+                        logger.debug("Étape de trace non poussée (socket fermé ?)")
+
                 _t_web = time.time()
                 web_query = user_text.strip()
-                web_results = await loop.run_in_executor(None, perform_web_search, web_query)
+                web_results, web_resultats = await loop.run_in_executor(
+                    None, _rechercher_pour_prompt, web_query, _on_etape_recherche
+                )
                 logger.info("TTFT Web: %.3fs (query=%r, len=%d)", time.time() - _t_web, web_query[:80], len(web_results))
-                if web_results:
-                    web_ctx = (
-                        "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
-                        f"{web_results}\n\n"
-                        "Si pertinent, intègre ces informations dans ta réponse et cite la source."
-                    )
-                else:
-                    web_ctx = (
-                        "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
-                        "Réponds à partir de tes connaissances en le signalant."
-                    )
+                web_ctx = _construire_web_ctx(web_results)
 
             # Les fichiers viennent de LA CONVERSATION, plus d'un `fichiers_actifs`
             # global (retiré le 2026-08-27). `conv` a été relu juste au-dessus par
@@ -902,6 +941,25 @@ async def ws_chat(websocket: WebSocket):
             else:
                 chunks = ""
             logger.info("TTFT RAG: %.3fs", time.time() - _t)
+
+            # Sources des chunks RAG INJECTÉS ce tour, pour l'ensemble de
+            # référence de `core.citations` (§2). `RAGEngine.query`/
+            # `query_filtered` ne rendent que le texte concaténé des chunks,
+            # sans métadonnée par chunk (`core/rag.py`) : impossible de
+            # retrouver le fichier exact d'où vient tel passage sans changer
+            # cette API. Approximation délibérée, du côté qui évite les faux
+            # positifs (la consigne prioritaire, cf. tâche §2) : le fichier
+            # attaché en mode filtré, tout le corpus indexé en mode « all » —
+            # au pire plus permissif que la vraie source, jamais moins.
+            urls_rag: set[str] = set()
+            if chunks:
+                if rag_override == "all":
+                    try:
+                        urls_rag = set(await loop.run_in_executor(None, rag.get_indexed_files))
+                    except Exception:
+                        urls_rag = set()
+                elif active_files:
+                    urls_rag = set(active_files)
 
             sys_parts: list[str] = []
             if strict_override:
@@ -1005,11 +1063,20 @@ async def ws_chat(websocket: WebSocket):
                         if _event.get("type") == "pipeline_done":
                             _final = _event.get("final_output", "")
                         await websocket.send_text(json.dumps(_event))
-                    _meta = await _enregistrer_reponse(conv_id, _final) if _final else {}
+                    _sources, _trace = _finaliser_citations_et_trace(
+                        conv_id, _final, web_resultats, user_text, urls_rag,
+                        etapes_recherche,
+                    )
+                    _meta = await _enregistrer_reponse(conv_id, _final, _sources, _trace) if _final else {}
                     await websocket.send_text(json.dumps({
                         "type": "done",
                         "horodatage": _meta.get("horodatage", ""),
                         "modèle": _meta.get("modèle", ""),
+                        # Mêmes sources/trace qu'après un F5 (relecture de la
+                        # conversation persistée) : la vue en direct ne doit pas
+                        # différer de la vue relue, cf. tâche §3.
+                        "sources": _meta.get("sources", []),
+                        "trace_recherche": _meta.get("trace_recherche", []),
                     }, ensure_ascii=False))
                     continue
                 elif not _direct_mode:
@@ -1106,11 +1173,20 @@ async def ws_chat(websocket: WebSocket):
                     ),
                 }, ensure_ascii=False))
 
-            _meta = await _enregistrer_reponse(conv_id, accumulated) if accumulated else {}
+            _sources, _trace = _finaliser_citations_et_trace(
+                conv_id, accumulated, web_resultats, user_text, urls_rag,
+                etapes_recherche,
+            )
+            _meta = await _enregistrer_reponse(conv_id, accumulated, _sources, _trace) if accumulated else {}
             await websocket.send_text(json.dumps({
                 "type": "done",
                 "horodatage": _meta.get("horodatage", ""),
                 "modèle": _meta.get("modèle", ""),
+                # Mêmes sources/trace qu'après un F5 (relecture de la conversation
+                # persistée) : la vue en direct ne doit pas différer de la vue
+                # relue, cf. tâche §3.
+                "sources": _meta.get("sources", []),
+                "trace_recherche": _meta.get("trace_recherche", []),
             }, ensure_ascii=False))
 
     except WebSocketDisconnect:

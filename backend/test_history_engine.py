@@ -252,6 +252,171 @@ class MetadonneesParMessageTest(_Base):
         self.assertNotIn("modèle", self._brut(conv["id"])["messages"][0])
 
 
+class SourcesParMessageTest(_Base):
+    """`sources` : métadonnée OPTIONNELLE par message, jamais mélangée à
+    `content`.
+
+    Correctif direct du chantier @web : la version précédente appendait un
+    bloc « Sources » (URLs complètes) au `content` persisté AVANT de
+    l'écrire — ce `content` repart tel quel dans le prompt du tour suivant,
+    ce qui réintroduisait les URLs complètes que le contrat de citation
+    retire du contexte, et enseignait au modèle qu'en écrire est normal ici.
+    `sources` vit désormais à côté, jamais dans le texte lui-même.
+    """
+
+    def test_sources_persistees_a_cote_du_contenu_jamais_dedans(self):
+        conv = self.moteur.create_conversation()
+        sources = [{"rang": 1, "titre": "Python", "url": "https://python.org/"}]
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Voir [1].", "sources": sources},
+        ])
+        message = self._brut(conv["id"])["messages"][0]
+        self.assertEqual(message["content"], "Voir [1].")
+        self.assertNotIn("https://python.org/", message["content"])
+        self.assertEqual(message["sources"], sources)
+
+    def test_sans_sources_la_cle_reste_absente(self):
+        """Absente, pas une liste vide — même convention que `modèle` : la clé
+        absente EST la bonne valeur pour un message qui n'a rien cité."""
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [{"role": "assistant", "content": "Rien à citer."}])
+        self.assertNotIn("sources", self._brut(conv["id"])["messages"][0])
+
+    def test_liste_de_sources_vide_ne_pose_pas_la_cle(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Rien à citer.", "sources": []},
+        ])
+        self.assertNotIn("sources", self._brut(conv["id"])["messages"][0])
+
+    def test_get_conversation_rend_les_sources_telles_quelles(self):
+        conv = self.moteur.create_conversation()
+        sources = [{"rang": 1, "titre": "Python", "url": "https://python.org/"}]
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Voir [1].", "sources": sources},
+        ])
+        relue = self.moteur.get_conversation(conv["id"])
+        self.assertEqual(relue["messages"][0]["sources"], sources)
+
+
+class TraceRechercheParMessageTest(_Base):
+    """`trace_recherche` : même mécanisme que `sources` (métadonnée par
+    message, jamais dans `content`), pour la même raison — rendre visible le
+    déroulé d'une recherche @web sans le faire repasser par le prompt du
+    tour suivant (CLAUDE.md, chantier « rendre visible la recherche »).
+    """
+
+    def test_trace_persistee_a_cote_du_contenu(self):
+        conv = self.moteur.create_conversation()
+        trace = [
+            {"etape": "recherche_debut", "requete": "python", "moteur": "ddg-instant"},
+            {"etape": "recherche_resultats", "nombre": 1, "moteur": "ddg-instant", "ms": 120, "resultats": []},
+        ]
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Voir [1].", "trace_recherche": trace},
+        ])
+        message = self._brut(conv["id"])["messages"][0]
+        self.assertEqual(message["content"], "Voir [1].")
+        self.assertEqual(message["trace_recherche"], trace)
+
+    def test_sans_trace_la_cle_reste_absente(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [{"role": "assistant", "content": "Pas de recherche."}])
+        self.assertNotIn("trace_recherche", self._brut(conv["id"])["messages"][0])
+
+    def test_liste_de_trace_vide_ne_pose_pas_la_cle(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Pas de recherche.", "trace_recherche": []},
+        ])
+        self.assertNotIn("trace_recherche", self._brut(conv["id"])["messages"][0])
+
+    def test_get_conversation_rend_la_trace_telle_quelle(self):
+        conv = self.moteur.create_conversation()
+        trace = [{"etape": "recherche_erreur", "message": "HTTP 403"}]
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "La recherche a échoué.", "trace_recherche": trace},
+        ])
+        relue = self.moteur.get_conversation(conv["id"])
+        self.assertEqual(relue["messages"][0]["trace_recherche"], trace)
+
+    def test_message_ancien_sans_trace_recherche_reste_lisible(self):
+        """Un message d'avant ce champ (ou simplement sans @web) se lit sans
+        erreur ni panneau fantôme — c'est la rétrocompatibilité demandée."""
+        conv_id = "7f1e2a3b-4444-5555-6666-777788889999"
+        (self.tmp / f"{conv_id}.json").write_text(json.dumps({
+            "id": conv_id, "date": "2026-06-01", "titre": "Avant la trace",
+            "modèle": "qwen2.5:7b", "modules": ["chat"], "n_messages": 1,
+            "messages": [{"role": "assistant", "content": "Une vieille réponse, sans trace."}],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        conv = self.moteur.get_conversation(conv_id)
+        self.assertIsNotNone(conv)
+        self.assertNotIn("trace_recherche", conv["messages"][0])
+        self.assertEqual(conv["messages"][0]["content"], "Une vieille réponse, sans trace.")
+
+
+class RetrocompatibiliteBlocSourcesDansContenuTest(_Base):
+    """Compatibilité ascendante EXPLICITE, demandée par la tâche : une
+    conversation écrite par la version PRÉCÉDENTE (bloc « Sources » avec URLs
+    complètes collé au `content`) doit encore se lire sans casser ni perdre
+    ses liens. Aucune migration : le contenu ancien n'est pas touché
+    (`_normaliser` ne réécrit rien, cf. sa docstring) — les deux formats
+    coexistent, l'ancien restant lisible tel quel.
+    """
+
+    _AVEC_BLOC_DANS_LE_CONTENU = {
+        "id": "5c9e1c4a-1111-4444-8888-abcdefabcdef",
+        "date": "2026-09-02",
+        "titre": "Avant la séparation sources/contenu",
+        "modèle": "qwen2.5:7b",
+        "modules": ["chat"],
+        "n_messages": 2,
+        "messages": [
+            {"role": "user", "content": "Question", "horodatage": "2026-09-02T10:00:00"},
+            {
+                "role": "assistant",
+                "content": "Réponse, voir [1].\n\nSources\n[1] Python — https://www.python.org/",
+                "horodatage": "2026-09-02T10:00:05",
+                "modèle": "qwen2.5:7b",
+            },
+        ],
+    }
+
+    def _poser(self):
+        (self.tmp / f"{self._AVEC_BLOC_DANS_LE_CONTENU['id']}.json").write_text(
+            json.dumps(self._AVEC_BLOC_DANS_LE_CONTENU, ensure_ascii=False), encoding="utf-8")
+
+    def test_la_lecture_ne_casse_pas(self):
+        self._poser()
+        conv = self.moteur.get_conversation(self._AVEC_BLOC_DANS_LE_CONTENU["id"])
+        self.assertIsNotNone(conv)
+        self.assertEqual(len(conv["messages"]), 2)
+
+    def test_le_lien_ancien_reste_visible_tel_quel(self):
+        """Le lien n'est pas perdu : il est toujours là, en texte, comme
+        avant. Ce message n'a simplement pas de `sources` structurée — il
+        date d'avant ce champ, et rien ne l'invente rétroactivement."""
+        self._poser()
+        conv = self.moteur.get_conversation(self._AVEC_BLOC_DANS_LE_CONTENU["id"])
+        assistant = conv["messages"][1]
+        self.assertIn("https://www.python.org/", assistant["content"])
+        self.assertNotIn("sources", assistant)
+
+    def test_un_nouveau_tour_sur_cette_conversation_suit_la_nouvelle_regle(self):
+        """Pas de migration rétroactive, mais le NOUVEAU tour suit la nouvelle
+        règle — les deux formats coexistent dans la même conversation."""
+        self._poser()
+        sources = [{"rang": 1, "titre": "W3Schools", "url": "https://www.w3schools.com/python/"}]
+        self.moteur.append_messages(self._AVEC_BLOC_DANS_LE_CONTENU["id"], [
+            {"role": "assistant", "content": "Autre réponse, voir [1].", "sources": sources},
+        ])
+        messages = self._brut(self._AVEC_BLOC_DANS_LE_CONTENU["id"])["messages"]
+        self.assertNotIn("sources", messages[1])       # l'ancien, inchangé
+        self.assertEqual(messages[2]["sources"], sources)  # le nouveau
+        self.assertNotIn("https://", messages[2]["content"])
+
+
 class RetrocompatibiliteMetadonneesTest(_Base):
     """Les messages d'AVANT ces champs ne sont ni complétés ni devinés.
 
