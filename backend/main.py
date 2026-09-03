@@ -58,7 +58,7 @@ from core.paths import resolve_web_dir
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
-    get_ollama_installed,
+    get_ollama_installed, check_lmstudio, get_lmstudio_installed,
 )
 from core.quota_tracker import QuotaTracker
 from core.rag import RAGEngine
@@ -315,6 +315,21 @@ async def list_models():
         # Serveur Ollama injoignable → modèle configuré affiché mais indisponible
         local = [{"id": llm._model, "nom": llm._model, "provider": "ollama", "disponible": False}]
 
+    # LM Studio : même contrat que Ollama ci-dessus (None = injoignable → liste
+    # vide, silencieuse, plutôt qu'une entrée grisée qui suppose un modèle
+    # configuré qui n'existe pas ici). Préfixé `lmstudio:` parce qu'Ollama et LM
+    # Studio peuvent tous deux servir un modèle du même nom (`qwen2.5:7b`) : les
+    # ids d'Ollama ne portent eux-mêmes aucun préfixe, donc sans celui-ci une clé
+    # de sélecteur en collision associerait un module au mauvais fournisseur.
+    lmstudio_models = await loop.run_in_executor(None, get_lmstudio_installed)
+    local_lmstudio = [
+        {
+            "id": f"lmstudio:{name}", "nom": name, "provider": "lmstudio", "disponible": True,
+            "description": QUALITATIVE_METADATA.get(name, {}).get("description", ""),
+        }
+        for name in (lmstudio_models or [])
+    ]
+
     catalog = await models_registry.get_catalog()
 
     # FLM: server reachable + model physically installed in ~/.flm/models
@@ -418,6 +433,7 @@ async def list_models():
     # erreur. Ne porte aucun secret : six booléens, pas les clés.
     return {
         "local": local,
+        "local_lmstudio": local_lmstudio,
         "local_npu": local_npu,
         "cloud": cloud,
         "fournisseurs": key_ok,
@@ -899,11 +915,12 @@ async def health():
     # son coin et /health répond sans elle, en dégradant `ollama` à false. C'est
     # le compromis déjà retenu pour check_flm.
     #
-    # Les deux sondes tournent EN PARALLÈLE, et c'est ce qui rend la borne utile.
-    # Enchaînées, elles additionnaient leurs plafonds : mesuré à 4,05 s avec les
-    # deux serveurs éteints, soit toujours au-dessus du --timeout=5s une fois la
-    # latence réseau du conteneur ajoutée. Elles sont indépendantes, rien ne
-    # justifie de les séquencer. Plafond réel : max(2, 2) et non 2 + 2.
+    # Les sondes tournent EN PARALLÈLE, et c'est ce qui rend la borne utile.
+    # Enchaînées, elles additionnaient leurs plafonds : mesuré à 4,05 s avec
+    # Ollama et FLM éteints tous les deux (avant l'ajout de LM Studio),
+    # soit toujours au-dessus du --timeout=5s une fois la latence réseau du
+    # conteneur ajoutée. Elles sont indépendantes, rien ne justifie de les
+    # séquencer. Plafond réel : max(2, 2, 2) et non 2 + 2 + 2.
     async def _borne(sonde, defaut, timeout=2.0):
         try:
             return await asyncio.wait_for(
@@ -912,9 +929,10 @@ async def health():
         except Exception:
             return defaut
 
-    models, flm_ok = await asyncio.gather(
+    models, flm_ok, lmstudio_ok = await asyncio.gather(
         _borne(get_ollama_installed, None),
         _borne(check_flm, False),
+        _borne(check_lmstudio, False),
     )
 
     if models is not None:
@@ -924,7 +942,10 @@ async def health():
     else:
         active_model, models, ollama_ok = "", [], False
 
-    return {"ollama": ollama_ok, "model": active_model, "models": models, "flm": flm_ok}
+    return {
+        "ollama": ollama_ok, "model": active_model, "models": models,
+        "flm": flm_ok, "lmstudio": lmstudio_ok,
+    }
 
 
 # ── Montage des routeurs de modules ─────────────────────────────────────────

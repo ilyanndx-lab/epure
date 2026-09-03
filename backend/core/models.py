@@ -353,6 +353,47 @@ def flm_model_ids() -> Optional[set[str]]:
         return None
 
 
+#: LM Studio expose une API compatible OpenAI en local, sans authentification —
+#: même famille que FLM (``check_flm`` ci-dessus) mais un port par défaut
+#: différent (1234, celui de LM Studio) et, contrairement à FLM, configurable :
+#: ``LMSTUDIO_HOST`` reprend la convention d'``OLLAMA_HOST`` (URL complète,
+#: ``http://`` et le port ajoutés si absents) plutôt que le port en dur de FLM,
+#: parce que LM Studio — application de bureau — laisse son port se changer
+#: dans ses réglages, à la différence du service FLM.
+_lmstudio_host = os.environ.get("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
+if not _lmstudio_host.startswith("http"):
+    _lmstudio_host = f"http://{_lmstudio_host}:1234"
+
+
+def check_lmstudio() -> bool:
+    """Return True if the LM Studio server responds on `_lmstudio_host`."""
+    try:
+        req = urllib.request.Request(f"{_lmstudio_host}/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def get_lmstudio_installed() -> Optional[list[str]]:
+    """Modèles chargés dans LM Studio, par HTTP direct. None si le serveur ne
+    répond pas — même contrat que `get_ollama_installed()` : l'appelant doit
+    pouvoir distinguer "aucun modèle chargé" de "serveur injoignable".
+
+    Format OpenAI (`{"data": [{"id": ...}, ...]}`), pas le format Ollama
+    (`{"models": [{"name"/"model": ...}]}`) : LM Studio suit `/v1/models`
+    tel quel, comme FLM.
+    """
+    try:
+        req = urllib.request.Request(f"{_lmstudio_host}/v1/models")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except Exception:
+        logger.warning("LM Studio non joignable sur %s", _lmstudio_host)
+        return None
+
+
 def _ollama_vision_model() -> str:
     """``vision.ollama_model`` de config.yaml, même registre que ``model.name``.
 
