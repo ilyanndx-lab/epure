@@ -894,6 +894,103 @@ class ConstruireWebCtxDateTest(unittest.TestCase):
         self.assertNotIn("Date du jour", ctx)
 
 
+class DetecterIntentionRechercheTest(unittest.TestCase):
+    """`websearch.detecter_intention_recherche` — classifieur PAR MOTIFS
+    (Phase 6), aucun appel réseau ni LLM."""
+
+    # ── Un cas positif par catégorie ────────────────────────────────────
+
+    def test_temporel(self):
+        out = websearch.detecter_intention_recherche("Que se passe-t-il aujourd'hui en bourse ?")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["categorie"], "temporel")
+        self.assertEqual(out["mode"], "simple")
+
+    def test_temporel_date_explicite_mois_annee(self):
+        out = websearch.detecter_intention_recherche("Qui a gagné l'élection de mars 2024 ?")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["categorie"], "temporel")
+
+    def test_factuel_temps_reel(self):
+        out = websearch.detecter_intention_recherche("Quelle est la météo à Paris ?")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["categorie"], "factuel_temps_reel")
+        self.assertEqual(out["mode"], "simple")
+
+    def test_explicite(self):
+        out = websearch.detecter_intention_recherche("Cherche sur internet qui a inventé le calcul intégral.")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["categorie"], "explicite")
+        self.assertEqual(out["mode"], "simple")
+
+    def test_approfondie(self):
+        out = websearch.detecter_intention_recherche("Fais une recherche approfondie sur les tenseurs.")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["categorie"], "approfondie")
+        self.assertEqual(out["mode"], "approfondie")
+
+    # ── Cas négatifs explicites ──────────────────────────────────────────
+
+    def test_recherche_academique_ne_declenche_rien(self):
+        """LE piège central de cette phase : « recherche »/« cherche » isolés
+        sont interdits comme déclencheurs — usage réel et fréquent dans ce
+        dépôt (utilisateur en prépa scientifique)."""
+        out = websearch.detecter_intention_recherche(
+            "je fais une recherche sur les tenseurs pour ma prépa"
+        )
+        self.assertIsNone(out)
+
+    def test_cours_de_matiere_ne_declenche_rien(self):
+        """Second piège, trouvé en écrivant ce test : « cours de »/« cours
+        du » nus captureraient aussi un cours SCOLAIRE."""
+        out = websearch.detecter_intention_recherche("aide-moi à réviser mon cours de maths")
+        self.assertIsNone(out)
+
+    def test_explique_moi_python_ne_declenche_rien(self):
+        self.assertIsNone(websearch.detecter_intention_recherche("explique-moi Python"))
+
+    def test_merci_ne_declenche_rien(self):
+        self.assertIsNone(websearch.detecter_intention_recherche("merci"))
+
+    def test_culture_generale_evergreen_ne_declenche_rien(self):
+        out = websearch.detecter_intention_recherche("Quelle est la capitale de l'Australie ?")
+        self.assertIsNone(out)
+
+    def test_question_vide_ne_declenche_rien(self):
+        self.assertIsNone(websearch.detecter_intention_recherche(""))
+        self.assertIsNone(websearch.detecter_intention_recherche("   "))
+
+    # ── Insensibilité à la casse ─────────────────────────────────────────
+
+    def test_insensible_a_la_casse(self):
+        out = websearch.detecter_intention_recherche("CHERCHE SUR INTERNET les tenseurs")
+        self.assertIsNotNone(out)
+        self.assertEqual(out["categorie"], "explicite")
+
+    # ── Aucun appel LLM ───────────────────────────────────────────────────
+
+    def test_aucun_appel_llm(self):
+        with mock.patch.object(websearch.llm, "generate", side_effect=AssertionError("ne doit jamais être appelé")), \
+             mock.patch.object(websearch.llm, "stream", side_effect=AssertionError("ne doit jamais être appelé")):
+            for texte in (
+                "aujourd'hui il pleut", "météo à Lyon", "cherche sur le web",
+                "recherche approfondie sur les tenseurs", "merci", "explique-moi Python",
+                "je fais une recherche sur les tenseurs pour ma prépa",
+            ):
+                websearch.detecter_intention_recherche(texte)
+
+
+class DeclenchementAutoImportTest(unittest.TestCase):
+    """`modules/chat/router.py` importe et utilise le MÊME classifieur que
+    `core.websearch` (pas une copie) — le câblage bout en bout (motif détecté
+    → `web_search_override` forcé → étape `declenchement_auto` dans la trace
+    → priorité du manuel) est vérifié end-to-end dans
+    `test_declenchement_auto.py`, via un vrai tour `/ws/chat`."""
+
+    def test_router_reexporte_le_meme_classifieur(self):
+        self.assertIs(chat_router.detecter_intention_recherche, websearch.detecter_intention_recherche)
+
+
 def _live():
     query = "Python programming"
     print(f"Query: {query}")

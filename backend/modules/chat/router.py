@@ -44,6 +44,7 @@ from core.websearch import (
     TRACE_MAX_ETAPES,
     RechercheWebErreur,
     ResultatWeb,
+    detecter_intention_recherche,
     formater_pour_llm,
     rechercher,
     reformuler_requete,
@@ -902,6 +903,21 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
 
+            # ── Déclenchement automatique de la recherche web (Phase 6) ──────
+            #
+            # `detecter_intention_recherche` (core/websearch.py) est une
+            # heuristique par motifs, AUCUN appel LLM/réseau — tourne sur
+            # CHAQUE message, gratuite en latence pour l'immense majorité qui
+            # ne matche rien. Le manuel garde TOUJOURS priorité : si
+            # `web_search_override` est déjà vrai (l'utilisateur a tapé
+            # @web), on ne détecte rien de plus — pas de double origine dans
+            # la trace (`declenchement_auto` reste `None`, cf. plus bas).
+            declenchement_auto: Optional[dict] = None
+            if not web_search_override:
+                declenchement_auto = detecter_intention_recherche(user_text)
+                if declenchement_auto is not None:
+                    web_search_override = True
+
             # @web skill
             web_ctx = ""
             #: Résultats STRUCTURÉS du tour, conservés pour `core.citations`
@@ -934,6 +950,23 @@ async def ws_chat(websocket: WebSocket):
                         )
                     except Exception:
                         logger.debug("Étape de trace non poussée (socket fermé ?)")
+
+                if declenchement_auto is not None:
+                    # Un déclenchement automatique ne doit JAMAIS être
+                    # silencieux (cf. le diagnostic qui a lancé ce projet) :
+                    # visible dans le panneau de trace au même titre que le
+                    # reste du déroulé.
+                    # TODO phase future : mode "approfondie" — brancher un
+                    # pipeline multi-requêtes/multi-tours sur ce champ, sans
+                    # redesign de la détection (core.websearch.
+                    # detecter_intention_recherche). Le pipeline exécuté ici
+                    # reste le pipeline simple, quel que soit le mode.
+                    _on_etape_recherche({
+                        "etape": "declenchement_auto",
+                        "declencheur": declenchement_auto["declencheur"],
+                        "categorie": declenchement_auto["categorie"],
+                        "mode": declenchement_auto["mode"],
+                    })
 
                 _t_web = time.time()
                 web_query = user_text.strip()

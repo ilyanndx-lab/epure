@@ -580,6 +580,139 @@ def _domaine(url: str) -> str:
     return netloc or url
 
 
+#: ── Phase 6 : déclenchement automatique de la recherche web ────────────────
+#
+# Un classifieur par MOTIFS, pas un appel LLM : `detecter_intention_recherche`
+# tourne sur CHAQUE message envoyé (pas seulement ceux avec `@web`), et un
+# classifieur LLM y ajouterait une latence perceptible pour détecter les
+# ~10-20% de messages qui en ont réellement besoin. Une heuristique par motifs
+# est gratuite en latence pour l'immense majorité des messages, qui ne
+# matchent rien.
+#
+# Piège central, propre au contexte réel de ce dépôt (utilisateur en prépa
+# scientifique) : « recherche »/« cherche » isolés sont des mots INTERDITS
+# comme déclencheurs — l'utilisateur écrit couramment « je fais une recherche
+# sur les tenseurs », « ma recherche sur X » pour un travail académique, sans
+# aucun rapport avec le web. Seules des expressions COMPOSÉES sans ambiguïté
+# ("cherche sur internet", "recherche sur le web"...) déclenchent.
+#
+# Second piège, trouvé en écrivant les tests négatifs de cette phase et NON
+# prévu par la liste de motifs d'origine : « cours de »/« cours du » (prévus
+# pour capter « cours de la bourse », un prix en temps réel) capturent aussi
+# « [mon] cours de maths » — un cours scolaire, le sens le plus fréquent de ce
+# mot dans CE dépôt. Un motif nu aurait donc déclenché une recherche web sur
+# la quasi-totalité des messages évoquant un cours. Restreint aux formes
+# financières explicites ci-dessous plutôt qu'au mot nu — cf. le rapport de
+# cette phase pour la déviation par rapport à la liste de motifs demandée.
+_MOTIFS_TEMPOREL = (
+    r"\baujourd'hui\b", r"\baujourdhui\b", r"\bactuellement\b",
+    r"\ben ce moment\b", r"\bcette semaine\b", r"\bhier\b",
+    r"\brécent\b", r"\brécente\b", r"\brécents\b", r"\brécentes\b",
+    r"\bdernier\b", r"\bdernière\b", r"\bderniers\b", r"\bdernières\b",
+    r"\bmaintenant\b",
+)
+
+_MOTIFS_FACTUEL_TEMPS_REEL = (
+    r"\bprix de\b", r"\bprix du\b",
+    # "cours de"/"cours du" nus retirés : cf. commentaire ci-dessus (faux
+    # positif massif sur « cours de maths »/« cours du soir »). Restreint aux
+    # instruments financiers usuels — vocabulaire générique (pas une filière
+    # scolaire), donc compatible avec le cœur générique du dépôt (CLAUDE.md §1).
+    r"\bcours de la bourse\b", r"\bcours du dollar\b", r"\bcours de l'euro\b",
+    r"\bcours du bitcoin\b", r"\bcours du pétrole\b", r"\bcours de l'action\b",
+    r"\bcours de l'or\b", r"\bcours du change\b",
+    r"\bmétéo\b", r"\bscore\b", r"\brésultat de\b",
+    r"\bactualité\b", r"\bactualités\b", r"\bactu\b", r"\bactus\b",
+)
+
+_MOTIFS_EXPLICITE = (
+    r"\bcherche sur internet\b", r"\bcherche sur le web\b", r"\bcherche en ligne\b",
+    r"\brecherche sur internet\b", r"\brecherche sur le web\b", r"\brecherche en ligne\b",
+    r"\btrouve sur internet\b", r"\btrouve sur le web\b",
+    r"\bregarde sur internet\b", r"\bregarde sur le web\b",
+    r"\bgoogle ça\b", r"\bcherche ça sur google\b",
+)
+
+_MOTIFS_APPROFONDIE = (
+    r"\brecherche approfondie\b", r"\banalyse approfondie\b", r"\banalyse complète\b",
+    r"\brecherche exhaustive\b", r"\bdeep research\b", r"\bcreuse le sujet\b",
+    r"\bcreuse ce sujet\b", r"\bfais une recherche complète\b",
+)
+
+
+def _compiler_motifs(motifs: tuple[str, ...]) -> re.Pattern:
+    return re.compile("|".join(motifs))
+
+
+_RE_TEMPOREL = _compiler_motifs(_MOTIFS_TEMPOREL)
+_RE_FACTUEL_TEMPS_REEL = _compiler_motifs(_MOTIFS_FACTUEL_TEMPS_REEL)
+_RE_EXPLICITE = _compiler_motifs(_MOTIFS_EXPLICITE)
+_RE_APPROFONDIE = _compiler_motifs(_MOTIFS_APPROFONDIE)
+
+#: Nom de mois français, et année à 4 chiffres commençant par 20 — détection
+#: de date explicite, distincte des motifs temporels lexicaux ci-dessus.
+_MOTIF_MOIS_RE = re.compile(
+    r"\b(?:janvier|février|mars|avril|mai|juin|juillet|août|"
+    r"septembre|octobre|novembre|décembre)\b"
+)
+_MOTIF_ANNEE_RE = re.compile(r"\b20\d{2}\b")
+
+#: Ordre de priorité des catégories : "approfondie" avant "explicite" pour
+#: qu'une demande de recherche approfondie ne se voie jamais réduite à une
+#: recherche simple — les deux jeux de motifs sont de toute façon disjoints
+#: (aucune phrase ne peut matcher les deux), l'ordre n'est donc qu'une
+#: garantie de robustesse si les listes évoluent.
+_CATEGORIES_DANS_L_ORDRE = (
+    ("approfondie", _RE_APPROFONDIE, "approfondie"),
+    ("explicite", _RE_EXPLICITE, "simple"),
+    ("factuel_temps_reel", _RE_FACTUEL_TEMPS_REEL, "simple"),
+    ("temporel", _RE_TEMPOREL, "simple"),
+)
+
+
+def detecter_intention_recherche(question: str) -> Optional[dict]:
+    """Détecte, par motifs (AUCUN appel réseau ni LLM), si `question` appelle
+    une recherche web — pour un déclenchement AUTOMATIQUE sans `@web` manuel.
+
+    Doit rester rapide : appelée sur CHAQUE message du chat, cf. le
+    commentaire de module ci-dessus pour le choix heuristique plutôt que LLM.
+
+    Rend `None` si rien ne matche (silence = pas de déclenchement). Sinon un
+    dict `{"declencheur", "categorie", "mode"}` :
+      - `categorie` ∈ {"temporel", "factuel_temps_reel", "explicite",
+        "approfondie"} ;
+      - `mode` vaut `"approfondie"` UNIQUEMENT pour cette catégorie,
+        `"simple"` pour les trois autres. Ce champ prépare une future
+        fonctionnalité de recherche approfondie (multi-requêtes/multi-tours,
+        non construite ici) : il se propage jusque dans la trace persistée
+        pour qu'une phase future puisse brancher un pipeline différent sur
+        `mode == "approfondie"` sans redesign de la détection — le pipeline
+        RÉELLEMENT exécuté aujourd'hui reste identique dans les deux cas.
+
+    En cas de motif ambigu non tranché par les tests de cette phase, le choix
+    fait est de déclencher plutôt que de se taire (cf. rapport de la tâche) —
+    sauf pour « recherche »/« cherche » isolés, explicitement exclus.
+    """
+    if not question or not question.strip():
+        return None
+    q = question.casefold()
+
+    for categorie, motif_re, mode in _CATEGORIES_DANS_L_ORDRE:
+        m = motif_re.search(q)
+        if m:
+            return {"declencheur": m.group(0), "categorie": categorie, "mode": mode}
+
+    m = _MOTIF_MOIS_RE.search(q)
+    if m:
+        return {"declencheur": m.group(0), "categorie": "temporel", "mode": "simple"}
+
+    m = _MOTIF_ANNEE_RE.search(q)
+    if m:
+        return {"declencheur": m.group(0), "categorie": "temporel", "mode": "simple"}
+
+    return None
+
+
 def formater_pour_llm(resultats: list[ResultatWeb]) -> str:
     """Formate une liste de résultats pour l'injecter dans un prompt.
 
