@@ -376,43 +376,93 @@ class RAGEngine:
         """Backward-compat alias for index_file."""
         return self.index_file(path)
 
-    def _do_query(self, text: str, n: int) -> str:
+    def _do_query(self, text: str, n: int) -> list[dict]:
+        """Chunks bruts, chacun avec sa provenance — forme STRUCTURÉE.
+
+        `query()` n'en fait qu'aplatir le texte ; `query_avec_sources()`
+        rend cette liste telle quelle. Une seule requête, un seul résultat en
+        cache (`_query_lru`) : les deux méthodes publiques lisent le même
+        appel, jamais deux requêtes pour un seul tour.
+
+        La clé du dict est ``"source"``, pas réinventée : c'est le nom déjà
+        utilisé par `get_indexed_files()`/`describe_indexed_files()` pour la
+        même métadonnée du store.
+        """
         count = self._col.count()
         if count == 0:
-            return ""
+            return []
         results = self._col.query(query_texts=[text], n_results=min(n, count))
         docs = results.get("documents", [[]])[0]
-        return "\n\n---\n\n".join(d for d in docs if d)
+        metas = results.get("metadatas", [[]])[0]
+        return [
+            {"texte": d, "source": (m or {}).get("source", "")}
+            for d, m in zip(docs, metas) if d
+        ]
 
-    def _do_query_filtered(self, text: str, paths_key: tuple, n: int) -> str:
+    def _do_query_filtered(self, text: str, paths_key: tuple, n: int) -> list[dict]:
+        """Version filtrée de `_do_query` — même forme structurée, même raison."""
         paths = list(paths_key)
         if not paths:
-            return ""
+            return []
         try:
             existing = self._col.get(
                 where={"source": {"$in": paths}}, include=[]
             )
             count = len(existing.get("ids", []))
             if count == 0:
-                return ""
+                return []
             results = self._col.query(
                 query_texts=[text],
                 n_results=min(n, count),
                 where={"source": {"$in": paths}},
             )
             docs = results.get("documents", [[]])[0]
-            return "\n\n---\n\n".join(d for d in docs if d)
+            metas = results.get("metadatas", [[]])[0]
+            return [
+                {"texte": d, "source": (m or {}).get("source", "")}
+                for d, m in zip(docs, metas) if d
+            ]
         except Exception:
             logger.exception("Erreur query_filtered")
-            return ""
+            return []
 
     def query(self, text: str, n_results: Optional[int] = None) -> str:
         n = n_results if n_results is not None else self._n_results
-        return self._query_lru(text, n)
+        chunks = self._query_lru(text, n)
+        return "\n\n---\n\n".join(c["texte"] for c in chunks)
 
     def query_filtered(self, text: str, paths: list, n_results: Optional[int] = None) -> str:
         if not paths:
             return ""
+        n = n_results if n_results is not None else self._n_results
+        chunks = self._query_filtered_lru(text, tuple(sorted(paths)), n)
+        return "\n\n---\n\n".join(c["texte"] for c in chunks)
+
+    def query_avec_sources(self, text: str, n_results: Optional[int] = None) -> list[dict]:
+        """Forme structurée de `query()` : ``[{"texte": ..., "source": ...}, ...]``.
+
+        Existe pour `modules/chat/router.py`, qui doit savoir de QUEL fichier
+        vient chaque chunk réellement injecté ce tour — `query()` seul ne le
+        permet pas, puisqu'il aplatit tout en une seule chaîne. C'est très
+        précisément ce qui rendait `urls_rag` (l'ensemble de référence de
+        `core.citations` pour les URLs venant du RAG) un NO-OP avant ce
+        correctif : sans la source par chunk, l'appelant ne pouvait peupler
+        `urls_rag` qu'avec des CHEMINS de fichiers, jamais avec les URLs
+        `http(s)` que `core.citations.extraire_urls` sait reconnaître — un
+        chemin ne matche jamais ce motif. Toute URL réellement présente dans
+        un document attaché, et correctement citée par le modèle, était donc
+        signalée à tort comme inventée.
+
+        Passe par le même cache que `query()` (`_query_lru`) : appeler les
+        deux pour le même tour ne recalcule rien la seconde fois.
+        """
+        n = n_results if n_results is not None else self._n_results
+        return self._query_lru(text, n)
+
+    def query_filtered_avec_sources(self, text: str, paths: list, n_results: Optional[int] = None) -> list[dict]:
+        """Version filtrée de `query_avec_sources` — même raison d'être."""
+        if not paths:
+            return []
         n = n_results if n_results is not None else self._n_results
         return self._query_filtered_lru(text, tuple(sorted(paths)), n)
 

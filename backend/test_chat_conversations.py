@@ -550,6 +550,62 @@ class SuppressionDuCorpusTest(_Base):
         self.assertEqual(fiche["chunks"], 3)
 
 
+class OuvrirFichierIndexeTest(_Base):
+    """`GET /rag/files/ouvrir` — sert le CONTENU, pour ouvrir dans l'onglet.
+
+    Même confinement que `DELETE /rag/files` (§ci-dessus) : appartenance au
+    corpus indexé (`rag.get_indexed_files()`), pas un confinement disque
+    générique — et ici il est ENCORE plus important de le tenir, puisque
+    cette route lit réellement le fichier (`DELETE` ne touche que l'index)."""
+
+    def _corpus(self, fichiers):
+        routeur_reglages = sys.modules["modules.settings.router"]
+        original = routeur_reglages.rag
+        routeur_reglages.rag = _RagStub(fichiers)
+        self.addCleanup(setattr, routeur_reglages, "rag", original)
+        return routeur_reglages.rag
+
+    def test_fichier_du_corpus_sert_le_contenu(self):
+        f = self._fichier("cours.pdf")
+        self._corpus([f])
+        r = self.client.get("/rag/files/ouvrir", params={"path": f}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.content, b"contenu")
+        self.assertIn("inline", r.headers.get("content-disposition", ""))
+
+    def test_chemin_hors_corpus_rend_404(self):
+        """Le fichier existe bel et bien sur le disque — la seule chose qui
+        manque est son appartenance au corpus indexé, et c'est ce qui doit
+        suffire à refuser : sinon la route servirait n'importe quel chemin
+        lisible du poste, faille de confinement (cf. `test_safe_path.py`)."""
+        f = self._fichier("jamais-indexe.pdf")
+        self._corpus([])
+        r = self.client.get("/rag/files/ouvrir", params={"path": f}, headers=self.auth)
+        self.assertEqual(r.status_code, 404, r.text)
+
+    def test_traversee_de_chemin_hors_corpus_rejetee(self):
+        """Un chemin qui n'a jamais été indexé — traversant ou non — est
+        rejeté par la même vérification d'appartenance, sans avoir besoin
+        d'une règle de traversée séparée : le corpus indexé ne contient de
+        toute façon jamais ce genre de chemin."""
+        self._corpus(["/a/cours.pdf"])
+        for cible in (
+            "../../../../etc/passwd",
+            str(Path(os.environ.get("WINDIR", "C:\\Windows")) / "win.ini"),
+        ):
+            with self.subTest(cible=cible):
+                r = self.client.get("/rag/files/ouvrir", params={"path": cible}, headers=self.auth)
+                self.assertEqual(r.status_code, 404, r.text)
+
+    def test_le_chemin_passe_en_parametre_de_requete(self):
+        r"""Même raison que `DELETE /rag/files` : `\` et `:` d'un chemin
+        Windows cassent un segment d'URL."""
+        chemin = self._fichier("thermo.pdf")
+        self._corpus([chemin])
+        r = self.client.get("/rag/files/ouvrir", params={"path": chemin}, headers=self.auth)
+        self.assertEqual(r.status_code, 200, r.text)
+
+
 class PrefixeTest(_Base):
     def test_les_routes_sont_bien_sous_chat(self):
         """Le module chat est monté avec `prefix: ""` : sans le `/chat/` écrit à

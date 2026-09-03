@@ -114,13 +114,18 @@ class _RagEspion:
         self.indexes.append(str(chemin))
         return f"[contenu indexé de {chemin}]"
 
-    def query(self, texte, n_results=None):
+    def query_avec_sources(self, texte, n_results=None):
+        """Forme structurée de `query()` — c'est celle-ci que `router.py`
+        appelle désormais (phase 3.7, `core.rag.RAGEngine.query_avec_sources`).
+        Même enregistrement dans `globales` que l'ancien `query()`, pour ne
+        pas casser les tests qui inspectent cette liste."""
         self.globales.append(texte)
-        return "CHUNK GLOBAL"
+        return [{"texte": "CHUNK GLOBAL", "source": "/corpus/global.pdf"}]
 
-    def query_filtered(self, texte, paths, n_results=None):
+    def query_filtered_avec_sources(self, texte, paths, n_results=None):
+        """Forme structurée de `query_filtered()` — cf. `query_avec_sources`."""
         self.filtres.append((texte, list(paths)))
-        return "CHUNK FILTRE"
+        return [{"texte": "CHUNK FILTRE", "source": paths[0] if paths else ""}]
 
     def get_indexed_files(self):
         return []

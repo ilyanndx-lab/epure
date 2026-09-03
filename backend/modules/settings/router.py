@@ -10,6 +10,7 @@ import asyncio
 import io
 import json
 import logging
+import mimetypes
 import os
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ from typing import Optional
 import pypdf
 from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from core import catalogue as _catalogue
@@ -704,6 +705,54 @@ async def rag_file_delete(path: str = Query(..., description="Chemin indexé à 
     if supprimes == 0:
         raise HTTPException(status_code=404, detail="Ce fichier n'est pas dans le corpus indexé")
     return {"ok": True, "chemin": path, "chunks_supprimés": supprimes}
+
+
+@router.get("/rag/files/ouvrir")
+async def rag_file_ouvrir(path: str = Query(..., description="Chemin indexé à ouvrir")):
+    """Sert le CONTENU d'un fichier indexé, pour l'ouvrir dans l'onglet plutôt
+    que de forcer un téléchargement.
+
+    Les deux mêmes choix que `rag_file_delete`, pour la même raison écrite
+    là-bas : le chemin passe en paramètre de REQUÊTE (un chemin Windows
+    contient `\\` et `:`, qu'un segment d'URL ne tolère pas), et la
+    validation porte sur l'appartenance au CORPUS INDEXÉ — pas sur un
+    confinement disque générique (`resolve_user_path`/`safe_upload_name`
+    valident un chemin qu'on s'apprête à ÉCRIRE sous une racine ; ici on lit
+    un chemin déjà connu du store).
+
+    **Cette route-ci lit RÉELLEMENT le fichier**, contrairement à
+    `rag_file_delete` qui ne touche que la base vectorielle : c'est
+    précisément pourquoi la vérification d'appartenance n'est pas
+    optionnelle ici. Sans elle, `path` serait un chemin arbitraire du
+    disque tel quel passé à `FileResponse` — la faille de confinement que
+    `core/codeagent.py::_safe_path`/`test_safe_path.py` existent pour
+    éliminer ailleurs dans le dépôt. La vérification est celle déjà
+    utilisée par `GET /rag/files` (`rag.get_indexed_files()`) : l'ensemble
+    des chemins que le corpus reconnaît, une lecture pure, sans l'effet de
+    bord de `remove_source` (qui, lui, supprimerait si trouvé).
+
+    404 sur un chemin hors corpus, jamais un fichier arbitraire servi avec
+    200 — même exigence que `rag_file_delete`.
+
+    `Content-Disposition: inline` (`content_disposition_type="inline"`,
+    défaut Starlette : `attachment`) : un PDF ou une image s'affiche dans
+    l'onglet au lieu de déclencher un téléchargement. Le type MIME est
+    déduit de l'extension (`mimetypes`, comme pour tout fichier statique) ;
+    à défaut de correspondance connue, `application/octet-stream` — le
+    navigateur proposera alors un téléchargement, ce qui reste correct pour
+    un format qu'il ne sait pas afficher.
+    """
+    loop = asyncio.get_running_loop()
+    fichiers = await loop.run_in_executor(None, rag.get_indexed_files)
+    if path not in fichiers:
+        raise HTTPException(status_code=404, detail="Ce fichier n'est pas dans le corpus indexé")
+    media_type, _ = mimetypes.guess_type(path)
+    return FileResponse(
+        path,
+        media_type=media_type or "application/octet-stream",
+        filename=Path(path).name,
+        content_disposition_type="inline",
+    )
 
 
 # ── Orchestrator presets ─────────────────────────────────────────────────────

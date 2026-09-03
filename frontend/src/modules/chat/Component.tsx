@@ -533,6 +533,9 @@ export default function Chat({
   const [panneauReplie, setPanneauReplie] = usePersistentState<boolean>(
     'epure.chat.panneauReplie', false)
   const [input, setInput] = usePersistentState<string>('epure.chat.input', '')
+  /** Miroir d'affichage de `procheDuBasRef`, pour le bouton « reprendre le
+   * suivi » — la ref seule ne redéclenche pas de rendu. */
+  const [procheDuBas, setProcheDuBas] = useState(true)
   const [connected, setConnected] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
@@ -576,6 +579,24 @@ export default function Chat({
   const wsRef = useRef<WebSocket | null>(null)
   const webMenuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  /** Le conteneur défilant lui-même — nécessaire pour lire sa position de
+   * scroll (cf. l'effet de suivi automatique plus bas). */
+  const containerRef = useRef<HTMLDivElement>(null)
+  /**
+   * Position de scroll SUIVIE EN CONTINU par l'écouteur `scroll` du
+   * conteneur, pas recalculée après coup depuis `messages` : au moment où
+   * l'effet sur `messages` tourne, le DOM a déjà grandi du nouveau contenu,
+   * donc mesurer « suis-je proche du bas » à cet instant confondrait « le
+   * bas a reculé parce qu'un message est arrivé » avec « l'utilisateur a
+   * remonté ». Cette ref porte la dernière position connue AVANT l'arrivée
+   * du nouveau contenu — c'est elle qui répond à la vraie question : est-ce
+   * que l'utilisateur suivait la conversation ?
+   */
+  const procheDuBasRef = useRef(true)
+  /** Force le prochain défilement, quelle que soit la position — posé par
+   * `pushMsg('user', …)` : un message que l'utilisateur vient d'envoyer doit
+   * toujours ramener en bas, même s'il avait remonté pour relire. */
+  const forcerDefilementRef = useRef(false)
   const lastAssistantRef = useRef('')
   const tokenCountRef = useRef(0)
   const streamStartRef = useRef<number | null>(null)
@@ -988,9 +1009,60 @@ export default function Chat({
     } catch { /* le backend répondra au premier message : rien de bloquant */ }
   }, [setConversationId])
 
+  /**
+   * Suit la position de scroll EN CONTINU, pas seulement entre deux rendus
+   * de `messages` : l'utilisateur peut remonter à tout moment pendant un
+   * streaming, sans qu'aucun message ne change entre-temps.
+   *
+   * Le seuil (quelques dizaines de px) absorbe l'arrondi de
+   * `scrollIntoView({ behavior: 'smooth' })`, qui ne pose pas toujours
+   * `scrollTop` pile sur la valeur exacte du bas.
+   */
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = containerRef.current
+    if (!el) return
+    const SEUIL_BAS_PX = 64
+    const majPosition = () => {
+      const proche = el.scrollHeight - el.scrollTop - el.clientHeight < SEUIL_BAS_PX
+      procheDuBasRef.current = proche
+      setProcheDuBas(proche)
+    }
+    majPosition()
+    el.addEventListener('scroll', majPosition, { passive: true })
+    return () => el.removeEventListener('scroll', majPosition)
+  }, [])
+
+  /**
+   * Défilement automatique — plus JAMAIS inconditionnel (bug rapporté : un
+   * token reçu pendant qu'on relit un message plus haut ramenait la vue en
+   * bas de force). Deux cas ramènent en bas :
+   *
+   *   1. l'utilisateur SUIVAIT déjà la conversation (`procheDuBasRef`, posée
+   *      par l'écouteur de scroll AVANT que ce nouveau contenu n'arrive —
+   *      pas recalculée ici, où le DOM a déjà grandi et fausserait la
+   *      mesure) ;
+   *   2. l'utilisateur vient d'envoyer un message (`forcerDefilementRef`,
+   *      posée par `pushMsg('user', …)`) — l'action qui justifie de suivre,
+   *      qu'il ait remonté ou non.
+   *
+   * Sinon : rien. On ne le ramène jamais de force pendant qu'une réponse
+   * s'écrit.
+   */
+  useEffect(() => {
+    const doitDefiler = forcerDefilementRef.current || procheDuBasRef.current
+    forcerDefilementRef.current = false
+    if (doitDefiler) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages])
+
+  /** Ramène en bas et reprend le suivi — action du bouton affiché quand
+   * l'utilisateur a remonté. */
+  const reprendreLeSuivi = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    procheDuBasRef.current = true
+    setProcheDuBas(true)
+  }, [])
 
   // Ferme le menu de recherche web au clic extérieur.
   useEffect(() => {
@@ -1023,8 +1095,13 @@ export default function Chat({
 
   // ── Skill handlers ────────────────────────────────────────────────────────
 
-  const pushMsg = (role: Message['role'], content: string) =>
+  const pushMsg = (role: Message['role'], content: string) => {
+    // Un message UTILISATEUR est l'action qui justifie de suivre la
+    // conversation, même si on avait remonté pour relire — cf. l'effet de
+    // défilement plus bas, seul lecteur de cette ref.
+    if (role === 'user') forcerDefilementRef.current = true
     setMessages(prev => [...prev, { role, content }])
+  }
 
   const streamSSE = useCallback(async (userText: string) => {
     pushMsg('user', userText)
@@ -1305,8 +1382,8 @@ export default function Chat({
         replie={panneauReplie}
         onBasculerRepli={() => setPanneauReplie(v => !v)}
       />
-    <main className="flex flex-col flex-1 overflow-hidden">
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
+    <main className="flex flex-col flex-1 overflow-hidden relative">
+      <div ref={containerRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center gap-2 h-full text-muted select-none">
             <Sparkles size={16} />
@@ -1481,6 +1558,20 @@ export default function Chat({
         )}
         <div ref={bottomRef} />
       </div>
+
+      {!procheDuBas && (
+        <button
+          type="button"
+          onClick={reprendreLeSuivi}
+          title="Reprendre le suivi de la conversation"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1
+                     rounded-full bg-accent px-3 py-1.5 text-xs text-on-accent shadow-lg
+                     hover:opacity-90"
+        >
+          <ChevronDown size={13} />
+          Reprendre le suivi
+        </button>
+      )}
 
       <ModuleBar
         module="chat"

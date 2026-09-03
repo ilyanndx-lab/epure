@@ -33,7 +33,9 @@ from core.runtime import (
     rag,
     usage_tracker,
 )
-from core.citations import RapportCitations, construire_reference, extraire_rangs_cites, valider_citations
+from core.citations import (
+    RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls, valider_citations,
+)
 from core.websearch import (
     PREFIXE_ERREUR,
     TRACE_LISTE_MAX,
@@ -932,34 +934,38 @@ async def ws_chat(websocket: WebSocket):
             # « attache tout ».
             active_files = conv.get("fichiers_attachés", [])
             _t = time.time()
+            chunks_struct: list[dict] = []
             if rag_override == "all":
-                chunks = await loop.run_in_executor(None, rag.query, user_text)
+                chunks_struct = await loop.run_in_executor(None, rag.query_avec_sources, user_text)
             elif active_files:
-                chunks = await loop.run_in_executor(
-                    None, rag.query_filtered, user_text, active_files
+                chunks_struct = await loop.run_in_executor(
+                    None, rag.query_filtered_avec_sources, user_text, active_files
                 )
-            else:
-                chunks = ""
+            chunks = "\n\n---\n\n".join(c["texte"] for c in chunks_struct)
             logger.info("TTFT RAG: %.3fs", time.time() - _t)
 
-            # Sources des chunks RAG INJECTÉS ce tour, pour l'ensemble de
-            # référence de `core.citations` (§2). `RAGEngine.query`/
-            # `query_filtered` ne rendent que le texte concaténé des chunks,
-            # sans métadonnée par chunk (`core/rag.py`) : impossible de
-            # retrouver le fichier exact d'où vient tel passage sans changer
-            # cette API. Approximation délibérée, du côté qui évite les faux
-            # positifs (la consigne prioritaire, cf. tâche §2) : le fichier
-            # attaché en mode filtré, tout le corpus indexé en mode « all » —
-            # au pire plus permissif que la vraie source, jamais moins.
+            # Fichiers RAG effectivement INJECTÉS ce tour — resserré aux chunks
+            # que la requête a réellement fait remonter, pas « tous les fichiers
+            # attachés » ni « tout le corpus indexé » : une conversation peut
+            # attacher trois fichiers sans qu'aucun de leurs chunks ne matche la
+            # question posée.
+            fichiers_rag_injectes = {c["source"] for c in chunks_struct if c.get("source")}
+
+            # URLs légitimes pour l'ensemble de référence de `core.citations` :
+            # les vraies URLs http(s) présentes dans le TEXTE des chunks
+            # réellement injectés ce tour (`extraire_urls`, déjà publique).
+            # C'est le correctif du NO-OP décrit dans `RAGEngine.query_avec_sources` :
+            # avant, cet ensemble était peuplé avec des CHEMINS de fichiers
+            # (`active_files`) ou `get_indexed_files()`, qui ne matchent jamais
+            # le motif `https?://` de `extraire_urls` — une URL réellement citée
+            # depuis un document attaché était donc signalée à tort comme
+            # inventée. Resserrement assumé pour le mode « all » (tâche §3) :
+            # les URLs viennent des chunks REMONTÉS par la requête, pas de la
+            # liste de tout le corpus indexé — mécaniquement plus strict qu'avant
+            # dans ce mode, mais c'est la même vérité qu'en mode filtré.
             urls_rag: set[str] = set()
-            if chunks:
-                if rag_override == "all":
-                    try:
-                        urls_rag = set(await loop.run_in_executor(None, rag.get_indexed_files))
-                    except Exception:
-                        urls_rag = set()
-                elif active_files:
-                    urls_rag = set(active_files)
+            for c in chunks_struct:
+                urls_rag |= extraire_urls(c["texte"])
 
             sys_parts: list[str] = []
             if strict_override:

@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react'
 import {
   Paperclip, Mic, Zap, Bot, X, ChevronLeft, ChevronRight, Check,
   AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
-  FileSpreadsheet, File as FileIcon, Save, Trash2,
+  FileSpreadsheet, File as FileIcon, Save, Trash2, ExternalLink,
 } from 'lucide-react'
 import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
@@ -449,6 +449,30 @@ export default function ModuleBar({
         delete copie[chemin]
         return copie
       })
+    } catch { /* le panneau reste tel quel : l'utilisateur peut réessayer */ }
+  }, [])
+
+  /**
+   * Ouvre le CONTENU d'un fichier indexé dans un nouvel onglet
+   * (`GET /rag/files/ouvrir`, backend/modules/settings/router.py).
+   *
+   * Passe par `apiFetch` (Bearer en en-tête) plutôt que par un
+   * `window.open('…&token=…')` direct : c'est la même convention que le
+   * reste de ce fichier pour parler au backend, et ça évite de faire
+   * apparaître le token dans une URL — historique de navigation, logs
+   * d'un proxy éventuel — pour un gain nul, puisque `apiFetch` fait déjà le
+   * travail. Le blob obtenu est ouvert via une URL objet locale ; révoquée
+   * après un délai généreux plutôt qu'aussitôt, pour ne pas couper
+   * l'affichage d'un gros PDF encore en train de se charger dans l'onglet.
+   */
+  const ouvrirFichier = useCallback(async (chemin: string) => {
+    try {
+      const res = await apiFetch(`${API}/rag/files/ouvrir?path=${encodeURIComponent(chemin)}`)
+      if (!res.ok) return
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
     } catch { /* le panneau reste tel quel : l'utilisateur peut réessayer */ }
   }, [])
 
@@ -977,13 +1001,22 @@ export default function ModuleBar({
                         </button>
                       </span>
                     ) : (
-                      <button
-                        className="opacity-0 group-hover:opacity-100 text-muted hover:text-error p-0.5 shrink-0"
-                        title="Retirer du corpus indexé (le fichier reste sur le disque)"
-                        aria-label={`Retirer ${basename(f)} du corpus indexé`}
-                        onClick={() => setSuppressionEnAttente(f)}>
-                        <Trash2 size={12} />
-                      </button>
+                      <span className="flex items-center gap-1 shrink-0">
+                        <button
+                          className="opacity-0 group-hover:opacity-100 text-muted hover:text-secondary p-0.5"
+                          title="Ouvrir dans un nouvel onglet"
+                          aria-label={`Ouvrir ${basename(f)}`}
+                          onClick={() => void ouvrirFichier(f)}>
+                          <ExternalLink size={12} />
+                        </button>
+                        <button
+                          className="opacity-0 group-hover:opacity-100 text-muted hover:text-error p-0.5"
+                          title="Retirer du corpus indexé (le fichier reste sur le disque)"
+                          aria-label={`Retirer ${basename(f)} du corpus indexé`}
+                          onClick={() => setSuppressionEnAttente(f)}>
+                          <Trash2 size={12} />
+                        </button>
+                      </span>
                     )}
                   </div>
                 )
