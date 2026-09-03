@@ -79,6 +79,15 @@ class WebSearchOfflineTest(unittest.TestCase):
     def setUp(self):
         # Le cache est un état global au module : repartir propre à chaque test.
         websearch._cache.clear()
+        # `perform_web_search`/`_rechercher_pour_prompt` appellent désormais
+        # `reformuler_requete` (Phase 5), qui frappe le modèle LOCAL — un
+        # appel réel ici romprait la promesse « offline » de cette classe et
+        # ferait dépendre ses assertions d'un LLM installé. Repli garanti sur
+        # la question brute : les assertions existantes (qui portent sur la
+        # requête ORIGINALE) restent valables telles quelles.
+        patcher = mock.patch.object(websearch.llm, "generate", side_effect=RuntimeError("pas de LLM en test"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_empty_query_returns_empty(self):
         self.assertEqual(websearch.rechercher("   "), [])
@@ -803,6 +812,86 @@ class TraceEtCitationsTest(unittest.TestCase):
             )
         self.assertEqual(trace, self.etapes_recherche)  # pas d'étape ajoutée
         self.assertTrue(any("sans aucune citation" in m for m in capture.output))
+
+
+class ReformulerRequeteTest(unittest.TestCase):
+    """`websearch.reformuler_requete` — reformulation en mots-clés via le
+    modèle local, avec repli silencieux sur la question brute (Phase 5)."""
+
+    def test_sortie_propre_est_utilisee(self):
+        etapes: list = []
+        with mock.patch.object(websearch.llm, "generate", return_value="python async await") as gen:
+            out = websearch.reformuler_requete("Comment fonctionne async await en python ?", on_etape=etapes.append)
+        self.assertEqual(out, "python async await")
+        self.assertEqual(gen.call_args.kwargs.get("model"), websearch.modele_local_defaut())
+        self.assertEqual(len(etapes), 1)
+        self.assertEqual(etapes[0]["etape"], "requete_reformulee")
+        self.assertEqual(etapes[0]["reformulee"], "python async await")
+
+    def test_sortie_vide_replie_sur_la_question(self):
+        etapes: list = []
+        with mock.patch.object(websearch.llm, "generate", return_value="   "):
+            out = websearch.reformuler_requete("question originale", on_etape=etapes.append)
+        self.assertEqual(out, "question originale")
+        self.assertEqual(etapes, [])
+
+    def test_sortie_multiligne_replie_sur_la_question(self):
+        with mock.patch.object(websearch.llm, "generate", return_value="ligne 1\nligne 2"):
+            out = websearch.reformuler_requete("question originale")
+        self.assertEqual(out, "question originale")
+
+    def test_sortie_avec_url_replie_sur_la_question(self):
+        with mock.patch.object(websearch.llm, "generate", return_value="voir https://exemple.org"):
+            out = websearch.reformuler_requete("question originale")
+        self.assertEqual(out, "question originale")
+
+    def test_sortie_trop_longue_replie_sur_la_question(self):
+        with mock.patch.object(websearch.llm, "generate", return_value="x" * 121):
+            out = websearch.reformuler_requete("question originale")
+        self.assertEqual(out, "question originale")
+
+    def test_exception_replie_sur_la_question(self):
+        with mock.patch.object(websearch.llm, "generate", side_effect=Exception("boom")):
+            out = websearch.reformuler_requete("question originale")
+        self.assertEqual(out, "question originale")
+
+    def test_isolation_rag_le_prompt_ne_porte_que_la_question(self):
+        """Un contenu RAG/document simulé côté appelant ne doit JAMAIS se
+        retrouver dans le prompt envoyé au modèle — seule `question` y figure."""
+        sentinelle = "SENTINELLE_RAG_NE_DOIT_JAMAIS_APPARAITRE"
+        _chunks_simules = [sentinelle, "un autre passage de document"]  # jamais passés à reformuler_requete
+
+        captured = {}
+
+        def _fake_generate(messages, model=None):
+            captured["messages"] = messages
+            return "mots cles"
+
+        with mock.patch.object(websearch.llm, "generate", side_effect=_fake_generate):
+            websearch.reformuler_requete("question de l'utilisateur, sans rapport avec le RAG")
+
+        prompt_envoye = " ".join(m["content"] for m in captured["messages"])
+        self.assertNotIn(sentinelle, prompt_envoye)
+        self.assertIn("question de l'utilisateur", prompt_envoye)
+
+
+class ConstruireWebCtxDateTest(unittest.TestCase):
+    """`_construire_web_ctx` doit dater le contexte SEULEMENT quand il porte
+    de vrais résultats — pas les branches erreur/vide, qui n'ont rien à dater."""
+
+    def test_branche_resultats_contient_la_date_du_jour(self):
+        ctx = chat_router._construire_web_ctx("[1] Titre (exemple.org) — extrait")
+        date_attendue = chat_router.datetime.now().strftime("%Y-%m-%d")
+        self.assertIn(f"Date du jour : {date_attendue}", ctx)
+
+    def test_branche_erreur_ne_contient_pas_de_date(self):
+        from core.websearch import PREFIXE_ERREUR
+        ctx = chat_router._construire_web_ctx(f"{PREFIXE_ERREUR}panne réseau")
+        self.assertNotIn("Date du jour", ctx)
+
+    def test_branche_vide_ne_contient_pas_de_date(self):
+        ctx = chat_router._construire_web_ctx("")
+        self.assertNotIn("Date du jour", ctx)
 
 
 def _live():

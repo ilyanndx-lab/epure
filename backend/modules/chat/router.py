@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from threading import Thread
 from typing import Optional
@@ -45,6 +46,7 @@ from core.websearch import (
     ResultatWeb,
     formater_pour_llm,
     rechercher,
+    reformuler_requete,
     tronquer_champ,
 )
 
@@ -74,7 +76,14 @@ def _rechercher_pour_prompt(
     `on_etape` (optionnel) est transmis tel quel à `core.websearch.rechercher`
     — c'est le canal de la trace de déroulé (§1) : cette fonction n'a rien à
     en savoir, elle ne fait que le relayer.
+
+    `query` est d'abord réduit à des mots-clés par `reformuler_requete`
+    (modèle local, repli silencieux sur `query` en cas d'échec) — la MÊME
+    requête reformulée sert ensuite à `rechercher` et à `recuperer_contenu`,
+    pour que le re-classement des pages se fasse sur ce qui a servi à
+    chercher.
     """
+    query = reformuler_requete(query, on_etape=on_etape)
     try:
         resultats = rechercher(query, on_etape=on_etape)
     except RechercheWebErreur as exc:
@@ -130,7 +139,9 @@ def _construire_web_ctx(web_results: str) -> str:
             "a échoué, et réponds à partir de tes connaissances si pertinent."
         )
     if web_results:
+        date_du_jour = datetime.now().strftime("%Y-%m-%d")
         return (
+            f"Date du jour : {date_du_jour}\n"
             "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
             f"{web_results}\n\n"
             "Si pertinent, intègre ces informations dans ta réponse. Cite tes sources "

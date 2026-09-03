@@ -28,6 +28,9 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from core.instance import modele_local_defaut
+from core.runtime import llm
+
 logger = logging.getLogger(__name__)
 
 
@@ -417,6 +420,70 @@ def _html_search(q: str) -> tuple[list[ResultatWeb], Optional[str], int]:
         if len(resultats) >= _MAX_RESULTS:
             break
     return resultats, None, nombre_ecarte_pub
+
+
+#: Seuils de validation de `reformuler_requete` — des heuristiques
+#: volontairement simples (longueur, absence de saut de ligne, absence
+#: d'URL/de bloc de code), PAS une garantie sémantique que le modèle n'a rien
+#: inventé. C'est le prompt qui porte l'essentiel de cette garantie ; ces
+#: seuils ne font que rejeter les formes qui trahissent une phrase/explication
+#: plutôt que des mots-clés.
+_REFORMULATION_MAX_LEN = 120
+
+
+def reformuler_requete(
+    question: str, on_etape: Optional[Callable[[dict], None]] = None,
+) -> str:
+    """Réduit `question` à 2-3 mots-clés de recherche, via le modèle LOCAL.
+
+    Tâche de fond au sens de CLAUDE.md §3.7 : ce n'est pas la réponse au tour
+    de chat, donc `modele_local_defaut()` toujours, jamais de paramètre cloud
+    — même principe que `core.history._generate_title`, dont cette fonction
+    reprend le style (try/except large, repli silencieux).
+
+    Isolation stricte : ne reçoit et n'utilise QUE `question` (le texte brut
+    de l'utilisateur). Aucun chunk RAG, aucun contenu de fichier attaché ne
+    doit jamais transiter par ici — c'est ce qui part, en clair, vers
+    DuckDuckGo.
+
+    Ne lève jamais : un échec (modèle absent, timeout, sortie invalide)
+    replie silencieusement sur `question` telle quelle, sans bloquer la
+    recherche qui suit.
+    """
+    if not question or not question.strip():
+        return question
+    prompt = (
+        "Réduis la question suivante à 2 ou 3 mots-clés de recherche web, "
+        "rien d'autre. N'utilise QUE des mots présents dans la question "
+        "(ou leurs variantes évidentes : singulier/pluriel, conjugaison). "
+        "N'ajoute JAMAIS de nom propre, de date, de lieu ou d'entité absente "
+        "de la question. Pas de phrase, pas de ponctuation superflue, pas de "
+        "guillemets. Réponds UNIQUEMENT les mots-clés, sans explication ni "
+        "préambule.\n\n"
+        f"Question : {question}"
+    )
+    try:
+        sortie = llm.generate([{"role": "user", "content": prompt}], model=modele_local_defaut())
+        candidate = sortie.strip().strip('"').strip("'")
+        if (
+            not candidate
+            or len(candidate) > _REFORMULATION_MAX_LEN
+            or "\n" in candidate
+            or "http://" in candidate
+            or "https://" in candidate
+            or "```" in candidate
+            or "`" in candidate
+        ):
+            return question
+        _emettre(on_etape, {
+            "etape": "requete_reformulee",
+            "originale": tronquer_champ(question),
+            "reformulee": tronquer_champ(candidate),
+        })
+        return candidate
+    except Exception:
+        logger.debug("Reformulation de requête échouée, repli sur la question brute", exc_info=True)
+        return question
 
 
 def rechercher(
