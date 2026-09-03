@@ -166,6 +166,28 @@ python-pptx==1.0.2
 openpyxl==3.1.5
 pandas==3.0.3
 
+# ── Extraction du contenu réel des pages web (core/webcontent.py) ───────────
+# Phase 4 de la recherche @web : remplace le snippet DuckDuckGo (~150
+# caractères, écrit par DDG) par le texte principal réel des pages les plus
+# pertinentes, avant reclassement par similarité avec le modèle d'embedding
+# du RAG.
+#
+# `trafilatura` a été écarté APRÈS vérification, pas par principe : il tire
+# `dateparser`, qui déclare `regex` en dépendance directe. `regex` est
+# précisément l'un des deux binaires (`.pyd` non signé) dont le blocage par
+# Smart App Control sur la machine ARM64 cible est MESURÉ dans ce dépôt (via
+# `sentence-transformers`, retiré pour cette raison le 2026-08-26 — cf.
+# `core/embedding.py`). Le réintroduire par une autre porte aurait recréé un
+# risque déjà vécu, pas hypothétique.
+#
+# `readability-lxml` (portage Python de l'algorithme Readability de Firefox)
+# ne dépend que de `lxml` (DÉJÀ dans l'arbre — `python-docx` le tire depuis le
+# lot bureautique ci-dessus), `cssselect` et `chardet`, tous deux purs Python.
+# Vérifié par installation réelle sur ce poste (Windows) : AUCUN binaire
+# nouveau, `lxml` mis à part — qui, lui, publie une wheel `win_arm64` pour
+# cp312 et est déjà accepté dans l'arbre depuis le lot bureautique.
+readability-lxml==0.9
+
 # ── Lanceur système : epure_tray.py, PAS le backend ──────────────────────────
 # Ni `main.py` ni `core/*` ne les importent — le backend démarre sans. Elles
 # sont déclarées ici parce que requirements.txt est le seul fichier de

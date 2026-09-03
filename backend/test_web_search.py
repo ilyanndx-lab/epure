@@ -166,7 +166,15 @@ class WebSearchOfflineTest(unittest.TestCase):
             "api.duckduckgo.com": _EMPTY_JSON,
             "html.duckduckgo.com": _HTML_FIXTURE,
         })
-        with mock.patch.object(websearch.urllib.request, "urlopen", side_effect=fake):
+        # Ce test porte sur le FORMATAGE (domaine, pas URL), pas sur la phase 4
+        # (contenu réel des pages) : neutraliser `recuperer_contenu` évite que
+        # ses fetchs sur les URLs RÉELLES du fixture (python.org, wikipedia…)
+        # passent par le même `urlopen` mocké — `_urlopen_router` lève une
+        # `AssertionError` pour toute URL non listée, ce que `recuperer_contenu`
+        # avale silencieusement (dégradation par page) : le test resterait vert
+        # par accident, tout en tentant un vrai appel réseau hors mock.
+        with mock.patch.object(websearch.urllib.request, "urlopen", side_effect=fake), \
+             mock.patch.object(chat_router, "recuperer_contenu", side_effect=lambda resultats, requete, on_etape=None: resultats):
             out = chat_router.perform_web_search("python programming")
         self.assertIn("[1]", out)
         self.assertIn("(python.org)", out)

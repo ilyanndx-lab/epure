@@ -166,6 +166,20 @@ class VectorStore:
         )
         self._collections: dict[str, "Collection"] = {}
 
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """Encode des textes bruts en vecteurs normalisés, SANS les écrire dans
+        une collection — pour un appelant qui n'a besoin que d'une similarité
+        cosinus ponctuelle sur du texte de passage (ex. reclassement des
+        passages de recherche web, `core/webcontent.py`), pas d'un index
+        persistant. Public, contrairement à `_embed` : c'est le point d'entrée
+        prévu pour un usage hors des trois collections `fiches`/`doc_analysis`
+        /`history`, avec le MÊME moteur qu'elles — jamais un second chargé en
+        double. Peut lever `EmbeddingIndisponible` au tout premier appel
+        (résolution du store), exactement comme n'importe quelle autre méthode
+        de ce store.
+        """
+        return self._embed(texts)
+
     def _embed(self, texts: list[str]) -> np.ndarray:
         """Vecteurs normalisés (norme 1) — la similarité cosinus devient un simple
         produit scalaire, et les valeurs reproduisent celles que chromadb calculait

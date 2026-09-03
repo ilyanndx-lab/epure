@@ -36,6 +36,7 @@ from core.runtime import (
 from core.citations import (
     RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls, valider_citations,
 )
+from core.webcontent import recuperer_contenu
 from core.websearch import (
     PREFIXE_ERREUR,
     TRACE_LISTE_MAX,
@@ -78,6 +79,14 @@ def _rechercher_pour_prompt(
         resultats = rechercher(query, on_etape=on_etape)
     except RechercheWebErreur as exc:
         return f"{PREFIXE_ERREUR}{exc}", []
+    # Phase 4 : remplace le snippet DDG (~150 caractères, écrit par DDG) par du
+    # contenu réel des pages les plus pertinentes, reclassé par similarité
+    # avec `query` — AVANT `formater_pour_llm`, qui ne change pas : il ne fait
+    # que mettre en forme des `ResultatWeb`, quelle que soit la richesse de
+    # leur `extrait`. `recuperer_contenu` ne lève jamais — dégradation par
+    # page et, si l'embedding manque, dégradation de toute l'étape vers les
+    # extraits DDG d'origine (cf. sa docstring).
+    resultats = recuperer_contenu(resultats, query, on_etape=on_etape)
     return formater_pour_llm(resultats), resultats
 
 
