@@ -113,12 +113,28 @@ jobs:
       # pydantic, sniffio, tqdm, typing-extensions) ont tous des wheels
       # manylinux, et httpx/pydantic sont déjà dans cette liste. Rien à voir avec
       # les deps ML que cet en-tête écarte.
+      #
+      # `readability-lxml` : même piège que `openai` ci-dessus, rejoué à
+      # l'identique. `core/webcontent.py` (contenu réel des pages en recherche
+      # web, `eaa36b3`) l'importe SANS condition au niveau module, et
+      # `modules/chat/router.py` importe `core.webcontent` au niveau module —
+      # donc son absence ici n'a jamais donné un test sauté mais une ERREUR DE
+      # COLLECTE sur tout fichier qui importe `modules.chat.router` ou
+      # `TestClient(app)` (`test_chat_comparaison.py`, `test_chat_ws_conversation.py`,
+      # `test_web_search.py`, `test_webcontent.py`, dix fichiers au total,
+      # `FAILED (errors=1)` sur CHACUN) — CI rouge sur `main` depuis ce commit,
+      # sans que rien ne le signale ailleurs qu'ici. `lxml` est déjà dans
+      # l'arbre (tiré par `python-docx` juste en dessous) ; `cssselect`,
+      # `chardet` et `lxml_html_clean` (transitif de `lxml[html-clean]`) sont
+      # tous les trois py3-none-any, aucune extension compilée — même famille
+      # que `python-docx`/`python-pptx`/`openpyxl` ci-dessous, rien à voir avec
+      # les deps ML que cet en-tête écarte.
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
           pip install fastapi==0.136.3 starlette==1.2.0
           pydantic pyyaml python-dotenv
           httpx python-multipart numpy ollama openai pypdf watchdog uvicorn wsproto
-          python-docx python-pptx openpyxl onnxruntime
+          python-docx python-pptx openpyxl onnxruntime readability-lxml
       - name: Tests unitaires (découverte automatique)
         working-directory: backend
         # Les tests forcent HF_HUB_OFFLINE=1 et neutralisent les sondes
