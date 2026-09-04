@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react'
 import {
   Paperclip, Mic, Zap, Bot, X, ChevronLeft, ChevronRight, Check,
   AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
@@ -363,6 +363,26 @@ export default function ModuleBar({
     ...cloudCategories.puissant,
     ...cloudCategories.long_contexte,
   ], [localModels, localNpuModels, cloudCategories])
+
+  /**
+   * Provider du modèle actif — pour que le toggle de réflexion (plus bas) ne
+   * mente pas sur ce qu'il fait vraiment. `raisonnement` n'a pas le même effet
+   * partout (`core/llm.py::stream`) : `gemini` l'ignore intégralement (aucune
+   * bascule n'existe côté SDK, cf. son commentaire « Pas de bascule ici »),
+   * les cinq autres fournisseurs OpenAI-compatibles cloud (groq, cerebras,
+   * mistral, nvidia, deepseek) ne l'utilisent que pour relever le plafond de
+   * tokens (`_budget`), sans jamais faire remonter de réflexion visible —
+   * seuls `ollama` et `flm` en affichent une. `undefined` tant que `/models`
+   * n'a pas encore répondu : le toggle garde alors son comportement actuel,
+   * plutôt que d'afficher un verdict qu'on n'a pas encore les moyens de tenir.
+   */
+  const providerActif = useMemo(
+    () => allModels().find(m => m.id === selectedModel)?.provider,
+    [allModels, selectedModel],
+  )
+  const raisonnementNonSupporte = providerActif === 'gemini'
+  const raisonnementBudgetSeul =
+    !!providerActif && providerActif !== 'gemini' && providerActif !== 'ollama' && providerActif !== 'flm'
 
   const defaultModelForRole = useCallback((recommended: string | null): string => {
     if (!recommended) return selectedModel
@@ -1086,22 +1106,47 @@ export default function ModuleBar({
               le seul réglage d'ici qui change le TEMPS DE RÉPONSE (mesuré : 78 s
               contre 4 s sur la même question), et « raisonnement » ne veut rien
               dire pour quelqu'un qui n'a jamais lu ce qu'un modèle produit avant
-              de répondre. Un libellé nu se cocherait au hasard. */}
+              de répondre. Un libellé nu se cocherait au hasard.
+
+              Trois variantes selon `providerActif` (cf. sa définition plus haut) :
+              gemini n'a pas de toggle du tout (aucun effet à annoncer), les cinq
+              fournisseurs cloud OpenAI-compatibles gardent un toggle qui agit
+              réellement (le budget de tokens), mais un libellé et un texte qui ne
+              prétendent plus à une réflexion visible qu'ils ne produisent jamais,
+              et ollama/flm gardent le texte d'origine, inchangé. */}
           <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <Toggle checked={raisonnement} onChange={handleRaisonnementToggle}
-                      label="Réflexion du modèle" />
-              <span className="text-xs text-secondary">réflexion du modèle</span>
-            </div>
-            <p className="text-xs text-muted leading-relaxed">
-              {raisonnement
-                ? 'Le modèle réfléchit avant de répondre : les réponses sont plus '
-                  + 'sûres sur les questions difficiles, mais arrivent beaucoup plus '
-                  + "tard. Sa réflexion s'affiche pendant l'attente."
-                : 'Le modèle répond directement, sans réfléchir à voix haute : '
-                  + 'beaucoup plus rapide, mais moins fiable sur un calcul ou un '
-                  + 'raisonnement en plusieurs étapes.'}
-            </p>
+            {raisonnementNonSupporte ? (
+              <p className="text-xs text-muted leading-relaxed">
+                Réflexion du modèle — non disponible sur Gemini : ce réglage
+                n'a aucun effet sur ce fournisseur, il n'apparaît donc pas ici.
+              </p>
+            ) : (
+              <>
+                <div className="flex items-center gap-2">
+                  <Toggle checked={raisonnement} onChange={handleRaisonnementToggle}
+                          label={raisonnementBudgetSeul ? 'Budget de réflexion (tokens)' : 'Réflexion du modèle'} />
+                  <span className="text-xs text-secondary">
+                    {raisonnementBudgetSeul ? 'budget de réflexion (tokens)' : 'réflexion du modèle'}
+                  </span>
+                </div>
+                <p className="text-xs text-muted leading-relaxed">
+                  {raisonnementBudgetSeul
+                    ? (raisonnement
+                        ? "Ce fournisseur n'affiche pas sa réflexion : ce réglage relève "
+                          + 'seulement le plafond de tokens de la réponse, au cas où le '
+                          + 'modèle réfléchit en interne sans le montrer.'
+                        : 'Plafond de tokens standard. Aucun fournisseur cloud (hors NPU '
+                          + 'local) ne montre sa réflexion ici de toute façon.')
+                    : (raisonnement
+                        ? 'Le modèle réfléchit avant de répondre : les réponses sont plus '
+                          + 'sûres sur les questions difficiles, mais arrivent beaucoup plus '
+                          + "tard. Sa réflexion s'affiche pendant l'attente."
+                        : 'Le modèle répond directement, sans réfléchir à voix haute : '
+                          + 'beaucoup plus rapide, mais moins fiable sur un calcul ou un '
+                          + 'raisonnement en plusieurs étapes.')}
+                </p>
+              </>
+            )}
           </div>
 
           <div className="space-y-1.5">

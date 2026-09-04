@@ -194,6 +194,19 @@ async function rendre(conversationId = '') {
   return rendu
 }
 
+/**
+ * Rend la barre telle que le module Chat l'utilise (seul consommateur de
+ * `showSkills` en production, `Component.tsx:1985-1991`), et ouvre directement
+ * le panneau « Paramètres de session » où vit le toggle de réflexion.
+ */
+async function rendreCompetences(table: Record<string, Reponse>) {
+  poserFetch(table)
+  const rendu = render(<ModuleBar module="chat" conversationId="" showFile showModel showSkills />)
+  await act(async () => { await Promise.resolve() })
+  await ouvrir('Paramètres de session')
+  return rendu
+}
+
 /** Ouvre un panneau par le bouton de la barre (le `title` est son seul repère). */
 async function ouvrir(titre: string) {
   const bouton = screen.getByTitle(titre)
@@ -468,5 +481,70 @@ describe('ModuleBar — panneau modèles', () => {
     await ouvrir('Modèle')
     await act(async () => { screen.getByText('Voir tous les modèles').click() })
     expect(screen.getByText(/Chargement des modèles/)).toBeTruthy()
+  })
+})
+
+/**
+ * Toggle de réflexion (panneau « Paramètres de session ») — honnête sur ce
+ * qu'il fait vraiment selon le PROVIDER du modèle actif, pas seulement sur
+ * son propre état coché/décoché.
+ *
+ * `core/llm.py::stream` traite trois cas très différents derrière le même
+ * bool `raisonnement` : `gemini` l'ignore intégralement (aucune bascule
+ * n'existe côté SDK), les cinq fournisseurs OpenAI-compatibles cloud
+ * (groq/cerebras/mistral/nvidia/deepseek) ne l'utilisent que pour relever un
+ * plafond de tokens sans jamais faire remonter de réflexion visible, et seuls
+ * `ollama`/`flm` en affichent une véritable. Avant cette correction, le même
+ * texte (« Sa réflexion s'affiche pendant l'attente ») s'affichait dans les
+ * trois cas — faux pour cinq fournisseurs sur sept, et pour gemini le toggle
+ * acceptait une valeur qui ne produit STRICTEMENT aucun effet.
+ */
+const MODELES_GEMINI = {
+  local: [], local_npu: [],
+  cloud: {
+    rapide: [{ id: 'gemini:gemini-2.5-flash', nom: 'Gemini 2.5 Flash', provider: 'gemini', disponible: true }],
+    puissant: [], long_contexte: [],
+  },
+  fournisseurs: {}, recommandations: {},
+}
+const MODELES_GROQ = {
+  local: [], local_npu: [],
+  cloud: {
+    rapide: [{ id: 'groq:openai/gpt-oss-20b', nom: 'GPT OSS 20B', provider: 'groq', disponible: true }],
+    puissant: [], long_contexte: [],
+  },
+  fournisseurs: {}, recommandations: {},
+}
+
+describe('ModuleBar — toggle de réflexion, honnête selon le provider', () => {
+  it("masque le toggle et remplace par un texte explicite quand gemini est actif — aucun effet à annoncer", async () => {
+    await rendreCompetences({
+      ...tableSaine(),
+      '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'gemini:gemini-2.5-flash' } },
+      '/models': { corps: MODELES_GEMINI },
+    })
+    await waitFor(() => expect(screen.getByText(/non disponible sur Gemini/)).toBeTruthy())
+    // Aucun contrôle qui accepterait une valeur sans effet, sous aucun libellé.
+    expect(screen.queryByRole('switch', { name: 'Réflexion du modèle' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeNull()
+  })
+
+  it("relabellise en « budget de réflexion » sur un fournisseur cloud qui ne montre jamais sa pensée (groq)", async () => {
+    await rendreCompetences({
+      ...tableSaine(),
+      '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'groq:openai/gpt-oss-20b' } },
+      '/models': { corps: MODELES_GROQ },
+    })
+    // Le toggle reste un vrai contrôle (il agit sur le plafond de tokens) mais
+    // ne prétend plus à une réflexion visible que groq ne produit jamais.
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
+    expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
+    expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
+  })
+
+  it('garde le libellé et le texte actuels sur ollama — non-régression', async () => {
+    await rendreCompetences(tableSaine())
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Réflexion du modèle' })).toBeTruthy())
+    expect(screen.getByText(/Sa réflexion s'affiche pendant l'attente/)).toBeTruthy()
   })
 })
