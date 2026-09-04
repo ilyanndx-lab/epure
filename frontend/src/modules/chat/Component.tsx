@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { usePersistentState } from '../../usePersistentState'
-import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, RotateCcw } from 'lucide-react'
+import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, RotateCcw, Columns3 } from 'lucide-react'
 import { Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
@@ -9,7 +9,7 @@ import { API, apiFetch, wsUrl } from '../../api'
 import { AT_COMMANDS, allSlashCommands, moduleCommands } from './commands'
 import ConversationList from './ConversationList'
 import { creerConversation, reprendreAncienChat } from './conversations'
-import { liste, texte } from '../../normaliser'
+import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { etapesDe, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
@@ -41,6 +41,35 @@ interface ThinkingBlock {
   steps: PipelineStepData[]
   totalStats?: PipelineTotalStats
   done: boolean
+}
+
+/** État d'UN modèle dans une comparaison en cours — mêmes canaux que le
+ * chemin mono-modèle (`content`, `raisonnement`), mais tenus séparément par
+ * modèle, cf. `ComparaisonBlock`. */
+interface CompareModelState {
+  content: string
+  raisonnement: string
+  termine: boolean
+  erreur?: string
+}
+
+/**
+ * Comparaison multi-modèles EN COURS, attachée au message UTILISATEUR qui l'a
+ * déclenchée — même principe que `ThinkingBlock` : c'est ce message qui a
+ * demandé la comparaison, donc c'est lui qui la porte.
+ *
+ * `resolutionEnCours` : posé au clic sur « Garder cette réponse », AVANT même
+ * la réponse du serveur — désactive tous les boutons de cette comparaison
+ * pour éviter un double envoi (double clic). Remis à `false` si le serveur
+ * répond par une erreur (état périmé) plutôt que par `done`, pour que
+ * l'utilisateur puisse réessayer sur une autre réponse au lieu de rester
+ * bloqué. Le champ disparaît (comparaison mise à `undefined` sur le message)
+ * dès qu'un choix aboutit — cf. le handler `done`.
+ */
+interface ComparaisonBlock {
+  modeles: string[]
+  parModele: Record<string, CompareModelState>
+  resolutionEnCours: boolean
 }
 
 interface Message {
@@ -105,6 +134,14 @@ interface Message {
    * message plus ancien que ce champ (cf. CLAUDE.md, convention `sources`).
    */
   traceRecherche?: EtapeTrace[]
+  /**
+   * Comparaison multi-modèles déclenchée par CE message utilisateur, tant
+   * qu'elle n'est pas résolue. Absent : soit ce message n'a jamais déclenché
+   * de comparaison, soit elle vient d'être résolue (le champ est effacé au
+   * moment où le texte choisi devient un message assistant normal — cf.
+   * handler `done`). Jamais posé sur un message assistant.
+   */
+  comparaison?: ComparaisonBlock
 }
 
 interface SourceCitee {
@@ -488,6 +525,71 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
   )
 }
 
+/**
+ * Panneaux de comparaison multi-modèles, côte à côte (empilés verticalement
+ * si l'écran est étroit — jamais de scroll horizontal forcé).
+ *
+ * Même langage visuel que `ThinkingBlockView`/`RaisonnementView` (`Card`,
+ * `RichMessage` en mode streaming) : c'est la même idée pour l'utilisateur
+ * (« voici ce qui arrive, modèle par modèle »), donc les mêmes briques.
+ *
+ * `msgIdx` sert uniquement à préfixer les clés de `collapsedRaisonnement`
+ * (partagé entre tous les modèles de tous les messages) — le composant ne
+ * lit ni n'écrit rien d'autre à travers cet index.
+ */
+function ComparaisonView({
+  msgIdx, comparaison, onGarder, collapsedRaisonnement, onToggleRaisonnement,
+}: {
+  msgIdx: number
+  comparaison: ComparaisonBlock
+  onGarder: (model: string) => void
+  collapsedRaisonnement: Record<string, boolean>
+  onToggleRaisonnement: (model: string) => void
+}) {
+  return (
+    <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-3">
+      {comparaison.modeles.map(model => {
+        const etat = comparaison.parModele[model]
+        if (!etat) return null
+        const gardable = etat.termine && !etat.erreur && etat.content.length > 0
+        const cle = `${msgIdx}-${model}`
+        return (
+          <Card key={model} className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-mono text-secondary truncate">{model}</span>
+              {!etat.termine && <Loader2 size={13} className="animate-spin text-accent2 shrink-0" />}
+            </div>
+            {etat.raisonnement && (
+              <RaisonnementView
+                texte={etat.raisonnement}
+                enCours={!etat.termine && !etat.content}
+                collapsed={collapsedRaisonnement[cle] ?? etat.content.length > 0}
+                onToggle={() => onToggleRaisonnement(model)}
+              />
+            )}
+            {etat.erreur ? (
+              <p className="text-xs text-error whitespace-pre-wrap break-words m-0">{etat.erreur}</p>
+            ) : (
+              <div className="text-sm text-secondary min-w-0">
+                <RichMessage content={etat.content} streaming={!etat.termine} />
+              </div>
+            )}
+            <button
+              type="button"
+              disabled={!gardable || comparaison.resolutionEnCours}
+              onClick={() => onGarder(model)}
+              className="mt-auto text-xs rounded-md px-2 py-1.5 border border-line text-secondary
+                         hover:bg-elevated disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-150"
+            >
+              Garder cette réponse
+            </button>
+          </Card>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function Chat({
   onAssistantDone,
   playSpeech,
@@ -574,10 +676,28 @@ export default function Chat({
   const [webSearchMode, setWebSearchMode] = usePersistentState<'once' | 'always'>('epure.chat.webSearchMode', 'once')
   const [webMenuOpen, setWebMenuOpen] = useState(false)
 
+  /**
+   * Comparaison multi-modèles — sélection courante (2 à 3 id, non persistée :
+   * préférence de tour, pas de session). Une comparaison est « active » dès
+   * que 2 modèles au moins sont cochés (§ tâche 2026-09-03) ; il n'y a pas de
+   * bascule séparée, le plafond de 3 est appliqué en désactivant les cases non
+   * cochées plutôt qu'en acceptant puis rejetant (double protection avec la
+   * validation serveur, cf. `router.py:_valider_compare_models`).
+   */
+  const [compareModeles, setCompareModeles] = useState<string[]>([])
+  const [compareMenuOpen, setCompareMenuOpen] = useState(false)
+  const [modelesDisponiblesListe, setModelesDisponiblesListe] = useState<ModeleDisponible[]>([])
+  /** Repli du raisonnement PAR PANNEAU de comparaison, clé `${msgIdx}-${model}` —
+   * même sémantique que `collapsedRaisonnement`, dupliquée plutôt que partagée
+   * parce que les clés ne vivent pas dans le même espace (un index de message
+   * seul ne suffit plus à identifier UN panneau). */
+  const [collapsedRaisonnementCompare, setCollapsedRaisonnementCompare] = useState<Record<string, boolean>>({})
+
   /** Position du bouton enfoncé, pour distinguer un clic d'un glisser. */
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const webMenuRef = useRef<HTMLDivElement>(null)
+  const compareMenuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   /** Le conteneur défilant lui-même — nécessaire pour lire sa position de
    * scroll (cf. l'effet de suivi automatique plus bas). */
@@ -603,6 +723,33 @@ export default function Chat({
   const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
   const inPipelineRef = useRef(false)
   const pipelineUserMsgIdxRef = useRef(-1)
+  /** Index, dans `messages`, du message UTILISATEUR qui porte une comparaison
+   * EN COURS — `-1` si aucune. Même rôle que `pipelineUserMsgIdxRef`, mais
+   * posé côté CLIENT dès l'envoi (aucun événement serveur n'annonce le début
+   * d'une comparaison : c'est le client qui a demandé `compare_models`, donc
+   * qui connaît déjà la liste — cf. handler `done` pour la remise à `-1`). */
+  const comparaisonUserMsgIdxRef = useRef(-1)
+  /**
+   * Miroir SYNCHRONE du texte accumulé par modèle pendant une comparaison,
+   * tenu en parallèle de l'état React (`messages[i].comparaison`).
+   *
+   * Nécessaire précisément parce qu'un updater passé à `setMessages` n'est
+   * PAS exécuté immédiatement à l'appel : React le rejoue plus tard, à son
+   * prochain rendu. Le reste de ce fichier s'appuie sur ce délai sans jamais
+   * le nommer (ex. `lastAssistantRef`, posé dans l'updater de `token` puis lu
+   * seulement au `done` SUIVANT — un événement séparé, dont le rendu du
+   * précédent a déjà eu lieu). Ici, `done` doit lire le texte choisi et le
+   * repousser dans CE MÊME appel : lire une ref qu'on vient de poser DANS un
+   * updater, plus bas dans le même appel synchrone, verrait encore l'ancienne
+   * valeur. D'où ce second miroir, écrit en dehors de tout `setState`.
+   */
+  const compareAccumRef = useRef<Record<string, string>>({})
+  /** Miroir synchrone de `comparaison.resolutionEnCours`, pour la même
+   * raison que `compareAccumRef` : le handler `error` doit savoir, DANS le
+   * même appel, si l'erreur reçue répond à un `compare_choix` (auquel cas on
+   * réactive les boutons) ou rejette la comparaison avant tout streaming
+   * (auquel cas rien ne viendra jamais peupler le panneau — on le referme). */
+  const resolutionEnCoursRef = useRef(false)
   // Arrêt : ignore les events de streaming entrants après un stop manuel.
   const cancelledRef = useRef(false)
   // Dernier message envoyé (pour « relancer »).
@@ -825,7 +972,121 @@ export default function Chat({
             evalMs: data.eval_duration_ms as number,
           }
 
+        // ── Comparaison multi-modèles ────────────────────────────────────
+        //
+        // Vocabulaire d'événements disjoint du mono-modèle (cf. router.py) :
+        // un `compare_*` ne peut arriver que pour un tour lancé avec
+        // `compare_models`, donc uniquement pendant que
+        // `comparaisonUserMsgIdxRef.current` pointe un message valide. Chaque
+        // handler met à jour SON modèle dans `parModele`, jamais les autres —
+        // c'est ce qui permet un streaming réellement indépendant par panneau.
+
+        } else if (data.type === 'compare_token') {
+          const modele: string = data.model
+          compareAccumRef.current[modele] = (compareAccumRef.current[modele] ?? '') + data.content
+          setMessages(prev => {
+            const idx = comparaisonUserMsgIdxRef.current
+            const bloc = prev[idx]?.comparaison
+            if (!bloc || !bloc.parModele[modele]) return prev
+            const updated = [...prev]
+            updated[idx] = {
+              ...updated[idx],
+              comparaison: {
+                ...bloc,
+                parModele: {
+                  ...bloc.parModele,
+                  [modele]: { ...bloc.parModele[modele], content: bloc.parModele[modele].content + data.content },
+                },
+              },
+            }
+            return updated
+          })
+
+        } else if (data.type === 'compare_reasoning') {
+          const modele: string = data.model
+          setMessages(prev => {
+            const idx = comparaisonUserMsgIdxRef.current
+            const bloc = prev[idx]?.comparaison
+            if (!bloc || !bloc.parModele[modele]) return prev
+            const updated = [...prev]
+            updated[idx] = {
+              ...updated[idx],
+              comparaison: {
+                ...bloc,
+                parModele: {
+                  ...bloc.parModele,
+                  [modele]: { ...bloc.parModele[modele], raisonnement: bloc.parModele[modele].raisonnement + data.content },
+                },
+              },
+            }
+            return updated
+          })
+
+        } else if (data.type === 'compare_error') {
+          const modele: string = data.model
+          setMessages(prev => {
+            const idx = comparaisonUserMsgIdxRef.current
+            const bloc = prev[idx]?.comparaison
+            if (!bloc || !bloc.parModele[modele]) return prev
+            const updated = [...prev]
+            updated[idx] = {
+              ...updated[idx],
+              comparaison: {
+                ...bloc,
+                parModele: { ...bloc.parModele, [modele]: { ...bloc.parModele[modele], erreur: data.content } },
+              },
+            }
+            return updated
+          })
+
+        } else if (data.type === 'compare_done') {
+          const modele: string = data.model
+          setMessages(prev => {
+            const idx = comparaisonUserMsgIdxRef.current
+            const bloc = prev[idx]?.comparaison
+            if (!bloc || !bloc.parModele[modele]) return prev
+            const updated = [...prev]
+            updated[idx] = {
+              ...updated[idx],
+              comparaison: {
+                ...bloc,
+                parModele: { ...bloc.parModele, [modele]: { ...bloc.parModele[modele], termine: true } },
+              },
+            }
+            return updated
+          })
+          // `compare_all_done` (un seul événement, tous modèles terminés)
+          // n'a rien de plus à faire ici : `tousTermines` se dérive déjà de
+          // `parModele` à chaque rendu, jamais un flag séparé à maintenir.
+
         } else if (data.type === 'done') {
+          // Résolution d'une comparaison multi-modèles : le serveur répond par
+          // ce même événement `done` (CLAUDE.md, protocole de comparaison),
+          // avec `modèle` portant l'ID CHOISI par l'utilisateur. Le texte,
+          // lui, n'est JAMAIS renvoyé par le serveur — il vit déjà côté
+          // client, accumulé au fil des `compare_token` (même principe que
+          // l'horodatage serveur-fait-foi ailleurs : ici c'est le CONTENU qui
+          // fait foi côté client, le serveur n'ayant fait que le persister).
+          // On le pousse comme un message assistant normal AVANT de laisser
+          // le reste de ce handler faire ce qu'il fait déjà pour un tour
+          // mono-modèle (stats, sources, trace — tous visent « le dernier
+          // message assistant », qui est désormais celui-ci).
+          const idxComparaison = comparaisonUserMsgIdxRef.current
+          if (idxComparaison >= 0) {
+            const modeleChoisi = data['modèle'] as string | undefined
+            const texteChoisi = (modeleChoisi && compareAccumRef.current[modeleChoisi]) || ''
+            lastAssistantRef.current = texteChoisi
+            setMessages(prev => {
+              if (!prev[idxComparaison]?.comparaison) return prev
+              const updated = [...prev]
+              updated[idxComparaison] = { ...updated[idxComparaison], comparaison: undefined }
+              updated.push({ role: 'assistant', content: texteChoisi })
+              return updated
+            })
+            comparaisonUserMsgIdxRef.current = -1
+            compareAccumRef.current = {}
+          }
+
           const pending = pendingOllamaStatsRef.current
           let finalStats: MsgStats | null = null
           if (pending && pending.outputTokens > 0 && pending.evalMs > 0) {
@@ -896,6 +1157,35 @@ export default function Chat({
         } else if (data.type === 'error') {
           inPipelineRef.current = false
           cancelledRef.current = false
+          const idxComparaisonErr = comparaisonUserMsgIdxRef.current
+          if (idxComparaisonErr >= 0) {
+            if (resolutionEnCoursRef.current) {
+              // Réponse à un `compare_choix` périmé (double clic, comparaison
+              // déjà résolue) : la génération, elle, a bien eu lieu — on
+              // réactive juste les boutons pour laisser choisir une autre
+              // réponse, sans toucher au reste du panneau.
+              resolutionEnCoursRef.current = false
+              setMessages(prev => {
+                const bloc = prev[idxComparaisonErr]?.comparaison
+                if (!bloc) return prev
+                const updated = [...prev]
+                updated[idxComparaisonErr] = { ...updated[idxComparaisonErr], comparaison: { ...bloc, resolutionEnCours: false } }
+                return updated
+              })
+            } else {
+              // Rejetée AVANT tout streaming (compare_models invalide côté
+              // serveur) : aucun `compare_token` ne viendra jamais peupler ce
+              // panneau, on le referme plutôt que de le laisser figé.
+              setMessages(prev => {
+                if (!prev[idxComparaisonErr]?.comparaison) return prev
+                const updated = [...prev]
+                updated[idxComparaisonErr] = { ...updated[idxComparaisonErr], comparaison: undefined }
+                return updated
+              })
+              comparaisonUserMsgIdxRef.current = -1
+              compareAccumRef.current = {}
+            }
+          }
           setMessages(prev => [...prev, { role: 'assistant', content: data.content, isError: true }])
           setStreaming(false)
           setStreamStats(null)
@@ -947,7 +1237,11 @@ export default function Chat({
    * jusqu'au `.map()` du rendu.
    */
   useEffect(() => {
-    if (!conversationId) { setMessages([]); return }
+    if (!conversationId) {
+      setMessages([])
+      comparaisonUserMsgIdxRef.current = -1
+      return
+    }
     let annule = false
     void (async () => {
       try {
@@ -958,6 +1252,7 @@ export default function Chat({
           // d'afficher une conversation fantôme.
           setConversationId('')
           setMessages([])
+          comparaisonUserMsgIdxRef.current = -1
           return
         }
         if (!res.ok) return
@@ -991,6 +1286,7 @@ export default function Chat({
     setConversationId(id)
     setMessages([])          // évite d'afficher l'ancien fil pendant le chargement
     setStreaming(false)
+    comparaisonUserMsgIdxRef.current = -1
   }, [conversationId, setConversationId])
 
   /**
@@ -1005,6 +1301,7 @@ export default function Chat({
       const id = await creerConversation()
       setConversationId(id)
       setMessages([])
+      comparaisonUserMsgIdxRef.current = -1
       setRafraichirConvs(n => n + 1)
     } catch { /* le backend répondra au premier message : rien de bloquant */ }
   }, [setConversationId])
@@ -1075,6 +1372,39 @@ export default function Chat({
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [webMenuOpen])
+
+  // Ferme le menu de comparaison au clic extérieur — même patron que le menu
+  // de recherche web juste au-dessus.
+  useEffect(() => {
+    if (!compareMenuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (compareMenuRef.current && !compareMenuRef.current.contains(e.target as Node)) {
+        setCompareMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [compareMenuOpen])
+
+  /**
+   * Modèles disponibles pour la comparaison — même route que le panneau
+   * modèle de `ModuleBar`/Réglages (`GET /models`), aplatie par
+   * `modelesDisponibles` (`../../normaliser`) plutôt qu'une variante de plus
+   * du même parsing. Échec silencieux : le picker reste vide, pas bloquant.
+   */
+  useEffect(() => {
+    let annule = false
+    void (async () => {
+      try {
+        const res = await apiFetch(`${API}/models`)
+        if (!res.ok || annule) return
+        const d = await res.json()
+        if (annule) return
+        setModelesDisponiblesListe(modelesDisponibles(d).filter(m => m.disponible))
+      } catch { /* backend qui démarre : le picker reste vide */ }
+    })()
+    return () => { annule = true }
+  }, [])
 
   // ── Autocomplete ──────────────────────────────────────────────────────────
 
@@ -1207,12 +1537,58 @@ export default function Chat({
     [onNavigate]
   )
 
+  // ── Comparaison multi-modèles ───────────────────────────────────────────────
+
+  /**
+   * Une comparaison est en attente de résolution — dérivé de `messages` et de
+   * la ref, jamais un état séparé à maintenir en double (même principe que
+   * `thinking.done` plus haut). Bloque l'envoi d'un nouveau message : la
+   * conversation ne reprend qu'une fois une réponse choisie, cf. `sendUserText`
+   * et la zone de saisie (rendu).
+   */
+  const comparaisonEnCours = (() => {
+    const idx = comparaisonUserMsgIdxRef.current
+    return idx >= 0 && !!messages[idx]?.comparaison
+  })()
+
+  const toggleCompareModel = useCallback((id: string) => {
+    setCompareModeles(prev => {
+      if (prev.includes(id)) return prev.filter(m => m !== id)
+      if (prev.length >= 3) return prev
+      return [...prev, id]
+    })
+  }, [])
+
+  /**
+   * Résout la comparaison EN COURS en gardant la réponse d'un modèle.
+   *
+   * Désactive IMMÉDIATEMENT tous les boutons de ce panneau (avant même la
+   * réponse du serveur), pour éviter un double envoi sur double clic — cf.
+   * `resolutionEnCoursRef`, son miroir synchrone lu par le handler `error`.
+   */
+  const garderReponse = useCallback((idxMsg: number, modele: string) => {
+    // Le garde-fou anti-double-clic vit sur la REF, pas sur l'état React : la
+    // ref est lue/posée de façon synchrone, l'état ne l'est pas (cf. les
+    // commentaires de `resolutionEnCoursRef`) — un second clic très rapproché
+    // doit être arrêté ICI, avant même la première mise à jour d'état.
+    if (resolutionEnCoursRef.current) return
+    resolutionEnCoursRef.current = true
+    setMessages(prev => {
+      const bloc = prev[idxMsg]?.comparaison
+      if (!bloc) return prev
+      const updated = [...prev]
+      updated[idxMsg] = { ...updated[idxMsg], comparaison: { ...bloc, resolutionEnCours: true } }
+      return updated
+    })
+    wsRef.current?.send(JSON.stringify({ type: 'compare_choix', conv_id: conversationId, model: modele }))
+  }, [conversationId])
+
   // ── Send ──────────────────────────────────────────────────────────────────
 
   // Envoi d'un message « normal » (hors commandes /…) — factorisé pour être
   // réutilisé par « relancer ».
   const sendUserText = useCallback((rawText: string) => {
-    if (!connected) return
+    if (!connected || comparaisonEnCours) return
     cancelledRef.current = false
 
     let cleanText = rawText
@@ -1232,8 +1608,28 @@ export default function Chat({
       }
     }
 
-    pushMsg('user', rawText)
-    setStreaming(true)
+    // Comparaison : active dès 2 modèles cochés au moins (pas de bascule
+    // séparée — cf. le commentaire de `compareModeles`). `@web`/`@cours`/
+    // `@strict` restent traités exactement comme ci-dessus, indépendamment :
+    // ils pilotent la construction du contexte en amont, pas le choix entre
+    // mono-modèle et comparaison.
+    const compareActive = compareModeles.length >= 2
+
+    if (compareActive) {
+      const modeles = [...compareModeles]
+      const parModele: Record<string, CompareModelState> = Object.fromEntries(
+        modeles.map(m => [m, { content: '', raisonnement: '', termine: false }])
+      )
+      compareAccumRef.current = {}
+      forcerDefilementRef.current = true
+      setMessages(prev => {
+        comparaisonUserMsgIdxRef.current = prev.length
+        return [...prev, { role: 'user', content: rawText, comparaison: { modeles, parModele, resolutionEnCours: false } }]
+      })
+    } else {
+      pushMsg('user', rawText)
+      setStreaming(true)
+    }
     tokenCountRef.current = 0
     streamStartRef.current = null
     pendingOllamaStatsRef.current = null
@@ -1253,15 +1649,16 @@ export default function Chat({
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
     if (webSearchOverride) wsMsg.web_search_override = true
+    if (compareActive) wsMsg.compare_models = compareModeles
     lastSentRef.current = wsMsg
     wsRef.current?.send(JSON.stringify(wsMsg))
 
     if (webSearch && webSearchMode === 'once') setWebSearch(false)
-  }, [connected, conversationId, effort, pipelineSteps, webSearch, webSearchMode, pushMsg, setWebSearch])
+  }, [connected, comparaisonEnCours, compareModeles, conversationId, effort, pipelineSteps, webSearch, webSearchMode, pushMsg, setWebSearch])
 
   const send = useCallback(async () => {
     const rawText = input.trim()
-    if (!rawText || streaming) return
+    if (!rawText || streaming || comparaisonEnCours) return
     setInput('')
 
     if (rawText.startsWith('/')) {
@@ -1326,7 +1723,7 @@ export default function Chat({
     // Message normal : délégué à sendUserText (réutilisé par « relancer »).
     sendUserText(rawText)
   }, [
-    input, connected, streaming, sendUserText, modules,
+    input, connected, streaming, comparaisonEnCours, sendUserText, modules,
     streamSSE, handleMémoire, handleModèle, handleLacunes, handleNavigate,
   ])
 
@@ -1344,12 +1741,12 @@ export default function Chat({
   }, [streaming])
 
   const relancer = useCallback(() => {
-    if (streaming || !connected) return
+    if (streaming || !connected || comparaisonEnCours) return
     const lastUser = [...messages].reverse().find(m => m.role === 'user')
     if (lastUser) sendUserText(lastUser.content)
-  }, [streaming, connected, messages, sendUserText])
+  }, [streaming, connected, comparaisonEnCours, messages, sendUserText])
 
-  const canResume = !streaming && messages.some(m => m.role === 'user')
+  const canResume = !streaming && !comparaisonEnCours && messages.some(m => m.role === 'user')
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
 
@@ -1430,6 +1827,18 @@ export default function Chat({
                       thinking={msg.thinking}
                       collapsed={collapsedThinking[i] ?? false}
                       onToggle={() => setCollapsedThinking(prev => ({ ...prev, [i]: !prev[i] }))}
+                    />
+                  )}
+                  {msg.comparaison && (
+                    <ComparaisonView
+                      msgIdx={i}
+                      comparaison={msg.comparaison}
+                      onGarder={modele => garderReponse(i, modele)}
+                      collapsedRaisonnement={collapsedRaisonnementCompare}
+                      onToggleRaisonnement={modele => setCollapsedRaisonnementCompare(prev => ({
+                        ...prev,
+                        [`${i}-${modele}`]: !(prev[`${i}-${modele}`] ?? (msg.comparaison?.parModele[modele]?.content.length ?? 0) > 0),
+                      }))}
                     />
                   )}
                 </>
@@ -1708,12 +2117,79 @@ export default function Chat({
             )}
           </div>
 
+          {/* ── Comparaison multi-modèles : icône + menu à cocher ── */}
+          <div className="relative shrink-0" ref={compareMenuRef}>
+            <button
+              type="button"
+              onClick={() => setCompareMenuOpen(v => !v)}
+              aria-haspopup="menu"
+              aria-expanded={compareMenuOpen}
+              aria-pressed={compareModeles.length >= 2}
+              title={compareModeles.length >= 2
+                ? `Comparaison active — ${compareModeles.length} modèles`
+                : 'Comparer plusieurs modèles côte à côte'}
+              className={`relative p-2.5 rounded-md border transition-colors duration-150 ${
+                compareModeles.length >= 2
+                  ? 'border-accent/40 bg-accent/10 text-accent'
+                  : 'border-line bg-elevated text-muted hover:text-secondary'
+              }`}
+            >
+              <Columns3 size={16} />
+              {compareModeles.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
+                  {compareModeles.length}
+                </span>
+              )}
+            </button>
+
+            {compareMenuOpen && (
+              <div className="absolute bottom-full left-0 mb-2 w-64 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
+                <div className="px-3 py-2.5 border-b border-line">
+                  <span className="text-xs font-medium text-primary flex items-center gap-2">
+                    <Columns3 size={13} className={compareModeles.length >= 2 ? 'text-accent' : 'text-muted'} />
+                    Comparer des modèles
+                  </span>
+                  <p className="text-[11px] text-muted mt-1">2 à 3 modèles, réponses côte à côte.</p>
+                </div>
+                <div className="p-1.5 space-y-0.5 max-h-64 overflow-y-auto">
+                  {modelesDisponiblesListe.length === 0 ? (
+                    <p className="px-2.5 py-2 text-xs text-muted">Aucun modèle disponible.</p>
+                  ) : modelesDisponiblesListe.map(m => {
+                    const checked = compareModeles.includes(m.id)
+                    const disabled = !checked && compareModeles.length >= 3
+                    return (
+                      <label
+                        key={m.id}
+                        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-sm ${
+                          disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-surface'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={disabled}
+                          onChange={() => toggleCompareModel(m.id)}
+                          className="shrink-0"
+                        />
+                        <span className="text-xs text-secondary truncate">{m.nom}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           <Textarea
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={streaming}
-            placeholder={connected ? 'Message...' : 'Connexion au serveur...'}
+            disabled={streaming || comparaisonEnCours}
+            placeholder={
+              !connected ? 'Connexion au serveur...'
+              : comparaisonEnCours ? 'Choisissez une réponse pour continuer...'
+              : 'Message...'
+            }
             rows={1}
             className="flex-1"
             style={{ minHeight: '40px', maxHeight: '160px' }}
@@ -1730,6 +2206,14 @@ export default function Chat({
               className="p-2.5 rounded-md bg-error/90 text-on-accent shadow-sm hover:opacity-90 transition-all duration-150 shrink-0"
             >
               <Square size={16} fill="currentColor" />
+            </button>
+          ) : comparaisonEnCours ? (
+            <button
+              disabled
+              title="Choisissez une réponse pour continuer"
+              className="p-2.5 rounded-md border border-line text-muted opacity-40 cursor-not-allowed shrink-0"
+            >
+              <Send size={16} />
             </button>
           ) : (
             <>

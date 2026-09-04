@@ -11,8 +11,7 @@ import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon, fetchModules } from '../../modules'
 import { API, apiFetch } from '../../api'
 import { ATELIER_PRESENT } from '../../atelier'
-
-interface ModelOption { id: string; nom: string; disponible: boolean }
+import { modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 
 interface EngineStatus { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 
@@ -21,12 +20,6 @@ const ENGINE_LABELS: Record<string, string> = {
   aider: 'aider (local/cloud)',
   claude_sub: 'Claude Code (abonnement)',
   claude_gateway: 'Claude Code (passerelle)',
-}
-
-interface ModelsResponse {
-  local?: ModelOption[]
-  local_npu?: ModelOption[]
-  cloud?: { rapide?: ModelOption[]; puissant?: ModelOption[]; long_contexte?: ModelOption[] }
 }
 
 interface Profile {
@@ -180,7 +173,7 @@ export default function Settings() {
   const { theme, toggleTheme } = useTheme()
   const config = useInstanceConfig()
   const modules = useModules()
-  const [models, setModels] = useState<ModelOption[]>([])
+  const [models, setModels] = useState<ModeleDisponible[]>([])
   const [engines, setEngines] = useState<Record<string, EngineStatus> | null>(null)
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; msg: string } | null>>({})
   const [testing, setTesting] = useState<Record<string, boolean>>({})
@@ -254,16 +247,7 @@ export default function Settings() {
 
     apiFetch(`${API}/models`)
       .then(r => r.json())
-      .then((d: ModelsResponse) => {
-        const flat = [
-          ...(d.local ?? []),
-          ...(d.local_npu ?? []),
-          ...(d.cloud?.rapide ?? []),
-          ...(d.cloud?.puissant ?? []),
-          ...(d.cloud?.long_contexte ?? []),
-        ]
-        setModels(flat)
-      })
+      .then((d: unknown) => setModels(modelesDisponibles(d)))
       .catch(() => {})
 
     if (ATELIER_PRESENT) loadEngines()
@@ -533,8 +517,8 @@ export default function Settings() {
 
   // Options du sélecteur de modèle : dédupliquées, avec le modèle actif garanti
   // présent même s'il n'est pas (ou plus) listé par /models.
-  const modelOptions: ModelOption[] = (() => {
-    const seen = new Map<string, ModelOption>()
+  const modelOptions: ModeleDisponible[] = (() => {
+    const seen = new Map<string, ModeleDisponible>()
     for (const m of models) if (!seen.has(m.id)) seen.set(m.id, m)
     const actif = config.providers.actif
     if (actif && !seen.has(actif)) seen.set(actif, { id: actif, nom: actif, disponible: true })
@@ -554,11 +538,11 @@ export default function Settings() {
    * sinon le `<select>` afficherait la première option et ferait croire à un
    * réglage qui n'est pas celui enregistré.
    */
-  const localModelOptions: ModelOption[] = (() => {
+  const localModelOptions: ModeleDisponible[] = (() => {
     const cloud = ['gemini', 'groq', 'cerebras', 'mistral', 'nvidia', 'deepseek']
     const estCloud = (id: string) =>
       id.includes(':') && cloud.includes(id.split(':')[0])
-    const seen = new Map<string, ModelOption>()
+    const seen = new Map<string, ModeleDisponible>()
     for (const m of modelOptions) if (!estCloud(m.id)) seen.set(m.id, m)
     const local = config.providers.local
     if (local && !seen.has(local)) seen.set(local, { id: local, nom: local, disponible: true })
