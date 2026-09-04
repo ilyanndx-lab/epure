@@ -105,12 +105,12 @@ const EFFORT_LABELS: Record<EffortLevel, string> = {
 
 // Pastilles provider : local→success, NPU→violet, cloud→turquoise
 const PROVIDER_DOT: Record<string, string> = {
-  ollama: 'bg-success', flm: 'bg-accent',
+  ollama: 'bg-success', flm: 'bg-accent', lmstudio: 'bg-success',
   gemini: 'bg-accent2', groq: 'bg-accent2', cerebras: 'bg-accent2',
   nvidia: 'bg-accent2', mistral: 'bg-accent2',
 }
 const PROVIDER_TEXT: Record<string, string> = {
-  ollama: 'text-success', flm: 'text-accent',
+  ollama: 'text-success', flm: 'text-accent', lmstudio: 'text-success',
   gemini: 'text-accent2', groq: 'text-accent2', cerebras: 'text-accent2',
   nvidia: 'text-accent2', mistral: 'text-accent2',
 }
@@ -331,6 +331,7 @@ export default function ModuleBar({
   // Model state
   const [localModels, setLocalModels] = useState<ModelInfo[]>([])
   const [localNpuModels, setLocalNpuModels] = useState<ModelInfo[]>([])
+  const [localLmstudioModels, setLocalLmstudioModels] = useState<ModelInfo[]>([])
   const [cloudCategories, setCloudCategories] = useState<CloudCategories>({ rapide: [], puissant: [], long_contexte: [] })
   // Quelles clés d'API sont posées, d'après `GET /models`. Un fournisseur sans
   // clé ne renvoie plus aucun modèle : ses entrées ne sont pas grisées, elles
@@ -359,10 +360,11 @@ export default function ModuleBar({
   const allModels = useCallback((): ModelInfo[] => [
     ...localModels,
     ...localNpuModels,
+    ...localLmstudioModels,
     ...cloudCategories.rapide,
     ...cloudCategories.puissant,
     ...cloudCategories.long_contexte,
-  ], [localModels, localNpuModels, cloudCategories])
+  ], [localModels, localNpuModels, localLmstudioModels, cloudCategories])
 
   /**
    * Provider du modèle actif — pour que le toggle de réflexion (plus bas) ne
@@ -370,9 +372,15 @@ export default function ModuleBar({
    * partout (`core/llm.py::stream`) : `gemini` l'ignore intégralement (aucune
    * bascule n'existe côté SDK, cf. son commentaire « Pas de bascule ici »),
    * les cinq autres fournisseurs OpenAI-compatibles cloud (groq, cerebras,
-   * mistral, nvidia, deepseek) ne l'utilisent que pour relever le plafond de
-   * tokens (`_budget`), sans jamais faire remonter de réflexion visible —
-   * seuls `ollama` et `flm` en affichent une. `undefined` tant que `/models`
+   * mistral, nvidia, deepseek) — et depuis LM Studio, `lmstudio` — ne
+   * l'utilisent que pour relever le plafond de tokens (`_budget`), sans
+   * jamais faire remonter de réflexion visible — seuls `ollama` et `flm` en
+   * affichent une. `lmstudio` n'est PAS un cloud (serveur local, cf. `core/
+   * instance.py:_FOURNISSEURS_CLOUD`), mais rejoint quand même ce groupe côté
+   * bascule : LM Studio n'expose aucun paramètre API stable pour couper sa
+   * réflexion (deux mécanismes concurrents selon le modèle, l'un rapporté
+   * ignoré par son propre suivi de bugs sur Qwen3.5) — voir le docstring de
+   * `LLMEngine._stream_openai` pour le détail. `undefined` tant que `/models`
    * n'a pas encore répondu : le toggle garde alors son comportement actuel,
    * plutôt que d'afficher un verdict qu'on n'a pas encore les moyens de tenir.
    */
@@ -554,9 +562,10 @@ export default function ModuleBar({
         .then(r => r.json())
         // Aucun champ n'est annoncé non-optionnel : la seule chose qu'on sache
         // de ce corps, c'est qu'il a été parsé.
-        .then((d: { local?: unknown; local_npu?: unknown; cloud?: unknown; fournisseurs?: unknown }) => {
+        .then((d: { local?: unknown; local_npu?: unknown; local_lmstudio?: unknown; cloud?: unknown; fournisseurs?: unknown }) => {
           setLocalModels(liste<ModelInfo>(d.local))
           setLocalNpuModels(liste<ModelInfo>(d.local_npu))
+          setLocalLmstudioModels(liste<ModelInfo>(d.local_lmstudio))
           setCloudCategories(categories(d.cloud))
           setFournisseurs(dico(d.fournisseurs))
         })
@@ -1227,7 +1236,8 @@ export default function ModuleBar({
       {/* ── Model panel ── */}
       {showModel && activePanel === 'model' && (() => {
         const allCloud = [...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
-        const hasModels = localModels.length > 0 || localNpuModels.length > 0 || allCloud.length > 0
+        const hasModels = localModels.length > 0 || localNpuModels.length > 0
+          || localLmstudioModels.length > 0 || allCloud.length > 0
         // Une recommandation dont le fournisseur n'a pas de clé disparaît, comme
         // le modèle lui-même. Sans ce filtre elle retomberait sur la branche
         // « inconnu du catalogue » (HelpCircle, cliquable) — le backend ne la
@@ -1353,6 +1363,14 @@ export default function ModuleBar({
                     <div className="border-t border-line my-1" />
                     <p className="text-xs text-muted uppercase tracking-wide px-3 py-1">Local NPU</p>
                     {localNpuModels.map(m => modelRow(m, 'bg-accent', 'NPU', 'text-accent'))}
+                  </>
+                )}
+
+                {localLmstudioModels.length > 0 && (
+                  <>
+                    <div className="border-t border-line my-1" />
+                    <p className="text-xs text-muted uppercase tracking-wide px-3 py-1">Local LM Studio</p>
+                    {localLmstudioModels.map(m => modelRow(m, 'bg-success', 'LM Studio', 'text-success'))}
                   </>
                 )}
 

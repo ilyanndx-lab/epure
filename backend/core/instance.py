@@ -58,7 +58,10 @@ _KEY_TO_PROVIDER = {
 #: que ce garde-fou existe pour empêcher.
 #:
 #: `flm` en est ABSENT, et ce n'est pas un oubli : c'est le NPU de la machine, du
-#: local au même titre qu'Ollama.
+#: local au même titre qu'Ollama. `lmstudio` (core/llm.py `_OPENAI_COMPAT`) suit
+#: la même règle et pour la même raison : un serveur qui tourne SUR ce poste,
+#: pas chez un fournisseur distant — il n'a d'ailleurs aucune clé dans
+#: `_KEY_TO_PROVIDER`, ce qui suffit déjà à l'exclure d'ici sans y penser.
 _FOURNISSEURS_CLOUD = frozenset(_KEY_TO_PROVIDER.values())
 
 _DEFAULT_LOCAL_MODEL = "qwen2.5:7b"

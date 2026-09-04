@@ -132,6 +132,7 @@ function cases(): HTMLInputElement[] {
 const MODELES_OK = {
   local: [{ id: 'qwen2.5:7b', nom: 'qwen2.5:7b', provider: 'ollama', disponible: true }],
   local_npu: [],
+  local_lmstudio: [],
   cloud: { rapide: [], puissant: [], long_contexte: [] },
   fournisseurs: { gemini: false, groq: false },
   recommandations: {},
@@ -459,6 +460,26 @@ describe('ModuleBar — panneau modèles', () => {
     expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(1)
   })
 
+  it('liste un modèle LM Studio sous sa propre section', async () => {
+    poserFetch({
+      ...tableSaine(),
+      '/models': {
+        corps: {
+          ...MODELES_OK,
+          local_lmstudio: [{
+            id: 'lmstudio:llama-3.1-8b-instruct', nom: 'llama-3.1-8b-instruct',
+            provider: 'lmstudio', disponible: true,
+          }],
+        },
+      },
+    })
+    await rendre()
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Local LM Studio')).toBeTruthy())
+    expect(screen.getByText('llama-3.1-8b-instruct')).toBeTruthy()
+  })
+
   it("s'ouvre sans planter quand /models répond 500", async () => {
     // Cette réponse-là a changé de forme récemment (filtrage des fournisseurs
     // cloud sans clé, ajout de `fournisseurs`) : le panneau doit tenir sur un
@@ -500,7 +521,7 @@ describe('ModuleBar — panneau modèles', () => {
  * acceptait une valeur qui ne produit STRICTEMENT aucun effet.
  */
 const MODELES_GEMINI = {
-  local: [], local_npu: [],
+  local: [], local_npu: [], local_lmstudio: [],
   cloud: {
     rapide: [{ id: 'gemini:gemini-2.5-flash', nom: 'Gemini 2.5 Flash', provider: 'gemini', disponible: true }],
     puissant: [], long_contexte: [],
@@ -508,11 +529,25 @@ const MODELES_GEMINI = {
   fournisseurs: {}, recommandations: {},
 }
 const MODELES_GROQ = {
-  local: [], local_npu: [],
+  local: [], local_npu: [], local_lmstudio: [],
   cloud: {
     rapide: [{ id: 'groq:openai/gpt-oss-20b', nom: 'GPT OSS 20B', provider: 'groq', disponible: true }],
     puissant: [], long_contexte: [],
   },
+  fournisseurs: {}, recommandations: {},
+}
+// LM Studio n'est pas un fournisseur CLOUD (serveur local, cf.
+// core/instance.py:_FOURNISSEURS_CLOUD) mais rejoint quand même la branche
+// « budget de réflexion seul » du toggle : LM Studio n'expose aucun paramètre
+// stable pour couper sa réflexion (core/llm.py::_stream_openai). D'où
+// `local_lmstudio`, pas `cloud`, pour porter le modèle actif de ce test.
+const MODELES_LMSTUDIO = {
+  local: [], local_npu: [],
+  local_lmstudio: [{
+    id: 'lmstudio:llama-3.1-8b-instruct', nom: 'llama-3.1-8b-instruct',
+    provider: 'lmstudio', disponible: true,
+  }],
+  cloud: { rapide: [], puissant: [], long_contexte: [] },
   fournisseurs: {}, recommandations: {},
 }
 
@@ -546,5 +581,16 @@ describe('ModuleBar — toggle de réflexion, honnête selon le provider', () =>
     await rendreCompetences(tableSaine())
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Réflexion du modèle' })).toBeTruthy())
     expect(screen.getByText(/Sa réflexion s'affiche pendant l'attente/)).toBeTruthy()
+  })
+
+  it("relabellise en « budget de réflexion » sur LM Studio — aucun paramètre stable côté serveur", async () => {
+    await rendreCompetences({
+      ...tableSaine(),
+      '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'lmstudio:llama-3.1-8b-instruct' } },
+      '/models': { corps: MODELES_LMSTUDIO },
+    })
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
+    expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
+    expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
   })
 })

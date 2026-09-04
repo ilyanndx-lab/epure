@@ -81,6 +81,24 @@ _vision_ollama_client = ollama.Client(
     timeout=httpx.Timeout(_VISION_TIMEOUT_S, connect=5.0),
 )
 
+#: LM Studio expose une API compatible OpenAI en local, sans authentification —
+#: même famille que FLM, mais avec un port par défaut différent (1234) et,
+#: contrairement à FLM, CONFIGURABLE : c'est une application de bureau qui
+#: laisse son port se changer dans ses réglages, à la différence du service FLM
+#: (port fixe 11435, jamais lu depuis l'environnement ci-dessous). `LMSTUDIO_HOST`
+#: reprend donc la convention d'`OLLAMA_HOST` — URL complète, `http://` et le
+#: port ajoutés si absents — plutôt qu'un port en dur.
+#:
+#: Définie ICI et pas dans `core/models.py` (qui la consomme pour ses sondes de
+#: détection, `check_lmstudio`/`get_lmstudio_installed`) : une même variable
+#: d'environnement parsée indépendamment aux deux endroits pourrait diverger
+#: silencieusement si l'une des deux normalisations est oubliée un jour — même
+#: raison que `core.models.ollama_host` est déjà importé d'ici plutôt que
+#: reparsé.
+lmstudio_host = os.environ.get("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
+if not lmstudio_host.startswith("http"):
+    lmstudio_host = f"http://{lmstudio_host}:1234"
+
 # OpenAI-compatible providers: name → (base_url, env_key | None)
 # env_key=None means no API key required (local server)
 _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
@@ -90,6 +108,7 @@ _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
     "nvidia":   ("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
     "deepseek": ("https://api.deepseek.com/v1",         "DEEPSEEK_API_KEY"),
     "flm":      ("http://localhost:11435/v1",           None),
+    "lmstudio": (f"{lmstudio_host}/v1",                 None),
 }
 
 
@@ -275,7 +294,9 @@ class LLMEngine:
           (``data:image/<ext>;base64,...``) — mesuré sur ``qwen3vl-it:4b`` :
           7,5 s, transcription exacte d'un texte photographié.
 
-        Seuls ces deux providers sont câblés, et c'est délibéré :
+        Seuls ces deux CHEMINS sont câblés, et c'est délibéré — le ``if
+        provider in _OPENAI_COMPAT`` ci-dessous couvre aussi ``lmstudio``
+        depuis son ajout, mais reste inatteignable en pratique :
         ``core.models.premier_modele_vision_disponible()`` ne rend jamais que
         ``flm:...`` ou un nom Ollama nu — deviner un troisième format non mesuré
         serait exactement l'erreur que ce fichier évite ailleurs (cf. la bascule
@@ -603,6 +624,24 @@ class LLMEngine:
         nvidia, deepseek) ne reçoivent **rien de nouveau** : leur bascule n'a pas
         été mesurée, et ``extra_body`` part vers une API distante qui pourrait
         refuser un champ inconnu. On ne devine pas sur du réseau facturé.
+
+        **``lmstudio`` rejoint ce groupe, délibérément, pour une raison
+        différente : il n'existe PAS UN paramètre API stable à poser.** LM
+        Studio expose deux mécanismes concurrents selon le modèle/la version —
+        ``reasoning_effort`` (un raccourci ajouté après coup) et
+        ``chat_template_kwargs: {"enable_thinking": ...}`` (dépendant du gabarit
+        de discussion du modèle chargé) — et son propre suivi de bugs rapporte
+        ce flag **ignoré** sur des familles récentes (Qwen3.5 : le raisonnement
+        continue de consommer tout ``max_tokens`` malgré ``enableThinking:
+        false``). Rien de tout ça n'a été rejoué sur ce poste — aucune instance
+        LM Studio disponible au moment d'écrire —, donc ni mesuré ni supposé
+        fiable : câbler un flag qui peut être silencieusement ignoré serait pire
+        que ne rien câbler, ça donnerait l'illusion d'un contrôle qui n'agit pas
+        toujours. Revoir cette garde le jour où c'est mesuré sur un vrai serveur
+        LM Studio ; jusque-là, ``lmstudio`` suit le chemin ``raisonnement``
+        inerte du chat classique — le toggle du frontend le range déjà dans sa
+        branche « budget de réflexion seul » (aucun préfixe local reconnu),
+        sans qu'il ait fallu y toucher.
 
         **Le raisonnement de FLM est remonté depuis le 2026-08-24**, comme celui
         d'Ollama et sous la même sentinelle ``__reasoning__`` — donc le même

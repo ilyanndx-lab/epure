@@ -144,6 +144,14 @@ class AccesseurTest(_BaseLocale):
         self.assertTrue(est_modele_cloud("groq:openai/gpt-oss-120b"))
         self.assertTrue(est_modele_cloud("gemini:gemini-2.5-flash"))
 
+    def test_lmstudio_compte_comme_local(self):
+        """Même raisonnement que `flm` ci-dessus : un serveur qui tourne SUR ce
+        poste, sans clé dans `_KEY_TO_PROVIDER` — rien à faire pour l'exclure
+        du cloud, mais ça se casserait en silence si quelqu'un l'y ajoutait un
+        jour par erreur.
+        """
+        self.assertFalse(est_modele_cloud("lmstudio:llama-3.1-8b-instruct"))
+
     def test_use_cloud_faux_rend_du_local(self):
         self.assertLocal(modele_pour_tache(False, _ACTIF_CLOUD, "GROQ_API_KEY"),
                          "use_cloud=False")

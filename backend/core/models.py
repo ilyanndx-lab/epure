@@ -15,6 +15,7 @@ from typing import Optional
 
 import yaml
 
+from core.llm import lmstudio_host as _lmstudio_host
 from core.llm import ollama_host as _ollama_host
 
 logger = logging.getLogger(__name__)
@@ -353,20 +354,15 @@ def flm_model_ids() -> Optional[set[str]]:
         return None
 
 
-#: LM Studio expose une API compatible OpenAI en local, sans authentification —
-#: même famille que FLM (``check_flm`` ci-dessus) mais un port par défaut
-#: différent (1234, celui de LM Studio) et, contrairement à FLM, configurable :
-#: ``LMSTUDIO_HOST`` reprend la convention d'``OLLAMA_HOST`` (URL complète,
-#: ``http://`` et le port ajoutés si absents) plutôt que le port en dur de FLM,
-#: parce que LM Studio — application de bureau — laisse son port se changer
-#: dans ses réglages, à la différence du service FLM.
-_lmstudio_host = os.environ.get("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
-if not _lmstudio_host.startswith("http"):
-    _lmstudio_host = f"http://{_lmstudio_host}:1234"
-
-
 def check_lmstudio() -> bool:
-    """Return True if the LM Studio server responds on `_lmstudio_host`."""
+    """Return True if the LM Studio server responds on `_lmstudio_host`.
+
+    L'hôte est importé de `core.llm` (qui l'utilise aussi pour router les
+    appels de génération via `_OPENAI_COMPAT["lmstudio"]`) plutôt que reparsé
+    ici : une même variable d'environnement (`LMSTUDIO_HOST`) lue deux fois
+    indépendamment pourrait diverger si l'une des deux normalisations change
+    sans l'autre.
+    """
     try:
         req = urllib.request.Request(f"{_lmstudio_host}/v1/models")
         with urllib.request.urlopen(req, timeout=2) as resp:
@@ -376,13 +372,26 @@ def check_lmstudio() -> bool:
 
 
 def get_lmstudio_installed() -> Optional[list[str]]:
-    """Modèles chargés dans LM Studio, par HTTP direct. None si le serveur ne
-    répond pas — même contrat que `get_ollama_installed()` : l'appelant doit
-    pouvoir distinguer "aucun modèle chargé" de "serveur injoignable".
+    """Modèles que LM Studio annonce sur `/v1/models`, par HTTP direct. None si
+    le serveur ne répond pas — même contrat que `get_ollama_installed()` :
+    l'appelant doit pouvoir distinguer "rien annoncé" de "serveur injoignable".
 
     Format OpenAI (`{"data": [{"id": ...}, ...]}`), pas le format Ollama
     (`{"models": [{"name"/"model": ...}]}`) : LM Studio suit `/v1/models`
     tel quel, comme FLM.
+
+    **Ce que la liste contient dépend d'un réglage qu'on ne contrôle pas ici**
+    (le JIT loading de LM Studio, Réglages > Developer) : chargement à la
+    demande ACTIVÉ (comportement courant sur les versions récentes) → la liste
+    porte TOUT le catalogue téléchargé sur disque, chargé ou non — LM Studio
+    charge lui-même le modèle au premier appel, sans action de notre côté ;
+    DÉSACTIVÉ → seuls les modèles physiquement en mémoire y figurent. Les deux
+    cas restent utilisables tels quels, sans branche à ajouter ici : un modèle
+    annoncé mais pas encore chargé se comporte comme un modèle Ollama installé
+    mais pas encore lancé — le premier appel le charge (JIT) ou échoue avec une
+    erreur claire (`_provider_error_message`, JIT désactivé), jamais un
+    silence. Filtrer selon ce réglage demanderait de le lire depuis LM Studio,
+    que `/v1/models` n'expose pas.
     """
     try:
         req = urllib.request.Request(f"{_lmstudio_host}/v1/models")
