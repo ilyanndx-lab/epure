@@ -114,7 +114,12 @@ frontend/src/modules/generated/*/
 epure_tray.log
 
 # Node
-frontend/node_modules/
+# Sans ancrage : `node_modules/` est ignore A TOUTE PROFONDEUR, pas seulement
+# sous frontend/. Un motif qui contient un `/` ailleurs qu'a la fin est ancre a
+# la racine du depot, donc `frontend/node_modules/` ne couvrait QUE celui-la --
+# et un `npm install` lance depuis la racine y laissait un node_modules/ suivi
+# comme du code, que `git status` proposait a chaque fois.
+node_modules/
 frontend/dist/
 
 # OS
