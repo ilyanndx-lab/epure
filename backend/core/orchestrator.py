@@ -9,6 +9,7 @@ from threading import Thread
 from typing import Optional
 
 from core.instance import modele_local_defaut
+from core.llm import ollama_host as _ollama_host
 from core.jsonstore import read_json, transaction, write_json
 from core.paths import resolve_data_dir
 
@@ -42,8 +43,21 @@ def _is_cloud_model(model_id: str) -> bool:
 
 
 def _ollama_ok() -> bool:
+    """Ollama répond-il ? Sonde courte : le palier doit trancher vite.
+
+    L'hôte vient de `core.llm`, **jamais écrit en dur ici**. Il l'était, et
+    c'était un bug latent : `OLLAMA_HOST` personnalisé (autre port, autre
+    machine) laissait le reste de l'application fonctionner tout en rendant
+    cette sonde-ci systématiquement fausse — l'orchestrateur écartait alors le
+    palier local sur une machine où Ollama tournait très bien. Une panne
+    partielle est plus difficile à voir qu'une panne franche.
+
+    `core.llm` normalise en plus `OLLAMA_HOST=0.0.0.0`, une adresse d'ÉCOUTE
+    inutilisable en connexion sous Windows (§8) — la réimplémenter ici la
+    ferait diverger.
+    """
     try:
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1) as r:
+        with urllib.request.urlopen(f"{_ollama_host}/api/tags", timeout=1) as r:
             return r.status == 200
     except Exception:
         return False
