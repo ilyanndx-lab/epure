@@ -1402,7 +1402,7 @@ export default function Code() {
       turns[turns.length - 1] = { ...last, events }
       return turns
     })
-  }, [])
+  }, [setChatTurns])
 
   const cancelWrite = useCallback((path: string) => {
     setChatTurns(prev => {
@@ -1413,7 +1413,7 @@ export default function Code() {
       turns[turns.length - 1] = { ...last, events }
       return turns
     })
-  }, [])
+  }, [setChatTurns])
 
   // ── Run active file ──────────────────────────────────────────────────────
 
