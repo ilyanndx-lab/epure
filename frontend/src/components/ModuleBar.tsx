@@ -3,6 +3,7 @@ import {
   Paperclip, Mic, Zap, Bot, X, ChevronLeft, ChevronRight, Check,
   AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
   FileSpreadsheet, File as FileIcon, Save, Trash2, ExternalLink,
+  Wrench, Eye, Brain,
 } from 'lucide-react'
 import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
@@ -48,6 +49,23 @@ const MODULE_RECOMMENDATIONS: Record<string, { id: string; label: string }[]> = 
 
 type Panel = 'files' | 'skills' | 'model' | null
 
+/**
+ * Capacites d'un modele, en TROIS etats et non deux.
+ *
+ * `true`/`false` sont des FAITS : la source a declare, la capacite y est ou
+ * non. `null` dit que personne n'a mesure — aucune source pour ce fournisseur,
+ * ou champ absent. Les confondre ferait lire une ignorance comme une absence,
+ * sur un point que l'utilisateur lit comme un fait.
+ *
+ * `undefined` est un quatrieme cas, distinct : le champ n'est pas emis du tout
+ * (modeles cloud, hors perimetre de ce lot).
+ */
+interface Capacites {
+  outils: boolean | null
+  vision: boolean | null
+  raisonnement: boolean | null
+}
+
 interface ModelInfo {
   id: string
   nom: string
@@ -55,6 +73,7 @@ interface ModelInfo {
   disponible: boolean
   gratuit?: boolean
   description?: string
+  capacites?: Capacites
 }
 
 interface CloudCategories {
@@ -1323,6 +1342,53 @@ export default function ModuleBar({
         })
 
         // Item de la liste complète — disponibilité pilotée par /models
+        /**
+         * Les capacites d'un modele, en icones.
+         *
+         * REGLE : une icone n'apparait que pour un FAIT POSITIF. Une capacite
+         * declaree absente (`false`) ne montre rien — l'absence d'icone est
+         * alors l'information. Une capacite INCONNUE (`null`) ne montre pas
+         * rien non plus : elle affiche un marqueur distinct, sans quoi
+         * « personne n'a mesure » se lirait exactement comme « ce modele ne
+         * sait pas le faire ». C'est toute la difference entre les deux etats,
+         * et elle doit se voir a l'ecran, pas seulement dans le JSON.
+         *
+         * `=== true` et non une verite JS : `null` est falsy, donc un test par
+         * troncature ecraserait justement la distinction qu'on transporte
+         * depuis le backend.
+         */
+        const iconesCapacites = (m: ModelInfo) => {
+          const c = m.capacites
+          if (!c) return null      // champ non emis (cloud) : rien a dire
+          const inconnu = c.outils === null && c.vision === null && c.raisonnement === null
+          if (inconnu) {
+            return (
+              <Tooltip
+                content={`capacites inconnues : ${m.provider} n'expose pas cette information, et rien n'est deduit du nom du modele`}
+                side="top"
+              >
+                <span className="text-xs font-mono text-muted/70 shrink-0">?</span>
+              </Tooltip>
+            )
+          }
+          const marques: Array<[boolean, React.ReactNode, string]> = [
+            [c.outils === true, <Wrench key="o" size={11} />, 'appels d’outils'],
+            [c.vision === true, <Eye key="v" size={11} />, 'vision : traite les images'],
+            [c.raisonnement === true, <Brain key="r" size={11} />, 'raisonnement'],
+          ]
+          const visibles = marques.filter(([oui]) => oui)
+          if (visibles.length === 0) return null
+          return (
+            <span className="flex items-center gap-1 shrink-0 text-muted">
+              {visibles.map(([, icone, libelle]) => (
+                <Tooltip key={libelle} content={libelle} side="top">
+                  <span className="flex items-center">{icone}</span>
+                </Tooltip>
+              ))}
+            </span>
+          )
+        }
+
         const modelRow = (m: ModelInfo, dot: string, tag?: string, tagCls?: string) => {
           const isSelected = m.id === selectedModel
           const row = (
@@ -1335,6 +1401,7 @@ export default function ModuleBar({
               }`}>
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? dot : 'bg-line'}`} />
               <span className="flex-1 truncate">{m.nom}</span>
+              {iconesCapacites(m)}
               {tag && <span className={`text-xs shrink-0 ${tagCls}`}>{tag}</span>}
               {isSelected && <Check size={13} className="text-accent shrink-0" />}
               {!m.disponible && <AlertTriangle size={11} className="text-warning shrink-0" />}

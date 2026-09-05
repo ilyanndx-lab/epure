@@ -694,3 +694,92 @@ describe('ModuleBar — mémoire Ollama', () => {
     expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0)
   })
 })
+
+/**
+ * Icônes de capacités : trois états, pas deux.
+ *
+ * L'enjeu n'est pas de savoir dessiner une icône, c'est que **« on ne sait
+ * pas » ne se lise jamais comme « non »**. Une icône est lue comme un fait ;
+ * son absence aussi. Un fournisseur sans source doit donc afficher autre chose
+ * que rien, sinon l'ignorance passe pour une constatation.
+ *
+ * `null` est falsy en JS : un test de vérité par troncature écraserait
+ * exactement la distinction que le backend transporte. Ces tests existent pour
+ * que ça devienne rouge.
+ */
+describe('ModuleBar — capacités des modèles', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+  // `Tooltip` rend son contenu en TEXTE dans le DOM (un span masque par
+  // `opacity`), pas en attribut `title` : les libelles se cherchent donc par
+  // le texte. Ecrit d'abord en `getByTitle`, ces tests echouaient sur une UI
+  // parfaitement correcte.
+  const CAP = (o: boolean | null, v: boolean | null, r: boolean | null) =>
+    ({ outils: o, vision: v, raisonnement: r })
+
+  const ouvrirAvec = async (local: unknown[]) => {
+    poserFetch({
+      ...tableSaine(),
+      '/models': { corps: { ...MODELES_OK, local } },
+      '/models/loaded': { corps: { charges: [] } },
+    })
+    await rendre()
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Local')).toBeTruthy())
+  }
+
+  it('une capacité déclarée présente montre son icône', async () => {
+    await ouvrirAvec([{
+      id: 'qwen3:8b', nom: 'qwen3:8b', provider: 'ollama', disponible: true,
+      capacites: CAP(true, false, true),
+    }])
+    expect(screen.getByText('appels d’outils')).toBeTruthy()
+    expect(screen.getByText('raisonnement')).toBeTruthy()
+  })
+
+  it('une capacité déclarée ABSENTE ne montre rien — l’absence est le fait', async () => {
+    await ouvrirAvec([{
+      id: 'qwen2.5:7b', nom: 'qwen2.5:7b', provider: 'ollama', disponible: true,
+      capacites: CAP(true, false, false),
+    }])
+    await waitFor(() => expect(screen.getByText('appels d’outils')).toBeTruthy())
+    expect(screen.queryByText('vision : traite les images')).toBeNull()
+    expect(screen.queryByText('raisonnement')).toBeNull()
+    // …et surtout PAS le marqueur d'inconnu : ici, on sait.
+    expect(screen.queryByText('?')).toBeNull()
+  })
+
+  it('trois inconnues affichent un marqueur distinct, pas le silence', async () => {
+    // Le cœur du sujet. Sans ce marqueur, un modèle LM Studio dont personne ne
+    // connaît les capacités serait visuellement identique à un modèle Ollama
+    // qui a déclaré n'en avoir aucune.
+    await ouvrirAvec([{
+      id: 'lmstudio:mystere', nom: 'mystere', provider: 'lmstudio', disponible: true,
+      capacites: CAP(null, null, null),
+    }])
+    await waitFor(() => expect(screen.getByText('?')).toBeTruthy())
+    expect(screen.queryByText('appels d’outils')).toBeNull()
+  })
+
+  it('`null` ne se lit pas comme `false` : aucune icône n’est déduite', async () => {
+    await ouvrirAvec([{
+      id: 'flm:qwen3vl-it:4b', nom: 'Qwen3 VL', provider: 'flm', disponible: true,
+      capacites: CAP(null, true, null),
+    }])
+    // La vision est un fait (registre FLM tenu à la main) : elle s'affiche.
+    await waitFor(() => expect(screen.getByText('vision : traite les images')).toBeTruthy())
+    // Les deux autres sont inconnues : rien n'est affirmé, dans aucun sens.
+    expect(screen.queryByText('appels d’outils')).toBeNull()
+    expect(screen.queryByText('raisonnement')).toBeNull()
+  })
+
+  it('un modèle sans le champ (cloud) n’affiche ni icône ni marqueur', async () => {
+    await ouvrirAvec([{
+      id: 'qwen2.5:7b', nom: 'qwen2.5:7b', provider: 'ollama', disponible: true,
+    }])
+    await waitFor(() => expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0))
+    expect(screen.queryByText('?')).toBeNull()
+    expect(screen.queryByText('appels d’outils')).toBeNull()
+  })
+})
