@@ -138,6 +138,74 @@ def lister_charges() -> Optional[list[dict]]:
     return [_decrire(e) for e in entrees if isinstance(e, dict)]
 
 
+# ── Capacités déclarées par Ollama ───────────────────────────────────────────
+#
+# MESURÉ sur Ollama 0.33.3 (ce poste), sept modèles de six familles : `/api/tags`
+# porte un champ `capabilities`, sous-ensemble de `completion` / `tools` /
+# `vision` / `thinking`. `/api/show` (POST — le GET répond 405) rend la même
+# chose, **au même ENSEMBLE près et non à la même liste** : sur `qwen3.6`,
+# `/api/tags` rend `['vision','completion',…]` et `/api/show`
+# `['completion','vision',…]`. D'où des `set` partout ici : une comparaison de
+# listes passerait aujourd'hui et casserait au prochain modèle réordonné.
+#
+# Conséquence de conception : annoter la liste ne coûte **aucune requête de
+# plus**. C'est le même `/api/tags` que `get_ollama_installed` interroge déjà —
+# inutile d'appeler `/api/show` par modèle.
+#
+# Ce qui n'est PAS mesuré : une seule version d'Ollama est installée ici, donc
+# « le champ existe sur toutes les versions » reste une supposition. Un champ
+# absent est traité comme INCONNU, jamais comme « aucune capacité ».
+_CAPACITES = {
+    "outils": "tools",
+    "vision": "vision",
+    "raisonnement": "thinking",
+}
+
+
+def capacites_installees() -> Optional[dict[str, Optional[set]]]:
+    """`{id: capacités}` pour chaque modèle installé. `None` si Ollama ne
+    répond pas ; une valeur `None` pour un modèle dont le champ est absent.
+
+    Deux `None` de portées différentes, et la distinction est utile : l'un dit
+    « pas d'Ollama », l'autre « cet Ollama-là ne déclare rien pour ce modèle ».
+    """
+    data = _appeler("/api/tags", None, _TIMEOUT_LECTURE_S)
+    if data is None:
+        return None
+    entrees = data.get("models")
+    if not isinstance(entrees, list):
+        logger.warning("/api/tags : corps inattendu depuis %s", hote_ollama())
+        return {}
+    out: dict[str, Optional[set]] = {}
+    for e in entrees:
+        if not isinstance(e, dict):
+            continue
+        mid = e.get("model") or e.get("name")
+        if not mid:
+            continue
+        brut = e.get("capabilities")
+        out[mid] = set(brut) if isinstance(brut, list) else None
+    return out
+
+
+def decrire_capacites(declarees: Optional[set]) -> dict:
+    """Traduit un ensemble déclaré en trois états : `True` / `False` / `None`.
+
+    **`False` et `None` ne disent pas la même chose.** `False` est un FAIT —
+    Ollama a déclaré ses capacités et celle-ci n'y est pas. `None` veut dire que
+    personne n'a mesuré : aucune source pour ce fournisseur, ou champ absent.
+    Les confondre ferait afficher une ignorance comme une absence, ce qui est un
+    mensonge sur un point que l'utilisateur lit comme un fait.
+
+    Les trois clés sont TOUJOURS émises, `None` compris : une clé absente arrive
+    `undefined` côté TypeScript, indistinguable d'un `null`, et les
+    normaliseurs du frontend (§8) l'écraseraient vers « absent ».
+    """
+    if declarees is None:
+        return {nom: None for nom in _CAPACITES}
+    return {nom: (cle in declarees) for nom, cle in _CAPACITES.items()}
+
+
 def _agir(model: str, corps: dict, verbe: str) -> dict:
     """Tronc commun de `charger`/`decharger` : agir, PUIS relire l'état réel.
 

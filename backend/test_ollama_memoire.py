@@ -324,6 +324,107 @@ class SondeOrchestrateurTest(_OllamaBouchonne):
         self.assertFalse(orchestrator._ollama_ok())
 
 
+#: `/api/tags` d'Ollama 0.33.3, recopié tel quel. Le champ `capabilities` y est
+#: — mesuré, pas lu dans une doc — donc annoter la liste ne coûte AUCUNE requête
+#: supplémentaire : c'est le même appel que `get_ollama_installed` fait déjà.
+TAGS_AVEC_CAPACITES = {
+    "models": [
+        {"model": "qwen2.5:7b", "name": "qwen2.5:7b",
+         "capabilities": ["completion", "tools"]},
+        {"model": "moondream:latest", "name": "moondream:latest",
+         "capabilities": ["completion", "vision"]},
+        {"model": "qwen3:8b", "name": "qwen3:8b",
+         "capabilities": ["completion", "tools", "thinking"]},
+        # Ordre DIFFÉRENT de celui de /api/show pour le même modèle : mesuré sur
+        # qwen3.6, où /api/tags rend ['vision','completion',...] et /api/show
+        # ['completion','vision',...]. Même ensemble, ordre libre.
+        {"model": "qwen3.6:latest", "name": "qwen3.6:latest",
+         "capabilities": ["vision", "completion", "tools", "thinking"]},
+    ]
+}
+
+#: Ollama plus ancien, ou modèle sans le champ : la capacité est INCONNUE, pas
+#: absente. Aucune version installée sur ce poste ne produit ce cas — il est
+#: donc supposé, et traité dans le sens sûr.
+TAGS_SANS_CAPACITES = {"models": [{"model": "vieux:7b", "name": "vieux:7b"}]}
+
+
+class CapacitesOllamaTest(_OllamaBouchonne):
+    """Capacités déclarées par Ollama lui-même (`/api/tags`).
+
+    MESURÉ sur Ollama 0.33.3, sept modèles de six familles : le champ
+    `capabilities` est présent partout, et vaut un sous-ensemble de
+    `completion` / `tools` / `vision` / `thinking`. `/api/show` rend la même
+    chose — **au même ENSEMBLE près, pas à la même liste** : sur `qwen3.6`, les
+    deux ordres diffèrent. D'où la comparaison en ensembles ici et dans le code.
+
+    Une seule version d'Ollama est installée sur ce poste : « présent sur toutes
+    les versions » n'est donc PAS mesuré, et le champ absent est traité comme
+    « on ne sait pas », jamais comme « aucune capacité ».
+    """
+
+    def test_les_capacites_viennent_de_api_tags_sans_requete_de_plus(self):
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        caps = ollama_memoire.capacites_installees()
+        self.assertEqual(len(self.appels), 1, "une seule requête doit suffire")
+        self.assertTrue(self.appels[0][0].endswith("/api/tags"))
+        self.assertEqual(caps["qwen2.5:7b"], {"completion", "tools"})
+
+    def test_les_trois_capacites_sont_lues(self):
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        caps = ollama_memoire.capacites_installees()
+        self.assertEqual(caps["moondream:latest"], {"completion", "vision"})
+        self.assertEqual(caps["qwen3:8b"], {"completion", "tools", "thinking"})
+        self.assertEqual(caps["qwen3.6:latest"],
+                         {"completion", "vision", "tools", "thinking"})
+
+    def test_l_ordre_du_tableau_ne_compte_pas(self):
+        """`qwen3.6` rend un ordre différent selon l'endpoint interrogé. Une
+        comparaison de LISTES passerait aujourd'hui et casserait au prochain
+        modèle qu'Ollama réordonne."""
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        caps = ollama_memoire.capacites_installees()
+        self.assertIsInstance(caps["qwen3.6:latest"], set)
+
+    def test_champ_absent_rend_none_pas_un_ensemble_vide(self):
+        """INCONNU n'est pas ABSENT. Un ensemble vide dirait « ce modèle ne sait
+        rien faire » ; `None` dit « Ollama ne l'a pas déclaré »."""
+        self.repondre("/api/tags", TAGS_SANS_CAPACITES)
+        self.assertIsNone(ollama_memoire.capacites_installees()["vieux:7b"])
+
+    def test_ollama_injoignable_rend_none(self):
+        self.echouer("/api/tags", OSError("connexion refusee"))
+        self.assertIsNone(ollama_memoire.capacites_installees())
+
+
+class TroisEtatsTest(unittest.TestCase):
+    """oui / non / on ne sait pas — la distinction doit survivre au transport.
+
+    C'est la leçon de `charges: null` (#26), rejouée sur les capacités : un
+    `False` affirme « ce modèle ne le fait pas », un `None` dit « personne ne
+    l'a mesuré ». Les confondre ferait afficher une absence comme un fait.
+    """
+
+    def test_capacite_declaree_donne_vrai_ou_faux(self):
+        caps = ollama_memoire.decrire_capacites({"completion", "tools"})
+        self.assertTrue(caps["outils"])
+        self.assertFalse(caps["vision"], "déclaré et absent = un FAIT négatif")
+        self.assertFalse(caps["raisonnement"])
+
+    def test_rien_de_declare_donne_trois_none(self):
+        caps = ollama_memoire.decrire_capacites(None)
+        self.assertEqual(caps, {"outils": None, "vision": None, "raisonnement": None})
+
+    def test_les_trois_cles_sont_toujours_presentes(self):
+        """Émises explicitement, y compris à `None` : une clé absente arrive en
+        `undefined` côté TypeScript, indistinguable d'un `null`, et les
+        normaliseurs du frontend (§8) l'écraseraient vers « absent »."""
+        for source in (None, set(), {"vision"}):
+            with self.subTest(source=source):
+                self.assertEqual(sorted(ollama_memoire.decrire_capacites(source)),
+                                 ["outils", "raisonnement", "vision"])
+
+
 class SurfaceHttpTest(_OllamaBouchonne):
     """Les trois routes, vues du client.
 
@@ -383,6 +484,97 @@ class SurfaceHttpTest(_OllamaBouchonne):
     def test_le_token_est_exige(self):
         self.repondre("/api/ps", PS_VIDE)
         self.assertEqual(self.client.get("/models/loaded").status_code, 401)
+
+
+class CapacitesDansModelsTest(_OllamaBouchonne):
+    """`GET /models` porte les capacités, avec une SOURCE par fournisseur.
+
+    Trois régimes, et ils ne se valent pas :
+
+    * **Ollama** — capacités déclarées par le serveur lui-même. Les trois états
+      sont connus : une capacité absente de la liste déclarée est un FAIT.
+    * **FLM** — pas de source à l'échelle d'une liste. `/v1/models` ne rend que
+      `{created, id, object, owned_by}` (mesuré). Seule la vision est connue,
+      et par un registre TENU À LA MAIN qui existe déjà dans le dépôt
+      (`FLM_MODELS_STATIC`, flag `vision`) — pas une déduction sur le nom.
+    * **LM Studio** — rien de mesurable ici (serveur éteint sur ce poste). Les
+      trois sont `None`.
+
+    **Aucune heuristique de nom.** « vl » ne vaut pas vision, « r1 » ne vaut pas
+    raisonnement : une icône est lue comme un fait, et une supposition affichée
+    comme un fait est un mensonge. Là où il n'y a pas de source, il y a `None`.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        from fastapi.testclient import TestClient
+        import main
+        from core.auth import get_api_token
+        self.main = main
+        self.client = TestClient(main.app, base_url="http://localhost",
+                                 client=("127.0.0.1", 54321))
+        self.entetes = {"Authorization": f"Bearer {get_api_token()}"}
+
+    def _modeles(self, **surcharges):
+        """`GET /models` avec les sondes externes neutralisées."""
+        defauts = {
+            "get_ollama_installed": ["qwen2.5:7b", "moondream:latest"],
+            "get_lmstudio_installed": [],
+            "check_flm": False,
+        }
+        defauts.update(surcharges)
+        with mock.patch.object(self.main, "get_ollama_installed",
+                               return_value=defauts["get_ollama_installed"]), \
+             mock.patch.object(self.main, "get_lmstudio_installed",
+                               return_value=defauts["get_lmstudio_installed"]), \
+             mock.patch.object(self.main, "check_flm",
+                               return_value=defauts["check_flm"]):
+            return self.client.get("/models", headers=self.entetes).json()
+
+    def test_ollama_porte_des_capacites_connues(self):
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        par_id = {m["id"]: m for m in self._modeles()["local"]}
+        self.assertEqual(par_id["qwen2.5:7b"]["capacites"],
+                         {"outils": True, "vision": False, "raisonnement": False})
+        self.assertEqual(par_id["moondream:latest"]["capacites"],
+                         {"outils": False, "vision": True, "raisonnement": False})
+
+    def test_ollama_injoignable_rend_trois_inconnues(self):
+        """Pas de source jointe = pas de fait. Surtout pas trois `False`, qui
+        affirmeraient que ces modèles ne savent rien faire."""
+        self.echouer("/api/tags", OSError("connexion refusee"))
+        for m in self._modeles()["local"]:
+            self.assertEqual(m["capacites"],
+                             {"outils": None, "vision": None, "raisonnement": None})
+
+    def test_lmstudio_a_trois_inconnues(self):
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        self.echouer("/v1/models", OSError("eteint"))
+        rep = self._modeles(get_lmstudio_installed=["llama-3.1-8b-instruct"])
+        for m in rep["local_lmstudio"]:
+            self.assertEqual(m["capacites"],
+                             {"outils": None, "vision": None, "raisonnement": None})
+
+    def test_les_trois_cles_existent_toujours_dans_le_json(self):
+        """Émises même à `null` : une clé absente arrive `undefined` côté
+        TypeScript et se confond avec « pas de capacité »."""
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        for m in self._modeles()["local"]:
+            self.assertEqual(sorted(m["capacites"]),
+                             ["outils", "raisonnement", "vision"])
+
+    def test_les_modeles_cloud_ne_portent_pas_le_champ(self):
+        """Hors périmètre de ce lot : le champ est ABSENT plutôt que `null`
+        partout, ce qui ferait apparaître un marqueur « inconnu » sur chaque
+        ligne cloud — beaucoup de bruit pour une question que personne n'a
+        posée. Le distinguer d'un `null` est délibéré."""
+        self.repondre("/api/tags", TAGS_AVEC_CAPACITES)
+        rep = self._modeles()
+        for models in rep["cloud"].values():
+            for m in models:
+                self.assertNotIn("capacites", m)
 
 
 class AucunAppelReseauReelTest(_OllamaBouchonne):
