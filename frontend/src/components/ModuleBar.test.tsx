@@ -145,11 +145,19 @@ type Reponse = { status?: number; corps: unknown }
  *
  * Le défaut est un 500 et non un 404 : on veut que toute route oubliée par un
  * test se comporte comme le pire cas réel, pas comme un silence.
+ *
+ * La clé retenue est la PLUS LONGUE qui corresponde, jamais la première trouvée.
+ * Avec `find`, `/models/loaded` tombait sur l'entrée `/models` — déclarée avant
+ * dans `tableSaine` — et recevait le corps de la liste des modèles : le test
+ * échouait en décrivant un composant qui marchait, sur une route qu'il n'avait
+ * jamais consultée. Un bouchon qui répond à côté est pire qu'un bouchon absent.
  */
 function poserFetch(table: Record<string, Reponse>) {
   const impl = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : String(input)
-    const cle = Object.keys(table).find(k => url.includes(k))
+    const cle = Object.keys(table)
+      .filter(k => url.includes(k))
+      .sort((a, b) => b.length - a.length)[0]
     const { status = 200, corps } = cle ? table[cle] : { corps: ERREUR_500, status: 500 }
     return new Response(JSON.stringify(corps), {
       status,
@@ -592,5 +600,97 @@ describe('ModuleBar — toggle de réflexion, honnête selon le provider', () =>
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
     expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
     expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
+  })
+})
+
+/**
+ * Modèles Ollama résidents en mémoire (`GET /models/loaded`).
+ *
+ * La distinction qui porte tout : `charges: null` veut dire « Ollama ne répond
+ * pas », `charges: []` veut dire « Ollama répond et rien n'est chargé ». Les
+ * confondre afficherait « injoignable » sur une machine au repos parfaitement
+ * saine — ou proposerait un bouton « charger » là où il n'y a pas de serveur.
+ *
+ * L'état est lu À L'OUVERTURE du panneau, sans action : c'est une exigence, pas
+ * un détail — un état qu'il faut demander n'est pas un état visible.
+ */
+describe('ModuleBar — mémoire Ollama', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+  const ouvrirListe = async () => {
+    await rendre()
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Local')).toBeTruthy())
+  }
+
+  it('rien de chargé : le bouton propose « charger », sans mention de mémoire', async () => {
+    poserFetch({ ...tableSaine(), '/models/loaded': { corps: { charges: [] } } })
+    await ouvrirListe()
+    await waitFor(() => expect(screen.getByText('charger')).toBeTruthy())
+    expect(screen.queryByText('en mémoire')).toBeNull()
+  })
+
+  it('modèle chargé : il est annoncé « en mémoire » et le bouton propose « libérer »', async () => {
+    poserFetch({
+      ...tableSaine(),
+      '/models/loaded': { corps: { charges: [{ id: 'qwen2.5:7b', processeur: 'cpu' }] } },
+    })
+    await ouvrirListe()
+    await waitFor(() => expect(screen.getByText('en mémoire')).toBeTruthy())
+    expect(screen.getByText('libérer')).toBeTruthy()
+    expect(screen.queryByText('charger')).toBeNull()
+  })
+
+  it('Ollama absent : aucun bouton, aucune alerte — le cas nominal se tait', async () => {
+    // `charges: null` et non une liste vide : c'est la réponse du backend quand
+    // Ollama ne répond pas, et elle NE DOIT PAS virer au rouge.
+    poserFetch({ ...tableSaine(), '/models/loaded': { corps: { charges: null } } })
+    await ouvrirListe()
+    expect(screen.queryByText('charger')).toBeNull()
+    expect(screen.queryByText('libérer')).toBeNull()
+    expect(screen.queryByText('en mémoire')).toBeNull()
+  })
+
+  it('la route absente est traitée comme Ollama absent, pas comme une panne', async () => {
+    // Une instance plus ancienne n'a pas cette route : 404. Le panneau doit se
+    // comporter comme sans Ollama, pas afficher une erreur.
+    poserFetch({ ...tableSaine(), '/models/loaded': { status: 404, corps: { detail: 'Not Found' } } })
+    await ouvrirListe()
+    expect(screen.queryByText('charger')).toBeNull()
+    expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0)
+  })
+
+  it('une éjection sans effet affiche SON message et laisse le modèle chargé', async () => {
+    // Le cas mesuré : une génération tient le modèle, Ollama répond 200
+    // `unload` et ne libère rien. Le backend relit et renvoie `ok: false` avec
+    // le modèle toujours dans `charges`. Croire le succès afficherait
+    // « libéré » puis un retour inexpliqué.
+    poserFetch({
+      ...tableSaine(),
+      '/models/loaded': { corps: { charges: [{ id: 'qwen2.5:7b' }] } },
+      '/models/unload': {
+        corps: {
+          ok: false,
+          message: '« qwen2.5:7b » est toujours chargé : une génération l\'utilise sans doute.',
+          charges: [{ id: 'qwen2.5:7b' }],
+        },
+      },
+    })
+    await ouvrirListe()
+    await waitFor(() => expect(screen.getByText('libérer')).toBeTruthy())
+
+    await act(async () => { screen.getByText('libérer').click() })
+
+    await waitFor(() => expect(screen.getByText(/toujours chargé/)).toBeTruthy())
+    expect(screen.getByText('en mémoire')).toBeTruthy()
+    expect(screen.getByText('libérer')).toBeTruthy()
+  })
+
+  it('un corps sans `charges` ne casse pas le rendu', async () => {
+    // §8 : aucune réponse n'est crue sur sa forme.
+    poserFetch({ ...tableSaine(), '/models/loaded': { corps: { detail: 'autre chose' } } })
+    await ouvrirListe()
+    expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0)
   })
 })
