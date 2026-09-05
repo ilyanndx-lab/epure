@@ -74,6 +74,7 @@ python test_module_validate.py    # gate AST des routers générés
 python test_safe_path.py          # confinement de chemin du codeagent
 python test_jsonstore.py          # lecture/écriture JSON (BOM)
 python test_module_states.py      # deux états des modules + migration (§3.3)
+python test_arbre_modules_deterministe.py  # l'arbre de _test_env ne dépend pas du poste (§3.5)
 python test_web_search.py         # recherche web, HTTP mocké
 python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
 python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
@@ -694,7 +695,24 @@ ces imports. `backend/_test_env.py` pose les **sept** variables sur des
 temporaires uniques pour la session — `backend/modules/` et
 `frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
 voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
-testable : son `rmtree` frappe la copie. `EPURE_MODELS_DIR`, `EPURE_EMBEDDING_DIR`,
+testable : son `rmtree` frappe la copie.
+
+**IMPÉRATIF — la copie écarte les modules installés sur CE poste**, c'est-à-dire
+tout manifeste d'`origin` `catalogue` ou `workshop` (`_test_env.MODULES_DU_POSTE`,
+appliqué aux DEUX moitiés : `backend/modules/` et `frontend/src/modules/generated/`,
+que `catalogue.install()`/`uninstall()` écrivent et retirent ensemble). Sans ça
+l'arbre de test dépend de ce que l'utilisateur a installé, et la suite ne mesure
+pas la même chose ici et en CI — payé par
+`test_catalogue.test_catalogue_liste_les_six_avec_installe`, rouge en permanence
+sur le poste de dev et vert en CI parce que le module `code` y était réellement
+installé : `installé: True` était la bonne réponse à une question posée au
+mauvais arbre. **Ce n'était pas un problème d'ordre d'exécution** — il échouait
+seul, dans les deux sens de n'importe quelle paire — et c'est la fausse piste
+qui l'a fait survivre. Le défaut est de COPIER : un dossier sans manifeste
+(`_atelier`, un reliquat de désinstallation) ou un manifeste sans `origin` reste
+copié, mieux vaut un arbre trop riche qu'un module versionné disparu en silence.
+Verrouillé par `test_arbre_modules_deterministe.py`, qui tient aussi la liaison
+tardive de `resolve_modules_dir()`. `EPURE_MODELS_DIR`, `EPURE_EMBEDDING_DIR`,
 `EPURE_VECTOR_DIR` et `EPURE_WEB_DIR` sont posés sur des temporaires **vides**,
 pour des raisons distinctes : copier 76 Mo de modèle vocal ou 90 Mo de modèle
 d'embedding n'aurait aucun sens et aucun test ne les lit (détournés seulement pour

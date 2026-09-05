@@ -250,12 +250,36 @@ class SuppressionOrdreTest(BaseCatalogue):
 
 class InstallationTest(BaseCatalogue):
     def test_catalogue_liste_les_six_avec_installe(self):
+        """Ce test échouait en permanence sur le poste de dev et jamais en CI.
+
+        Pas à cause de l'ordre d'exécution : l'arbre de `_test_env` était une
+        copie du vrai `backend/modules/`, où un développeur a de vrais modules
+        de catalogue installés. `installé: True` était la bonne réponse à une
+        question posée au mauvais arbre. L'assertion ci-dessous n'a pas bougé —
+        c'est l'arbre qui est désormais celui d'un clone frais (cf.
+        `test_arbre_modules_deterministe.py`).
+        """
         mods = catalogue.list_catalogue()
         ids = sorted(m["id"] for m in mods)
         self.assertEqual(ids, ["code", "docs", "flashcards", "kholle", "rangement", "reviseur"])
         for m in mods:
             self.assertIn("installé", m)
             self.assertFalse(m["installé"], "aucun installable ne doit l'être par défaut")
+
+    def test_installe_bascule_a_vrai_pour_le_seul_module_installe(self):
+        """Le pendant du test ci-dessus, et ce qu'il ne pouvait pas voir seul :
+        un `list_catalogue()` qui répondrait TOUJOURS `False` le passait. Les
+        deux côtés du drapeau ne valent qu'ensemble."""
+        catalogue.install("flashcards")
+        self.addCleanup(shutil.rmtree, self.modules / "flashcards", True)
+        self.addCleanup(shutil.rmtree, self.generated / "flashcards", True)
+
+        etats = {m["id"]: m["installé"] for m in catalogue.list_catalogue()}
+        self.assertTrue(etats["flashcards"], "le module installé doit être vu installé")
+        self.assertEqual(
+            sorted(mid for mid, pose in etats.items() if pose), ["flashcards"],
+            "installer un module ne doit pas en marquer d'autres",
+        )
 
     def test_install_copie_les_trois_fichiers(self):
         catalogue.install("flashcards")
