@@ -8,6 +8,7 @@ llm, quota_tracker, provider_of, pick_reflection_model) injectés via core.runti
 import asyncio
 import json
 import logging
+from functools import partial
 from pathlib import Path as _P
 from threading import Thread
 
@@ -19,12 +20,15 @@ from core.auth import ws_require_token
 from core.codeagent import (
     execute_code as _code_exec,
     create_file as _code_create,
+    appliquer_ecriture as _code_apply_write,
     read_file as _code_read,
     delete_path as _code_delete,
     create_folder as _code_mkdir,
     rename_path as _code_rename,
     get_tree as _code_tree,
     SecurityError as _CodeSecurityError,
+    SauvegardeError as _CodeSauvegardeError,
+    ORIGINE_EDITEUR as _ORIGINE_EDITEUR,
     install_package as _code_install,
     generate_tests as _code_generate_tests,
 )
@@ -78,11 +82,27 @@ async def code_file_get(path: str):
 
 @router.post("/code/file")
 async def code_file_post(req: CodeFileRequest):
+    """Enregistrement depuis l'éditeur (bouton « sauv » et auto-save).
+
+    Origine ÉDITEUR : ces copies sont plafonnées (cf. `RETENTION_EDITEUR`),
+    contrairement à celles du modèle. C'est l'unique appelant côté éditeur —
+    l'origine est passée ici, `create_file` ne peut pas la deviner.
+
+    **Le 409 porte le message de `SauvegardeError` mot pour mot**, et ce n'est
+    pas du confort : depuis que l'écriture est fail-closed, ce chemin peut
+    refuser d'enregistrer, et « Erreur création » ne dirait pas POURQUOI un
+    fichier qu'on vient de taper n'est pas sur le disque. 409 et non 500 : rien
+    n'a planté, une pré-condition n'est pas remplie.
+    """
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, _code_create, req.path, req.content)
+        result = await loop.run_in_executor(
+            None, partial(_code_create, req.path, req.content,
+                          origine=_ORIGINE_EDITEUR))
     except _CodeSecurityError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except _CodeSauvegardeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception:
         logger.exception("Erreur création fichier code %s", req.path)
         raise HTTPException(status_code=500, detail="Erreur création")
@@ -283,6 +303,28 @@ async def ws_code(websocket: WebSocket):
                     if event.get("type") == "tests_done":
                         quota_tracker.track("tests", _provider_of(model), event.get("count", 0))
                     await websocket.send_text(json.dumps(event, ensure_ascii=False))
+
+            elif msg_type == "write_confirm":
+                # Repli « aucun tool appelé » : l'agent a PROPOSÉ d'écrire le
+                # bloc de code sur le fichier actif (event `write_request`) et
+                # n'a rien écrit. C'est ici, et seulement après le clic de
+                # l'utilisateur, que l'écriture a lieu — avec sauvegarde de la
+                # version précédente (`appliquer_ecriture`). Même forme que
+                # `execute_confirm` juste en dessous, y compris le rattrapage
+                # de SecurityError, sans quoi un chemin hors workspace tuerait
+                # la connexion au lieu d'afficher une erreur.
+                path = msg.get("path", "")
+                content = msg.get("content", "")
+                try:
+                    result = await loop.run_in_executor(None, _code_apply_write, path, content)
+                except _CodeSecurityError as e:
+                    result = {"status": "error", "result": str(e)}
+                await websocket.send_text(json.dumps(
+                    {"type": "tool_result", "tool": "create_file", "path": path,
+                     "result": result.get("result", ""),
+                     "status": result.get("status", "error")},
+                    ensure_ascii=False,
+                ))
 
             elif msg_type == "execute_confirm":
                 path = msg.get("path", "")

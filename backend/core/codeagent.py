@@ -7,11 +7,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Generator, Optional
 
-from core.paths import resolve_workspace
+from core.paths import resolve_data_dir, resolve_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -165,12 +167,295 @@ def _safe_path(relative: str) -> Path:
 
 # ── File tools ─────────────────────────────────────────────────────────────
 
-def create_file(path: str, content: str) -> str:
+def _dossier_sauvegardes() -> Path:
+    """Racine des sauvegardes d'écrasement, HORS du workspace.
+
+    ⚠️ **Appelée, jamais figée dans une constante de module** (§3.5 de
+    CLAUDE.md) : `resolve_data_dir()` est détourné par `_test_env` APRÈS les
+    imports, et une constante calculée au chargement ferait écrire la suite de
+    tests dans les données réelles.
+
+    Pourquoi pas un `.epure_backups/` dans le workspace, qui serait pourtant
+    plus simple : `get_tree` ne filtre rien, donc le dossier apparaîtrait dans
+    l'arborescence de l'utilisateur, et `_safe_path` l'y rendrait accessible au
+    modèle — qui pourrait écraser ou supprimer les sauvegardes faites pour se
+    protéger de lui.
+    """
+    return resolve_data_dir() / "code_backups"
+
+
+# ── Origine d'une sauvegarde, et ce qu'elle change ───────────────────────────
+#
+# Les deux chemins qui écrivent n'ont pas la même valeur de conservation :
+#
+#   - MODÈLE  — le modèle a écrit un fichier. C'est LA raison d'être du
+#     dispositif : la copie d'avant est parfois la seule version qui reste.
+#   - ÉDITEUR — l'utilisateur a enregistré depuis Monaco. Avec l'auto-save,
+#     c'est une copie par pause de frappe.
+#
+# Le coût des instantanés d'éditeur n'est pas le disque (du texte, négligeable)
+# mais la **findabilité** : sans plafond, la copie d'avant un écrasement par le
+# modèle se noie sous des centaines d'instantanés de frappe — exactement ce que
+# le dispositif est censé rendre retrouvable. D'où deux rétentions.
+ORIGINE_MODELE = "modele"
+ORIGINE_EDITEUR = "editeur"
+_ORIGINES = (ORIGINE_MODELE, ORIGINE_EDITEUR)
+
+# Plafond des sauvegardes d'origine ÉDITEUR, par fichier. Dix, et pas un chiffre
+# choisi pour le disque : Monaco a son propre annuler pour revenir en arrière
+# DANS la session, donc ces copies servent l'après-rechargement. Dix pas est
+# plus loin que ce que quiconque reconstruit à la main, et ça garde la liste des
+# sauvegardes d'un fichier lisible d'un coup d'œil — ce qui EST l'objectif.
+#
+# Les sauvegardes d'origine MODÈLE, elles, ne sont jamais purgées. L'invariant
+# « une purge n'emporte jamais une sauvegarde modèle » est donc vrai par
+# CONSTRUCTION — la purge ne regarde que les fichiers portant l'autre origine —
+# et non défendu par une condition qu'on pourrait casser. Qui voudrait plafonner
+# aussi le côté modèle doit savoir que c'est cette structure-là qu'il retire.
+RETENTION_EDITEUR = 10
+
+
+def sauvegarder_version(path: str, origine: str) -> Optional[Path]:
+    """Copie la version actuelle de `path` avant écriture. `None` si le
+    fichier n'existe pas encore (créer n'est pas écraser).
+
+    `origine` (`ORIGINE_MODELE` / `ORIGINE_EDITEUR`) est inscrite dans le NOM de
+    la copie plutôt que dans un fichier annexe : rien à tenir synchronisé, rien
+    à migrer, et l'origine reste lisible à l'œil dans le dossier. C'est aussi ce
+    qui rend la purge sélective — elle ne matche qu'un motif.
+
+    Horodatage à la microseconde : deux écritures successives sur le même
+    fichier dans la même seconde ne doivent pas faire perdre la première
+    sauvegarde en écrasant la seconde — soit exactement le problème qu'on
+    cherche à empêcher, rejoué un cran plus bas. C'est aussi ce qui fait que
+    l'ordre lexicographique des noms EST l'ordre chronologique (largeur fixe),
+    dont dépend la purge pour savoir lesquelles sont les plus récentes.
+    """
+    if origine not in _ORIGINES:
+        raise ValueError(f"Origine de sauvegarde inconnue : {origine!r}")
     target = _safe_path(path)
+    if not target.exists() or not target.is_file():
+        return None
+    horodatage = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    relatif = target.relative_to(WORKSPACE)
+    copie = (_dossier_sauvegardes() / relatif.parent
+             / f"{target.name}.{horodatage}.{origine}.bak")
+    copie.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target, copie)
+    logger.info("sauvegarde avant écriture (%s) : %s → %s", origine, target, copie)
+    return copie
+
+
+def _purger_sauvegardes_editeur(target: Path) -> None:
+    """Ne garde que les `RETENTION_EDITEUR` dernières sauvegardes d'origine
+    ÉDITEUR de `target`. Ne touche à rien d'autre.
+
+    Le motif porte l'origine, donc :
+      - les sauvegardes d'origine modèle sont hors d'atteinte ;
+      - celles d'avant l'étiquetage (`<nom>.<horodatage>.bak`, sans segment
+        d'origine, déjà sur le disque) ne matchent pas non plus — conservées
+        délibérément : on ignore d'où elles viennent, on les traite donc comme
+        les plus précieuses.
+
+    **Du ménage, pas une condition de l'écriture** : à l'inverse exact de la
+    sauvegarde, un échec ici est logué et avalé. Le fichier est déjà écrit ;
+    refuser après coup ne rendrait rien à personne.
+    """
+    try:
+        relatif = target.relative_to(WORKSPACE)
+        dossier = _dossier_sauvegardes() / relatif.parent
+        copies = sorted(dossier.glob(f"{target.name}.*.{ORIGINE_EDITEUR}.bak"))
+    except (OSError, ValueError):
+        logger.warning("purge des sauvegardes : listage impossible — %s", target)
+        return
+    for vieille in copies[:max(0, len(copies) - RETENTION_EDITEUR)]:
+        try:
+            vieille.unlink()
+        except OSError:
+            logger.warning("purge des sauvegardes : suppression impossible — %s",
+                           vieille)
+
+
+class SauvegardeError(Exception):
+    """La sauvegarde préalable a échoué, donc **l'écriture n'a pas eu lieu**.
+
+    Volontairement PAS une sous-classe d'`OSError` : elle traverse les blocs
+    qui rattrapent les erreurs d'écriture pour dire l'inverse d'une écriture
+    ratée — rien n'a été touché sur le disque.
+    """
+
+
+# ── Échecs de sauvegarde répétés : une trace, puis un compteur ────────────────
+#
+# L'auto-save de l'éditeur réessaie à CHAQUE pause de frappe, et c'est le bon
+# comportement : un auto-save qui abandonne laisserait le contenu dans le seul
+# navigateur. Mais avec une cause persistante — dossier de sauvegarde
+# inaccessible — ça produit une pile complète toutes les 1,5 s pour UNE cause
+# racine, qui noie le reste du fichier de log. La première trace est utile, les
+# suivantes la répètent.
+#
+# **« Identique » = chemin + TYPE de la cause, jamais le message.** Le message
+# nomme la copie visée, dont le nom porte un horodatage à la microseconde : deux
+# tentatives n'ont donc jamais le même message, et dédupliquer dessus ne
+# dédupliquerait rien. Le type change, lui, quand la cause change (un disque
+# plein après un dossier manquant est un autre problème) et mérite sa trace.
+#
+# Verrou : ces écritures partent du pool de threads d'uvicorn, donc deux
+# tentatives concurrentes sont possibles ; sans lui, un lire-modifier-écrire
+# perdrait un incrément — et l'enjeu ici est justement de compter juste.
+_echecs_sauvegarde: dict[tuple[str, str], int] = {}
+_verrou_echecs = threading.Lock()
+
+
+def _pile_attendue(nombre: int) -> bool:
+    """Faut-il ressortir la pile à cette occurrence ? Vrai aux **puissances de
+    dix** — 1, 10, 100, 1000, …
+
+    Pourquoi ré-échantillonner du tout : dédupliquer sur (chemin, type) sans
+    jamais reprendre une pile cacherait une cause racine NEUVE de même type.
+    `PermissionError` couvre aussi bien un dossier de sauvegarde bloqué qu'un
+    fichier verrouillé par un autre process, et la pile est ce qui les
+    distingue.
+
+    Pourquoi une suite géométrique et non un pas fixe : le déclencheur est
+    l'auto-save, qui réessaie environ toutes les 1,5 s. Un pas fixe de 10
+    donnerait une pile toutes les 15 s, c'est-à-dire le bruit qu'on vient de
+    retirer. Les puissances de dix placent les piles à ~0 s, ~15 s, ~2,5 min,
+    ~25 min : chaque reprise coûte une trace de plus mais confirme que la cause
+    n'a pas changé, et l'écart grandit exactement comme la probabilité que
+    l'opérateur soit déjà au courant. La suite est **non bornée** — une cause
+    qui changerait à la 5000e tentative finit par avoir sa pile.
+    """
+    while nombre > 1 and nombre % 10 == 0:
+        nombre //= 10
+    return nombre == 1
+
+
+def _prochaine_pile(nombre: int) -> int:
+    """Rang de la prochaine occurrence qui ressortira une pile : la puissance
+    de dix strictement supérieure à `nombre`."""
+    return 10 ** len(str(nombre))
+
+
+def _signaler_echec_sauvegarde(cible: str, exc: BaseException) -> None:
+    """Logue un échec de sauvegarde. Trace complète aux rangs de
+    `_pile_attendue` ; entre deux, un `warning` porteur du nombre de tentatives
+    consécutives **et du rang de la prochaine pile** — sans ce rang, l'opérateur
+    ne sait pas s'il doit attendre la trace suivante ou provoquer lui-même la
+    reproduction. À appeler DEPUIS un bloc `except` (`logger.exception` y prend
+    la pile en cours)."""
+    cle = (cible, type(exc).__name__)
+    with _verrou_echecs:
+        nombre = _echecs_sauvegarde.get(cle, 0) + 1
+        _echecs_sauvegarde[cle] = nombre
+    if _pile_attendue(nombre):
+        logger.exception(
+            "écriture annulée : sauvegarde impossible — %s (%s, tentative n°%d ; "
+            "pile suivante à la %de)",
+            cible, type(exc).__name__, nombre, _prochaine_pile(nombre),
+        )
+    else:
+        logger.warning(
+            "écriture annulée : sauvegarde impossible — %s (%s, %d tentatives "
+            "consécutives ; pile suivante à la %de)",
+            cible, type(exc).__name__, nombre, _prochaine_pile(nombre),
+        )
+
+
+def _oublier_echecs_sauvegarde(cible: str) -> None:
+    """Une écriture réussie remet ce chemin à zéro : la prochaine panne, même
+    d'un type déjà vu, redevient une première occurrence — sans quoi une cause
+    transitoire ferait taire la trace de la suivante.
+
+    Efface toutes les entrées de ce chemin, quel que soit le type de cause :
+    c'est aussi ce qui borne la table, dont les clés ne vivent que le temps
+    d'une panne."""
+    with _verrou_echecs:
+        for cle in [k for k in _echecs_sauvegarde if k[0] == cible]:
+            del _echecs_sauvegarde[cle]
+
+
+def _ecrire_avec_sauvegarde(path: str, content: str, origine: str) -> Optional[Path]:
+    """Écriture confinée, précédée de la sauvegarde de la version existante.
+
+    **Point de sauvegarde UNIQUE de tout le module** : `create_file`,
+    `appliquer_ecriture` et `edit_file` passent tous par ici, et aucun ne
+    rappelle `sauvegarder_version` — sinon la même version serait copiée deux
+    fois sur le chemin confirmé.
+
+    Rend la copie faite (`None` si le fichier n'existait pas). Le MESSAGE reste
+    à l'appelant : « créé » et « modifié » ne disent pas la même chose à
+    l'utilisateur, et c'est ce qu'il lit dans le fil.
+    """
+    target = _safe_path(path)
+    try:
+        sauvegarde = sauvegarder_version(path, origine)
+    except OSError as exc:
+        # Fail-closed : sans sauvegarde, l'écrasement est irréversible
+        # (`workspace/` est gitignoré). Mieux vaut ne rien écrire.
+        _signaler_echec_sauvegarde(str(target), exc)
+        raise SauvegardeError(
+            f"Écriture annulée : impossible de sauvegarder la version actuelle ({exc})."
+        ) from exc
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
-    logger.info("create_file: %s", target)
+    _oublier_echecs_sauvegarde(str(target))
+    if origine == ORIGINE_EDITEUR:
+        _purger_sauvegardes_editeur(target)
+    return sauvegarde
+
+
+def create_file(path: str, content: str, *, origine: str) -> str:
+    """Écrit `path` dans le workspace, en écrasant s'il existe déjà.
+
+    **Filet général contre l'écrasement, et c'est ici qu'il doit vivre** : tout
+    ce qui remplace un fichier du workspace passe par cette fonction — le tool
+    `create_file` du modèle (`dispatch_tool`, sans confirmation), le repli
+    confirmé (`appliquer_ecriture`), `generate_tests`, et le `POST /code/file`
+    de l'éditeur. (`edit_file` écrit à part, mais par le même
+    `_ecrire_avec_sauvegarde`.) Sauvegarder dans le seul chemin confirmé ne
+    couvrait que celui-là ; le poser ici couvre aussi les appelants à venir,
+    qui n'auront rien à savoir de ce filet.
+
+    **`origine` est obligatoire et nommée.** C'est justement parce que cette
+    fonction est l'entrée COMMUNE aux deux chemins qu'elle ne peut pas deviner
+    lequel l'appelle, et une valeur par défaut serait cette devinette : elle
+    classerait les enregistrements d'un futur appelant du mauvais côté de la
+    rétention, en silence. L'oubli échoue donc bruyamment — `TypeError`, et rien
+    d'écrit, ce qui est le bon sens de l'échec.
+
+    Si la sauvegarde échoue, **on n'écrit pas** (`SauvegardeError`) : même règle
+    et même raison que le chemin confirmé — `workspace/` est gitignoré, personne
+    ne retrouverait la version perdue.
+    """
+    _ecrire_avec_sauvegarde(path, content, origine)
+    logger.info("create_file: %s", path)
     return f"Fichier créé : {path}"
+
+
+def appliquer_ecriture(path: str, content: str) -> dict:
+    """Écriture confirmée par l'utilisateur (repli « aucun tool appelé » et
+    conversion markdown d'`edit_file`).
+
+    Origine MODÈLE : le contenu vient du modèle, l'utilisateur n'a fait que
+    valider. C'est le cas que la rétention doit conserver.
+
+    Ne sauvegarde pas elle-même : `_ecrire_avec_sauvegarde` le fait pour tout le
+    monde. Cette fonction ne garde que ce qui lui est propre — rendre un dict au
+    lieu de lever, et nommer la copie dans le message affiché.
+    """
+    try:
+        sauvegarde = _ecrire_avec_sauvegarde(path, content, ORIGINE_MODELE)
+        resultat = f"Fichier créé : {path}"
+    except (SecurityError, SauvegardeError) as exc:
+        return {"status": "error", "result": str(exc), "sauvegarde": None}
+    except Exception as exc:
+        logger.exception("appliquer_ecriture: %s", path)
+        return {"status": "error", "result": str(exc), "sauvegarde": None}
+    if sauvegarde is not None:
+        resultat += f" (version précédente sauvegardée : {sauvegarde.name})"
+    return {"status": "success", "result": resultat,
+            "sauvegarde": str(sauvegarde) if sauvegarde else None}
 
 
 def read_file(path: str) -> str:
@@ -181,13 +466,25 @@ def read_file(path: str) -> str:
 
 
 def edit_file(path: str, old_content: str, new_content: str) -> str:
+    """Remplace une occurrence de `old_content` par `new_content`.
+
+    Passe par `_ecrire_avec_sauvegarde` comme les autres écritures : c'est une
+    modification ciblée et non un écrasement complet, mais un remplacement raté
+    fait perdre le texte remplacé tout aussi définitivement — `workspace/` est
+    gitignoré. Ce chemin était le seul à écrire directement, donc le seul resté
+    hors du filet.
+
+    Garde son propre message : « modifié » et « créé » ne disent pas la même
+    chose dans le fil de l'utilisateur.
+    """
     target = _safe_path(path)
     if not target.exists():
         return f"Erreur : fichier introuvable — {path}"
     original = target.read_text(encoding="utf-8", errors="replace")
     if old_content not in original:
         return f"Erreur : texte introuvable dans {path}"
-    target.write_text(original.replace(old_content, new_content, 1), encoding="utf-8")
+    _ecrire_avec_sauvegarde(path, original.replace(old_content, new_content, 1),
+                            ORIGINE_MODELE)
     logger.info("edit_file: %s", target)
     return f"Fichier modifié : {path}"
 
@@ -725,6 +1022,32 @@ _MD_TOOL_RE = re.compile(
 # Standalone code block — used by the no-tool fallback
 _CODE_BLOCK_RE = re.compile(r'```(?:\w+)?\r?\n([\s\S]*?)\r?\n```')
 
+# Pseudo-outil : « le modèle propose un contenu, l'utilisateur tranche ».
+# N'existe QUE dans la liste rendue par `parse_tool_calls` ; `run_turn`
+# l'intercepte avant `dispatch_tool`, qui ne le connaît pas (et le refuserait
+# en « Outil inconnu » — repli sûr si un jour un autre appelant l'oubliait).
+_TOOL_PROPOSITION_ECRITURE = "__proposition_ecriture__"
+
+
+def _demande_ecriture(path: str, content: str) -> Optional[dict]:
+    """Événement `write_request` pour `path`, ou `None` si `path` est vide.
+
+    Un seul endroit calcule `existant` — le drapeau qui fait dire « écraser »
+    plutôt que « créer » à la carte de confirmation. Une SecurityError n'annule
+    pas la demande : c'est `appliquer_ecriture` qui refusera au moment du clic,
+    avec un message, plutôt que de faire disparaître la proposition en silence.
+    """
+    path = (path or "").strip()
+    if not path:
+        return None
+    existant = False
+    try:
+        existant = _safe_path(path).is_file()
+    except SecurityError:
+        logger.warning("demande d'écriture : chemin hors workspace — %s", path)
+    return {"type": "write_request", "path": path, "content": content,
+            "existant": existant}
+
 
 def parse_tool_calls(text: str) -> list[dict]:
     calls: list[dict] = []
@@ -753,8 +1076,17 @@ def parse_tool_calls(text: str) -> list[dict]:
             call: dict = {"tool": tool, "path": path}
             if content is not None:
                 if tool == "edit_file":
-                    # Markdown gives full content only — treat as full file write
-                    call["tool"] = "create_file"
+                    # Le markdown ne donne ni `old` ni `new` : l'édition
+                    # partielle demandée est donc IMPOSSIBLE à exécuter. Ce cas
+                    # était converti en `create_file`, c'est-à-dire en
+                    # écrasement du fichier entier par le fragment cité — on
+                    # transformait « remplace ces lignes » en « remplace tout »,
+                    # sans confirmation et sans que personne le voie.
+                    # On route vers la même demande de confirmation que le repli
+                    # « aucun tool appelé » : l'utilisateur voit le contenu
+                    # proposé et tranche. `create_file` en markdown reste, lui,
+                    # un vrai create_file — il annonce bien un fichier complet.
+                    call["tool"] = _TOOL_PROPOSITION_ECRITURE
                 call["content"] = content
             calls.append(call)
     return calls
@@ -764,7 +1096,10 @@ def dispatch_tool(call: dict) -> dict:
     tool = call.get("tool", "")
     try:
         if tool == "create_file":
-            return {"status": "success", "result": create_file(call["path"], call.get("content", ""))}
+            # Origine MODÈLE : ce chemin écrit SANS confirmation.
+            return {"status": "success",
+                    "result": create_file(call["path"], call.get("content", ""),
+                                          origine=ORIGINE_MODELE)}
         elif tool == "read_file":
             return {"status": "success", "result": read_file(call["path"])}
         elif tool == "edit_file":
@@ -848,7 +1183,7 @@ def generate_tests(path: str, llm, model: Optional[str] = None) -> Generator:
         if test_content.strip():
             cleaned = re.sub(r"```(?:python)?\n?|```\n?", "", test_content).strip()
             try:
-                create_file(test_path, cleaned)
+                create_file(test_path, cleaned, origine=ORIGINE_MODELE)
             except Exception:
                 logger.exception("generate_tests: create %s", test_path)
     except Exception:
@@ -987,27 +1322,43 @@ class CodeAgent:
         deleted_files: list[str] = []
         calls = parse_tool_calls(full)
 
-        # Fallback : code block présent mais aucun tool appelé
+        # ── Repli : bloc de code présent, mais aucun tool appelé ─────────────
+        #
+        # Ce repli ÉCRIVAIT le premier bloc sur le fichier actif, sans rien
+        # demander (l'avertissement partait APRÈS l'écriture). Le cas qui casse
+        # est le cas normal, pas un cas tordu : « explique-moi ce fichier »,
+        # « montre-moi la fonction X » — un modèle qui explique cite un
+        # fragment dans un bloc ```python, et le fichier entier était remplacé
+        # par ce fragment. `workspace/` étant gitignoré, la version précédente
+        # était perdue sans recours.
+        #
+        # On ne devine PAS si le bloc est un fragment ou un fichier complet :
+        # toute heuristique se tromperait un jour, et se tromper coûte ici un
+        # fichier. On reprend le mécanisme d'`execute_code`, déjà derrière
+        # confirmation : émettre la demande, laisser l'utilisateur trancher.
+        # L'écriture a lieu au retour (`write_confirm` sur /ws/code →
+        # `appliquer_ecriture`, qui sauvegarde d'abord).
         if not calls:
             cb = _CODE_BLOCK_RE.search(full)
             if cb:
                 active_path = (file_context or "").split("\n")[0].strip()
-                if active_path:
-                    code_content = cb.group(1)
-                    yield {"type": "warning", "content": "Tool non utilisé — modification appliquée automatiquement"}
-                    auto_call = {"tool": "create_file", "path": active_path, "content": code_content}
-                    yield {"type": "tool_call", "tool": "create_file", "path": active_path, "status": "pending"}
-                    res = dispatch_tool(auto_call)
-                    yield {
-                        "type": "tool_result", "tool": "create_file", "path": active_path,
-                        "result": res.get("result", ""), "status": res.get("status", "error"),
-                    }
-                    if res.get("status") == "success":
-                        created_files.append(active_path)
+                demande = _demande_ecriture(active_path, cb.group(1))
+                if demande is not None:
+                    yield demande
 
         for call in calls:
             tool_name = call.get("tool", "")
             path = call.get("path", "")
+            # `**edit_file** \`path\`` + bloc markdown : le modèle demandait une
+            # édition PARTIELLE que le markdown ne permet pas d'exécuter (ni
+            # `old` ni `new`). Même traitement que le repli ci-dessus — proposer,
+            # ne pas écrire. Intercepté AVANT le `tool_call` : rien n'a été
+            # exécuté, il n'y a donc pas d'outil à annoncer.
+            if tool_name == _TOOL_PROPOSITION_ECRITURE:
+                demande = _demande_ecriture(path, call.get("content", ""))
+                if demande is not None:
+                    yield demande
+                continue
             yield {"type": "tool_call", "tool": tool_name, "path": path, "status": "pending"}
             result = dispatch_tool(call)
             if result.get("needs_confirm"):

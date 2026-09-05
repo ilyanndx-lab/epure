@@ -64,6 +64,13 @@ backend/memory/*.json
 backend/memory/instance_config.json
 backend/memory/modules_state.json
 
+# Versions sauvegardees avant toute ecriture dans le module Code
+# (core/codeagent._ecrire_avec_sauvegarde : tool du modele, repli confirme,
+# edit_file, enregistrement de l'editeur). Ce sont des fragments du workspace
+# de l'utilisateur, jamais versionnes -- le glob *.json ci-dessus, qui ne vise
+# que backend/memory/*.json a plat, ne les couvre pas.
+backend/memory/code_backups/
+
 # Atelier de modules : bac à sable et sauvegardes (runtime, non versionnés)
 backend/modules/_staging/
 backend/modules/_backups/

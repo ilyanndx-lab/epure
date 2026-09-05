@@ -35,6 +35,10 @@ type ChatEventType =
   | { type: 'tests_prompt'; path: string }
   | { type: 'tests_result'; path: string; content: string; streaming: boolean }
   | { type: 'execute_request'; path: string; args: string }
+  // Le modèle a répondu par un bloc de code sans balise d'outil. Rien n'a été
+  // écrit : le backend PROPOSE l'écriture (cf. le repli de `run_turn`, qui
+  // écrasait le fichier actif en silence avant le 2026-09-05).
+  | { type: 'write_request'; path: string; content: string; existant: boolean }
   | { type: 'execute_result'; stdout: string; stderr: string; returncode: number; duration_ms: number }
   | { type: 'execute_external'; path: string }
   | { type: 'html_preview'; content: string }
@@ -70,6 +74,55 @@ function extLang(path: string): string {
     rs: 'rust', go: 'go', cpp: 'cpp', c: 'c', java: 'java',
   }
   return map[ext] ?? 'plaintext'
+}
+
+/**
+ * Message d'erreur lisible pour une réponse HTTP en échec.
+ *
+ * `apiFetch` ne lève JAMAIS sur un statut HTTP (cf. `src/api.ts`) : elle rend
+ * la `Response` telle quelle, donc un `.catch()` ne voit que les pannes réseau.
+ * Toute vérification d'échec doit passer par `res.ok` — et c'est le corps
+ * d'erreur qui dit pourquoi.
+ *
+ * `detail` est vérifié TYPE par TYPE, pas seulement en présence (§8 de
+ * CLAUDE.md, même famille que le `.json()` sur une réponse d'erreur) : le
+ * gestionnaire d'exceptions rend `{detail: "<texte>"}`, mais une erreur de
+ * validation FastAPI y met une LISTE d'objets — l'afficher brut donnerait
+ * « [object Object] » à l'utilisateur, ce qui est pire que le statut nu.
+ */
+async function messageErreur(res: Response, defaut: string): Promise<string> {
+  try {
+    const data = await res.json()
+    const detail = (data as { detail?: unknown } | null)?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail.trim()
+  } catch { /* corps vide ou non-JSON : on retombe sur le message par défaut */ }
+  return `${defaut} (HTTP ${res.status})`
+}
+
+/** `v` si c'est bien un tableau, `[]` sinon. `?? []` laisserait passer une
+ *  chaîne ou un objet venus d'un corps d'erreur (§8 de CLAUDE.md). */
+function liste<T>(v: unknown): T[] {
+  return Array.isArray(v) ? (v as T[]) : []
+}
+
+/**
+ * Ancienneté en clair : « à l'instant », « il y a 12 s », « il y a 4 min ».
+ *
+ * Sert au bandeau d'échec d'enregistrement, dont c'est la seule façon de dire
+ * si la panne dure ENCORE ou date de dix minutes : le message du backend, lui,
+ * est identique dans les deux cas.
+ */
+function depuis(horodatage: number, maintenant: number): string {
+  const s = Math.max(0, Math.round((maintenant - horodatage) / 1000))
+  if (s < 3) return "à l'instant"
+  if (s < 60) return `il y a ${s} s`
+  return `il y a ${Math.floor(s / 60)} min`
+}
+
+/** Heure murale d'un horodatage — un « il y a 47 min » relatif ne dit pas
+ *  QUAND, et c'est ce qu'on veut recouper avec les logs du backend. */
+function heure(horodatage: number): string {
+  return new Date(horodatage).toLocaleTimeString()
 }
 
 // ── File Tree ──────────────────────────────────────────────────────────────
@@ -334,6 +387,8 @@ function ChatEventView({
   event,
   onExecuteConfirm,
   onExecuteCancel,
+  onWriteConfirm,
+  onWriteCancel,
   onInstall,
   onGenerateTests,
   onExpand,
@@ -341,6 +396,8 @@ function ChatEventView({
   event: ChatEventType
   onExecuteConfirm: (path: string, args: string) => void
   onExecuteCancel: () => void
+  onWriteConfirm: (path: string, content: string) => void
+  onWriteCancel: (path: string) => void
   onInstall: (pkg: string) => void
   onGenerateTests: (path: string) => void
   onExpand: (data: Expanded) => void
@@ -400,6 +457,37 @@ function ChatEventView({
             exécuter
           </Button>
           <Button variant="ghost" size="sm" icon={<X size={12} />} onClick={onExecuteCancel}>
+            annuler
+          </Button>
+        </div>
+      </div>
+    )
+  }
+  if (event.type === 'write_request') {
+    const lignes = event.content.split('\n').length
+    return (
+      <div className="mt-2 border border-warning/30 rounded-md bg-warning/5 p-3">
+        <div className="text-xs font-mono mb-2 text-secondary">
+          {event.existant ? 'Remplacer tout le contenu de ' : 'Créer '}
+          <span className="text-primary">{event.path}</span>
+          <span className="text-muted"> par ce bloc ({lignes} lignes)</span>
+        </div>
+        <div className="text-xs text-muted mb-2">
+          Le modèle a montré du code sans utiliser d'outil.{' '}
+          {event.existant && 'La version actuelle sera sauvegardée.'}
+        </div>
+        <Collapsible label="voir le bloc" icon={<Code2 size={11} />}>
+          <pre className="text-[11px] font-mono text-secondary whitespace-pre-wrap max-h-64 overflow-y-auto">
+            {event.content}
+          </pre>
+        </Collapsible>
+        <div className="flex gap-2 mt-2">
+          <Button variant="primary" size="sm" icon={<Check size={12} />}
+                  onClick={() => onWriteConfirm(event.path, event.content)}>
+            {event.existant ? 'écraser' : 'créer'}
+          </Button>
+          <Button variant="ghost" size="sm" icon={<X size={12} />}
+                  onClick={() => onWriteCancel(event.path)}>
             annuler
           </Button>
         </div>
@@ -601,7 +689,12 @@ export default function Code() {
   const [tree, setTree] = useState<TreeNode[]>([])
   // Persistés : la progression (fichiers ouverts, fichier actif, conversation)
   // survit à un rechargement (notamment le reload Vite après approbation atelier).
-  const [openFiles, setOpenFiles] = usePersistentState<OpenFile[]>('epure.code.openFiles', [])
+  // 3e élément : l'état de la dernière écriture dans `localStorage`. Le garde
+  // `beforeunload` plus bas repose sur l'idée que ces onglets seront rejoués
+  // d'ici ; quand ce n'est pas vrai, il faut le DIRE, sinon l'utilisateur
+  // arbitre la fermeture avec une information fausse.
+  const [openFiles, setOpenFiles, persistanceOnglets] =
+    usePersistentState<OpenFile[]>('epure.code.openFiles', [])
   const [activeFile, setActiveFile] = usePersistentState<string | null>('epure.code.activeFile', null)
   const [chatTurns, setChatTurns] = usePersistentState<ChatTurn[]>('epure.code.chatTurns', [])
   const [chatInput, setChatInput] = useState('')
@@ -611,6 +704,22 @@ export default function Code() {
   const [newItemName, setNewItemName] = useState('')
   const [newItemType, setNewItemType] = useState<'file' | 'dir' | null>(null)
   const [autoSave, setAutoSave] = useState(false)
+  // Dernier échec d'enregistrement/lecture — affiché dans la barre de l'éditeur.
+  // La pastille `dirty` ne suffit pas : elle dit « non enregistré », pas
+  // « le backend a REFUSÉ, et voici pourquoi ».
+  //
+  // `tentatives` et `dernier` sont là parce que l'auto-save RÉESSAIE à chaque
+  // pause de frappe (et doit le faire : un auto-save qui abandonne laisserait
+  // le contenu dans le seul navigateur). Sans eux, un bandeau figé ne distingue
+  // pas une panne qui dure d'un échec vieux de dix minutes déjà résolu.
+  const [saveError, setSaveError] = useState<
+    { path: string; message: string; tentatives: number; dernier: number } | null
+  >(null)
+  // Horloge du bandeau : re-rendu chaque seconde tant qu'un échec est affiché,
+  // pour que « il y a 12 s » avance TOUT SEUL. Sans ça, lire « ça échoue
+  // encore » demanderait une action de l'utilisateur — exactement ce qu'on veut
+  // éviter. L'intervalle ne tourne pas quand il n'y a pas d'erreur.
+  const [maintenant, setMaintenant] = useState(() => Date.now())
   const [showPkgInstall, setShowPkgInstall] = useState(false)
   const [pkgName, setPkgName] = useState('')
   const [pkgInstalling, setPkgInstalling] = useState(false)
@@ -629,24 +738,95 @@ export default function Code() {
 
   const activeContent = openFiles.find(f => f.path === activeFile)?.content ?? ''
 
+  /**
+   * Enregistre un échec d'écriture/lecture pour affichage.
+   *
+   * Compte les tentatives CONSÉCUTIVES sur le même chemin : c'est ce nombre,
+   * plus l'horodatage, qui fait la différence entre « ça a raté une fois » et
+   * « ça rate en boucle depuis dix minutes ». Un chemin différent repart à 1 —
+   * c'est une autre panne. Le compteur est remis à zéro par un succès, au même
+   * endroit que l'effacement du bandeau.
+   */
+  const signalerEchec = useCallback((path: string, message: string) => {
+    setSaveError(prev => ({
+      path,
+      message,
+      tentatives: prev && prev.path === path ? prev.tentatives + 1 : 1,
+      dernier: Date.now(),
+    }))
+    setMaintenant(Date.now())
+  }, [])
+
+  /**
+   * Succès sur `path` : efface le bandeau — et le compteur avec, puisque les
+   * deux vivent dans le même état.
+   *
+   * **Portée au chemin, jamais global.** Un `setSaveError(null)` inconditionnel
+   * effacerait l'échec d'un AUTRE fichier : ouvrir `b.py` ferait disparaître
+   * « `a.py` — enregistrement refusé » alors que `a.py` est toujours en échec
+   * et toujours sale. Un seul helper pour les deux sites d'appel, sinon les
+   * deux remises à zéro divergent.
+   */
+  const oublierEchec = useCallback((path: string) => {
+    setSaveError(prev => prev?.path === path ? null : prev)
+  }, [])
+
+  useEffect(() => {
+    if (!saveError) return
+    const id = setInterval(() => setMaintenant(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [saveError])
+
+  /**
+   * Garde-fou de fermeture : demande confirmation tant qu'un onglet est sale.
+   *
+   * C'est LE point où du travail se perd pour de bon quand l'enregistrement
+   * échoue durablement — l'auto-save réessaie sans fin, mais rien n'empêche de
+   * fermer la fenêtre entre deux tentatives. Il couvre aussi le cas, plus
+   * banal, de l'auto-save DÉSACTIVÉ (son défaut).
+   *
+   * Second filet et non premier : `openFiles` passe par `usePersistentState`,
+   * donc son contenu est normalement rejoué depuis `localStorage` au
+   * rechargement. « Normalement » : l'écriture peut échouer sur un quota
+   * dépassé, ce qui arrive d'autant plus vite qu'un fichier peut peser 50 000
+   * caractères et que `epure.code.chatTurns` partage le même stockage — et elle
+   * ne suit ni un autre navigateur, ni un profil nettoyé. **Cet échec n'est plus
+   * silencieux** (`persistanceOnglets`, cf. le bandeau) : c'est ce qui rend le
+   * dialogue de fermeture honnête, puisque c'est là que l'utilisateur tranche.
+   */
+  useEffect(() => {
+    if (!openFiles.some(f => f.dirty)) return
+    const garde = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''  // exigé par les navigateurs qui ignorent preventDefault
+    }
+    window.addEventListener('beforeunload', garde)
+    return () => window.removeEventListener('beforeunload', garde)
+  }, [openFiles])
+
   // ── Fetch helpers ────────────────────────────────────────────────────────
 
   const fetchTree = useCallback(async () => {
     try {
       const res = await apiFetch(`${API}/code/files`)
+      if (!res.ok) return  // on garde l'arbre précédent plutôt que d'annoncer « workspace vide »
       const data = await res.json()
-      setTree(data.tree ?? [])
+      setTree(liste<TreeNode>(data.tree))
     } catch { /* ignore */ }
   }, [])
 
   const fetchAvailableModels = useCallback(async () => {
     try {
       const res = await apiFetch(`${API}/models`)
+      if (!res.ok) return
       const data = await res.json()
+      const cloud = data.cloud
       const all = [
-        ...(data.local ?? []),
-        ...(data.local_npu ?? []),
-        ...Object.values(data.cloud ?? {}).flat() as { id: string; nom: string }[],
+        ...liste<{ id: string; nom: string }>(data.local),
+        ...liste<{ id: string; nom: string }>(data.local_npu),
+        ...(cloud && typeof cloud === 'object'
+          ? Object.values(cloud).flatMap(v => liste<{ id: string; nom: string }>(v))
+          : []),
       ]
       const key = all.map(m => m.id).join(',')
       if (key === prevModelsKey.current) return  // zero flicker
@@ -683,10 +863,20 @@ export default function Code() {
     return () => ro.disconnect()
   }, [])
 
-  // Poll usage stats every 3s
+  // Poll usage stats every 3s.
+  // `StatsBar` déréférence `usage.session.total_tokens` sans garde : poser un
+  // corps d'erreur (`{detail, type}`) dans cet état plantait le RENDU du module
+  // — le « Cannot read properties of undefined » du §8, à l'identique. D'où le
+  // `res.ok` ET la vérification de forme : on garde la valeur précédente.
   useEffect(() => {
-    const poll = () =>
-      apiFetch(`${API}/code/usage`).then(r => r.json()).then(setUsage).catch(() => {})
+    const poll = async () => {
+      try {
+        const res = await apiFetch(`${API}/code/usage`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (data?.session && data?.session_tokens_by_step) setUsage(data as UsageStats)
+      } catch { /* ignore */ }
+    }
     poll()
     const id = setInterval(poll, 3000)
     return () => clearInterval(id)
@@ -841,6 +1031,16 @@ export default function Code() {
           ],
         }))
 
+      } else if (msg.type === 'write_request') {
+        patchLast(turn => ({
+          ...turn,
+          events: [
+            ...closeStreaming(turn.events),
+            { type: 'write_request', path: msg.path, content: msg.content ?? '',
+              existant: !!msg.existant },
+          ],
+        }))
+
       } else if (msg.type === 'execute_result') {
         patchLast(turn => ({
           ...turn,
@@ -894,34 +1094,72 @@ export default function Code() {
 
   // ── File operations ──────────────────────────────────────────────────────
 
+  /**
+   * Ouvre un onglet. **Rien n'est ouvert si la lecture échoue**, et ce n'est
+   * pas de la prudence gratuite : sans le contrôle, un GET en erreur donnait un
+   * onglet à `content: undefined`, que `activeContent` coerce en `''` — la
+   * sauvegarde suivante (auto-save comprise) écrivait alors une chaîne VIDE sur
+   * un fichier bien réel. Perte de données silencieuse, déclenchée par un
+   * simple clic dans l'arborescence.
+   */
   const openFile = useCallback(async (path: string) => {
     const already = openFiles.find(f => f.path === path)
     if (already) { setActiveFile(path); return }
     try {
       const res = await apiFetch(`${API}/code/file?path=${encodeURIComponent(path)}`)
+      if (!res.ok) {
+        signalerEchec(path, await messageErreur(res, 'Lecture impossible'))
+        return
+      }
       const data = await res.json()
+      if (typeof data?.content !== 'string') {
+        signalerEchec(path, 'Lecture impossible : réponse inattendue du backend.')
+        return
+      }
+      oublierEchec(path)
       setOpenFiles(prev => [...prev, { path, content: data.content, dirty: false }])
       setActiveFile(path)
-    } catch { /* ignore */ }
-  }, [openFiles])
+    } catch {
+      signalerEchec(path, 'Lecture impossible : backend injoignable.')
+    }
+  }, [openFiles, signalerEchec, oublierEchec])
 
+  /**
+   * Enregistre, et ne marque l'onglet propre QUE si le backend a confirmé.
+   *
+   * `apiFetch` ne lève pas sur un statut HTTP : le `catch` ne voyait que les
+   * pannes réseau, donc un 4xx/5xx faisait passer l'onglet en `dirty: false`
+   * — un faux signal de succès. Ce mode d'échec est né avec l'écriture
+   * fail-closed du backend (`SauvegardeError` → 409) : avant, ce chemin
+   * n'échouait pas. L'onglet reste sale ET le message du backend s'affiche :
+   * la pastille seule est trop discrète pour dire « refusé ».
+   */
   const saveFile = useCallback(async (path: string, content: string) => {
     try {
-      await apiFetch(`${API}/code/file`, {
+      const res = await apiFetch(`${API}/code/file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path, content }),
       })
+      if (!res.ok) {
+        signalerEchec(path, await messageErreur(res, 'Enregistrement refusé'))
+        return  // l'onglet reste `dirty` : rien n'est sur le disque
+      }
+      oublierEchec(path)
       setOpenFiles(prev => prev.map(f => f.path === path ? { ...f, dirty: false } : f))
-    } catch { /* ignore */ }
-  }, [])
+    } catch {
+      signalerEchec(path, 'Enregistrement impossible : backend injoignable.')
+    }
+  }, [signalerEchec, oublierEchec])
 
   const reloadOpenFile = useCallback(async (path: string) => {
     const isOpen = openFiles.some(f => f.path === path)
     if (!isOpen) return
     try {
       const res = await apiFetch(`${API}/code/file?path=${encodeURIComponent(path)}`)
+      if (!res.ok) return  // on garde le contenu affiché plutôt que de le vider
       const data = await res.json()
+      if (typeof data?.content !== 'string') return
       setOpenFiles(prev => prev.map(f =>
         f.path === path ? { ...f, content: data.content, dirty: false } : f
       ))
@@ -1146,6 +1384,37 @@ export default function Code() {
     })
   }, [])
 
+  // ── Écriture proposée par le repli « aucun tool appelé » ─────────────────
+  // Même mécanique que confirmExecute/cancelExecute juste au-dessus : le
+  // backend n'a RIEN écrit, il attend ce message. La carte disparaît dans les
+  // deux cas ; le `tool_result` de retour rafraîchit l'arbre et l'onglet
+  // ouvert (cf. le handler `tool_result`).
+
+  const confirmWrite = useCallback((path: string, content: string) => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify({ type: 'write_confirm', path, content }))
+    setChatTurns(prev => {
+      const turns = [...prev]
+      const last = turns[turns.length - 1]
+      if (!last) return prev
+      const events = last.events.filter(e => !(e.type === 'write_request' && e.path === path))
+      turns[turns.length - 1] = { ...last, events }
+      return turns
+    })
+  }, [])
+
+  const cancelWrite = useCallback((path: string) => {
+    setChatTurns(prev => {
+      const turns = [...prev]
+      const last = turns[turns.length - 1]
+      if (!last) return prev
+      const events = last.events.filter(e => !(e.type === 'write_request' && e.path === path))
+      turns[turns.length - 1] = { ...last, events }
+      return turns
+    })
+  }, [])
+
   // ── Run active file ──────────────────────────────────────────────────────
 
   const runActiveFile = useCallback(async () => {
@@ -1271,6 +1540,55 @@ export default function Code() {
           </div>
         </div>
 
+        {/* Échec d'enregistrement ou de lecture : le message du backend, pas un
+            statut nu. Il dit POURQUOI le fichier n'est pas sur le disque —
+            typiquement « impossible de sauvegarder la version actuelle ».
+            HORS du bloc `activeFile &&` volontairement : une ouverture qui
+            échoue n'ouvre AUCUN onglet, donc un bandeau placé dans la barre
+            d'outils ne s'afficherait jamais dans ce cas précis. */}
+        {(saveError || !persistanceOnglets.ok) && (
+          <div className="m-2 flex items-start gap-2 rounded-md border border-error/40 bg-error/10 px-2.5 py-2 shrink-0">
+            <div className="flex-1 min-w-0 space-y-1">
+              {saveError && (
+                <div>
+                  <div className="text-xs font-mono text-error break-all">
+                    <span className="font-semibold">{saveError.path}</span> — {saveError.message}
+                  </div>
+                  {/* La ligne qui dit si ça dure : elle avance toute seule (cf.
+                      l'intervalle sur `maintenant`). Le compteur n'apparaît qu'à
+                      partir de la 2e tentative — à 1, il n'apprendrait rien. */}
+                  <div className="text-[11px] font-mono text-error/70 mt-0.5">
+                    dernière tentative {depuis(saveError.dernier, maintenant)} ({heure(saveError.dernier)})
+                    {saveError.tentatives > 1 && ` — ${saveError.tentatives} tentatives consécutives`}
+                  </div>
+                </div>
+              )}
+              {/* Persistance locale en échec. DANS le bandeau existant et non
+                  dans une seconde zone : c'est la même information pour
+                  l'utilisateur — « ce que tu as tapé n'est nulle part ». Sans
+                  cette ligne, le dialogue de fermeture (`beforeunload`) laisse
+                  croire que fermer est rattrapable. */}
+              {!persistanceOnglets.ok && (
+                <div className="text-xs font-mono text-error">
+                  Onglets non conservés par le navigateur
+                  {persistanceOnglets.erreur && ` (${persistanceOnglets.erreur})`} —
+                  le contenu non enregistré ne survivra pas à la fermeture, même
+                  après confirmation.
+                </div>
+              )}
+            </div>
+            {/* Rien à masquer quand le seul motif est la persistance : elle
+                reviendrait au rendu suivant. */}
+            {saveError && (
+              <button
+                onClick={() => setSaveError(null)}
+                title="Masquer"
+                className="text-error/70 hover:text-error shrink-0 transition-colors duration-150"
+              ><X size={12} /></button>
+            )}
+          </div>
+        )}
+
         {/* Editor toolbar */}
         {activeFile && (
           <div className="border-b border-line bg-surface shrink-0">
@@ -1300,6 +1618,7 @@ export default function Code() {
                 pkg
               </Button>
             </div>
+
 
             {/* Package install panel */}
             {showPkgInstall && (
@@ -1438,6 +1757,8 @@ export default function Code() {
                         const reqEv = ev as { type: string; path: string }
                         if (reqEv.type === 'execute_request') cancelExecute(reqEv.path)
                       }}
+                      onWriteConfirm={confirmWrite}
+                      onWriteCancel={cancelWrite}
                       onInstall={installPackage}
                       onGenerateTests={generateTests}
                       onExpand={setExpanded}
