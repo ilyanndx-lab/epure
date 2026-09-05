@@ -61,6 +61,26 @@ cd frontend
 npm run dev
 ```
 
+### Avant de pousser — `tools\verif-ci.ps1`
+
+```powershell
+.\tools\verif-ci.ps1              # frontend + backend, périmètre de la CI
+.\tools\verif-ci.ps1 -Frontend    # ou -Backend
+```
+
+**IMPÉRATIF — `npm run lint` et la suite backend lancés à la main ne mesurent
+PAS ce que mesure la CI.** Deux fois le 2026-09-05, un « vert en local » est
+parti rouge en CI, sur deux axes indépendants : la CI installe **tout le
+catalogue** dans `frontend/src/modules/generated/` avant de linter (51
+avertissements ici, 62 là-bas, pour un cliquet à 61), et son clone n'a que les
+modules **versionnés** dans `backend/modules/` (un module de catalogue installé
+sur le poste faisait échouer `test_catalogue` ici et passer là-bas). Le seul
+contrôle qui vaut avant de pousser est ce script : il **lit `ci.yml`** au lieu de
+le paraphraser — cliquet eslint et commande de tests en sont extraits, et une
+lecture qui échoue **arrête** au lieu de retomber sur un défaut — et il travaille
+dans un arbre **temporaire**, jamais dans `generated/` (la CI y fait un `rm -rf`
+qui, ici, emporterait les modules réellement installés).
+
 ### Tests
 
 Les tests sont des scripts `unittest` **autonomes à la racine de `backend/`**
@@ -971,6 +991,9 @@ production, et `test_module_isolation.py` tourne en CI.
 | Un script PowerShell s'arrête sur une commande qui a **réussi** | Sous `powershell.exe` (5.1), une redirection `2>&1` sur un binaire NATIF convertit chaque ligne de son stderr en `ErrorRecord`, et `$ErrorActionPreference = 'Stop'` en fait une erreur TERMINANTE — même quand le binaire sort en 0. Le `if ($LASTEXITCODE -ne 0)` écrit juste après n'est jamais atteint. `tools/dev-epure.ps1` mourait ainsi sur l'avertissement de taille de chunk de Vite, build réussi. Passer par `Invoquer-Externe`, qui relâche la préférence en portée de FONCTION. Verrouillé par `test_dev_epure.py`. |
 | `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répondait 500 (la pile d'embedding n'y était pas installée, et le premier accès au moteur RAG la construit) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
 | Un modèle à raisonnement (qwen3) reste **muet une minute** puis lâche trois mots | Le raisonnement arrive dans un champ **séparé** du flux Ollama (`chunk.message.thinking`), pas en balises `<think>`, et **sans qu'on le demande** — aucun argument `think` n'est passé. `_stream_ollama` ne lisait que `content` et faisait `if content: yield content` : un chunk de raisonnement a `content == ""`, donc rien n'était yieldé. Mesuré sur `qwen3:8b` : **584 tokens en 78 s, premier caractère visible à 76,5 s**, pour `17 x 23 = 391.` — et `num_predict` consommé de façon invisible. Corrigé le 2026-08-24 : sentinelle `__reasoning__` → `{"type": "reasoning"}` sur `/ws/chat` → bloc repliable dans le chat (premier affichage à 7,8 s, mesuré). Ne PAS passer `think=True` : inutile pour les modèles qui pensent, et ça modifierait l'appel pour ceux qui ne pensent pas. Côté FLM il n'y a rien à récupérer — mesuré sur `qwen3.5:4b` via `/v1/chat/completions`, le delta ne porte que `role`/`content`. |
+| « C'est vert en local » et la CI est **rouge** | Aucune commande locale ne reproduisait le périmètre de la CI, et ça a coûté deux incidents le même jour, sur deux axes indépendants. **(a)** eslint : la CI installe TOUT `modules-catalogue/*/Component.tsx` dans `frontend/src/modules/generated/` avant de linter, puis fait `rm -rf` dessus. `npm run lint` local ne voit que ce que le poste a installé — 51 avertissements ici, **62** là-bas, cliquet à 61. **(b)** `backend/modules/` : `_test_env` copiait le vrai dossier, qui contient sur un poste de dev les modules installés depuis le catalogue ; `test_catalogue` échouait ici et passait en CI. Corrigés séparément, mais la cause commune est l'absence de reproduction locale — deux correctifs ponctuels auraient laissé le troisième axe en embuscade. **`tools\verif-ci.ps1` est le seul contrôle qui vaut avant de pousser** (§2). Trois règles qui font sa valeur et qu'il ne faut pas défaire : il **lit `ci.yml`** (cliquet, commande de tests) au lieu de le recopier ; une lecture ratée **arrête** le script au lieu de retomber sur un défaut — un contrôle qui mesure silencieusement autre chose est pire que pas de contrôle ; et il travaille dans un arbre **temporaire** (`frontend/` recopié, `node_modules` joint par une JONCTION — sans droits admin, contrairement à un lien symbolique), parce que rejouer le `rm -rf` de la CI dans l'arbre de travail supprimerait les modules réellement installés. Le cliquet a **une seule source**, `env: ESLINT_MAX_WARNINGS` en tête de `ci.yml` : il vivait à trois endroits et deux avaient déjà divergé (« au plus 63 » face à une étape à 61). |
+| Un `.ps1` meurt avant sa première ligne utile, sur un message qui ne nomme rien | **PowerShell est insensible à la casse pour les variables** : `$FRONTEND = "C:\...\frontend"` et le paramètre `param([switch]$Frontend)` sont la MÊME variable, et l'affectation viole le type déclaré → `Impossible de convertir System.String en SwitchParameter`, sans qu'aucun des deux noms apparaisse. Payé sur `tools/verif-ci.ps1`. Corollaire de la même famille : **ne jamais nommer un paramètre `$Args`** — c'est une variable automatique, un `-Args` ne s'y lie jamais et le paramètre reste vide **en silence** (mesuré : l'étape lançait le binaire sans aucun argument). |
+| Une regex `(?m)…$` sur un fichier du dépôt ne matche **jamais** | Les fichiers sont en CRLF sur ce poste. `(?m)$` ne se place qu'avant le `\n`, donc une classe `[^\r\n]*` s'arrête avant le `\r` et l'ancre ne peut plus coller — sur un fichier parfaitement conforme. Vu en lisant `ci.yml` depuis `tools/verif-ci.ps1`. Terminer par `\s*$`, ou ne pas ancrer. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---
