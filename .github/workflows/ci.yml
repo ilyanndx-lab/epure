@@ -43,8 +43,9 @@
 #              (vitest + jsdom) est arrivé le 2026-08-23, après un TypeError en
 #              production qu'aucun des trois autres ne pouvait voir — détail
 #              au-dessus de l'étape. eslint tourne avec un cliquet
-#              `--max-warnings 61` (0 erreur, périmètre src/ + catalogue
-#              installé) : le détail est au-dessus de l'étape, plus bas.
+#              `--max-warnings $ESLINT_MAX_WARNINGS` (0 erreur, périmètre
+#              src/ + catalogue installé) : la valeur est définie une seule
+#              fois, en `env:` de workflow, et le détail est plus bas.
 #              Le type-check est gardé EN PLUS du build, pour que le nom de
 #              l'étape en échec dise tout de suite si c'est le typage ou le
 #              bundling. Détail et durées mesurées au-dessus de l'étape.
@@ -62,6 +63,23 @@ on:
 
 permissions:
   contents: read
+
+# CLIQUET ESLINT — SOURCE DE VERITE UNIQUE.
+#
+# Ce nombre vivait a trois endroits : l'en-tete de ce fichier, le commentaire
+# au-dessus de l'etape, et l'etape elle-meme. Ils avaient deja diverge — le
+# commentaire annoncait « au plus 63 » quand l'etape imposait 61. Un cliquet
+# dont on ne sait plus lire la valeur ne cliquete plus.
+#
+# Il est ici, et non dans l'etape, pour que `tools/verif-ci.ps1` puisse le LIRE
+# depuis ce fichier plutot que le recopier : un controle local qui recopierait
+# le seuil finirait par mesurer autre chose que la CI, ce qui est exactement le
+# defaut que ce script existe pour supprimer.
+#
+# Le nombre ne peut que BAISSER. Quiconque ajoute un avertissement casse la CI ;
+# quiconque en resorbe descend le plafond dans le meme commit.
+env:
+  ESLINT_MAX_WARNINGS: "61"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -251,8 +269,12 @@ jobs:
         # dans tsconfig.app.json ("include": ["src"]) : un module généré qui ne
         # bundle pas cassait l'image frontend sans que la CI le voie.
         run: npm run build
-      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus 63
-      # avertissements. Le nombre ne peut que baisser — quiconque en ajoute un
+      # CLIQUET. eslint est bloquant : 0 erreur tolérée, et au plus
+      # `ESLINT_MAX_WARNINGS` avertissements — la valeur est en `env:` de
+      # workflow, en haut de ce fichier, et NULLE PART AILLEURS. Ce
+      # commentaire a annoncé « 63 » pendant que l'étape imposait 61 :
+      # c'est pour ça qu'il ne porte plus de nombre.
+      # Le nombre ne peut que baisser — quiconque en ajoute un
       # casse la CI, et quiconque en résorbe doit descendre le plafond dans le
       # même commit. C'est ce qui empêche la dette de regrimper en silence, ce
       # que `continue-on-error: true` avait laissé faire pendant des mois.
@@ -288,8 +310,10 @@ jobs:
             mkdir -p "src/modules/generated/$id"
             cp "$d/Component.tsx" "src/modules/generated/$id/Component.tsx"
           done
-      - name: eslint (bloquant — cliquet à 61 avertissements, src + catalogue)
-        run: npm run lint -- --max-warnings 61
+      # Le nombre n'est pas dans le `name:` : le contexte `env` n'y est pas
+      # disponible, un nombre écrit là repartirait donc en copie divergente.
+      - name: eslint (bloquant — cliquet ESLINT_MAX_WARNINGS, src + catalogue)
+        run: npm run lint -- --max-warnings "$ESLINT_MAX_WARNINGS"
       - name: eslint — désinstallation du catalogue
         if: always()
         run: |
