@@ -39,6 +39,7 @@ from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
 from core.embedding_install import EmbeddingIndisponible
 from core.orchestrator import OrchestratorEngine
+from core import ollama_memoire
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
@@ -439,6 +440,49 @@ async def list_models():
         "fournisseurs": key_ok,
         "recommandations": recommandations,
     }
+
+
+# ---------------------------------------------------------------------------
+# Modèles Ollama résidents en mémoire
+#
+# À côté de `/models` et pas dans un routeur de module : c'est la même surface,
+# et §3.1 place déjà les routes `/models` ici. Les trois passent par
+# `run_in_executor` comme leurs voisines — un `urlopen` synchrone sur la boucle
+# d'événements bloquerait TOUTES les autres requêtes, et un chargement à froid
+# se compte en dizaines de secondes (25 s mesurées, §3.3 bis).
+#
+# Aucune des trois ne lève sur Ollama absent : c'est le cas nominal d'une machine
+# sans Ollama, pas une panne. `core.ollama_memoire` rend `None`, on le transmet
+# tel quel et l'interface se tait.
+# ---------------------------------------------------------------------------
+
+class ModeleMemoireRequest(BaseModel):
+    model: str
+
+
+@app.get("/models/loaded")
+async def models_loaded():
+    """Ce qu'Ollama garde EN MÉMOIRE — à ne pas confondre avec `/models`, qui
+    dit ce qui est installé sur le disque. `charges: null` = Ollama injoignable ;
+    `charges: []` = Ollama répond et rien n'est chargé."""
+    loop = asyncio.get_running_loop()
+    charges = await loop.run_in_executor(None, ollama_memoire.lister_charges)
+    return {"charges": charges}
+
+
+@app.post("/models/load")
+async def models_load(req: ModeleMemoireRequest):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, ollama_memoire.charger, req.model)
+
+
+@app.post("/models/unload")
+async def models_unload(req: ModeleMemoireRequest):
+    """Libère la mémoire. **Rend l'état RELU, pas un succès supposé** : éjecter
+    un modèle qu'une génération utilise répond 200 sans rien décharger (mesuré),
+    et `ok: false` porte alors l'explication."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, ollama_memoire.decharger, req.model)
 
 
 # ---------------------------------------------------------------------------

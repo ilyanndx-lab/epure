@@ -324,6 +324,67 @@ class SondeOrchestrateurTest(_OllamaBouchonne):
         self.assertFalse(orchestrator._ollama_ok())
 
 
+class SurfaceHttpTest(_OllamaBouchonne):
+    """Les trois routes, vues du client.
+
+    Le contrat qui compte ici est le SILENCE sur Ollama absent : la machine sans
+    Ollama est le cas nominal, `charges: null` est une réponse **200**, pas une
+    erreur. Un 500 ferait afficher un bandeau rouge à quelqu'un dont
+    l'installation n'a rien d'anormal.
+    """
+
+    def setUp(self):
+        super().setUp()
+        os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        from fastapi.testclient import TestClient
+        import main
+        from core.auth import get_api_token
+        self.client = TestClient(main.app, base_url="http://localhost",
+                                 client=("127.0.0.1", 54321))
+        self.entetes = {"Authorization": f"Bearer {get_api_token()}"}
+
+    def test_loaded_rend_la_liste(self):
+        self.repondre("/api/ps", PS_MOONDREAM)
+        r = self.client.get("/models/loaded", headers=self.entetes)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([m["id"] for m in r.json()["charges"]], ["moondream:latest"])
+
+    def test_ollama_absent_repond_200_avec_null(self):
+        self.echouer("/api/ps", OSError("connexion refusee"))
+        r = self.client.get("/models/loaded", headers=self.entetes)
+        self.assertEqual(r.status_code, 200, "Ollama absent n'est pas une panne du backend")
+        self.assertIsNone(r.json()["charges"])
+
+    def test_rien_de_charge_repond_une_liste_vide(self):
+        self.repondre("/api/ps", PS_VIDE)
+        r = self.client.get("/models/loaded", headers=self.entetes)
+        self.assertEqual(r.json()["charges"], [])
+
+    def test_load_transmet_le_modele(self):
+        self.repondre("/api/generate", {"done": True, "done_reason": "load"})
+        self.repondre("/api/ps", PS_MOONDREAM)
+        r = self.client.post("/models/load", json={"model": "moondream:latest"},
+                             headers=self.entetes)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+
+    def test_unload_toujours_charge_repond_200_mais_ok_faux(self):
+        """Pas un code d'erreur HTTP : la requête a bien été traitée, c'est le
+        RÉSULTAT qui est « non ». Un 4xx/5xx ici ferait chercher une panne."""
+        self.repondre("/api/generate", {"done": True, "done_reason": "unload"})
+        self.repondre("/api/ps", PS_MOONDREAM)
+        r = self.client.post("/models/unload", json={"model": "moondream:latest"},
+                             headers=self.entetes)
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+        self.assertIn("génération", r.json()["message"].lower())
+
+    def test_le_token_est_exige(self):
+        self.repondre("/api/ps", PS_VIDE)
+        self.assertEqual(self.client.get("/models/loaded").status_code, 401)
+
+
 class AucunAppelReseauReelTest(_OllamaBouchonne):
     """Aucun appel ne sort du process, même sur une URL qu'aucun test n'a prévue.
 
