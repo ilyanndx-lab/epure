@@ -60,6 +60,7 @@ découverte automatique.
 """
 
 import atexit
+import json
 import os
 import shutil
 import tempfile
@@ -99,6 +100,78 @@ REAL_DIRS = (
 #: modules/ et n'est qu'un historique de runtime ; `_staging` et les caches sont
 #: recréés à la demande par le code testé.
 _IGNORES = shutil.ignore_patterns("_backups", "_staging", "__pycache__", "*.pyc")
+
+#: Origines dont la présence dans ``backend/modules/`` dépend du POSTE et non du
+#: dépôt : un module de catalogue s'installe et se désinstalle à volonté
+#: (``POST /settings/catalogue/{id}/install``), un module d'Atelier n'existe que
+#: chez qui l'a généré. Les deux sont gitignorés — un clone frais n'en a aucun.
+#:
+#: Les copier rendait l'arbre de test DIFFÉRENT sur chaque machine, et ça s'est
+#: payé : ``test_catalogue.test_catalogue_liste_les_six_avec_installe`` affirme
+#: « aucun installable ne doit l'être par défaut » et échouait en permanence sur
+#: le poste de dev — parce que le module ``code`` y était réellement installé,
+#: donc ``installé: True`` était la BONNE réponse à une question posée au mauvais
+#: arbre. En CI, où le clone n'a que les modules versionnés, le même test passait.
+#: Un échec qui ne se reproduit que chez son auteur finit par se lire comme du
+#: bruit ; c'est ainsi qu'il a survécu longtemps.
+#:
+#: Même esprit que ``EPURE_WEB_DIR``, vidé pour le DÉTERMINISME (§3.5) : sans ça
+#: le comportement de la suite dépend de ce que l'utilisateur a installé.
+_ORIGINES_LOCALES = frozenset({"catalogue", "workshop"})
+
+
+def _modules_du_poste() -> frozenset[str]:
+    """Ids de ``backend/modules/`` qui viennent du poste et non du dépôt.
+
+    Lu dans les manifestes plutôt qu'écrit en dur : la liste des installables
+    change avec ``modules-catalogue/``, et une liste figée ici divergerait en
+    silence. Le champ ``origin`` est déjà la source de vérité de cette
+    distinction (§3.3).
+
+    **Le défaut est de COPIER.** Un dossier sans manifeste (``_atelier``, ou un
+    reliquat de désinstallation), un manifeste illisible ou sans ``origin`` ne
+    sont pas exclus : mieux vaut un arbre trop riche — l'état d'avant, connu —
+    qu'un module versionné qui disparaîtrait de la copie sans que personne le
+    demande.
+    """
+    if not REAL_MODULES_DIR.is_dir():
+        return frozenset()
+    locaux: set[str] = set()
+    for sub in REAL_MODULES_DIR.iterdir():
+        mf = sub / "manifest.json"
+        if not mf.is_file():
+            continue
+        try:
+            origine = json.loads(mf.read_text(encoding="utf-8-sig")).get("origin")
+        except Exception:
+            continue
+        if origine in _ORIGINES_LOCALES:
+            locaux.add(sub.name)
+    return frozenset(locaux)
+
+
+#: Calculé une fois, avant toute copie. Exposé : les tests de détermination
+#: (`test_arbre_modules_deterministe.py`) s'en servent pour dire ce qui a été
+#: écarté, et un rapport « rien à écarter » est un résultat valide (cas de la CI).
+MODULES_DU_POSTE = _modules_du_poste()
+
+
+def _ignorer_aussi(par_dossier: dict[Path, frozenset[str]]):
+    """Compose ``_IGNORES`` avec une exclusion par dossier source.
+
+    Un rappel plutôt qu'un motif : ``shutil.ignore_patterns`` filtre sur les
+    NOMS, et la distinction qu'on veut se lit dans le CONTENU des manifestes.
+    Et par dossier, pour n'écarter ``code`` qu'à la racine des modules — pas un
+    sous-dossier qui porterait le même nom quelque part dans l'arbre.
+    """
+    cibles = {p.resolve(): noms for p, noms in par_dossier.items()}
+
+    def _filtre(src, names):
+        exclus = set(_IGNORES(src, names))
+        exclus |= cibles.get(Path(src).resolve(), frozenset())
+        return exclus
+
+    return _filtre
 
 
 def _derive(chemin: Path) -> bool:
@@ -180,7 +253,7 @@ def _installer_vide(var: str, nom: str) -> Path:
     return d
 
 
-def _installer_arbre(var: str, source: Path, nom: str) -> Path:
+def _installer_arbre(var: str, source: Path, nom: str, exclusions=None) -> Path:
     """Pose ``var`` sur une COPIE de ``source`` dans un temporaire.
 
     Une copie et non un dossier vide : les tests existants s'appuient sur un
@@ -191,6 +264,12 @@ def _installer_arbre(var: str, source: Path, nom: str) -> Path:
     C'est aussi ce qui rend testable ``DELETE /settings/modules/{id}`` : son
     ``rmtree`` frappe la copie. Sans ça, le premier test de suppression
     détruirait un vrai module.
+
+    ``exclusions`` — ``{dossier source: noms à ne pas copier}`` — retire de la
+    copie ce qui dépend du poste (cf. ``MODULES_DU_POSTE``). Filtré à la COPIE
+    et non élagué après : un élagage laisserait une fenêtre où l'arbre est
+    faux, et ce paramètre ne vaut pas pour tous les arbres — c'est pour ça
+    qu'il est passé par l'appelant et non câblé ici.
     """
     existant = os.environ.get(var, "").strip()
     if existant:
@@ -199,7 +278,8 @@ def _installer_arbre(var: str, source: Path, nom: str) -> Path:
     atexit.register(shutil.rmtree, racine, True)
     cible = racine / source.name
     if source.is_dir():
-        shutil.copytree(source, cible, ignore=_IGNORES)
+        filtre = _ignorer_aussi(exclusions) if exclusions else _IGNORES
+        shutil.copytree(source, cible, ignore=filtre)
     else:
         cible.mkdir(parents=True, exist_ok=True)
     os.environ[var] = str(cible)
@@ -221,8 +301,14 @@ DATA_DIR = _installer()
 #: utilisateur, surveillées comme celles de `memory/`.
 HISTORY_DIR = _installer_vide("EPURE_HISTORY_DIR", "history")
 
-#: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus.
-MODULES_DIR = _installer_arbre("EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules")
+#: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus. Les modules
+#: installés sur CE poste (catalogue, Atelier) en sont écartés : l'arbre de test
+#: doit être celui d'un clone frais, sinon la suite ne mesure pas la même chose
+#: ici et en CI. Cf. `MODULES_DU_POSTE`.
+MODULES_DIR = _installer_arbre(
+    "EPURE_MODULES_DIR", REAL_MODULES_DIR, "modules",
+    exclusions={REAL_MODULES_DIR: MODULES_DU_POSTE},
+)
 
 #: Cache des modèles vocaux — temporaire VIDE, et volontairement ABSENT de
 #: REAL_DIRS. Deux raisons distinctes, à ne pas confondre :
@@ -337,7 +423,16 @@ def _rebrancher_package_modules(cible: Path) -> None:
 
 #: Copie de frontend/src/modules/ — EPURE_GENERATED_DIR pointe sur son
 #: sous-dossier `generated`, dont core.paths déduit le parent.
-_FRONTEND_COPIE = _installer_arbre("EPURE_GENERATED_DIR", REAL_FRONTEND_MODULES, "frontend")
+#:
+#: Mêmes exclusions, appliquées à `generated/` : c'est la MOITIÉ SYMÉTRIQUE du
+#: même arbre. `catalogue.install()` écrit les deux côtés ensemble et
+#: `uninstall()` les retire ensemble ; n'assainir que le backend laisserait un
+#: `generated/code/` du poste face à un `modules/` de clone frais, c'est-à-dire
+#: un état que ni ce poste ni la CI n'ont jamais.
+_FRONTEND_COPIE = _installer_arbre(
+    "EPURE_GENERATED_DIR", REAL_FRONTEND_MODULES, "frontend",
+    exclusions={REAL_FRONTEND_MODULES / "generated": MODULES_DU_POSTE},
+)
 if _FRONTEND_COPIE.name != "generated":
     # _installer_arbre a copié `modules/` ; la variable doit désigner
     # `modules/generated`, le parent en étant déduit par core.paths.
