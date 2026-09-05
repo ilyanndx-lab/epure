@@ -298,4 +298,39 @@ describe('Chat — @web/@cours/@strict en mode comparaison', () => {
     expect(envoye.web_search_override).toBe(true)
     expect(envoye.content).toBe('quelle est la météo')
   })
+
+  // Ces deux cas manquaient alors que le titre du bloc les annonçait : un seul
+  // `it`, pour @web, et le vert laissait croire aux trois. Un test absent laisse
+  // un trou visible ; un test mal nommé le rebouche.
+  //
+  // Le nom du champ n'est PAS déductible de celui de la commande, et c'est le
+  // piège de ce bloc : `@cours` part en `rag_override: 'all'` — une CHAÎNE, pas
+  // un booléen comme ses deux voisins (`sendUserText`, Component.tsx).
+  it('@cours : le message porte compare_models ET rag_override', async () => {
+    poserFetch(tableSaine())
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { ws } = await rendreEtConnecter()
+
+    await activerComparaison(['Modèle A', 'Modèle B'])
+    await envoyerTexte('@cours resume le chapitre 3')
+
+    const envoye = JSON.parse(ws.sent[ws.sent.length - 1])
+    expect(envoye.compare_models).toEqual(['ollama:a', 'ollama:b'])
+    expect(envoye.rag_override).toBe('all')
+    expect(envoye.content).toBe('resume le chapitre 3')
+  })
+
+  it('@strict : le message porte compare_models ET strict_override', async () => {
+    poserFetch(tableSaine())
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { ws } = await rendreEtConnecter()
+
+    await activerComparaison(['Modèle A', 'Modèle B'])
+    await envoyerTexte('@strict donne la formule')
+
+    const envoye = JSON.parse(ws.sent[ws.sent.length - 1])
+    expect(envoye.compare_models).toEqual(['ollama:a', 'ollama:b'])
+    expect(envoye.strict_override).toBe(true)
+    expect(envoye.content).toBe('donne la formule')
+  })
 })
