@@ -18,6 +18,33 @@ workflow_dispatch).
 
 Usage :
     python integration_modules_mount.py
+
+RÉSERVE — lancé tel quel, ce script ÉCRIT DANS LES VRAIES DONNÉES de
+l'instance. C'est la contrepartie directe de ce qui précède : ne pas importer
+`_test_env` est ce qui lui donne le vrai arbre de modules, et c'est aussi ce
+qui laisse `core.runtime` construire ses moteurs sur `backend/memory/`. Au
+passage, `MemoryEngine.__init__` **réinitialise `context_session.json`** —
+modèle actif, mode strict, raisonnement, tout revient au défaut — et crée
+`profile.json` / `memory_sessions.json` / `instance_config.json` s'ils
+manquent. Le lancer pendant une séance de travail efface les réglages de cette
+séance, sans rien annoncer et sans que le test échoue pour autant : c'est un
+effet de bord de l'import, pas une assertion.
+
+Le job `integration` de la CI part d'un clone neuf, où il n'y a rien à perdre :
+c'est là que ce script est prévu pour tourner, et c'est pourquoi la réserve
+n'apparaissait nulle part.
+
+Pour le lancer sur un poste de travail sans y toucher, poser `EPURE_DATA_DIR`
+sur un temporaire (vérifié : les six fichiers partent là-bas et
+`backend/memory/` n'est pas modifié) :
+
+    $env:EPURE_DATA_DIR = "$env:TEMP/epure-mount"; python integration_modules_mount.py
+
+Ça change ce qui est mesuré, et dans le sens large : `modules_activés` y est
+vide, donc TOUS les modules installés comptent pour actifs (§3.3), au lieu des
+seuls activés. Le smoke test est plus couvrant, pas plus étroit. **Ne PAS
+détourner `EPURE_MODULES_DIR` en même temps** : l'arbre réel est précisément ce
+que ce script vient éprouver, le rediriger ne testerait plus rien.
 """
 
 import os
