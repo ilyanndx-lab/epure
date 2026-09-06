@@ -642,6 +642,26 @@ export default function Chat({
   const [streaming, setStreaming] = useState(false)
   const [selectedSuggestion, setSelectedSuggestion] = useState(0)
   const [streamStats, setStreamStats] = useState<{ tps: number; count: number } | null>(null)
+  /**
+   * Le modèle LM Studio actif est-il encore en train de charger ?
+   *
+   * `null` = on ne sait pas, et c'est un état À PART ENTIÈRE, pas un `false`
+   * poli : LM Studio rend un 500 transitoire à l'instant précis où un
+   * chargement démarre (observé une fois sur 79 sondes le 2026-09-06), et il
+   * peut être éteint. Le confondre avec « pas en train de charger » ferait
+   * disparaître l'indicateur en plein chargement — d'où la règle appliquée
+   * dans le sondage ci-dessous : **un `null` ne remplace jamais un `true`
+   * déjà affiché**, il est ignoré.
+   *
+   * Il n'y a délibérément AUCUN pourcentage ici. LM Studio n'en expose pas sur
+   * son API HTTP (mesuré, cf. `core/models.py:etat_modele_lmstudio` — le corps
+   * de la route de chargement refuse `stream` en 400, donc son schéma est
+   * fermé et il n'y a pas de drapeau qu'on aurait manqué). En fabriquer un à
+   * partir du temps écoulé serait un chiffre inventé, et les durées mesurées
+   * (12,1 s pour 3 Go, 119,4 s pour 17,7 Go) ne se laissent de toute façon pas
+   * estimer.
+   */
+  const [chargementLmStudio, setChargementLmStudio] = useState<boolean | null>(null)
   const [collapsedThinking, setCollapsedThinking] = useState<Record<number, boolean>>({})
   /**
    * Repli du bloc de raisonnement, par index de message — et seulement quand
@@ -1727,6 +1747,61 @@ export default function Chat({
     streamSSE, handleMémoire, handleModèle, handleLacunes, handleNavigate,
   ])
 
+  // ── Attente du premier token : LM Studio charge-t-il ? ──────────────────────
+
+  /**
+   * On attend le premier token de l'assistant — la fenêtre pendant laquelle
+   * LM Studio peut être en train de charger son modèle.
+   *
+   * **Volontairement SANS `inPipelineRef.current`**, alors que le curseur
+   * clignotant du fil (plus bas) l'exclut, lui. Deux raisons, dans cet ordre :
+   * lire un `ref.current` pendant le rendu pour le faire entrer dans une
+   * dépendance de hook est précisément ce que `react-hooks/refs` refuse (six
+   * avertissements en cascade, mesurés), et la valeur d'un ref ne redéclenche
+   * de toute façon aucun rendu — la dépendance serait un mensonge. Ensuite,
+   * l'écart est sans conséquence : sonder pendant un pipeline ne fait
+   * qu'alimenter un état que le rendu, lui, n'affiche pas dans ce cas.
+   */
+  const attenteToken = streaming && messages[messages.length - 1]?.role !== 'assistant'
+
+  useEffect(() => {
+    if (!attenteToken) return
+    let vivant = true
+    // 1 s : le chargement se compte en dizaines de secondes (12,1 s pour 3 Go,
+    // 119,4 s pour 17,7 Go, mesurés le 2026-09-06), et la sonde côté LM Studio
+    // répond en 4 ms de médiane MÊME pendant un chargement (max 164 ms sur
+    // 392 sondes). Sonder plus vite n'apprendrait rien de plus.
+    const sonder = async () => {
+      try {
+        const res = await apiFetch(`${API}/models/lmstudio/chargement`)
+        // `res.ok` AVANT de lire : un corps d'erreur n'a pas de champ
+        // `chargement`, et l'affirmer par un `as` donnerait `undefined` — le
+        // piège que `ModuleBar.test.tsx` verrouille ailleurs dans ce dépôt.
+        if (!vivant || !res.ok) return
+        const d = await res.json() as { chargement?: unknown }
+        if (!vivant) return
+        // Seul un booléen franc met l'état à jour. Tout le reste (`null` du
+        // backend, champ absent, corps inattendu) veut dire « aucune
+        // information nouvelle » et laisse l'affichage tel quel.
+        if (typeof d.chargement === 'boolean') setChargementLmStudio(d.chargement)
+      } catch {
+        // Panne réseau : on ne sait pas, donc on ne change rien.
+      }
+    }
+    void sonder()
+    const t = setInterval(() => { void sonder() }, 1000)
+    return () => {
+      vivant = false
+      clearInterval(t)
+      // Remise à zéro dans le NETTOYAGE, pas dans le corps de l'effet : un
+      // `setState` synchrone dans un corps d'effet déclenche des rendus en
+      // cascade (`react-hooks/set-state-in-effect`). Sans elle, le libellé
+      // survivrait au premier token et se rallumerait sur la réponse suivante
+      // avant le premier sondage.
+      setChargementLmStudio(null)
+    }
+  }, [attenteToken])
+
   // ── Stop & relancer ─────────────────────────────────────────────────────────
 
   const stop = useCallback(() => {
@@ -1961,8 +2036,18 @@ export default function Chat({
           </div>
         )}
         {streaming && messages[messages.length - 1]?.role !== 'assistant' && !inPipelineRef.current && (
-          <div className="flex justify-start">
+          <div className="flex justify-start items-center gap-2">
             <span className="text-xs font-mono text-accent2 animate-pulse">▍</span>
+            {/* Le libellé n'apparaît QUE sur un `true` franc : `null` (LM Studio
+                injoignable, 500 transitoire, modèle non LM Studio) laisse le
+                curseur seul, comme avant ce lot. Et il n'y a pas de
+                pourcentage — LM Studio n'en expose aucun sur son API HTTP
+                (mesuré, cf. `core/models.py:etat_modele_lmstudio`). */}
+            {chargementLmStudio === true && (
+              <span className="text-xs font-mono text-muted">
+                chargement du modèle en cours…
+              </span>
+            )}
           </div>
         )}
         <div ref={bottomRef} />
