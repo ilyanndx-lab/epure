@@ -3,6 +3,7 @@ import {
   Paperclip, Mic, Zap, Bot, X, ChevronLeft, ChevronRight, Check,
   AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
   FileSpreadsheet, File as FileIcon, Save, Trash2, ExternalLink,
+  Wrench, Eye, Brain,
 } from 'lucide-react'
 import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
@@ -48,6 +49,23 @@ const MODULE_RECOMMENDATIONS: Record<string, { id: string; label: string }[]> = 
 
 type Panel = 'files' | 'skills' | 'model' | null
 
+/**
+ * Capacites d'un modele, en TROIS etats et non deux.
+ *
+ * `true`/`false` sont des FAITS : la source a declare, la capacite y est ou
+ * non. `null` dit que personne n'a mesure — aucune source pour ce fournisseur,
+ * ou champ absent. Les confondre ferait lire une ignorance comme une absence,
+ * sur un point que l'utilisateur lit comme un fait.
+ *
+ * `undefined` est un quatrieme cas, distinct : le champ n'est pas emis du tout
+ * (modeles cloud, hors perimetre de ce lot).
+ */
+interface Capacites {
+  outils: boolean | null
+  vision: boolean | null
+  raisonnement: boolean | null
+}
+
 interface ModelInfo {
   id: string
   nom: string
@@ -55,6 +73,7 @@ interface ModelInfo {
   disponible: boolean
   gratuit?: boolean
   description?: string
+  capacites?: Capacites
 }
 
 interface CloudCategories {
@@ -341,6 +360,26 @@ export default function ModuleBar({
   const [fournisseurs, setFournisseurs] = useState<Record<string, boolean>>({})
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b')
 
+  /**
+   * Modèles Ollama RÉSIDENTS EN MÉMOIRE (`GET /models/loaded`) — à ne pas
+   * confondre avec `localModels`, qui dit ce qui est INSTALLÉ sur le disque.
+   * Les deux ensembles sont indépendants : sept modèles installés et zéro
+   * chargé est l'état normal d'une machine au repos.
+   *
+   * **`null` veut dire « Ollama ne répond pas », `[]` veut dire « rien de
+   * chargé ».** Les confondre afficherait « injoignable » sur une installation
+   * saine. Sur `null`, l'interface se TAIT : une machine sans Ollama est le cas
+   * nominal, pas une panne à signaler en rouge.
+   *
+   * Chargé dès l'ouverture du panneau, sans action : l'état doit se voir, pas
+   * se demander.
+   */
+  const [chargesOllama, setChargesOllama] = useState<string[] | null>(null)
+  //: Modèle dont une action est en vol — le bouton se verrouille, lui seul.
+  const [memoireEnCours, setMemoireEnCours] = useState<string | null>(null)
+  //: Dernier refus expliqué (typiquement : une génération tient le modèle).
+  const [memoireMessage, setMemoireMessage] = useState<string | null>(null)
+
   // Preset state (for effort panel)
   const [presets, setPresets] = useState<Preset[]>([])
   const [saveModalOpen, setSaveModalOpen] = useState(false)
@@ -356,6 +395,42 @@ export default function ModuleBar({
     setActivePanel(prev => (prev === panel ? null : panel))
     if (panel === 'model') setShowFullModelList(false)
   }
+
+  /**
+   * Charge ou libère un modèle Ollama.
+   *
+   * **L'état affiché vient de la RÉPONSE, jamais d'une supposition.** Le backend
+   * relit `/api/ps` après avoir agi et renvoie ce qu'il y a vraiment : éjecter
+   * un modèle qu'une génération utilise répond 200 côté Ollama sans rien
+   * libérer, et le modèle réapparaît à la fin de la requête en vol. Croire le
+   * succès afficherait « libéré » puis un retour inexpliqué deux minutes après.
+   */
+  const actionMemoire = useCallback(async (id: string, action: 'load' | 'unload') => {
+    setMemoireEnCours(id)
+    setMemoireMessage(null)
+    try {
+      const res = await apiFetch(`${API}/models/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: id }),
+      })
+      if (!res.ok) {
+        setMemoireMessage(`Le backend a refusé la demande (HTTP ${res.status}).`)
+        return
+      }
+      const d = await res.json() as { ok?: unknown; message?: unknown; charges?: unknown }
+      setChargesOllama(Array.isArray(d.charges)
+        ? liste<{ id?: string }>(d.charges).map(m => String(m.id ?? ''))
+        : null)
+      if (d.ok !== true && typeof d.message === 'string' && d.message.trim()) {
+        setMemoireMessage(d.message)
+      }
+    } catch {
+      setMemoireMessage('Backend injoignable.')
+    } finally {
+      setMemoireEnCours(null)
+    }
+  }, [])
 
   const allModels = useCallback((): ModelInfo[] => [
     ...localModels,
@@ -570,6 +645,21 @@ export default function ModuleBar({
           setFournisseurs(dico(d.fournisseurs))
         })
         .catch(() => {})
+
+      // Ce qui est CHARGÉ, en plus de ce qui est installé. Requête séparée
+      // parce que la réponse a une autre nature : `/models` liste le disque et
+      // change rarement, celle-ci décrit la mémoire et change toute seule (un
+      // modèle expire au bout de 5 min sans usage).
+      apiFetch(`${API}/models/loaded`)
+        .then(r => (r.ok ? r.json() : { charges: null }))
+        .then((d: { charges?: unknown }) => {
+          // `null` traversé tel quel : c'est « pas d'Ollama », pas « rien de
+          // chargé ». `liste()` écraserait la distinction en `[]`.
+          setChargesOllama(Array.isArray(d.charges)
+            ? liste<{ id?: string }>(d.charges).map(m => String(m.id ?? ''))
+            : null)
+        })
+        .catch(() => setChargesOllama(null))
     }
 
     if (showEffort) {
@@ -1252,6 +1342,53 @@ export default function ModuleBar({
         })
 
         // Item de la liste complète — disponibilité pilotée par /models
+        /**
+         * Les capacites d'un modele, en icones.
+         *
+         * REGLE : une icone n'apparait que pour un FAIT POSITIF. Une capacite
+         * declaree absente (`false`) ne montre rien — l'absence d'icone est
+         * alors l'information. Une capacite INCONNUE (`null`) ne montre pas
+         * rien non plus : elle affiche un marqueur distinct, sans quoi
+         * « personne n'a mesure » se lirait exactement comme « ce modele ne
+         * sait pas le faire ». C'est toute la difference entre les deux etats,
+         * et elle doit se voir a l'ecran, pas seulement dans le JSON.
+         *
+         * `=== true` et non une verite JS : `null` est falsy, donc un test par
+         * troncature ecraserait justement la distinction qu'on transporte
+         * depuis le backend.
+         */
+        const iconesCapacites = (m: ModelInfo) => {
+          const c = m.capacites
+          if (!c) return null      // champ non emis (cloud) : rien a dire
+          const inconnu = c.outils === null && c.vision === null && c.raisonnement === null
+          if (inconnu) {
+            return (
+              <Tooltip
+                content={`capacites inconnues : ${m.provider} n'expose pas cette information, et rien n'est deduit du nom du modele`}
+                side="top"
+              >
+                <span className="text-xs font-mono text-muted/70 shrink-0">?</span>
+              </Tooltip>
+            )
+          }
+          const marques: Array<[boolean, React.ReactNode, string]> = [
+            [c.outils === true, <Wrench key="o" size={11} />, 'appels d’outils'],
+            [c.vision === true, <Eye key="v" size={11} />, 'vision : traite les images'],
+            [c.raisonnement === true, <Brain key="r" size={11} />, 'raisonnement'],
+          ]
+          const visibles = marques.filter(([oui]) => oui)
+          if (visibles.length === 0) return null
+          return (
+            <span className="flex items-center gap-1 shrink-0 text-muted">
+              {visibles.map(([, icone, libelle]) => (
+                <Tooltip key={libelle} content={libelle} side="top">
+                  <span className="flex items-center">{icone}</span>
+                </Tooltip>
+              ))}
+            </span>
+          )
+        }
+
         const modelRow = (m: ModelInfo, dot: string, tag?: string, tagCls?: string) => {
           const isSelected = m.id === selectedModel
           const row = (
@@ -1264,6 +1401,7 @@ export default function ModuleBar({
               }`}>
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? dot : 'bg-line'}`} />
               <span className="flex-1 truncate">{m.nom}</span>
+              {iconesCapacites(m)}
               {tag && <span className={`text-xs shrink-0 ${tagCls}`}>{tag}</span>}
               {isSelected && <Check size={13} className="text-accent shrink-0" />}
               {!m.disponible && <AlertTriangle size={11} className="text-warning shrink-0" />}
@@ -1273,6 +1411,51 @@ export default function ModuleBar({
             <Tooltip key={m.id} content="indisponible : absent du serveur ou du catalogue du fournisseur" side="top">
               {row}
             </Tooltip>
+          )
+        }
+
+        /**
+         * Ligne d'un modèle Ollama : la sélection, plus le contrôle mémoire.
+         *
+         * Réservé à Ollama dans ce lot. LM Studio et FLM chargent leurs modèles
+         * autrement — leur donner ce bouton supposerait un mécanisme commun qui
+         * n'existe pas.
+         *
+         * Le bouton est un FRÈRE de la ligne, pas un enfant : `modelRow` rend un
+         * `<button>`, et imbriquer un bouton dans un bouton est invalide (le
+         * clic intérieur remonterait au parent, donc éjecter sélectionnerait
+         * aussi le modèle).
+         *
+         * Sur `chargesOllama === null` — Ollama injoignable — ni pastille ni
+         * bouton : rien à charger, et rien à signaler.
+         */
+        const ligneOllama = (m: ModelInfo) => {
+          if (chargesOllama === null) return modelRow(m, 'bg-success')
+          const charge = chargesOllama.includes(m.id)
+          const enCours = memoireEnCours === m.id
+          return (
+            <div key={m.id} className="flex items-center gap-1">
+              <div className="flex-1 min-w-0">{modelRow(m, 'bg-success')}</div>
+              {charge && (
+                <span className="text-xs font-mono text-success shrink-0" title="résident en mémoire">
+                  en mémoire
+                </span>
+              )}
+              <Tooltip
+                content={charge
+                  ? 'libérer la mémoire (sans effet si une génération est en cours)'
+                  : 'charger en mémoire — la première réponse sera immédiate'}
+                side="top"
+              >
+                <button
+                  onClick={() => actionMemoire(m.id, charge ? 'unload' : 'load')}
+                  disabled={enCours}
+                  className="shrink-0 px-2 py-1 rounded-sm text-xs font-mono text-muted hover:text-primary hover:bg-elevated disabled:opacity-50 transition-colors duration-150"
+                >
+                  {enCours ? <Loader2 size={12} className="animate-spin" /> : (charge ? 'libérer' : 'charger')}
+                </button>
+              </Tooltip>
+            </div>
           )
         }
 
@@ -1354,7 +1537,15 @@ export default function ModuleBar({
                 {localModels.length > 0 && (
                   <>
                     <p className="text-xs text-muted uppercase tracking-wide px-3 py-1">Local</p>
-                    {localModels.map(m => modelRow(m, 'bg-success'))}
+                    {localModels.map(m => ligneOllama(m))}
+                    {/* Le refus expliqué, pas un échec muet : « libérer » peut
+                        répondre 200 sans rien libérer si une génération tient le
+                        modèle (mesuré). Le backend relit l'état et dit pourquoi. */}
+                    {memoireMessage && (
+                      <p className="mx-3 my-1 px-2 py-1.5 rounded-sm border border-warning/40 bg-warning/10 text-xs font-mono text-warning">
+                        {memoireMessage}
+                      </p>
+                    )}
                   </>
                 )}
 

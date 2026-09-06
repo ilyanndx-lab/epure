@@ -39,6 +39,7 @@ from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
 from core.embedding_install import EmbeddingIndisponible
 from core.orchestrator import OrchestratorEngine
+from core import ollama_memoire
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
@@ -303,17 +304,32 @@ from core.runtime import (
 async def list_models():
     loop = asyncio.get_running_loop()
     ollama_models = await loop.run_in_executor(None, get_ollama_installed)
+
+    # Capacités DÉCLARÉES par Ollama (`/api/tags`, champ `capabilities`, mesuré
+    # sur 0.33.3). Aucune requête de plus que la ligne au-dessus : c'est le même
+    # endpoint. `None` — Ollama injoignable, ou version qui ne déclare rien —
+    # devient trois `None`, jamais trois `False` : ce serait affirmer que ces
+    # modèles ne savent rien faire.
+    capacites_ollama = await loop.run_in_executor(None, ollama_memoire.capacites_installees)
+
+    def _capacites_ollama_de(name: str) -> dict:
+        declarees = (capacites_ollama or {}).get(name)
+        return ollama_memoire.decrire_capacites(declarees)
+
     if ollama_models is not None:
         local = [
             {
                 "id": name, "nom": name, "provider": "ollama", "disponible": True,
                 "description": QUALITATIVE_METADATA.get(name, {}).get("description", ""),
+                "capacites": _capacites_ollama_de(name),
             }
             for name in ollama_models
         ]
     else:
         # Serveur Ollama injoignable → modèle configuré affiché mais indisponible
-        local = [{"id": llm._model, "nom": llm._model, "provider": "ollama", "disponible": False}]
+        local = [{"id": llm._model, "nom": llm._model, "provider": "ollama",
+                  "disponible": False,
+                  "capacites": ollama_memoire.decrire_capacites(None)}]
 
     # LM Studio : même contrat que Ollama ci-dessus (None = injoignable → liste
     # vide, silencieuse, plutôt qu'une entrée grisée qui suppose un modèle
@@ -322,10 +338,16 @@ async def list_models():
     # ids d'Ollama ne portent eux-mêmes aucun préfixe, donc sans celui-ci une clé
     # de sélecteur en collision associerait un module au mauvais fournisseur.
     lmstudio_models = await loop.run_in_executor(None, get_lmstudio_installed)
+    # Capacités : TROIS INCONNUES. LM Studio n'expose aucune source équivalente
+    # à `capabilities` d'Ollama, et rien n'a pu être mesuré ici (serveur éteint
+    # sur ce poste). On ne déduit RIEN du nom du modèle — « vl » ne vaut pas
+    # vision, « r1 » ne vaut pas raisonnement : une icône est lue comme un fait,
+    # et une supposition affichée comme un fait est un mensonge.
     local_lmstudio = [
         {
             "id": f"lmstudio:{name}", "nom": name, "provider": "lmstudio", "disponible": True,
             "description": QUALITATIVE_METADATA.get(name, {}).get("description", ""),
+            "capacites": ollama_memoire.decrire_capacites(None),
         }
         for name in (lmstudio_models or [])
     ]
@@ -356,8 +378,28 @@ async def list_models():
             and mid in flm_installed
             and (flm_live is None or mid in flm_live)
         )
+        # Capacités FLM : la VISION est connue, les deux autres non.
+        #
+        # Connue parce qu'un registre TENU À LA MAIN existe déjà dans le dépôt —
+        # le flag `vision` de `FLM_MODELS_STATIC` — et qu'il n'est pas décoratif :
+        # `premier_modele_vision_disponible()` s'en sert pour router les images,
+        # et il essaie FLM **avant** Ollama. Un modèle FLM marqué vision est donc
+        # bien celui qui traitera l'image, pas un intermédiaire. Ce n'est pas une
+        # déduction sur le nom : `qwen3vl-it:4b` porte le flag parce que
+        # quelqu'un l'a posé, pas parce qu'il contient « vl ».
+        #
+        # `outils` et `raisonnement` restent INCONNUS. FLM `/v1/models` ne rend
+        # que `{created, id, object, owned_by}` (mesuré). Son `/api/ps` porte
+        # bien un `think_toggleable` (mesuré, cf. core/llm.py), mais seulement
+        # pour le modèle CHARGÉ : une source existe, pas à l'échelle d'une
+        # liste. La combler par une heuristique de nom afficherait une
+        # supposition là où l'utilisateur lit un fait.
+        capacites = ollama_memoire.decrire_capacites(None)
+        if m.get("vision"):
+            capacites["vision"] = True
         local_npu.append(
-            {k: v for k, v in m.items() if not k.startswith("_")} | {"disponible": dispo}
+            {k: v for k, v in m.items() if not k.startswith("_")}
+            | {"disponible": dispo, "capacites": capacites}
         )
 
     key_ok: dict[str, bool] = {
@@ -439,6 +481,49 @@ async def list_models():
         "fournisseurs": key_ok,
         "recommandations": recommandations,
     }
+
+
+# ---------------------------------------------------------------------------
+# Modèles Ollama résidents en mémoire
+#
+# À côté de `/models` et pas dans un routeur de module : c'est la même surface,
+# et §3.1 place déjà les routes `/models` ici. Les trois passent par
+# `run_in_executor` comme leurs voisines — un `urlopen` synchrone sur la boucle
+# d'événements bloquerait TOUTES les autres requêtes, et un chargement à froid
+# se compte en dizaines de secondes (25 s mesurées, §3.3 bis).
+#
+# Aucune des trois ne lève sur Ollama absent : c'est le cas nominal d'une machine
+# sans Ollama, pas une panne. `core.ollama_memoire` rend `None`, on le transmet
+# tel quel et l'interface se tait.
+# ---------------------------------------------------------------------------
+
+class ModeleMemoireRequest(BaseModel):
+    model: str
+
+
+@app.get("/models/loaded")
+async def models_loaded():
+    """Ce qu'Ollama garde EN MÉMOIRE — à ne pas confondre avec `/models`, qui
+    dit ce qui est installé sur le disque. `charges: null` = Ollama injoignable ;
+    `charges: []` = Ollama répond et rien n'est chargé."""
+    loop = asyncio.get_running_loop()
+    charges = await loop.run_in_executor(None, ollama_memoire.lister_charges)
+    return {"charges": charges}
+
+
+@app.post("/models/load")
+async def models_load(req: ModeleMemoireRequest):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, ollama_memoire.charger, req.model)
+
+
+@app.post("/models/unload")
+async def models_unload(req: ModeleMemoireRequest):
+    """Libère la mémoire. **Rend l'état RELU, pas un succès supposé** : éjecter
+    un modèle qu'une génération utilise répond 200 sans rien décharger (mesuré),
+    et `ok: false` porte alors l'explication."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, ollama_memoire.decharger, req.model)
 
 
 # ---------------------------------------------------------------------------
