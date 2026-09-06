@@ -101,6 +101,28 @@ type VerdictModele =
   | 'tient' | 'limite' | 'ne_tiendra_pas' | 'inconnu'
   | 'disponible' | 'indisponible'
 
+/**
+ * Delai avant de relire `/models/materiel` apres un chargement/dechargement.
+ *
+ * **MESURE, pas choisi au jugé** (ce poste, 2026-09-06). Ollama repond a un
+ * dechargement en 0,01 s et `/api/ps` est deja vide a cet instant — mais la
+ * memoire, elle, n'est PAS encore rendue :
+ *
+ *     +0,0 s :  9,19 Gio libres  (+0,00)  /api/ps deja vide
+ *     +0,5 s : 15,34 Gio libres  (+6,16)
+ *     +5,0 s : 15,29 Gio libres  (+6,10)
+ *
+ * Relire immediatement afficherait donc « 9,2 Go libres » a cote d'un modele
+ * qu'on vient de liberer — un ecran qui contredit l'action qu'il vient de
+ * faire. Une seule relecture, decalee : dans le sens du CHARGEMENT la memoire
+ * est deja prise quand Ollama repond (mesure aussi), le delai n'y coute qu'un
+ * peu de latence.
+ *
+ * Ne pas « simplifier » en relisant tout de suite, et ne pas descendre sous la
+ * demi-seconde mesuree : la marge est la pour une machine plus lente.
+ */
+const DELAI_RELECTURE_MATERIEL_MS = 800
+
 /** Recopie de `core/materiel.py::VERDICTS` — sert de filtre, pas de decor. */
 const VERDICTS_CONNUS: readonly VerdictModele[] = [
   'tient', 'limite', 'ne_tiendra_pas', 'inconnu', 'disponible', 'indisponible',
@@ -604,6 +626,33 @@ export default function ModuleBar({
    * libérer, et le modèle réapparaît à la fin de la requête en vol. Croire le
    * succès afficherait « libéré » puis un retour inexpliqué deux minutes après.
    */
+  /**
+   * Lit `/models/materiel` et pose le resume ET les verdicts.
+   *
+   * Extrait de l'effet d'ouverture parce que ce n'est PLUS une lecture unique :
+   * le denominateur des verdicts est la memoire LIBRE (backend, 2026-09-06),
+   * donc charger ou liberer un modele depuis ce meme panneau change la reponse.
+   * Une seule lecture a l'ouverture laisserait les badges decrire l'etat
+   * d'avant l'action, juste a cote du bouton qui vient de la declencher.
+   */
+  const chargerMateriel = useCallback(() => {
+    apiFetch(`${API}/models/materiel`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: unknown) => {
+        // `materielDe` rend `null` sur un corps qui n'a pas la forme — 404
+        // d'une instance plus ancienne, 401 avant appairage, 500. Le résumé
+        // se tait alors, plutôt que d'annoncer une machine sans mémoire.
+        setMateriel(materielDe(d))
+        setVerdicts(verdictsDe(d))
+      })
+      .catch(() => { setMateriel(null); setVerdicts({}) })
+  }, [])
+
+  //: Relecture differee en vol — annulee au demontage, sinon React previent
+  //: d'un `setState` sur un composant disparu a chaque panneau referme vite.
+  const relectureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (relectureRef.current) clearTimeout(relectureRef.current) }, [])
+
   const actionMemoire = useCallback(async (id: string, action: 'load' | 'unload') => {
     setMemoireEnCours(id)
     setMemoireMessage(null)
@@ -628,8 +677,14 @@ export default function ModuleBar({
       setMemoireMessage('Backend injoignable.')
     } finally {
       setMemoireEnCours(null)
+      // La memoire libre vient de changer : les verdicts affiches decrivent
+      // l'etat d'AVANT tant qu'on n'a pas relu. Relance meme sur un refus —
+      // un dechargement refuse parce qu'une generation tient le modele laisse
+      // quand meme la machine dans un etat qu'on n'a pas observe.
+      if (relectureRef.current) clearTimeout(relectureRef.current)
+      relectureRef.current = setTimeout(chargerMateriel, DELAI_RELECTURE_MATERIEL_MS)
     }
-  }, [])
+  }, [chargerMateriel])
 
   const allModels = useCallback((): ModelInfo[] => [
     ...localModels,
@@ -864,16 +919,7 @@ export default function ModuleBar({
       // `/models` : la détection peut coûter 16 s au tout premier appel du
       // process (dxdiag), et la liste des modèles ne doit pas l'attendre pour
       // s'afficher.
-      apiFetch(`${API}/models/materiel`)
-        .then(r => (r.ok ? r.json() : null))
-        .then((d: unknown) => {
-          // `materielDe` rend `null` sur un corps qui n'a pas la forme — 404
-          // d'une instance plus ancienne, 401 avant appairage, 500. Le résumé
-          // se tait alors, plutôt que d'annoncer une machine sans mémoire.
-          setMateriel(materielDe(d))
-          setVerdicts(verdictsDe(d))
-        })
-        .catch(() => { setMateriel(null); setVerdicts({}) })
+      chargerMateriel()
     }
 
     if (showEffort) {
@@ -882,7 +928,7 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements])
+  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel])
 
   /**
    * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.

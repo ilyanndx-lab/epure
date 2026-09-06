@@ -839,18 +839,29 @@ describe('ModuleBar — faisabilité matérielle', () => {
     ressource_libre: { octets: 10166943744, origine: 'ram' },
   }
 
-  const ouvrirAvec = async (reponse: Reponse, local: unknown[] = MODELES_OK.local) => {
-    poserFetch({
+  const ouvrirAvec = async (
+    reponse: Reponse,
+    local: unknown[] = MODELES_OK.local,
+    charges: unknown[] = [],
+  ) => {
+    const fetchMock = poserFetch({
       ...tableSaine(),
       '/models': { corps: { ...MODELES_OK, local } },
-      '/models/loaded': { corps: { charges: [] } },
+      '/models/loaded': { corps: { charges } },
+      '/models/load': { corps: { ok: true, message: '', charges: [] } },
+      '/models/unload': { corps: { ok: true, message: '', charges: [] } },
       '/models/materiel': reponse,
     })
     await rendre()
     await ouvrir('Modèle')
     await act(async () => { screen.getByText('Voir tous les modèles').click() })
     await waitFor(() => expect(screen.getByText('Local')).toBeTruthy())
+    return fetchMock
   }
+
+  /** Combien de fois `/models/materiel` a été demandé. */
+  const appelsMateriel = (m: ReturnType<typeof poserFetch>) =>
+    m.mock.calls.filter(([u]) => String(u).includes('/models/materiel')).length
 
   it('annonce la RAM, le GPU et le NPU de la machine', async () => {
     await ouvrirAvec({ corps: { materiel: MATERIEL_IGPU, modeles: [] } })
@@ -913,6 +924,32 @@ describe('ModuleBar — faisabilité matérielle', () => {
     await waitFor(() => expect(screen.getByText('verdicts calculés sur')).toBeTruthy())
     expect(screen.getByText('rien de mesurable')).toBeTruthy()
     expect(screen.queryByText(/31,3 Go de RAM/)).toBeNull()
+  })
+
+  it('relit le matériel après un chargement/déchargement — sinon les verdicts décrivent l’état d’AVANT', async () => {
+    // Le denominateur des verdicts est desormais la memoire LIBRE : le bouton
+    // « libérer » qui vit dans ce panneau change donc la reponse de
+    // `/models/materiel`. Sans relecture, les badges d'a cote continueraient de
+    // decrire l'etat d'avant l'action qu'on vient de declencher — et c'etait
+    // correct par construction tant que le denominateur etait une constante
+    // materielle, ce qui rend l'oubli d'autant plus facile.
+    //
+    // La relecture est DIFFEREE, et le delai est mesure : Ollama repond a un
+    // dechargement en 0,01 s et `/api/ps` est deja vide, mais la memoire n'est
+    // rendue qu'a +0,5 s. Relire tout de suite afficherait « 9,2 Go libres » a
+    // cote d'un modele qu'on vient de liberer.
+    const fetchMock = await ouvrirAvec(
+      { corps: { materiel: MATERIEL_IGPU, modeles: [] } },
+      [{ id: 'petit:1b', nom: 'petit:1b', provider: 'ollama', disponible: true }],
+      // `/models/loaded` rend des OBJETS, pas des chaines : le composant lit
+      // `m.id`. Une liste de chaines y donnerait des identifiants vides, donc
+      // aucun modele « en memoire » et le bouton « charger » a la place.
+      [{ id: 'petit:1b' }],
+    )
+    const avant = appelsMateriel(fetchMock)
+    await act(async () => { screen.getByText('libérer').click() })
+    await waitFor(() => expect(appelsMateriel(fetchMock)).toBeGreaterThan(avant),
+                  { timeout: 3000 })
   })
 
   it('affiche un badge par verdict de mémoire', async () => {

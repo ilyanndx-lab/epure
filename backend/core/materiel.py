@@ -123,9 +123,17 @@ bug sous un autre nom.
 c'est l'incident `RAGEngine` qui empêchait `/health` de répondre) : un fil
 démon le fait en tâche de fond, et l'endpoint le calcule lui-même, sous verrou
 et dans un exécuteur, si la requête arrive avant que le préchauffage n'ait
-abouti. Les sondes fraîches, elles, sont bon marché par construction —
-`GlobalMemoryStatusEx` est un appel système, `nvidia-smi` répond en moins d'une
-seconde — et ne partent qu'**une fois par requête**, jamais par modèle.
+abouti. Les sondes fraîches, elles, sont bon marché — `GlobalMemoryStatusEx`
+est un appel système, et rien de plus — et ne partent qu'**une fois par
+requête**, jamais par modèle.
+
+**Le coût du chemin `nvidia-smi` n'est PAS mesuré ici** : ce poste n'a pas de
+carte NVIDIA. Un `nvidia-smi` par ouverture de panneau est réputé rapide, mais
+c'est de la réputation, pas un chiffre de ce dépôt ; `_TIMEOUT_NVIDIA_SMI_S`
+(10 s) borne le pire cas, et l'endpoint tourne dans un exécuteur, donc une
+carte occupée coûterait de la latence de panneau, jamais un blocage de la
+boucle d'événements. À mesurer le jour où quelqu'un fait tourner Épure sur une
+machine à carte discrète.
 
 **`EPURE_MATERIEL_SONDE=0` coupe toute sonde réelle** et rend un matériel
 entièrement inconnu. `_test_env.py` la pose : aucun test ne doit lancer un
