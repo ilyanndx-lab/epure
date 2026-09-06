@@ -9,10 +9,12 @@ signale en prime les collisions de chemins entre modules montés à la racine
 Charge core.runtime (moteurs partagés) — lent au premier import.
 
 Nommé `integration_` et NON `test_` volontairement : le job backend de la CI
-tourne en `unittest discover -p 'test_*.py'`, et ce fichier tire torch +
-chromadb + sentence-transformers. Le renommer suffit à l'exclure de la
-découverte, sans `skipUnless` ni variable d'environnement à se rappeler. Il est
-lancé par le job `integration` (manuel, workflow_dispatch).
+tourne en `unittest discover -p 'test_*.py'`, et ce fichier n'importe PAS
+`_test_env` — il monte le vrai arbre de modules et construit le vrai store
+vectoriel, ce que le job backend (dépendances minimales) ne peut pas porter. Le
+renommer suffit à l'exclure de la découverte, sans `skipUnless` ni variable
+d'environnement à se rappeler. Il est lancé par le job `integration` (manuel,
+workflow_dispatch).
 
 Usage :
     python integration_modules_mount.py
@@ -30,7 +32,7 @@ class ModulesMountTest(unittest.TestCase):
     def test_active_modules_import_and_mount(self):
         import importlib
         from fastapi import FastAPI
-        from core.module_registry import list_modules, _MODULES_DIR
+        from core.module_registry import list_modules, _modules_dir
 
         app = FastAPI()
         mounted, failures = [], []
@@ -51,7 +53,7 @@ class ModulesMountTest(unittest.TestCase):
             if m.get("status") != "active":
                 continue
             mid = str(m.get("id"))
-            if not (_MODULES_DIR / mid / "router.py").is_file():
+            if not (_modules_dir() / mid / "router.py").is_file():
                 continue  # core non migré (décoré sur app dans main.py)
             try:
                 mod = importlib.import_module(f"modules.{mid}.router")
