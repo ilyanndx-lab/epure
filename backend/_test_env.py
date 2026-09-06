@@ -384,6 +384,26 @@ EMBEDDING_DIR = _installer_vide("EPURE_EMBEDDING_DIR", "embedding")
 #: imports de ce module ne doivent pas se contredire.
 os.environ.setdefault("EPURE_EMBEDDING_AUTOINSTALL", "0")
 
+#: **Aucun test ne sonde le matériel RÉEL de la machine qui l'exécute.**
+#:
+#: `core/materiel.py` lance `nvidia-smi` puis `dxdiag` pour trouver le GPU, et
+#: `core/runtime.py` déclenche cette détection en tâche de fond dès l'import —
+#: donc dès qu'un test monte l'app. Deux conséquences, aucune souhaitable :
+#: **16,3 s** de `dxdiag` par exécution (mesuré sur ce poste), et une suite dont
+#: le résultat dépendrait de la carte graphique du poste — verte ici, rouge sur
+#: le runner de la CI, ou l'inverse.
+#:
+#: Coupée, la détection rend un matériel honnêtement inconnu : RAM `None`, GPU
+#: `source: "inconnu"`, NPU absent. C'est un état que le code doit de toute
+#: façon savoir servir, donc les tests l'éprouvent au lieu de le contourner.
+#: Ceux qui visent les sondes elles-mêmes remettent la variable à `1` pour leur
+#: durée et mockent `subprocess.run` (`test_materiel.py`).
+#:
+#: Posée ici et non dans chaque fichier : comme pour l'embedding juste au-dessus,
+#: la protection ne vaut que si elle couvre aussi les tests qui n'ont pas
+#: conscience de toucher au matériel.
+os.environ.setdefault("EPURE_MATERIEL_SONDE", "0")
+
 
 def _rebrancher_package_modules(cible: Path) -> None:
     """Fait résoudre ``import modules.<id>.…`` depuis l'arbre TEMPORAIRE.

@@ -82,6 +82,164 @@ interface CloudCategories {
   long_contexte: ModelInfo[]
 }
 
+/**
+ * Verdict de faisabilité d'un modele local (`GET /models/materiel`).
+ *
+ * SIX valeurs et non quatre, parce que deux questions differentes cohabitent :
+ * les quatre premieres comparent une taille a la memoire de cette machine ;
+ * `disponible`/`indisponible` disent seulement si FLM repond, parce que le NPU
+ * gere sa memoire lui-meme et qu'aucune de nos sondes ne voit ce qu'il en
+ * reste. Les melanger ferait afficher « tient » sur un backend eteint.
+ *
+ * `inconnu` est le quatrieme etat de la famille memoire, et il n'est le repli
+ * d'AUCUN autre : taille absente (LM Studio n'en publie pas — mesure, pas
+ * supposition) ou ressource introuvable. Le confondre avec « tient » est une
+ * promesse, avec « ne tiendra pas » un refus ; les deux sont des mensonges sur
+ * un point que l'utilisateur lit comme un fait.
+ */
+type VerdictModele =
+  | 'tient' | 'limite' | 'ne_tiendra_pas' | 'inconnu'
+  | 'disponible' | 'indisponible'
+
+/** Recopie de `core/materiel.py::VERDICTS` — sert de filtre, pas de decor. */
+const VERDICTS_CONNUS: readonly VerdictModele[] = [
+  'tient', 'limite', 'ne_tiendra_pas', 'inconnu', 'disponible', 'indisponible',
+]
+
+interface GpuInfo {
+  nom: string | null
+  /** Memoire DEDIEE. Sur un iGPU elle est minuscule (512 Mo mesures ici). */
+  vram_octets: number | null
+  /** Memoire PARTAGEE avec la RAM systeme. Jamais additionnee a la precedente
+   *  pour l'affichage : leur somme compterait deux fois les memes octets. */
+  vram_partagee_octets: number | null
+  /** Trois etats. `null` = on ignore si le GPU partage la RAM, ce qui n'est pas
+   *  la meme chose que savoir qu'il ne la partage pas. */
+  partage_la_ram: boolean | null
+  /** `nvidia-smi` | `dxdiag` | `inconnu`. */
+  source: string
+}
+
+interface Materiel {
+  ram_octets: number | null
+  gpu: GpuInfo
+  npu: { disponible: boolean }
+  ressource: { octets: number | null; origine: string }
+}
+
+/**
+ * Un nombre d'octets exploitable, ou `null`. **Un 0 vaut `null`.**
+ *
+ * `typeof v === 'number'` et non une troncature : `0` est falsy, mais surtout
+ * un 0 rendu par le backend est une LECTURE RATEE (dxdiag qui n'a rien trouve),
+ * pas une machine sans memoire. Le laisser passer ferait afficher « 0 Go » et
+ * calculer des verdicts dessus.
+ */
+function octets(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+}
+
+/** Trois etats preserves : tout ce qui n'est pas un vrai booleen est `null`. */
+function troisEtats(v: unknown): boolean | null {
+  return typeof v === 'boolean' ? v : null
+}
+
+/**
+ * `GET /models/materiel` → `Materiel`, ou `null` si le corps n'a pas la forme.
+ *
+ * `null` veut dire « on ne sait rien du materiel » — backend plus ancien sans
+ * cette route (404), token pas encore appaire (401), 500. L'interface se TAIT
+ * alors, au lieu d'afficher un resume vide qui se lirait « machine sans RAM ».
+ * Meme discipline que `chargesOllama === null` plus bas.
+ */
+function materielDe(v: unknown): Materiel | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const m = (v as Record<string, unknown>).materiel
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return null
+  const o = m as Record<string, unknown>
+  const gpuBrut = (o.gpu && typeof o.gpu === 'object' ? o.gpu : {}) as Record<string, unknown>
+  const npuBrut = (o.npu && typeof o.npu === 'object' ? o.npu : {}) as Record<string, unknown>
+  const resBrut = (o.ressource && typeof o.ressource === 'object' ? o.ressource : {}) as Record<string, unknown>
+  return {
+    ram_octets: octets(o.ram_octets),
+    gpu: {
+      nom: texte(gpuBrut.nom) || null,
+      vram_octets: octets(gpuBrut.vram_octets),
+      vram_partagee_octets: octets(gpuBrut.vram_partagee_octets),
+      partage_la_ram: troisEtats(gpuBrut.partage_la_ram),
+      source: texte(gpuBrut.source) || 'inconnu',
+    },
+    // `=== true` : un NPU n'est annonce present que sur une affirmation.
+    npu: { disponible: npuBrut.disponible === true },
+    ressource: {
+      octets: octets(resBrut.octets),
+      origine: texte(resBrut.origine) || 'inconnu',
+    },
+  }
+}
+
+/**
+ * `{id: verdict}` depuis le meme corps. Un verdict que le frontend ne connait
+ * pas — backend plus recent, ou champ absent — retombe sur `inconnu`.
+ *
+ * Retomber sur `inconnu` et non sur `tient` : une valeur qu'on ne sait pas lire
+ * est une ignorance, et c'est exactement le mot que porte cet etat. C'est aussi
+ * ce qui evite qu'un `verdict && <Badge/>` fasse disparaitre en silence le seul
+ * etat qui doit absolument se voir.
+ */
+function verdictsDe(v: unknown): Record<string, VerdictModele> {
+  const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>
+  const out: Record<string, VerdictModele> = {}
+  for (const brut of liste<Record<string, unknown>>(o.modeles)) {
+    const id = texte(brut.id)
+    if (!id) continue
+    const verdict = texte(brut.verdict) as VerdictModele
+    out[id] = VERDICTS_CONNUS.includes(verdict) ? verdict : 'inconnu'
+  }
+  return out
+}
+
+/** Octets → « 31,3 Go » / « 512 Mo ». `null` → « inconnu », jamais « 0 ». */
+function formaterOctets(n: number | null): string {
+  if (n === null) return 'inconnu'
+  const go = n / 1024 ** 3
+  return go >= 1
+    ? `${go.toFixed(1).replace('.', ',')} Go`
+    : `${Math.round(n / 1024 ** 2)} Mo`
+}
+
+/**
+ * Comment chaque verdict s'affiche. Table exhaustive (`Record<VerdictModele,…>`)
+ * et non une suite de `if` : ajouter un verdict cote backend sans lui donner de
+ * rendu devient une erreur de compilation, pas un badge muet.
+ */
+const RENDU_VERDICT: Record<VerdictModele, { libelle: string; classe: string; aide: string }> = {
+  tient: {
+    libelle: 'tient', classe: 'text-success',
+    aide: 'ce modele occupe au plus 80 % de la memoire disponible',
+  },
+  limite: {
+    libelle: 'limite', classe: 'text-warning',
+    aide: 'entre 80 et 100 % de la memoire disponible — ca passera peut-etre, et ce sera lent',
+  },
+  ne_tiendra_pas: {
+    libelle: 'ne tient pas', classe: 'text-error',
+    aide: 'ce modele depasse la memoire disponible : ses poids seuls n’y entrent pas',
+  },
+  inconnu: {
+    libelle: 'taille ?', classe: 'text-muted/70',
+    aide: 'taille du modele ou memoire de la machine inconnue — rien n’est suppose',
+  },
+  disponible: {
+    libelle: 'NPU pret', classe: 'text-accent',
+    aide: 'FastFlowLM repond et sert ce modele ; il gere sa memoire NPU lui-meme',
+  },
+  indisponible: {
+    libelle: 'NPU absent', classe: 'text-muted/70',
+    aide: 'FastFlowLM ne repond pas, ou ne sert pas ce modele',
+  },
+}
+
 interface Preset {
   id: string
   nom: string
@@ -375,6 +533,21 @@ export default function ModuleBar({
    * se demander.
    */
   const [chargesOllama, setChargesOllama] = useState<string[] | null>(null)
+  /**
+   * Ce que cette machine peut faire tourner (`GET /models/materiel`), et le
+   * verdict par modèle installé.
+   *
+   * **`null` veut dire « on ne sait rien du matériel »**, pas « machine sans
+   * RAM » — même distinction que `chargesOllama` juste au-dessus, et pour la
+   * même raison : une instance dont le backend est plus ancien n'a pas cette
+   * route, et un résumé matériel vide s'y lirait comme un diagnostic.
+   *
+   * Les verdicts sont dans un état SÉPARÉ et non dans `localModels` : ils
+   * arrivent d'une autre requête, plus lente (la détection peut coûter 16 s au
+   * premier appel), et la liste des modèles ne doit pas l'attendre.
+   */
+  const [materiel, setMateriel] = useState<Materiel | null>(null)
+  const [verdicts, setVerdicts] = useState<Record<string, VerdictModele>>({})
   //: Modèle dont une action est en vol — le bouton se verrouille, lui seul.
   const [memoireEnCours, setMemoireEnCours] = useState<string | null>(null)
   //: Dernier refus expliqué (typiquement : une génération tient le modèle).
@@ -660,6 +833,21 @@ export default function ModuleBar({
             : null)
         })
         .catch(() => setChargesOllama(null))
+
+      // Le matériel et les verdicts. Troisième requête et non un champ de
+      // `/models` : la détection peut coûter 16 s au tout premier appel du
+      // process (dxdiag), et la liste des modèles ne doit pas l'attendre pour
+      // s'afficher.
+      apiFetch(`${API}/models/materiel`)
+        .then(r => (r.ok ? r.json() : null))
+        .then((d: unknown) => {
+          // `materielDe` rend `null` sur un corps qui n'a pas la forme — 404
+          // d'une instance plus ancienne, 401 avant appairage, 500. Le résumé
+          // se tait alors, plutôt que d'annoncer une machine sans mémoire.
+          setMateriel(materielDe(d))
+          setVerdicts(verdictsDe(d))
+        })
+        .catch(() => { setMateriel(null); setVerdicts({}) })
     }
 
     if (showEffort) {
@@ -1389,6 +1577,30 @@ export default function ModuleBar({
           )
         }
 
+        /**
+         * Le verdict de faisabilite d'un modele, en badge.
+         *
+         * Rien du tout quand le backend n'a rien dit sur CE modele (les modeles
+         * cloud, dont la memoire de cette machine ne decide pas). C'est le seul
+         * cas muet : `inconnu` en a un, justement pour que « on ne sait pas »
+         * ne se lise pas comme l'absence de probleme — meme regle que le « ? »
+         * des capacites juste au-dessus.
+         *
+         * Le libelle passe par la table exhaustive `RENDU_VERDICT` : pas de
+         * `verdict === 'tient' ? … : …` en cascade, ou un etat oublie
+         * disparaitrait en silence.
+         */
+        const badgeVerdict = (m: ModelInfo) => {
+          const v = verdicts[m.id]
+          if (!v) return null
+          const rendu = RENDU_VERDICT[v]
+          return (
+            <Tooltip content={rendu.aide} side="top">
+              <span className={`text-xs font-mono shrink-0 ${rendu.classe}`}>{rendu.libelle}</span>
+            </Tooltip>
+          )
+        }
+
         const modelRow = (m: ModelInfo, dot: string, tag?: string, tagCls?: string) => {
           const isSelected = m.id === selectedModel
           const row = (
@@ -1402,6 +1614,7 @@ export default function ModuleBar({
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${m.disponible ? dot : 'bg-line'}`} />
               <span className="flex-1 truncate">{m.nom}</span>
               {iconesCapacites(m)}
+              {badgeVerdict(m)}
               {tag && <span className={`text-xs shrink-0 ${tagCls}`}>{tag}</span>}
               {isSelected && <Check size={13} className="text-accent shrink-0" />}
               {!m.disponible && <AlertTriangle size={11} className="text-warning shrink-0" />}
@@ -1455,6 +1668,78 @@ export default function ModuleBar({
                   {enCours ? <Loader2 size={12} className="animate-spin" /> : (charge ? 'libérer' : 'charger')}
                 </button>
               </Tooltip>
+            </div>
+          )
+        }
+
+        /**
+         * Le resume materiel, en tete de la liste complete.
+         *
+         * TROIS regles, chacune payee ailleurs dans ce fichier :
+         *
+         * 1. **Materiel inconnu → rien.** `materiel === null` (route absente,
+         *    401, 500) ne doit pas produire « RAM inconnue · GPU inconnu », qui
+         *    se lirait comme un diagnostic sur la machine plutot que comme
+         *    l'absence de reponse.
+         * 2. **La memoire dediee et la memoire partagee restent DEUX nombres.**
+         *    Les additionner (ce que fait le « Display Memory » de dxdiag)
+         *    annoncerait 49 Go a quelqu'un qui a 32 Go de RAM : la partagee EST
+         *    la RAM, comptee une seconde fois.
+         * 3. **Le NPU n'a que deux etats, et ils se disent tous les deux.** Un
+         *    NPU absent est le cas normal d'une machine sans FLM ; le taire
+         *    laisserait croire a une detection ratee.
+         */
+        const resumeMateriel = () => {
+          if (!materiel) return null
+          const g = materiel.gpu
+          const gpuConnu = g.source !== 'inconnu' && (g.nom || g.vram_octets)
+          return (
+            <div className="mb-2 px-3 py-2 rounded-sm border border-line bg-elevated/40 text-xs font-mono text-muted space-y-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <span>RAM</span>
+                <span className="text-secondary">{formaterOctets(materiel.ram_octets)}</span>
+              </div>
+              {gpuConnu ? (
+                <div className="flex items-start justify-between gap-2">
+                  <span className="shrink-0">GPU</span>
+                  <span className="text-secondary text-right truncate">
+                    {g.nom ?? 'carte inconnue'}
+                    {g.vram_octets !== null && (
+                      <>
+                        {' · '}{formaterOctets(g.vram_octets)} dédiés
+                        {/* La partagée n'apparaît QUE si elle existe, et
+                            toujours nommée « partagés avec la RAM » : sans ces
+                            trois mots, le lecteur additionne. */}
+                        {g.vram_partagee_octets !== null
+                          && ` + ${formaterOctets(g.vram_partagee_octets)} partagés avec la RAM`}
+                      </>
+                    )}
+                  </span>
+                </div>
+              ) : (
+                <Tooltip content="ni nvidia-smi ni dxdiag n’ont répondu — aucune carte n’est supposée, ni présente ni absente" side="top">
+                  <div className="flex items-center justify-between gap-2">
+                    <span>GPU</span>
+                    <span className="text-muted/70">inconnu</span>
+                  </div>
+                </Tooltip>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <span>NPU</span>
+                <span className={materiel.npu.disponible ? 'text-accent' : 'text-muted/70'}>
+                  {materiel.npu.disponible ? 'FastFlowLM répond' : 'aucun (FastFlowLM éteint)'}
+                </span>
+              </div>
+              {/* D'où sort le dénominateur des verdicts. Sans cette ligne,
+                  « ne tient pas » est un jugement sans motif. */}
+              <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-line/60">
+                <span>verdicts calculés sur</span>
+                <span className="text-secondary">
+                  {materiel.ressource.origine === 'inconnu'
+                    ? 'rien de mesurable'
+                    : `${formaterOctets(materiel.ressource.octets)} de ${materiel.ressource.origine === 'vram' ? 'VRAM' : 'RAM'}`}
+                </span>
+              </div>
             </div>
           )
         }
@@ -1527,6 +1812,7 @@ export default function ModuleBar({
               <ChevronLeft size={13} />
               Recommandés
             </button>
+            {resumeMateriel()}
             {!hasModels ? (
               <p className="text-xs text-muted flex items-center gap-2">
                 <Loader2 size={13} className="animate-spin" />

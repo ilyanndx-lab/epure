@@ -282,7 +282,17 @@ try {
     }
 
     if ($Backend) {
-        $morceaux = $ci.CommandeBackend -split '\s+'
+        # Les guillemets qui entourent un motif dans ci.yml sont retires APRES
+        # la decoupe, jamais avant. Le `.Replace("'", '"')` de Lire-Reference
+        # ne fait que changer l'espece de guillemet : le token reste
+        # `"test_*.py"`, guillemets COMPRIS, et PowerShell le passe tel quel a
+        # python -- qui cherche alors des fichiers dont le nom commence par un
+        # guillemet. Symptome mesure : `Ran 0 tests` / `NO TESTS RAN`, code 5,
+        # en 0,4 s. La pire forme d'echec apres celle qui rend un succes : une
+        # etape rouge qui ne dit rien de ce qu'elle mesurait, et qui aurait tout
+        # aussi bien pu etre verte a vide si l'absence de test n'etait pas une
+        # erreur pour unittest.
+        $morceaux = $ci.CommandeBackend -split '\s+' | ForEach-Object { $_ -replace '^"(.*)"$', '$1' }
         $binaire = $morceaux[0]
         $arguments = @($morceaux[1..($morceaux.Length - 1)])
         $null = Etape "Tests backend ($($ci.CommandeBackend))" $DOSSIER_BACKEND $binaire $arguments
