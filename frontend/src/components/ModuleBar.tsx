@@ -101,6 +101,28 @@ type VerdictModele =
   | 'tient' | 'limite' | 'ne_tiendra_pas' | 'inconnu'
   | 'disponible' | 'indisponible'
 
+/**
+ * Delai avant de relire `/models/materiel` apres un chargement/dechargement.
+ *
+ * **MESURE, pas choisi au jugé** (ce poste, 2026-09-06). Ollama repond a un
+ * dechargement en 0,01 s et `/api/ps` est deja vide a cet instant — mais la
+ * memoire, elle, n'est PAS encore rendue :
+ *
+ *     +0,0 s :  9,19 Gio libres  (+0,00)  /api/ps deja vide
+ *     +0,5 s : 15,34 Gio libres  (+6,16)
+ *     +5,0 s : 15,29 Gio libres  (+6,10)
+ *
+ * Relire immediatement afficherait donc « 9,2 Go libres » a cote d'un modele
+ * qu'on vient de liberer — un ecran qui contredit l'action qu'il vient de
+ * faire. Une seule relecture, decalee : dans le sens du CHARGEMENT la memoire
+ * est deja prise quand Ollama repond (mesure aussi), le delai n'y coute qu'un
+ * peu de latence.
+ *
+ * Ne pas « simplifier » en relisant tout de suite, et ne pas descendre sous la
+ * demi-seconde mesuree : la marge est la pour une machine plus lente.
+ */
+const DELAI_RELECTURE_MATERIEL_MS = 800
+
 /** Recopie de `core/materiel.py::VERDICTS` — sert de filtre, pas de decor. */
 const VERDICTS_CONNUS: readonly VerdictModele[] = [
   'tient', 'limite', 'ne_tiendra_pas', 'inconnu', 'disponible', 'indisponible',
@@ -124,7 +146,23 @@ interface Materiel {
   ram_octets: number | null
   gpu: GpuInfo
   npu: { disponible: boolean }
+  /** Le POOL dans lequel se joue le verdict — RAM ou VRAM, TOTALE. Sert
+   *  d'echelle de lecture, plus de denominateur. */
   ressource: { octets: number | null; origine: string }
+  /**
+   * Ce qui est REELLEMENT libre a l'instant de la reponse, dans ce meme pool.
+   * **C'est le denominateur des verdicts** depuis le 2026-09-06.
+   *
+   * Les deux nombres sont affiches ENSEMBLE, et pas seulement le second : « 9,5
+   * Go » tout seul ne dit pas si la machine est petite ou simplement occupee,
+   * et c'est cette difference qui explique qu'un modele « ne tienne pas »
+   * aujourd'hui alors qu'il tenait ce matin.
+   *
+   * `origine: 'inconnu'` = la lecture fraiche a echoue. Le backend ne retombe
+   * JAMAIS sur le total dans ce cas (ce serait rejouer le bug), donc tous les
+   * verdicts memoire sont `inconnu` et cette ligne doit le dire.
+   */
+  ressource_libre: { octets: number | null; origine: string }
 }
 
 /**
@@ -160,6 +198,12 @@ function materielDe(v: unknown): Materiel | null {
   const gpuBrut = (o.gpu && typeof o.gpu === 'object' ? o.gpu : {}) as Record<string, unknown>
   const npuBrut = (o.npu && typeof o.npu === 'object' ? o.npu : {}) as Record<string, unknown>
   const resBrut = (o.ressource && typeof o.ressource === 'object' ? o.ressource : {}) as Record<string, unknown>
+  // Absent d'un backend anterieur au 2026-09-06 : normalise en « inconnu », pas
+  // en zero. Un `0 Go libres` se lirait comme une machine saturee, alors que la
+  // verite est qu'on n'a pas la mesure (§8 — chaque frontiere `.json()` se
+  // normalise, et l'etat le plus honnete n'est jamais le plus flatteur).
+  const libreBrut = (o.ressource_libre && typeof o.ressource_libre === 'object'
+    ? o.ressource_libre : {}) as Record<string, unknown>
   return {
     ram_octets: octets(o.ram_octets),
     gpu: {
@@ -174,6 +218,10 @@ function materielDe(v: unknown): Materiel | null {
     ressource: {
       octets: octets(resBrut.octets),
       origine: texte(resBrut.origine) || 'inconnu',
+    },
+    ressource_libre: {
+      octets: octets(libreBrut.octets),
+      origine: texte(libreBrut.origine) || 'inconnu',
     },
   }
 }
@@ -578,6 +626,33 @@ export default function ModuleBar({
    * libérer, et le modèle réapparaît à la fin de la requête en vol. Croire le
    * succès afficherait « libéré » puis un retour inexpliqué deux minutes après.
    */
+  /**
+   * Lit `/models/materiel` et pose le resume ET les verdicts.
+   *
+   * Extrait de l'effet d'ouverture parce que ce n'est PLUS une lecture unique :
+   * le denominateur des verdicts est la memoire LIBRE (backend, 2026-09-06),
+   * donc charger ou liberer un modele depuis ce meme panneau change la reponse.
+   * Une seule lecture a l'ouverture laisserait les badges decrire l'etat
+   * d'avant l'action, juste a cote du bouton qui vient de la declencher.
+   */
+  const chargerMateriel = useCallback(() => {
+    apiFetch(`${API}/models/materiel`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: unknown) => {
+        // `materielDe` rend `null` sur un corps qui n'a pas la forme — 404
+        // d'une instance plus ancienne, 401 avant appairage, 500. Le résumé
+        // se tait alors, plutôt que d'annoncer une machine sans mémoire.
+        setMateriel(materielDe(d))
+        setVerdicts(verdictsDe(d))
+      })
+      .catch(() => { setMateriel(null); setVerdicts({}) })
+  }, [])
+
+  //: Relecture differee en vol — annulee au demontage, sinon React previent
+  //: d'un `setState` sur un composant disparu a chaque panneau referme vite.
+  const relectureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (relectureRef.current) clearTimeout(relectureRef.current) }, [])
+
   const actionMemoire = useCallback(async (id: string, action: 'load' | 'unload') => {
     setMemoireEnCours(id)
     setMemoireMessage(null)
@@ -602,8 +677,14 @@ export default function ModuleBar({
       setMemoireMessage('Backend injoignable.')
     } finally {
       setMemoireEnCours(null)
+      // La memoire libre vient de changer : les verdicts affiches decrivent
+      // l'etat d'AVANT tant qu'on n'a pas relu. Relance meme sur un refus —
+      // un dechargement refuse parce qu'une generation tient le modele laisse
+      // quand meme la machine dans un etat qu'on n'a pas observe.
+      if (relectureRef.current) clearTimeout(relectureRef.current)
+      relectureRef.current = setTimeout(chargerMateriel, DELAI_RELECTURE_MATERIEL_MS)
     }
-  }, [])
+  }, [chargerMateriel])
 
   const allModels = useCallback((): ModelInfo[] => [
     ...localModels,
@@ -838,16 +919,7 @@ export default function ModuleBar({
       // `/models` : la détection peut coûter 16 s au tout premier appel du
       // process (dxdiag), et la liste des modèles ne doit pas l'attendre pour
       // s'afficher.
-      apiFetch(`${API}/models/materiel`)
-        .then(r => (r.ok ? r.json() : null))
-        .then((d: unknown) => {
-          // `materielDe` rend `null` sur un corps qui n'a pas la forme — 404
-          // d'une instance plus ancienne, 401 avant appairage, 500. Le résumé
-          // se tait alors, plutôt que d'annoncer une machine sans mémoire.
-          setMateriel(materielDe(d))
-          setVerdicts(verdictsDe(d))
-        })
-        .catch(() => { setMateriel(null); setVerdicts({}) })
+      chargerMateriel()
     }
 
     if (showEffort) {
@@ -856,7 +928,7 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements])
+  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel])
 
   /**
    * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.
@@ -1688,6 +1760,14 @@ export default function ModuleBar({
          * 3. **Le NPU n'a que deux etats, et ils se disent tous les deux.** Un
          *    NPU absent est le cas normal d'une machine sans FLM ; le taire
          *    laisserait croire a une detection ratee.
+         * 4. **Le motif des verdicts, c'est la memoire LIBRE, et la ligne le
+         *    dit avec le total a cote.** Afficher le total seul — ce qu'elle
+         *    faisait jusqu'au 2026-09-06 — annoncait un motif qui n'etait plus
+         *    celui du calcul : « ne tient pas » a cote de « calcules sur
+         *    31,3 Go » est incomprehensible quand le modele pese 13 Go. Les
+         *    deux nombres ensemble rendent le verdict lisible, et surtout
+         *    expliquent pourquoi il change sans que la machine change :
+         *    liberer un modele resident rend 6 Go.
          */
         const resumeMateriel = () => {
           if (!materiel) return null
@@ -1731,13 +1811,18 @@ export default function ModuleBar({
                 </span>
               </div>
               {/* D'où sort le dénominateur des verdicts. Sans cette ligne,
-                  « ne tient pas » est un jugement sans motif. */}
+                  « ne tient pas » est un jugement sans motif — et le motif est
+                  ce qui est LIBRE, pas ce que la machine contient. */}
               <div className="flex items-center justify-between gap-2 pt-0.5 border-t border-line/60">
                 <span>verdicts calculés sur</span>
-                <span className="text-secondary">
-                  {materiel.ressource.origine === 'inconnu'
+                <span className="text-secondary text-right">
+                  {materiel.ressource_libre.origine === 'inconnu'
                     ? 'rien de mesurable'
-                    : `${formaterOctets(materiel.ressource.octets)} de ${materiel.ressource.origine === 'vram' ? 'VRAM' : 'RAM'}`}
+                    : `${formaterOctets(materiel.ressource_libre.octets)} libres`
+                      + (materiel.ressource.octets !== null
+                        ? ` sur ${formaterOctets(materiel.ressource.octets)}`
+                        : '')
+                      + ` de ${materiel.ressource_libre.origine === 'vram' ? 'VRAM' : 'RAM'}`}
                 </span>
               </div>
             </div>
