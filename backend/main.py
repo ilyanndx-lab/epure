@@ -61,6 +61,7 @@ from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
     get_ollama_installed, check_lmstudio, get_lmstudio_installed,
+    lmstudio_chargement_en_cours,
 )
 from core.quota_tracker import QuotaTracker
 from core.rag import RAGEngine
@@ -525,6 +526,55 @@ async def models_unload(req: ModeleMemoireRequest):
     et `ok: false` porte alors l'explication."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, ollama_memoire.decharger, req.model)
+
+
+@app.get("/models/lmstudio/chargement")
+async def models_lmstudio_chargement():
+    """Le modèle ACTIF est-il un modèle LM Studio encore en train de charger ?
+
+    Sert l'indicateur d'attente du chat : LM Studio charge son modèle à la
+    demande (JIT), et ce chargement se compte en dizaines de secondes — 12,1 s
+    mesurées pour 3 Go, **119,4 s pour 17,7 Go** sur ce poste le 2026-09-06.
+    Sans signal, l'utilisateur voit un curseur clignotant sans savoir si quelque
+    chose se passe.
+
+    **`chargement` n'est JAMAIS un pourcentage, et ne doit pas le devenir.**
+    LM Studio n'expose aucun nombre sur son API HTTP — c'est prouvé, pas
+    supposé : le corps de `POST /api/v1/models/load` refuse `stream` en 400
+    (schéma fermé), la réponse arrive en un bloc à la fin, et aucune route
+    d'état n'existe ailleurs. Le détail des mesures est dans
+    `core.models.etat_modele_lmstudio`. Même traitement qu'Ollama et FLM, chez
+    qui l'absence de signal chiffré était déjà constatée.
+
+    Trois réponses, et la troisième n'est pas la deuxième :
+
+    * `{"chargement": true}`  — le modèle actif est LM Studio et n'est pas prêt ;
+    * `{"chargement": false}` — il est prêt (ou le modèle actif n'est pas LM
+      Studio, cas où il n'y a rien à signaler) ;
+    * `{"chargement": null}`  — **on ne sait pas** : LM Studio injoignable,
+      modèle inconnu de son catalogue, ou l'un des 500 transitoires qu'il rend
+      à l'instant précis où un chargement démarre (observé une fois sur 79
+      sondes, corps HTML). Le frontend doit traduire ce `null` par « aucune
+      information nouvelle » et garder ce qu'il affichait — le traiter comme
+      `false` ferait clignoter l'indicateur en plein chargement.
+
+    Le préfixe `lmstudio:` est retiré ici et pas côté client : c'est une
+    convention d'`ids` propre à `GET /models` (§ `local_lmstudio`), et le
+    catalogue de LM Studio ne connaît que le nom nu.
+    """
+    ctx = memory.get_context()
+    actif = ctx.get("modèle_actif") or ""
+    if not actif.startswith("lmstudio:"):
+        # Pas de sonde du tout : interroger LM Studio pour un modèle Ollama
+        # rendrait `null` (inconnu de son catalogue), que le frontend garderait
+        # affiché. « Ce n'est pas LM Studio » est une certitude, donc `false`.
+        return {"modele": None, "chargement": False}
+    nom = actif[len("lmstudio:"):]
+    loop = asyncio.get_running_loop()
+    en_cours = await loop.run_in_executor(
+        None, lmstudio_chargement_en_cours, nom
+    )
+    return {"modele": nom, "chargement": en_cours}
 
 
 @app.get("/models/materiel")

@@ -38,6 +38,7 @@ import os
 import sys
 import time
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -272,6 +273,235 @@ class HealthcheckLmStudioTest(unittest.TestCase):
         # Le reste du healthcheck doit rester lisible malgré le blocage.
         self.assertIn("ollama", r.json())
         self.assertIn("flm", r.json())
+
+
+# ── État de chargement : la sonde et la route qui l'expose ──────────────────
+
+class EtatChargementLmStudioTest(unittest.TestCase):
+    """`core.models.etat_modele_lmstudio` / `lmstudio_chargement_en_cours`.
+
+    **Ces deux fonctions existent parce qu'un POURCENTAGE, lui, n'existe pas.**
+    Mesuré sur ce poste le 2026-09-06 (LM Studio 0.4.23) : le corps de
+    `POST /api/v1/models/load` refuse `stream` en 400 « Unrecognized key(s) »
+    — donc son schéma est FERMÉ, l'absence est prouvée et pas seulement
+    constatée —, la réponse arrive en un seul bloc à la fin, et aucune route
+    d'état n'existe ailleurs sur `/api/v1`. Le seul signal réel est le champ
+    `state` de `/api/v0/models/{id}`, qui n'est pas un nombre. Ce que ces tests
+    gardent, c'est donc autant le comportement que la DÉCISION : rien ici ne
+    doit se mettre à produire un chiffre.
+
+    `urllib.request.urlopen` est mocké — la CI n'a pas de LM Studio, et le
+    poste de dev ne doit pas faire dépendre le résultat de ce qui y tourne.
+    """
+
+    def _reponse(self, corps):
+        return mock.patch.object(
+            core_models.urllib.request, "urlopen", return_value=_FakeResponse(corps),
+        )
+
+    def test_etat_rend_le_champ_state_tel_quel(self):
+        for etat in core_models.ETATS_LMSTUDIO_MESURES:
+            with self.subTest(etat=etat):
+                with self._reponse('{"id": "m", "state": "%s"}' % etat):
+                    self.assertEqual(core_models.etat_modele_lmstudio("m"), etat)
+
+    def test_etat_none_si_injoignable(self):
+        """Injoignable et « pas chargé » ne se confondent pas : le premier ne
+        permet aucune affirmation, le second en est une."""
+        with mock.patch.object(
+            core_models.urllib.request, "urlopen", side_effect=OSError("refusee"),
+        ):
+            self.assertIsNone(core_models.etat_modele_lmstudio("m"))
+
+    def test_etat_none_sur_500_transitoire(self):
+        """LM Studio rend un 500 (corps HTML) à l'instant précis où un
+        chargement démarre — observé une fois sur 79 sondes le 2026-09-06. Il
+        ne doit ni lever, ni se lire comme un état."""
+        erreur = urllib.error.HTTPError(
+            "http://x/api/v0/models/m", 500, "Internal Server Error", {}, None,
+        )
+        with mock.patch.object(
+            core_models.urllib.request, "urlopen", side_effect=erreur,
+        ):
+            self.assertIsNone(core_models.etat_modele_lmstudio("m"))
+
+    def test_etat_none_si_le_champ_manque_ou_est_vide(self):
+        for corps in ('{"id": "m"}', '{"id": "m", "state": ""}', '{"id": "m", "state": 3}'):
+            with self.subTest(corps=corps):
+                with self._reponse(corps):
+                    self.assertIsNone(core_models.etat_modele_lmstudio("m"))
+
+    def test_etat_none_sur_identifiant_vide_sans_appel_reseau(self):
+        with mock.patch.object(core_models.urllib.request, "urlopen") as urlopen:
+            self.assertIsNone(core_models.etat_modele_lmstudio(""))
+        urlopen.assert_not_called()
+
+    def test_le_slash_de_la_cle_est_encode(self):
+        """Une clé LM Studio porte un « / » (`éditeur/modèle`). Laissé tel
+        quel il serait lu comme un segment de chemin par le serveur d'en face.
+        """
+        with mock.patch.object(
+            core_models.urllib.request, "urlopen",
+            return_value=_FakeResponse('{"state": "loaded"}'),
+        ) as urlopen:
+            core_models.etat_modele_lmstudio("mistralai/ministral-3-3b")
+        url = urlopen.call_args[0][0].full_url
+        self.assertIn("mistralai%2Fministral-3-3b", url)
+        self.assertNotIn("mistralai/ministral-3-3b", url)
+
+    def test_en_cours_est_vrai_tant_que_l_etat_n_est_pas_loaded(self):
+        """**`!= "loaded"`, jamais `== "loading"`.** Seuls trois états ont été
+        observés, mais un quatrième (une file d'attente, par exemple) ne doit
+        pas faire disparaître l'indicateur en silence pendant l'attente.
+        """
+        for etat, attendu in (
+            ("loaded", False), ("loading", True), ("not-loaded", True),
+            ("queued", True),  # jamais observé — c'est tout l'intérêt du test
+        ):
+            with self.subTest(etat=etat):
+                with self._reponse('{"state": "%s"}' % etat):
+                    self.assertIs(core_models.lmstudio_chargement_en_cours("m"), attendu)
+
+    def test_en_cours_none_si_on_ne_sait_pas(self):
+        with mock.patch.object(
+            core_models.urllib.request, "urlopen", side_effect=OSError("refusee"),
+        ):
+            self.assertIsNone(core_models.lmstudio_chargement_en_cours("m"))
+
+
+class RouteChargementLmStudioTest(unittest.TestCase):
+    """`GET /models/lmstudio/chargement` — ce que le chat sonde pendant qu'il
+    attend son premier token."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(
+            main.app, base_url="http://localhost", client=("127.0.0.1", 54321)
+        )
+        cls.entetes = {"Authorization": f"Bearer {get_api_token()}"}
+
+    def setUp(self):
+        self._sonde = main.lmstudio_chargement_en_cours
+        self._contexte = main.memory.get_context
+
+    def tearDown(self):
+        main.lmstudio_chargement_en_cours = self._sonde
+        main.memory.get_context = self._contexte
+
+    def _avec_modele(self, actif):
+        main.memory.get_context = lambda: {"modèle_actif": actif}
+
+    def test_modele_non_lmstudio_repond_false_sans_sonder(self):
+        """`false` et non `null` : « ce n'est pas LM Studio » est une
+        certitude. Et surtout AUCUNE sonde — interroger LM Studio pour un
+        modèle Ollama rendrait `null` (inconnu de son catalogue), que le
+        frontend garderait affiché.
+        """
+        appels = []
+        main.lmstudio_chargement_en_cours = lambda nom: appels.append(nom)
+        for actif in ("qwen2.5:7b", "flm:lfm2:1.2b", "gemini-2.5-flash", ""):
+            with self.subTest(actif=actif):
+                self._avec_modele(actif)
+                r = self.client.get("/models/lmstudio/chargement", headers=self.entetes)
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(r.json(), {"modele": None, "chargement": False})
+        self.assertEqual(appels, [], "LM Studio sonde pour un modele qui n'est pas le sien")
+
+    def test_le_prefixe_lmstudio_est_retire_avant_la_sonde(self):
+        """`lmstudio:` est une convention d'ids de `GET /models` ; le catalogue
+        de LM Studio ne connaît que le nom nu."""
+        vus = []
+
+        def _sonde(nom):
+            vus.append(nom)
+            return True
+
+        main.lmstudio_chargement_en_cours = _sonde
+        self._avec_modele("lmstudio:mistralai/ministral-3-3b")
+        r = self.client.get("/models/lmstudio/chargement", headers=self.entetes)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(vus, ["mistralai/ministral-3-3b"])
+        self.assertEqual(
+            r.json(), {"modele": "mistralai/ministral-3-3b", "chargement": True},
+        )
+
+    def test_les_trois_reponses_passent_telles_quelles(self):
+        """`null` doit ARRIVER au frontend comme `null` : c'est lui qui le
+        traduit par « aucune information nouvelle » et garde son affichage. Le
+        replier ici en `false` ferait clignoter l'indicateur."""
+        for renvoye in (True, False, None):
+            with self.subTest(renvoye=renvoye):
+                main.lmstudio_chargement_en_cours = lambda _n, _r=renvoye: _r
+                self._avec_modele("lmstudio:m")
+                r = self.client.get("/models/lmstudio/chargement", headers=self.entetes)
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertIs(r.json()["chargement"], renvoye)
+
+    def test_la_reponse_ne_porte_aucun_nombre(self):
+        """Le garde-fou du chantier : LM Studio n'expose aucun pourcentage sur
+        son API HTTP (mesuré — schéma de chargement fermé, réponse en un bloc,
+        pas de route d'état). Si un champ numérique apparaît un jour dans cette
+        réponse, il aura été FABRIQUÉ, et ce test doit tomber.
+        """
+        main.lmstudio_chargement_en_cours = lambda _n: True
+        self._avec_modele("lmstudio:m")
+        corps = self.client.get(
+            "/models/lmstudio/chargement", headers=self.entetes,
+        ).json()
+        self.assertEqual(set(corps), {"modele", "chargement"})
+        for cle, valeur in corps.items():
+            # `bool` est une sous-classe d'`int` en Python : un
+            # `assertNotIsInstance(valeur, int)` seul ferait tomber ce test sur
+            # le `chargement: true` qu'on veut justement autoriser. C'est le
+            # TYPE EXACT qui distingue un drapeau d'un pourcentage.
+            self.assertNotIn(
+                type(valeur), (int, float),
+                f"champ numerique inattendu : {cle}={valeur!r} — aucun signal "
+                f"chiffre n'existe cote LM Studio, celui-ci serait invente",
+            )
+
+    def test_le_prefixe_survit_au_vrai_reglage_sans_contexte_mocke(self):
+        """La chaîne COMPLÈTE, `memory` non mocké : choisir un modèle dans
+        ModuleBar (`PATCH /context/settings`) doit rendre la route capable de
+        le reconnaître.
+
+        **C'est le seul test du fichier qui ne mocke pas `get_context`, et
+        c'est tout son intérêt.** Tous les autres posent eux-mêmes un
+        `modèle_actif` déjà préfixé — ils ne peuvent donc pas voir la panne la
+        plus vraisemblable de cette fonctionnalité : que le `lmstudio:` de
+        `m.id` soit normalisé quelque part entre le sélecteur et le contexte
+        mémoire. Il serait alors absent ici, `startswith` répondrait `False`,
+        et l'indicateur serait mort dans l'application réelle avec tous les
+        autres tests au vert.
+
+        La sonde LM Studio reste remplacée : la CI n'a pas de LM Studio, et ce
+        qu'on vérifie est le passage de l'identifiant, pas le réseau.
+        """
+        vus = []
+        main.lmstudio_chargement_en_cours = lambda nom: vus.append(nom) or True
+        # Restauré par le tearDown de la classe (get_context y est réaffecté à
+        # l'original, qu'on n'a de toute façon pas touché ici).
+        main.memory.get_context = self._contexte
+
+        r = self.client.patch(
+            "/context/settings",
+            headers={**self.entetes, "Content-Type": "application/json"},
+            json={"modèle_actif": "lmstudio:mistralai/ministral-3-3b"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+        # Le réglage est bien arrivé tel quel dans le contexte…
+        self.assertEqual(
+            self.client.get("/context", headers=self.entetes).json().get("modèle_actif"),
+            "lmstudio:mistralai/ministral-3-3b",
+            "le préfixe `lmstudio:` n'a pas survécu à PATCH /context/settings",
+        )
+        # …et la route en tire le nom NU que connaît le catalogue LM Studio.
+        corps = self.client.get(
+            "/models/lmstudio/chargement", headers=self.entetes,
+        ).json()
+        self.assertEqual(vus, ["mistralai/ministral-3-3b"])
+        self.assertEqual(corps["modele"], "mistralai/ministral-3-3b")
 
 
 if __name__ == "__main__":

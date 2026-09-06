@@ -9,6 +9,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,11 @@ from core.llm import lmstudio_host as _lmstudio_host
 from core.llm import ollama_host as _ollama_host
 
 logger = logging.getLogger(__name__)
+
+#: Sonde d'etat appelee EN BOUCLE pendant une generation (cf.
+#: `etat_modele_lmstudio`) : elle doit repondre vite ou pas du tout. Meme
+#: valeur, et meme raison, que le `timeout=2` de `check_lmstudio`.
+_TIMEOUT_SONDE_LMSTUDIO_S = 2
 
 _CONFIG_FILE = Path(__file__).parent.parent / "config.yaml"
 
@@ -390,8 +396,16 @@ def get_lmstudio_installed() -> Optional[list[str]]:
     annoncé mais pas encore chargé se comporte comme un modèle Ollama installé
     mais pas encore lancé — le premier appel le charge (JIT) ou échoue avec une
     erreur claire (`_provider_error_message`, JIT désactivé), jamais un
-    silence. Filtrer selon ce réglage demanderait de le lire depuis LM Studio,
-    que `/v1/models` n'expose pas.
+    silence. Filtrer selon ce réglage demanderait un état par modèle, que
+    `/v1/models` (format OpenAI) n'expose pas.
+
+    **`/api/v0/models` L'EXPOSE, lui** — champ `state`, mesuré le 2026-09-06
+    (cf. `etat_modele_lmstudio`). Ce n'est pas une raison de basculer cette
+    liste-ci dessus : la question à laquelle elle répond est « quels modèles
+    cette instance peut-elle proposer », et un modèle non chargé reste
+    proposable (le JIT le charge au premier appel). L'état sert à SIGNALER une
+    attente, pas à filtrer un catalogue — deux usages qu'on ne veut pas voir
+    fusionner ici.
     """
     try:
         req = urllib.request.Request(f"{_lmstudio_host}/v1/models")
@@ -401,6 +415,126 @@ def get_lmstudio_installed() -> Optional[list[str]]:
     except Exception:
         logger.warning("LM Studio non joignable sur %s", _lmstudio_host)
         return None
+
+
+#: États que LM Studio met dans le champ ``state`` de ``/api/v0/models`` —
+#: MESURÉS sur ce poste (LM Studio 0.4.23, 2026-09-06), pas lus dans une doc :
+#: ``not-loaded`` au repos, ``loading`` pendant tout le chargement, ``loaded``
+#: ensuite. Constante non pas pour être comparée (le code teste
+#: ``!= "loaded"``, cf. ``lmstudio_chargement_en_cours``) mais pour que le seul
+#: endroit qui NOMME ces valeurs soit ici.
+ETATS_LMSTUDIO_MESURES = ("not-loaded", "loading", "loaded")
+
+
+def etat_modele_lmstudio(model_id: str) -> Optional[str]:
+    """État de chargement d'UN modèle LM Studio, via ``GET /api/v0/models/{id}``.
+
+    Rend la valeur brute du champ ``state`` (cf. ``ETATS_LMSTUDIO_MESURES``), ou
+    ``None`` si LM Studio ne répond pas / ne connaît pas ce modèle — même
+    contrat que les deux sondes voisines : jamais d'exception, et « injoignable »
+    reste distinct d'un état connu.
+
+    **Pourquoi ce chemin et pas un autre — mesuré le 2026-09-06 sur ce poste
+    (LM Studio 0.4.23, serveur local port 1234), pas supposé.** La question de
+    départ était d'afficher un vrai POURCENTAGE de chargement. Il n'y en a pas
+    sur la surface HTTP, et ce n'est pas une absence constatée au hasard :
+
+    * ``POST /api/v1/models/load`` **ne diffuse rien**. Réponse unique,
+      ``Content-Type: application/json``, ``Content-Length: 117``, délivrée en
+      bloc À LA FIN — premier octet mesuré à 12,3 s sur un modèle de 3 Go, à
+      17,2 s sur un autre. Son corps est
+      ``{"type", "instance_id", "load_time_seconds", "status"}`` : aucun champ
+      de progression, et ``load_time_seconds`` est RÉTROSPECTIF.
+
+      Trois détails de cette route, notés parce qu'ils coûtent chacun un
+      aller-retour en 400 à qui les redécouvre : le champ attendu s'appelle
+      ``model`` (et non ``model_key``) ; **le déchargement, lui, exige
+      ``instance_id`` et refuse ``model``** ; et deux ``load`` successifs sur
+      la même clé n'en réutilisent pas l'instance mais en EMPILENT une seconde
+      (``mistralai/ministral-3-3b:2``, puis ``:3``), chacune à décharger
+      séparément. Rien de tout cela n'est utilisé ici — Épure ne charge ni ne
+      décharge un modèle LM Studio, le JIT s'en occupe — mais c'est la surface
+      qu'explore forcément quiconque revient chercher une progression.
+    * ``{"stream": true}`` dans le corps → **HTTP 400
+      ``Unrecognized key(s) in object: 'stream'``**. C'est le point décisif :
+      le schéma du corps est FERMÉ, donc il n'existe pas de drapeau de
+      streaming qu'on aurait manqué. Une absence prouvée, pas une absence
+      observée.
+    * ``Accept: text/event-stream`` est **ignoré** — la réponse reste du JSON
+      en bloc (``Content-Length: 118``).
+    * Aucune route d'état ailleurs : ``/api/v1/models/{clé}``,
+      ``/api/v1/models/loaded``, ``/api/v1/models/status``, ``/api/v1/status``,
+      ``/api/v1/instances``, ``/api/v1/system`` répondent toutes **404
+      « Unexpected endpoint or method »**. ``/api/v1/models`` et
+      ``/api/v1/models/{load,unload}`` sont toute la surface v1.
+    * Sondage concurrent pendant un chargement à froid de 17,7 Go, toutes les
+      0,2 s, sur les deux listes : **aucun champ numérique n'apparaît**, ni
+      attendu ni inattendu (la sonde collectait explicitement les clés hors
+      schéma pour ne pas rater un champ non documenté).
+
+    **Le nombre existe pourtant — hors de portée d'ici, et c'est délibéré.**
+    ``lms load`` affiche bien une progression (0 % → 66 % → 100 % relevés sur
+    un chargement de 12,1 s). Ce n'est PAS sur l'API HTTP. L'atteindre voudrait
+    dire soit parler un protocole interne non documenté — donc parier sur une
+    version de LM Studio, exactement ce que ce chantier s'interdit — soit
+    lancer ``lms.exe`` en sous-processus, la catégorie que le chemin
+    d'embedding a justement retirée après deux blocages Smart App Control chez
+    un destinataire (CLAUDE.md §8). Épure affiche donc un indicateur NON
+    CHIFFRÉ, comme pour Ollama et FLM. **Ne pas « améliorer » ça en calculant
+    un pourcentage à partir du temps écoulé et d'une durée estimée : ce serait
+    un chiffre inventé**, et les durées mesurées ici (12,1 s pour 3 Go, 17,1 s
+    pour le même modèle une autre fois) montrent qu'aucune estimation ne
+    tiendrait.
+
+    **IMPÉRATIF — c'est ``/api/v0`` qui porte l'état, pas ``/api/v1``.**
+    ``loaded_instances`` de ``/api/v1/models`` se remplit **dès le début du
+    chargement** : mesuré à 0,23 s sur un modèle de 17,7 Go qui met plus de
+    quarante secondes à charger. En déduire « chargé » afficherait « prêt »
+    pendant toute l'attente, c'est-à-dire l'inverse de l'information cherchée
+    — même piège que ``size_vram: 0`` dans ``core/ollama_memoire.py``, où le
+    champ le plus évident répondait à une autre question.
+    """
+    if not model_id:
+        return None
+    # `quote` avec safe="" : une clé LM Studio contient un « / » (éditeur/modèle)
+    # qui, laissé tel quel, serait lu comme un segment de chemin. Mesuré :
+    # `/api/v0/models/qwen/qwen3.8-27b` répond bien, mais on ne s'en remet pas à
+    # la tolérance du routeur d'en face pour un identifiant venant du client.
+    chemin = urllib.parse.quote(model_id, safe="")
+    try:
+        req = urllib.request.Request(f"{_lmstudio_host}/api/v0/models/{chemin}")
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SONDE_LMSTUDIO_S) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        # Injoignable OU modèle inconnu (404) : dans les deux cas on n'a rien à
+        # dire sur son état, et l'appelant traduit ça par « on n'affiche rien ».
+        # Pas de `logger.warning` : cette sonde est appelée en boucle pendant une
+        # génération, elle noierait les logs à chaque LM Studio éteint.
+        return None
+    etat = data.get("state")
+    return etat if isinstance(etat, str) and etat else None
+
+
+def lmstudio_chargement_en_cours(model_id: str) -> Optional[bool]:
+    """``True`` si ce modèle LM Studio n'est PAS encore utilisable.
+
+    ``None`` = on ne sait pas (LM Studio injoignable, modèle inconnu) ; c'est
+    ce qui doit produire un silence dans l'interface, jamais un « en cours »
+    par défaut.
+
+    **La condition est ``!= "loaded"``, pas ``== "loading"``**, et c'est
+    volontaire : seuls trois états ont été OBSERVÉS ici
+    (``ETATS_LMSTUDIO_MESURES``), mais une file d'attente côté LM Studio
+    pourrait en introduire un quatrième (un « queued » par exemple). Tester
+    l'égalité à ``loading`` ferait alors disparaître l'indicateur en silence
+    pendant l'attente ; tester la différence à ``loaded`` le garde affiché.
+    Même réflexe qu'ailleurs dans le dépôt : une assertion sur ce qui est
+    présent se formule en inclusion, pas en égalité.
+    """
+    etat = etat_modele_lmstudio(model_id)
+    if etat is None:
+        return None
+    return etat != "loaded"
 
 
 def _ollama_vision_model() -> str:

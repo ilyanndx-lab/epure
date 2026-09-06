@@ -174,3 +174,143 @@ describe('Chat — défilement automatique', () => {
     expect(scrollIntoView).toHaveBeenCalled()
   })
 })
+
+
+/**
+ * Indicateur « le modèle LM Studio charge » — pendant l'attente du premier token.
+ *
+ * LM Studio charge son modèle à la demande, et ce chargement se compte en
+ * dizaines de secondes (12,1 s mesurées pour 3 Go, 119,4 s pour 17,7 Go sur le
+ * poste de dev, 2026-09-06). Sans signal, l'utilisateur ne voit qu'un curseur
+ * clignotant.
+ *
+ * **Ce n'est PAS un pourcentage, et ces tests sont là pour que ça le reste.**
+ * LM Studio n'expose aucun nombre sur son API HTTP : le corps de sa route de
+ * chargement refuse `stream` en 400 (schéma fermé — l'absence est prouvée, pas
+ * seulement constatée), la réponse arrive en un bloc à la fin, et aucune route
+ * d'état n'existe ailleurs. Détail des mesures dans
+ * `backend/core/models.py:etat_modele_lmstudio`.
+ *
+ * Le reste éprouve la FORME de la réponse, au sens de CLAUDE.md §4 : un `as`
+ * sur un `r.json()` est une affirmation, pas une vérification, et cette route
+ * peut répondre un corps d'erreur (500 avant appairage, 404 sur une instance
+ * qui ne l'a pas). Les trois cas « on ne sait pas » — `null`, corps d'erreur,
+ * champ absent — doivent laisser l'affichage tel quel, jamais l'allumer.
+ */
+describe('Chat — chargement LM Studio', () => {
+  const LIBELLE = 'chargement du modèle en cours…'
+
+  /** Envoie un message : `streaming` passe à vrai et le dernier message reste
+   * de rôle `user`, donc on est exactement dans la fenêtre d'attente du
+   * premier token — celle où l'indicateur a un sens. */
+  async function envoyerMessage() {
+    const zone = screen.getByPlaceholderText('Message...')
+    fireEvent.change(zone, { target: { value: 'Une question' } })
+    await act(async () => { fireEvent.click(screen.getByTitle('Envoyer')) })
+  }
+
+  async function rendreAvec(reponse: { status?: number; corps: unknown } | null) {
+    // **La clé de CETTE route doit venir AVANT `/models`.** `poserFetch`
+    // retient la PREMIÈRE clé dont l'URL contient le texte, et
+    // `/models/lmstudio/chargement` contient `/models` : posée après, elle est
+    // masquée par le catalogue de modèles, et les tests passeraient en
+    // mesurant autre chose. Payé une fois en écrivant ce fichier.
+    const table = {
+      ...(reponse ? { '/models/lmstudio/chargement': reponse } : {}),
+      ...tableSaine(),
+    } as Record<string, { status?: number; corps: unknown }>
+    // `null` = on ne pose RIEN pour cette route : elle retombe sur le 500 par
+    // défaut de `poserFetch`, c'est-à-dire le corps d'erreur réel du
+    // gestionnaire d'exceptions, pas un silence.
+    poserFetch(table)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    await rendreEtConnecter()
+    await envoyerMessage()
+  }
+
+  it('chargement: true → le libellé s’affiche', async () => {
+    await rendreAvec({ corps: { modele: 'mistralai/ministral-3-3b', chargement: true } })
+    expect(await screen.findByText(LIBELLE)).toBeTruthy()
+  })
+
+  /** Laisse le sondage se résoudre AVANT de conclure à une absence : sans
+   * cette attente, le test passerait même si le libellé s'allumait juste
+   * après — il mesurerait la lenteur du `fetch`, pas le comportement. */
+  async function laisserSonder() {
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+  }
+
+  it('chargement: false → aucun libellé', async () => {
+    await rendreAvec({ corps: { modele: 'mistralai/ministral-3-3b', chargement: false } })
+    await laisserSonder()
+    expect(screen.queryByText(LIBELLE)).toBeNull()
+  })
+
+  it('chargement: null (LM Studio injoignable) → aucun libellé, aucune erreur', async () => {
+    await rendreAvec({ corps: { modele: 'm', chargement: null } })
+    await laisserSonder()
+    expect(screen.queryByText(LIBELLE)).toBeNull()
+  })
+
+  it('corps d’ERREUR (500) → aucun libellé et le chat reste rendu', async () => {
+    // Le cas qui a coûté un panneau mort ailleurs dans ce dépôt : `r.json()`
+    // RÉUSSIT sur un corps d'erreur, donc le `.catch()` ne voit rien et le
+    // champ annoncé vaut `undefined`.
+    await rendreAvec(null)
+    await laisserSonder()
+    expect(screen.queryByText(LIBELLE)).toBeNull()
+    expect(screen.getByPlaceholderText('Message...')).toBeTruthy()
+  })
+
+  it('champ `chargement` ABSENT d’un corps 200 → aucun libellé', async () => {
+    await rendreAvec({ corps: { modele: 'm' } })
+    await laisserSonder()
+    expect(screen.queryByText(LIBELLE)).toBeNull()
+  })
+
+  it('un `null` n’ÉTEINT pas un `true` déjà affiché', async () => {
+    // La règle qui évite le clignotement : LM Studio rend un 500 transitoire à
+    // l'instant précis où un chargement démarre (observé une fois sur 79
+    // sondes). Traiter ce « on ne sait pas » comme un `false` ferait
+    // disparaître l'indicateur en plein chargement.
+    let corps: unknown = { modele: 'm', chargement: true }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input)
+      if (url.includes('/models/lmstudio/chargement')) {
+        return new Response(JSON.stringify(corps), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const table = tableSaine() as Record<string, { status?: number; corps: unknown }>
+      const cle = Object.keys(table).find(k => url.includes(k))
+      const { status = 200, corps: c } = cle ? table[cle] : { corps: { detail: 'Erreur' }, status: 500 }
+      return new Response(JSON.stringify(c), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    await rendreEtConnecter()
+    await envoyerMessage()
+    expect(await screen.findByText(LIBELLE)).toBeTruthy()
+
+    // La sonde suivante ne sait plus rien : l'affichage ne doit pas bouger.
+    // Attente en temps REEL plutot qu'en horloge simulee : `vi.useFakeTimers()`
+    // fige aussi les promesses que `findByText` attend, et le remede
+    // couterait plus de mecanique que la seconde qu'il economise.
+    corps = { modele: 'm', chargement: null }
+    await act(async () => { await new Promise(r => setTimeout(r, 1400)) })
+    expect(screen.getByText(LIBELLE)).toBeTruthy()
+  })
+
+  it('aucun POURCENTAGE n’est affiché, quoi que réponde le backend', async () => {
+    // Le garde-fou du chantier. Même si un champ numérique apparaissait un jour
+    // dans la réponse, il ne devrait JAMAIS atteindre l'écran : il aurait été
+    // fabriqué, LM Studio n'en fournissant aucun.
+    await rendreAvec({ corps: { modele: 'm', chargement: true, progression: 42 } })
+    expect(await screen.findByText(LIBELLE)).toBeTruthy()
+    expect(screen.queryByText(/42\s*%/)).toBeNull()
+    expect(screen.queryByText(/%/)).toBeNull()
+  })
+})
