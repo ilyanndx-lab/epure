@@ -804,6 +804,14 @@ describe('ModuleBar — capacités des modèles', () => {
  * en a 31 : les mêmes octets, comptés deux fois. Le test vérifie que les deux
  * nombres restent nommés séparément.
  *
+ * **3. Le motif affiché doit être celui du calcul.** Depuis le 2026-09-06 les
+ * verdicts se calculent sur la mémoire LIBRE, pas sur la totale : afficher le
+ * total sous « verdicts calculés sur » annoncerait un motif qui ne correspond
+ * plus au badge d'à côté. Un backend antérieur, lui, n'envoie pas ce champ —
+ * la ligne doit alors dire qu'elle ne sait pas, jamais « 0 Go libres », qui se
+ * lirait comme une machine saturée (§8, la discipline des frontières
+ * `.json()`).
+ *
  * Le corps rejoué est celui que `core/materiel.py` produit réellement sur ce
  * poste, `GET /models/materiel` à l'appui — pas une forme inventée.
  */
@@ -825,6 +833,10 @@ describe('ModuleBar — faisabilité matérielle', () => {
     },
     npu: { disponible: false },
     ressource: { octets: 33631817728, origine: 'ram' },
+    // Mesuré sur ce poste avec `qwen2.5:7b` résident : 9,47 Gio libres sur
+    // 31,32 Gio. C'est l'écart que le calcul ignorait, et le seul chiffre qui
+    // explique qu'un modèle de 13 Go « ne tienne pas » sur cette machine.
+    ressource_libre: { octets: 10166943744, origine: 'ram' },
   }
 
   const ouvrirAvec = async (reponse: Reponse, local: unknown[] = MODELES_OK.local) => {
@@ -859,13 +871,48 @@ describe('ModuleBar — faisabilité matérielle', () => {
     expect(ligne.textContent).not.toContain('16,2 Go')
   })
 
-  it('dit sur quelle ressource les verdicts sont calculés', async () => {
+  it('dit sur quelle ressource les verdicts sont calculés — la LIBRE, avec le total', async () => {
     // Sans cette ligne, « ne tient pas » est un jugement sans motif — et sur ce
-    // poste le motif est contre-intuitif : c'est la RAM et non les 16,2 Go de
-    // « mémoire d'affichage » que dxdiag annonce, parce que celle-ci EST la RAM.
+    // poste le motif est contre-intuitif deux fois : c'est la RAM et non les
+    // 16,2 Go de « mémoire d'affichage » que dxdiag annonce (celle-ci EST la
+    // RAM), et c'est ce qui en RESTE et non ce que la machine contient.
     await ouvrirAvec({ corps: { materiel: MATERIEL_IGPU, modeles: [] } })
     await waitFor(() => expect(screen.getByText('verdicts calculés sur')).toBeTruthy())
-    expect(screen.getByText('31,3 Go de RAM')).toBeTruthy()
+    const ligne = screen.getByText(/libres sur/)
+    expect(ligne.textContent).toContain('9,5 Go libres')
+    // Le total reste affiché à côté : « 9,5 Go » seul ne dit pas si la machine
+    // est petite ou simplement occupée.
+    expect(ligne.textContent).toContain('sur 31,3 Go de RAM')
+  })
+
+  it('un backend sans `ressource_libre` ne fait pas afficher « 0 Go libres »', async () => {
+    // Instance antérieure au 2026-09-06 : le champ n'existe pas. `materielDe`
+    // normalise en « inconnu », et la ligne le dit — un zéro se lirait comme
+    // une machine saturée, c'est-à-dire un diagnostic à la place d'une absence
+    // de mesure. Même discipline que `materiel === null` plus haut.
+    const { ressource_libre: _ignore, ...ancien } = MATERIEL_IGPU
+    await ouvrirAvec({ corps: { materiel: ancien, modeles: [] } })
+    await waitFor(() => expect(screen.getByText('verdicts calculés sur')).toBeTruthy())
+    expect(screen.getByText('rien de mesurable')).toBeTruthy()
+    expect(screen.queryByText(/0 o libres/)).toBeNull()
+    expect(screen.queryByText(/0 Go libres/)).toBeNull()
+    // Le reste du résumé, lui, tient toujours : la RAM totale est un autre
+    // champ, et son absence n'est pas ce qu'on teste ici.
+    expect(screen.getByText('31,3 Go')).toBeTruthy()
+  })
+
+  it('une lecture fraîche ratée se dit, elle ne se remplace pas par le total', async () => {
+    // Le backend ne retombe JAMAIS sur la mémoire totale quand la sonde échoue
+    // (ce serait rejouer le bug sous couvert de prudence) : il envoie
+    // `origine: 'inconnu'`. La ligne doit refuser de l'habiller.
+    const materiel = {
+      ...MATERIEL_IGPU,
+      ressource_libre: { octets: null, origine: 'inconnu' },
+    }
+    await ouvrirAvec({ corps: { materiel, modeles: [] } })
+    await waitFor(() => expect(screen.getByText('verdicts calculés sur')).toBeTruthy())
+    expect(screen.getByText('rien de mesurable')).toBeTruthy()
+    expect(screen.queryByText(/31,3 Go de RAM/)).toBeNull()
   })
 
   it('affiche un badge par verdict de mémoire', async () => {

@@ -14,6 +14,13 @@ qu'une recherche non bornée ramasserait à la place de la bonne.
 
 Le cas qui tourne pour de bon en CI a sa classe : runner Linux, ni `nvidia-smi`
 ni `dxdiag`, `SystemRoot` absent — le module doit rendre « inconnu » sans lever.
+
+**Depuis le 2026-09-06, deux durées de vie se testent séparément** : ce qui est
+figé (RAM totale, GPU) et ce qui est relu à chaque verdict (mémoire libre,
+joignabilité de FLM). `ModeleResidentTest` rejoue la mesure qui a motivé le
+chantier — `qwen2.5:7b` résident, un second modèle proposé — et `CacheTest`
+vérifie qu'aucune valeur périssable ne s'est glissée dans le cache, ce qui est
+la seule façon d'empêcher le bug de revenir sous un autre nom de champ.
 """
 
 import os
@@ -74,16 +81,45 @@ Display Devices
        Shared Memory: 16088 MB
 """
 
-NVIDIA_SMI_OK = "name, memory.total [MiB]\nNVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB\n"
-NVIDIA_SMI_DEUX = (
-    "name, memory.total [MiB]\n"
-    "NVIDIA GeForce RTX 4090, 24564 MiB\n"
-    "NVIDIA GeForce GTX 1050, 4096 MiB\n"
+#: TROIS colonnes depuis le 2026-09-06 : `memory.free` part dans la même
+#: requête que `memory.total`, et chaque appelant garde la sienne (le total est
+#: mis en cache, le libre est jeté aussitôt lu).
+NVIDIA_SMI_OK = (
+    "name, memory.total [MiB], memory.free [MiB]\n"
+    "NVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB, 6120 MiB\n"
 )
-NVIDIA_SMI_NA = "name, memory.total [MiB]\nNVIDIA GeForce RTX 4070 Laptop GPU, [N/A]\n"
+NVIDIA_SMI_DEUX = (
+    "name, memory.total [MiB], memory.free [MiB]\n"
+    "NVIDIA GeForce RTX 4090, 24564 MiB, 20000 MiB\n"
+    "NVIDIA GeForce GTX 1050, 4096 MiB, 4000 MiB\n"
+)
+NVIDIA_SMI_NA = (
+    "name, memory.total [MiB], memory.free [MiB]\n"
+    "NVIDIA GeForce RTX 4070 Laptop GPU, [N/A], [N/A]\n"
+)
+
+#: Un `nvidia-smi` plus ancien, qui ne connaîtrait pas `memory.free` : deux
+#: colonnes. Le total reste lisible, le libre est `None` — donc `inconnu`, et
+#: surtout pas un repli sur le total.
+NVIDIA_SMI_SANS_LIBRE = (
+    "name, memory.total [MiB]\nNVIDIA GeForce RTX 4070 Laptop GPU, 8188 MiB\n"
+)
 
 GIO = 1024 ** 3
 MO = 1024 * 1024
+
+# ── Les chiffres RÉELS du 2026-09-06 sur ce poste ────────────────────────────
+#
+# Relevés, pas inventés : `ullTotalPhys` / `ullAvailPhys` avant et après un
+# chargement de `qwen2.5:7b` par Ollama, et les tailles de `/api/tags`. Ils
+# servent à `ModeleResidentTest`, qui rejoue exactement ce cas — écrire des
+# nombres ronds à la place ferait un test qui prouve l'arithmétique plutôt que
+# le bug.
+RAM_TOTALE = 33631817728          # 31,32 Gio — ullTotalPhys
+RAM_LIBRE_AU_REPOS = 16808464384  # 15,65 Gio — ullAvailPhys, aucun modèle résident
+RAM_LIBRE_AVEC_QWEN = 10166943744 # 9,47 Gio  — après chargement (-6,18 Gio)
+TAILLE_QWEN25_7B = 4683087332     # 4,36 Gio sur disque, 6,44 Gio résident
+TAILLE_MISTRAL_24B = 14333921662  # 13,35 Gio — le modèle qui bascule
 
 
 def _vider_cache() -> None:
@@ -147,6 +183,41 @@ class AnalyseNvidiaSmiTest(unittest.TestCase):
     def test_sortie_incoherente(self):
         self.assertIsNone(materiel.analyser_nvidia_smi("bash: nvidia-smi: not found"))
 
+    def test_aucune_valeur_libre_dans_le_dict(self):
+        """**Le garde-fou structurel du correctif.** Ce dict part dans le cache
+        de `materiel()` : y laisser entrer `memory.free` figerait pour la vie
+        du process une valeur qui change à chaque chargement de modèle — le bug
+        de 2026-09-06 rejoué sous un nouveau nom de champ, invisible."""
+        gpu = materiel.analyser_nvidia_smi(NVIDIA_SMI_OK)
+        for cle in gpu:
+            self.assertNotIn("libre", cle)
+            self.assertNotIn("free", cle)
+
+
+class AnalyseNvidiaSmiLibreTest(unittest.TestCase):
+    """La TROISIÈME colonne, lue à part et sur la même sortie."""
+
+    def test_colonne_libre(self):
+        self.assertEqual(materiel.analyser_nvidia_smi_libre(NVIDIA_SMI_OK), 6120 * MO)
+
+    def test_premiere_carte(self):
+        """Même carte que `analyser_nvidia_smi` — les deux lecteurs doivent
+        parler du même GPU, sinon le verdict compare la VRAM libre d'une carte
+        au pool d'une autre."""
+        self.assertEqual(materiel.analyser_nvidia_smi_libre(NVIDIA_SMI_DEUX), 20000 * MO)
+
+    def test_colonne_absente(self):
+        """`nvidia-smi` sans `memory.free` : `None`, jamais le total. Le total
+        est exactement la valeur fausse que ce chantier a retirée du calcul."""
+        self.assertIsNone(materiel.analyser_nvidia_smi_libre(NVIDIA_SMI_SANS_LIBRE))
+
+    def test_na(self):
+        self.assertIsNone(materiel.analyser_nvidia_smi_libre(NVIDIA_SMI_NA))
+
+    def test_sortie_vide(self):
+        self.assertIsNone(materiel.analyser_nvidia_smi_libre(""))
+        self.assertIsNone(materiel.analyser_nvidia_smi_libre("bash: not found"))
+
 
 class AnalyseDxdiagTest(unittest.TestCase):
     """Le rapport dxdiag, sur les chaînes réelles capturées ici."""
@@ -204,6 +275,22 @@ class AnalyseMeminfoTest(unittest.TestCase):
     def test_absent(self):
         self.assertIsNone(materiel.analyser_meminfo("MemFree:  12 kB\n"))
 
+    def test_memavailable(self):
+        texte = "MemTotal: 32851028 kB\nMemFree: 812345 kB\nMemAvailable: 9123456 kB\n"
+        self.assertEqual(materiel.analyser_meminfo_libre(texte), 9123456 * 1024)
+
+    def test_memavailable_ne_lit_pas_memfree(self):
+        """`MemFree` ignore le cache réclamable : le prendre pour `MemAvailable`
+        sous-estimerait massivement ce qu'un modèle peut prendre, et ferait
+        sortir `ne_tiendra_pas` sur des modèles qui se chargent sans peine."""
+        texte = "MemTotal: 32851028 kB\nMemFree: 812345 kB\nMemAvailable: 9123456 kB\n"
+        self.assertNotEqual(materiel.analyser_meminfo_libre(texte), 812345 * 1024)
+
+    def test_memavailable_absent_ne_retombe_pas_sur_memfree(self):
+        """Noyau antérieur à 3.14 : `None`, donc `inconnu`. Remplacer une
+        ignorance par un chiffre faux serait pire que se taire."""
+        self.assertIsNone(materiel.analyser_meminfo_libre("MemTotal: 1 kB\nMemFree: 12 kB\n"))
+
 
 class SondeNvidiaSmiTest(unittest.TestCase):
     """L'orchestration autour du sous-processus — absent, en échec, ou correct."""
@@ -227,6 +314,45 @@ class SondeNvidiaSmiTest(unittest.TestCase):
         faux = mock.Mock(returncode=0, stdout=NVIDIA_SMI_OK.encode("utf-8"), stderr=b"")
         with mock.patch("core.materiel.subprocess.run", return_value=faux):
             self.assertEqual(materiel._sonder_nvidia_smi()["vram_octets"], 8188 * MO)
+
+    def test_une_seule_requete_pour_les_deux_colonnes(self):
+        """Total et libre partent ENSEMBLE. Deux commandes distinctes
+        divergeraient le jour où l'une gagne un champ, et paieraient deux
+        sous-processus pour une sortie qui les porte tous les deux."""
+        faux = mock.Mock(returncode=0, stdout=NVIDIA_SMI_OK.encode("utf-8"), stderr=b"")
+        with mock.patch("core.materiel.subprocess.run", return_value=faux) as run:
+            materiel._sonder_nvidia_smi()
+        argv = run.call_args[0][0]
+        requete = next(a for a in argv if a.startswith("--query-gpu="))
+        self.assertIn("memory.total", requete)
+        self.assertIn("memory.free", requete)
+
+
+class SondeVramLibreTest(unittest.TestCase):
+    """`_sonder_vram_libre` — la moitié périssable, relue à chaque verdict."""
+
+    def test_succes(self):
+        faux = mock.Mock(returncode=0, stdout=NVIDIA_SMI_OK.encode("utf-8"), stderr=b"")
+        with mock.patch("core.materiel.subprocess.run", return_value=faux):
+            self.assertEqual(materiel._sonder_vram_libre(), 6120 * MO)
+
+    def test_binaire_absent(self):
+        with mock.patch("core.materiel.subprocess.run", side_effect=FileNotFoundError):
+            self.assertIsNone(materiel._sonder_vram_libre())
+
+    def test_timeout(self):
+        boom = subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10)
+        with mock.patch("core.materiel.subprocess.run", side_effect=boom):
+            self.assertIsNone(materiel._sonder_vram_libre())
+
+    def test_relance_la_commande(self):
+        """Et ne réutilise PAS la sortie de la détection : celle-là date du
+        démarrage du process, c'est-à-dire précisément ce qu'on corrige."""
+        faux = mock.Mock(returncode=0, stdout=NVIDIA_SMI_OK.encode("utf-8"), stderr=b"")
+        with mock.patch("core.materiel.subprocess.run", return_value=faux) as run:
+            materiel._sonder_vram_libre()
+            materiel._sonder_vram_libre()
+        self.assertEqual(run.call_count, 2)
 
 
 class SondeDxdiagTest(unittest.TestCase):
@@ -362,13 +488,18 @@ class OrdreDesSondesTest(unittest.TestCase):
             self.assertEqual(materiel._sonder_gpu()["source"], "dxdiag")
 
 
-class RessourceDisponibleTest(unittest.TestCase):
-    """Le dénominateur du verdict — c'est ici que se joue l'écart assumé à la
-    règle naïve « VRAM si connue, sinon RAM » (cf. en-tête de core/materiel.py)."""
+class RessourceTotaleTest(unittest.TestCase):
+    """Le POOL dans lequel se joue le verdict — c'est ici que se joue l'écart
+    assumé à la règle naïve « VRAM si connue, sinon RAM » (cf. en-tête de
+    core/materiel.py).
+
+    Ce n'est plus le dénominateur depuis le 2026-09-06 (`ressource_libre` l'est),
+    mais le choix du pool reste le même et c'est lui qui décide QUELLE sonde
+    fraîche est interrogée ensuite."""
 
     def test_carte_discrete_la_vram_gagne(self):
         gpu = materiel.analyser_nvidia_smi(NVIDIA_SMI_OK)
-        r = materiel.ressource_disponible(32 * GIO, gpu)
+        r = materiel.ressource_totale(32 * GIO, gpu)
         self.assertEqual(r["origine"], "vram")
         self.assertEqual(r["octets"], 8188 * MO)
 
@@ -377,7 +508,7 @@ class RessourceDisponibleTest(unittest.TestCase):
         deux fois, et son total (16,5 Go ici) déclarerait impossible un modèle
         de 17,7 Gio qui tourne réellement sur ce poste."""
         gpu = materiel.analyser_dxdiag(DXDIAG_IGPU)
-        r = materiel.ressource_disponible(32 * GIO, gpu)
+        r = materiel.ressource_totale(32 * GIO, gpu)
         self.assertEqual(r["origine"], "ram")
         self.assertEqual(r["octets"], 32 * GIO)
 
@@ -386,17 +517,123 @@ class RessourceDisponibleTest(unittest.TestCase):
         n'autorise pas à affirmer un second pool."""
         gpu = materiel.analyser_dxdiag("           Card name: Machin\n    Dedicated Memory: 4096 MB\n")
         self.assertIsNone(gpu["partage_la_ram"])
-        self.assertEqual(materiel.ressource_disponible(32 * GIO, gpu)["origine"], "ram")
+        self.assertEqual(materiel.ressource_totale(32 * GIO, gpu)["origine"], "ram")
 
     def test_aucun_gpu(self):
-        r = materiel.ressource_disponible(16 * GIO, materiel._gpu_inconnu())
+        r = materiel.ressource_totale(16 * GIO, materiel._gpu_inconnu())
         self.assertEqual(r["origine"], "ram")
         self.assertEqual(r["octets"], 16 * GIO)
 
     def test_rien_du_tout(self):
-        r = materiel.ressource_disponible(None, materiel._gpu_inconnu())
+        r = materiel.ressource_totale(None, materiel._gpu_inconnu())
         self.assertEqual(r["origine"], "inconnu")
         self.assertIsNone(r["octets"])
+
+
+class RessourceLibreTest(unittest.TestCase):
+    """Le VRAI dénominateur : relu à chaque appel, jamais mis en cache."""
+
+    def test_ram_sous_windows(self):
+        with _SondesActives(), \
+                mock.patch("core.materiel.sys.platform", "win32"), \
+                mock.patch("core.materiel._memoire_windows",
+                           return_value=(RAM_TOTALE, RAM_LIBRE_AVEC_QWEN)):
+            self.assertEqual(materiel.ressource_libre("ram"), RAM_LIBRE_AVEC_QWEN)
+
+    def test_ram_sous_linux(self):
+        with _SondesActives(), \
+                mock.patch("core.materiel.sys.platform", "linux"), \
+                mock.patch("core.materiel.Path.read_text",
+                           return_value="MemTotal: 16384000 kB\nMemAvailable: 4096000 kB\n"):
+            self.assertEqual(materiel.ressource_libre("ram"), 4096000 * 1024)
+
+    def test_vram_passe_par_nvidia_smi(self):
+        """Le pool décide de la sonde, pas la plateforme : lire la RAM alors
+        que le verdict se joue en VRAM donnerait un chiffre juste pour la
+        mauvaise question."""
+        faux = mock.Mock(returncode=0, stdout=NVIDIA_SMI_OK.encode("utf-8"), stderr=b"")
+        with _SondesActives(), mock.patch("core.materiel.subprocess.run", return_value=faux):
+            self.assertEqual(materiel.ressource_libre("vram"), 6120 * MO)
+
+    def test_origine_inconnue(self):
+        with _SondesActives(), mock.patch("core.materiel.subprocess.run") as run:
+            self.assertIsNone(materiel.ressource_libre("inconnu"))
+        run.assert_not_called()
+
+    def test_sondes_coupees(self):
+        """`EPURE_MATERIEL_SONDE=0` : aucune sonde, y compris fraîche. Sans
+        cette porte, toute la suite lirait la mémoire du poste qui l'exécute et
+        les verdicts changeraient d'une machine à l'autre."""
+        with mock.patch("core.materiel.subprocess.run") as run, \
+                mock.patch("core.materiel._memoire_windows") as win:
+            self.assertIsNone(materiel.ressource_libre("ram"))
+            self.assertIsNone(materiel.ressource_libre("vram"))
+        run.assert_not_called()
+        win.assert_not_called()
+
+
+class RessourceFraicheTest(unittest.TestCase):
+    """Le dict `{octets, origine}` du moment — et son refus de se replier."""
+
+    @staticmethod
+    def _etat(origine, octets=RAM_TOTALE):
+        return {"ressource": {"octets": octets, "origine": origine}}
+
+    def test_garde_l_origine_du_pool(self):
+        with _SondesActives(), \
+                mock.patch("core.materiel.ressource_libre", return_value=RAM_LIBRE_AVEC_QWEN):
+            r = materiel.ressource_fraiche(self._etat("ram"))
+        self.assertEqual(r, {"octets": RAM_LIBRE_AVEC_QWEN, "origine": "ram"})
+
+    def test_lecture_ratee_ne_retombe_pas_sur_le_total(self):
+        """**La règle du fichier.** Le total est précisément la valeur qui
+        donnait la mauvaise réponse ; y revenir en silence rejouerait le bug en
+        le faisant passer pour une dégradation prudente."""
+        with _SondesActives(), mock.patch("core.materiel.ressource_libre", return_value=None):
+            r = materiel.ressource_fraiche(self._etat("ram"))
+        self.assertEqual(r, {"octets": None, "origine": "inconnu"})
+        self.assertNotEqual(r["octets"], RAM_TOTALE)
+
+    def test_zero_ne_vaut_pas_une_lecture(self):
+        with _SondesActives(), mock.patch("core.materiel.ressource_libre", return_value=0):
+            self.assertIsNone(materiel.ressource_fraiche(self._etat("ram"))["octets"])
+
+    def test_materiel_inconnu(self):
+        with _SondesActives():
+            r = materiel.ressource_fraiche({"ressource": {"octets": None, "origine": "inconnu"}})
+        self.assertEqual(r["origine"], "inconnu")
+
+    def test_etat_sans_ressource(self):
+        with _SondesActives():
+            self.assertEqual(materiel.ressource_fraiche({}),
+                             {"octets": None, "origine": "inconnu"})
+
+
+class NpuJoignableTest(unittest.TestCase):
+    """La joignabilité de FLM, relue et non mémorisée."""
+
+    def test_suit_check_flm(self):
+        for joignable in (True, False):
+            with self.subTest(flm=joignable), _SondesActives(), \
+                    mock.patch("core.materiel.check_flm", return_value=joignable):
+                self.assertIs(materiel.npu_joignable(), joignable)
+
+    def test_relue_a_chaque_appel(self):
+        """Le bug jumeau de la mémoire libre : un FLM démarré APRÈS
+        l'application restait « éteint » pour la vie du process."""
+        with _SondesActives(), \
+                mock.patch("core.materiel.check_flm", side_effect=[False, True]):
+            self.assertFalse(materiel.npu_joignable())
+            self.assertTrue(materiel.npu_joignable())
+
+    def test_une_sonde_qui_leve_ne_tue_rien(self):
+        with _SondesActives(), mock.patch("core.materiel.check_flm", side_effect=RuntimeError):
+            self.assertFalse(materiel.npu_joignable())
+
+    def test_sondes_coupees(self):
+        with mock.patch("core.materiel.check_flm") as flm:
+            self.assertFalse(materiel.npu_joignable())
+        flm.assert_not_called()
 
 
 class VerdictMemoireTest(unittest.TestCase):
@@ -451,16 +688,22 @@ class VerdictFlmTest(unittest.TestCase):
 class VerdictsModelesTest(unittest.TestCase):
     """Les trois backends locaux, avec leurs trois qualités d'information."""
 
+    #: La forme que rend `etat_frais()` : les faits figés du cache PLUS les deux
+    #: valeurs relues à chaque requête. `verdicts_modeles` lit `ressource_libre`
+    #: comme dénominateur — `ressource` n'est là que pour l'affichage.
     ETAT = {
         "ram_octets": 32 * GIO,
         "gpu": materiel._gpu_inconnu(),
         "npu": {"disponible": False},
         "ressource": {"octets": 32 * GIO, "origine": "ram"},
+        "ressource_libre": {"octets": 32 * GIO, "origine": "ram"},
     }
 
     def _verdicts(self, ollama=None, lmstudio=None, npu=False, flm_installes=None,
-                  flm_live=None):
+                  flm_live=None, libre=None):
         etat = dict(self.ETAT, npu={"disponible": npu})
+        if libre is not None:
+            etat["ressource_libre"] = {"octets": libre, "origine": "ram"}
         with mock.patch("core.materiel._tailles_ollama", return_value=ollama), \
                 mock.patch("core.materiel.get_lmstudio_installed", return_value=lmstudio), \
                 mock.patch("core.materiel.get_flm_installed",
@@ -516,6 +759,85 @@ class VerdictsModelesTest(unittest.TestCase):
         v = self._verdicts(ollama={"qwen2.5:7b": 4 * GIO})
         self.assertEqual({m["provider"] for m in v.values()}, {"ollama", "flm"})
 
+    def test_le_denominateur_est_le_libre_pas_le_total(self):
+        """`ressource` reste à 32 Gio, `ressource_libre` tombe à 5 Gio : c'est
+        le second qui décide. Lire le premier était le bug du 2026-09-06."""
+        v = self._verdicts(ollama={"gros:20b": 10 * GIO}, libre=5 * GIO)
+        self.assertEqual(v["gros:20b"]["verdict"], "ne_tiendra_pas")
+
+    def test_etat_sans_ressource_libre_ne_retombe_pas_sur_le_total(self):
+        """Un appelant qui ne passe pas par `etat_frais()` obtient `inconnu`,
+        jamais un verdict calculé sur le total — la dégradation doit se voir."""
+        etat = {k: v for k, v in self.ETAT.items() if k != "ressource_libre"}
+        with mock.patch("core.materiel._tailles_ollama", return_value={"a:1b": GIO}), \
+                mock.patch("core.materiel.get_lmstudio_installed", return_value=[]), \
+                mock.patch("core.materiel.get_flm_installed", return_value=set()), \
+                mock.patch("core.materiel.flm_model_ids", return_value=None):
+            v = {m["id"]: m for m in materiel.verdicts_modeles(etat)}
+        self.assertEqual(v["a:1b"]["verdict"], "inconnu")
+
+    def test_aucune_sonde_par_modele(self):
+        """Le dénominateur est LU dans l'état, jamais sondé ici : sept modèles
+        installés ne doivent pas donner sept `nvidia-smi`."""
+        with mock.patch("core.materiel.subprocess.run") as run, \
+                mock.patch("core.materiel.ressource_libre") as libre:
+            self._verdicts(ollama={"a:1b": GIO, "b:2b": 2 * GIO, "c:3b": 3 * GIO})
+        run.assert_not_called()
+        libre.assert_not_called()
+
+
+class ModeleResidentTest(unittest.TestCase):
+    """**Le cas MESURÉ qui a motivé le chantier**, rejoué de bout en bout.
+
+    2026-09-06 sur ce poste : `qwen2.5:7b` chargé par Ollama, `ullAvailPhys`
+    tombé de 15,65 à 9,47 Gio pour 31,32 Gio de RAM totale. Un second modèle
+    proposé — `mistral-small:24b`, 13,35 Gio, réellement installé ici — tenait
+    largement contre le total (43 %) et ne tenait pas du tout contre ce qui
+    restait (141 %).
+
+    Les DEUX directions sont affirmées dans le même test : sans la première,
+    on ne prouverait pas que le verdict a changé, seulement qu'il est sévère.
+    """
+
+    def _verdicts(self, libre):
+        etat = {
+            "ram_octets": RAM_TOTALE,
+            "gpu": materiel._gpu_inconnu(),
+            "npu": {"disponible": False},
+            "ressource": {"octets": RAM_TOTALE, "origine": "ram"},
+            "ressource_libre": {"octets": libre, "origine": "ram"},
+        }
+        tailles = {"qwen2.5:7b": TAILLE_QWEN25_7B, "mistral-small:24b": TAILLE_MISTRAL_24B}
+        with mock.patch("core.materiel._tailles_ollama", return_value=tailles), \
+                mock.patch("core.materiel.get_lmstudio_installed", return_value=[]), \
+                mock.patch("core.materiel.get_flm_installed", return_value=set()), \
+                mock.patch("core.materiel.flm_model_ids", return_value=None):
+            return {m["id"]: m["verdict"] for m in materiel.verdicts_modeles(etat)}
+
+    def test_machine_au_repos_le_second_modele_tient(self):
+        """Rien de résident : 13,35 Gio sur 15,65 Gio libres — c'est limite, et
+        le dire « limite » est déjà plus juste que le « tient » d'avant."""
+        v = self._verdicts(RAM_LIBRE_AU_REPOS)
+        self.assertEqual(v["mistral-small:24b"], "limite")
+
+    def test_avec_qwen_resident_le_second_ne_tient_plus(self):
+        """Le cœur du correctif : 13,35 Gio réclamés, 9,47 Gio libres."""
+        v = self._verdicts(RAM_LIBRE_AVEC_QWEN)
+        self.assertEqual(v["mistral-small:24b"], "ne_tiendra_pas")
+        # Et le petit modèle continue de tenir : le correctif ne rend pas tout
+        # rouge, il rend le verdict vrai.
+        self.assertEqual(v["qwen2.5:7b"], "tient")
+
+    def test_l_ancien_calcul_disait_l_inverse(self):
+        """La preuve que le test mesure le CHANGEMENT et pas l'arithmétique :
+        contre la mémoire TOTALE — l'ancien dénominateur — le même modèle, dans
+        le même état de la machine, sortait « tient »."""
+        self.assertEqual(
+            materiel.verdict_memoire(TAILLE_MISTRAL_24B, RAM_TOTALE), "tient")
+        self.assertEqual(
+            materiel.verdict_memoire(TAILLE_MISTRAL_24B, RAM_LIBRE_AVEC_QWEN),
+            "ne_tiendra_pas")
+
 
 class SondesCoupeesTest(unittest.TestCase):
     """`EPURE_MATERIEL_SONDE=0` — le régime de toute la suite."""
@@ -538,7 +860,13 @@ class SondesCoupeesTest(unittest.TestCase):
         fil.assert_not_called()
 
     def test_verdicts_tous_inconnus(self):
-        """Le matériel muet ne rend pas des modèles « qui tiennent » par défaut."""
+        """Le matériel muet ne rend pas des modèles « qui tiennent » par défaut.
+
+        **Et la sonde FRAÎCHE est coupée elle aussi** : sans cette porte, la
+        RAM libre du poste qui exécute la suite entrerait dans le calcul, `a:1b`
+        sortirait « tient » ici et « inconnu » en CI, et le test mesurerait la
+        machine plutôt que le code.
+        """
         with mock.patch("core.materiel._tailles_ollama", return_value={"a:1b": GIO}), \
                 mock.patch("core.materiel.get_lmstudio_installed", return_value=[]), \
                 mock.patch("core.materiel.get_flm_installed", return_value=set()), \
@@ -546,10 +874,28 @@ class SondesCoupeesTest(unittest.TestCase):
             corps = materiel.etat_complet()
         ollama = [m for m in corps["modeles"] if m["provider"] == "ollama"]
         self.assertEqual([m["verdict"] for m in ollama], ["inconnu"])
+        self.assertEqual(corps["materiel"]["ressource_libre"]["origine"], "inconnu")
+
+    def test_aucun_sous_processus_sur_le_chemin_complet(self):
+        """`etat_complet()` ajoute deux sondes fraîches au chemin de `detecter()`
+        — elles passent par la même porte."""
+        with mock.patch("core.materiel.subprocess.run") as run, \
+                mock.patch("core.materiel.check_flm") as flm, \
+                mock.patch("core.materiel._tailles_ollama", return_value=None), \
+                mock.patch("core.materiel.get_lmstudio_installed", return_value=None), \
+                mock.patch("core.materiel.get_flm_installed", return_value=set()), \
+                mock.patch("core.materiel.flm_model_ids", return_value=None):
+            materiel.etat_complet()
+        run.assert_not_called()
+        flm.assert_not_called()
 
 
 class DetectionCompleteTest(unittest.TestCase):
-    """`detecter()` sondes actives, tout mocké — dont le cas réel de la CI."""
+    """`detecter()` sondes actives, tout mocké — dont le cas réel de la CI.
+
+    **Ne rend QUE des faits figés** : ce qu'elle produit part droit dans un
+    cache qui vit aussi longtemps que le process. Le NPU et la mémoire libre
+    sont ailleurs (`etat_frais`), et leur absence ici est vérifiée."""
 
     def test_linux_sans_rien(self):
         """Le runner de la CI : pas de `nvidia-smi`, pas de dxdiag, `/proc` lu.
@@ -566,8 +912,20 @@ class DetectionCompleteTest(unittest.TestCase):
             etat = materiel.detecter()
         self.assertEqual(etat["ram_octets"], 16384000 * 1024)
         self.assertEqual(etat["gpu"]["source"], "inconnu")
-        self.assertFalse(etat["npu"]["disponible"])
         self.assertEqual(etat["ressource"]["origine"], "ram")
+
+    def test_aucune_valeur_perissable(self):
+        """Le garde-fou structurel, côté détection : ni NPU ni mémoire libre
+        dans ce que le cache va garder pour la vie du process."""
+        with _SondesActives(), \
+                mock.patch("core.materiel.sys.platform", "linux"), \
+                mock.patch("core.materiel.subprocess.run", side_effect=FileNotFoundError), \
+                mock.patch("core.materiel.Path.read_text",
+                           return_value="MemTotal: 16384000 kB\nMemAvailable: 999 kB\n"), \
+                mock.patch("core.materiel.check_flm", return_value=True) as flm:
+            etat = materiel.detecter()
+        self.assertEqual(set(etat), {"ram_octets", "gpu", "ressource"})
+        flm.assert_not_called()
 
     def test_ram_illisible(self):
         with _SondesActives(), \
@@ -579,22 +937,80 @@ class DetectionCompleteTest(unittest.TestCase):
         self.assertIsNone(etat["ram_octets"])
         self.assertEqual(etat["ressource"]["origine"], "inconnu")
 
+
+class EtatFraisTest(unittest.TestCase):
+    """Là où les deux durées de vie se rencontrent — une fois par requête."""
+
+    FIGE = {
+        "ram_octets": RAM_TOTALE,
+        "gpu": materiel._gpu_inconnu(),
+        "ressource": {"octets": RAM_TOTALE, "origine": "ram"},
+    }
+
+    def setUp(self):
+        _vider_cache()
+        self.addCleanup(_vider_cache)
+
+    def test_assemble_les_deux_durees_de_vie(self):
+        with _SondesActives(), \
+                mock.patch("core.materiel.detecter", return_value=dict(self.FIGE)), \
+                mock.patch("core.materiel.ressource_libre", return_value=RAM_LIBRE_AVEC_QWEN), \
+                mock.patch("core.materiel.check_flm", return_value=True):
+            etat = materiel.etat_frais()
+        self.assertEqual(etat["ressource"]["octets"], RAM_TOTALE)
+        self.assertEqual(etat["ressource_libre"]["octets"], RAM_LIBRE_AVEC_QWEN)
+        self.assertTrue(etat["npu"]["disponible"])
+
     def test_npu_suit_flm(self):
         for joignable in (True, False):
             with self.subTest(flm=joignable), _SondesActives(), \
-                    mock.patch("core.materiel.sys.platform", "linux"), \
-                    mock.patch("core.materiel.subprocess.run", side_effect=FileNotFoundError), \
-                    mock.patch("core.materiel.Path.read_text", return_value=""), \
+                    mock.patch("core.materiel.detecter", return_value=dict(self.FIGE)), \
+                    mock.patch("core.materiel.ressource_libre", return_value=None), \
                     mock.patch("core.materiel.check_flm", return_value=joignable):
-                self.assertIs(materiel.detecter()["npu"]["disponible"], joignable)
+                self.assertIs(materiel.etat_frais()["npu"]["disponible"], joignable)
+            _vider_cache()
 
-    def test_flm_qui_leve_ne_tue_pas_la_detection(self):
+    def test_flm_qui_leve_ne_tue_pas_l_assemblage(self):
         with _SondesActives(), \
-                mock.patch("core.materiel.sys.platform", "linux"), \
-                mock.patch("core.materiel.subprocess.run", side_effect=FileNotFoundError), \
-                mock.patch("core.materiel.Path.read_text", return_value=""), \
+                mock.patch("core.materiel.detecter", return_value=dict(self.FIGE)), \
+                mock.patch("core.materiel.ressource_libre", return_value=None), \
                 mock.patch("core.materiel.check_flm", side_effect=RuntimeError):
-            self.assertFalse(materiel.detecter()["npu"]["disponible"])
+            etat = materiel.etat_frais()
+        self.assertFalse(etat["npu"]["disponible"])
+        self.assertEqual(etat["ressource"]["octets"], RAM_TOTALE)
+
+    def test_ne_mute_jamais_le_cache(self):
+        """**Le piège que ce dict rend possible.** `materiel()` rend toujours le
+        MÊME objet et le garde pour la vie du process : un `etat["npu"] = …`
+        y figerait la valeur fraîche pour toutes les requêtes suivantes,
+        c'est-à-dire reproduirait très exactement le bug corrigé."""
+        with _SondesActives(), \
+                mock.patch("core.materiel.detecter", return_value=dict(self.FIGE)), \
+                mock.patch("core.materiel.ressource_libre", return_value=RAM_LIBRE_AVEC_QWEN), \
+                mock.patch("core.materiel.check_flm", return_value=True):
+            frais = materiel.etat_frais()
+            cache = materiel.materiel()
+        self.assertIsNot(frais, cache)
+        self.assertNotIn("npu", cache)
+        self.assertNotIn("ressource_libre", cache)
+
+    def test_une_seule_mesure_par_appel(self):
+        """Les verdicts et la ligne qui les motive doivent parler du MÊME
+        instant : deux lectures afficheraient « calculés sur 9,5 Gio » à côté
+        de verdicts calculés sur autre chose."""
+        with _SondesActives(), \
+                mock.patch("core.materiel.detecter", return_value=dict(self.FIGE)), \
+                mock.patch("core.materiel.ressource_libre",
+                           return_value=RAM_LIBRE_AVEC_QWEN) as libre, \
+                mock.patch("core.materiel.check_flm", return_value=False) as flm, \
+                mock.patch("core.materiel._tailles_ollama", return_value={"a:1b": GIO}), \
+                mock.patch("core.materiel.get_lmstudio_installed", return_value=[]), \
+                mock.patch("core.materiel.get_flm_installed", return_value=set()), \
+                mock.patch("core.materiel.flm_model_ids", return_value=None):
+            corps = materiel.etat_complet()
+        self.assertEqual(libre.call_count, 1)
+        self.assertEqual(flm.call_count, 1)
+        self.assertEqual(corps["materiel"]["ressource_libre"]["octets"], RAM_LIBRE_AVEC_QWEN)
 
 
 class CacheTest(unittest.TestCase):
@@ -607,13 +1023,28 @@ class CacheTest(unittest.TestCase):
 
     def test_detection_unique(self):
         faux = {"ram_octets": 1, "gpu": materiel._gpu_inconnu(),
-                "npu": {"disponible": False},
                 "ressource": {"octets": 1, "origine": "ram"}}
         with mock.patch("core.materiel.detecter", return_value=faux) as det:
             premier = materiel.materiel()
             second = materiel.materiel()
         self.assertEqual(det.call_count, 1)
         self.assertIs(premier, second)
+
+    def test_rien_de_perissable_dans_le_cache(self):
+        """**L'invariant qui empêche le bug de revenir sous un autre nom.** Un
+        futur champ dynamique posé dans `detecter()` serait figé pour la vie du
+        process sans que personne ne le remarque — c'est exactement ce qui est
+        arrivé au NPU et à la mémoire libre."""
+        with _SondesActives(), \
+                mock.patch("core.materiel.sys.platform", "linux"), \
+                mock.patch("core.materiel.subprocess.run", side_effect=FileNotFoundError), \
+                mock.patch("core.materiel.Path.read_text",
+                           return_value="MemTotal: 16384000 kB\nMemAvailable: 4096000 kB\n"), \
+                mock.patch("core.materiel.check_flm", return_value=True):
+            cache = materiel.materiel()
+        self.assertEqual(set(cache), {"ram_octets", "gpu", "ressource"})
+        for cle in cache["gpu"]:
+            self.assertNotIn("libre", cle)
 
 
 class EndpointMaterielTest(unittest.TestCase):
@@ -648,8 +1079,13 @@ class EndpointMaterielTest(unittest.TestCase):
         # Sondes coupées par `_test_env` : l'état est honnêtement vide, et les
         # clés sont TOUTES émises — une clé absente arrive `undefined` côté
         # TypeScript et les normaliseurs du frontend l'écraseraient (§8).
-        for cle in ("ram_octets", "gpu", "npu", "ressource"):
+        for cle in ("ram_octets", "gpu", "npu", "ressource", "ressource_libre"):
             self.assertIn(cle, corps["materiel"])
+        # Les DEUX nombres sont servis : le libre est le dénominateur, le total
+        # est ce qui le rend lisible — « 9,5 Gio » seul ne dit pas si la machine
+        # est petite ou simplement occupée.
+        for cle in ("octets", "origine"):
+            self.assertIn(cle, corps["materiel"]["ressource_libre"])
         for cle in ("nom", "vram_octets", "vram_partagee_octets", "partage_la_ram", "source"):
             self.assertIn(cle, corps["materiel"]["gpu"])
         for m in corps["modeles"]:
