@@ -39,6 +39,7 @@ from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
 from core.embedding_install import EmbeddingIndisponible
 from core.orchestrator import OrchestratorEngine
+from core import materiel
 from core import ollama_memoire
 from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
@@ -524,6 +525,23 @@ async def models_unload(req: ModeleMemoireRequest):
     et `ok: false` porte alors l'explication."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, ollama_memoire.decharger, req.model)
+
+
+@app.get("/models/materiel")
+async def models_materiel():
+    """Ce que cette machine peut faire tourner, et le verdict par modèle installé.
+
+    Quatrième route de la famille `/models`, et même patron que les trois
+    au-dessus : `run_in_executor`, parce que tout y est synchrone et bloquant —
+    la détection matérielle (`dxdiag`, 16 s au premier appel si le préchauffage
+    de `core/runtime.py` n'a pas encore abouti) comme les sondes Ollama/LM
+    Studio/FLM des verdicts.
+
+    Ne lève jamais : un matériel indétectable rend `source: "inconnu"` et des
+    verdicts `inconnu`, ce qui est une réponse et pas une panne.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, materiel.etat_complet)
 
 
 # ---------------------------------------------------------------------------

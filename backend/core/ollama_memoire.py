@@ -188,6 +188,43 @@ def capacites_installees() -> Optional[dict[str, Optional[set]]]:
     return out
 
 
+def tailles_installees() -> Optional[dict[str, int]]:
+    """`{id: taille du blob sur disque, en octets}`. `None` si Ollama se tait.
+
+    Même endpoint que `capacites_installees` juste au-dessus, et pour la même
+    raison qu'elle : `/api/tags` porte déjà `size` à côté de `capabilities` —
+    interroger `/api/show` par modèle coûterait une requête par modèle pour un
+    champ qu'on a déjà.
+
+    **`size` est le poids SUR DISQUE, pas l'empreinte résidente**, et l'écart a
+    été mesuré plutôt que supposé (ce poste, 2026-09-06) : `qwen2.5:7b` annonce
+    **4,36 Gio** ici, et **6,44 Gio** dans `/api/ps` une fois chargé — +48 %,
+    le cache KV et le contexte s'ajoutant aux poids. C'est donc un MINORANT, et
+    c'est une des deux raisons de la marge de sécurité de `core/materiel.py`.
+    Ne pas le présenter comme « la mémoire qu'il prendra ».
+
+    Un modèle sans `size` exploitable est simplement ABSENT du dictionnaire :
+    l'appelant en tire « taille inconnue », qui est vrai, plutôt qu'un zéro qui
+    se lirait « tient partout ».
+    """
+    data = _appeler("/api/tags", None, _TIMEOUT_LECTURE_S)
+    if data is None:
+        return None
+    entrees = data.get("models")
+    if not isinstance(entrees, list):
+        logger.warning("/api/tags : corps inattendu depuis %s", hote_ollama())
+        return {}
+    out: dict[str, int] = {}
+    for e in entrees:
+        if not isinstance(e, dict):
+            continue
+        mid = e.get("model") or e.get("name")
+        taille = e.get("size")
+        if mid and isinstance(taille, int) and taille > 0:
+            out[mid] = taille
+    return out
+
+
 def decrire_capacites(declarees: Optional[set]) -> dict:
     """Traduit un ensemble déclaré en trois états : `True` / `False` / `None`.
 

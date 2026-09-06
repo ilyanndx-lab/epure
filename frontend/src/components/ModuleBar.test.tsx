@@ -783,3 +783,221 @@ describe('ModuleBar — capacités des modèles', () => {
     expect(screen.queryByText('appels d’outils')).toBeNull()
   })
 })
+
+/**
+ * Faisabilité matérielle (`GET /models/materiel`) — le résumé et les badges.
+ *
+ * Ce que ces tests gardent tient en deux points, et aucun des deux n'est
+ * décoratif :
+ *
+ * **1. « On ne sait pas » ne doit jamais se lire comme « tout va bien ».** Le
+ * verdict `inconnu` a son propre badge, exactement comme le « ? » des capacités
+ * juste au-dessus. Un `verdict && <Badge/>` ou un `?? 'tient'` le ferait
+ * disparaître — et c'est précisément l'état de TOUS les modèles LM Studio,
+ * puisque ni `/v1/models` ni `/api/v0/models` ne publient de taille (mesuré sur
+ * ce poste le 2026-09-06, pas supposé).
+ *
+ * **2. La mémoire dédiée et la mémoire partagée ne s'additionnent pas.** Sur
+ * l'iGPU de ce poste, dxdiag rend `Dedicated: 512 MB` + `Shared: 16036 MB`, et
+ * leur somme est ce qu'il appelle « Display Memory ». L'afficher annoncerait
+ * ~16,2 Go de VRAM à côté de 31,3 Go de RAM, soit près de 48 Go à quelqu'un qui
+ * en a 31 : les mêmes octets, comptés deux fois. Le test vérifie que les deux
+ * nombres restent nommés séparément.
+ *
+ * Le corps rejoué est celui que `core/materiel.py` produit réellement sur ce
+ * poste, `GET /models/materiel` à l'appui — pas une forme inventée.
+ */
+describe('ModuleBar — faisabilité matérielle', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+
+  const GIO = 1024 ** 3
+  const MO = 1024 * 1024
+
+  /** L'état réel de ce poste : 31,3 Go de RAM, iGPU AMD, pas de FLM. */
+  const MATERIEL_IGPU = {
+    ram_octets: 33631817728,
+    gpu: {
+      nom: 'AMD Radeon(TM) 840M Graphics',
+      vram_octets: 512 * MO,
+      vram_partagee_octets: 16036 * MO,
+      partage_la_ram: true,
+      source: 'dxdiag',
+    },
+    npu: { disponible: false },
+    ressource: { octets: 33631817728, origine: 'ram' },
+  }
+
+  const ouvrirAvec = async (reponse: Reponse, local: unknown[] = MODELES_OK.local) => {
+    poserFetch({
+      ...tableSaine(),
+      '/models': { corps: { ...MODELES_OK, local } },
+      '/models/loaded': { corps: { charges: [] } },
+      '/models/materiel': reponse,
+    })
+    await rendre()
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Local')).toBeTruthy())
+  }
+
+  it('annonce la RAM, le GPU et le NPU de la machine', async () => {
+    await ouvrirAvec({ corps: { materiel: MATERIEL_IGPU, modeles: [] } })
+    await waitFor(() => expect(screen.getByText('31,3 Go')).toBeTruthy())
+    expect(screen.getByText(/AMD Radeon\(TM\) 840M Graphics/)).toBeTruthy()
+    expect(screen.getByText(/aucun \(FastFlowLM éteint\)/)).toBeTruthy()
+  })
+
+  it('garde la mémoire dédiée et la partagée SÉPARÉES — jamais leur somme', async () => {
+    await ouvrirAvec({ corps: { materiel: MATERIEL_IGPU, modeles: [] } })
+    const ligne = await screen.findByText(/AMD Radeon\(TM\) 840M Graphics/)
+    // Les deux nombres, nommés, et les trois mots qui disent d'où vient le
+    // second : sans eux, le lecteur additionne.
+    expect(ligne.textContent).toContain('512 Mo dédiés')
+    expect(ligne.textContent).toContain('partagés avec la RAM')
+    // Et surtout PAS leur somme (« Display Memory » de dxdiag) : 512 + 16036
+    // = 16548 Mo, soit 16,2 Go de mémoire qui n'existe pas séparément.
+    expect(ligne.textContent).not.toContain('16,2 Go')
+  })
+
+  it('dit sur quelle ressource les verdicts sont calculés', async () => {
+    // Sans cette ligne, « ne tient pas » est un jugement sans motif — et sur ce
+    // poste le motif est contre-intuitif : c'est la RAM et non les 16,2 Go de
+    // « mémoire d'affichage » que dxdiag annonce, parce que celle-ci EST la RAM.
+    await ouvrirAvec({ corps: { materiel: MATERIEL_IGPU, modeles: [] } })
+    await waitFor(() => expect(screen.getByText('verdicts calculés sur')).toBeTruthy())
+    expect(screen.getByText('31,3 Go de RAM')).toBeTruthy()
+  })
+
+  it('affiche un badge par verdict de mémoire', async () => {
+    await ouvrirAvec(
+      {
+        corps: {
+          materiel: MATERIEL_IGPU,
+          modeles: [
+            { id: 'petit:1b', provider: 'ollama', taille_octets: GIO, verdict: 'tient' },
+            { id: 'moyen:20b', provider: 'ollama', taille_octets: 25 * GIO, verdict: 'limite' },
+            { id: 'gros:70b', provider: 'ollama', taille_octets: 40 * GIO, verdict: 'ne_tiendra_pas' },
+          ],
+        },
+      },
+      [
+        { id: 'petit:1b', nom: 'petit:1b', provider: 'ollama', disponible: true },
+        { id: 'moyen:20b', nom: 'moyen:20b', provider: 'ollama', disponible: true },
+        { id: 'gros:70b', nom: 'gros:70b', provider: 'ollama', disponible: true },
+      ],
+    )
+    await waitFor(() => expect(screen.getByText('tient')).toBeTruthy())
+    expect(screen.getByText('limite')).toBeTruthy()
+    expect(screen.getByText('ne tient pas')).toBeTruthy()
+  })
+
+  it('« inconnu » a son propre badge — le silence se lirait comme « tout va bien »', async () => {
+    // Le cas de TOUS les modèles LM Studio : aucune taille publiée, donc aucun
+    // verdict possible. Sans badge, ils seraient visuellement identiques à des
+    // modèles qui tiennent.
+    await ouvrirAvec(
+      {
+        corps: {
+          materiel: MATERIEL_IGPU,
+          modeles: [{
+            id: 'lmstudio:mystere', provider: 'lmstudio', taille_octets: null, verdict: 'inconnu',
+          }],
+        },
+      },
+      [{ id: 'lmstudio:mystere', nom: 'mystere', provider: 'lmstudio', disponible: true }],
+    )
+    await waitFor(() => expect(screen.getByText('taille ?')).toBeTruthy())
+    expect(screen.queryByText('tient')).toBeNull()
+  })
+
+  it('un verdict que le frontend ne connaît pas retombe sur « inconnu », pas sur « tient »', async () => {
+    // Backend plus récent, ou champ absent. Une valeur illisible est une
+    // ignorance : elle doit prendre le mot qui le dit, jamais le bénéfice du
+    // doute.
+    await ouvrirAvec(
+      {
+        corps: {
+          materiel: MATERIEL_IGPU,
+          modeles: [
+            { id: 'a:1b', provider: 'ollama', taille_octets: GIO, verdict: 'verdict_du_futur' },
+            { id: 'b:1b', provider: 'ollama', taille_octets: GIO },
+          ],
+        },
+      },
+      [
+        { id: 'a:1b', nom: 'a:1b', provider: 'ollama', disponible: true },
+        { id: 'b:1b', nom: 'b:1b', provider: 'ollama', disponible: true },
+      ],
+    )
+    await waitFor(() => expect(screen.getAllByText('taille ?').length).toBe(2))
+    expect(screen.queryByText('tient')).toBeNull()
+  })
+
+  it('annonce le NPU quand FastFlowLM répond', async () => {
+    await ouvrirAvec(
+      {
+        corps: {
+          materiel: { ...MATERIEL_IGPU, npu: { disponible: true } },
+          modeles: [{
+            id: 'flm:qwen3:4b', provider: 'flm', taille_octets: null, verdict: 'disponible',
+          }],
+        },
+      },
+      [{ id: 'flm:qwen3:4b', nom: 'Qwen3 4B (NPU)', provider: 'flm', disponible: true }],
+    )
+    await waitFor(() => expect(screen.getByText('FastFlowLM répond')).toBeTruthy())
+    expect(screen.getByText('NPU pret')).toBeTruthy()
+  })
+
+  it('GPU indétectable : « inconnu », et surtout pas « aucun »', async () => {
+    // Troisième état. Ni « pas de GPU » (qui autoriserait à conclure) ni « GPU
+    // illimité » (qui autoriserait à promettre).
+    await ouvrirAvec({
+      corps: {
+        materiel: {
+          ...MATERIEL_IGPU,
+          gpu: {
+            nom: null, vram_octets: null, vram_partagee_octets: null,
+            partage_la_ram: null, source: 'inconnu',
+          },
+        },
+        modeles: [],
+      },
+    })
+    await waitFor(() => expect(screen.getByText('inconnu')).toBeTruthy())
+    expect(screen.queryByText(/Radeon/)).toBeNull()
+  })
+
+  it('une RAM à 0 se lit « inconnu », pas « machine sans mémoire »', async () => {
+    // Un 0 rendu par le backend est une lecture ratée. « 0 Go » serait un
+    // diagnostic, et il serait faux.
+    await ouvrirAvec({ corps: { materiel: { ...MATERIEL_IGPU, ram_octets: 0 }, modeles: [] } })
+    await waitFor(() => expect(screen.getByText('RAM')).toBeTruthy())
+    expect(screen.queryByText('0 Mo')).toBeNull()
+    expect(screen.queryByText('0,0 Go')).toBeNull()
+  })
+
+  it('la route absente (instance plus ancienne) ne produit AUCUN résumé, sans planter', async () => {
+    await ouvrirAvec({ status: 404, corps: { detail: 'Not Found' } })
+    await waitFor(() => expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0))
+    expect(screen.queryByText('verdicts calculés sur')).toBeNull()
+    expect(screen.queryByText('taille ?')).toBeNull()
+  })
+
+  it("le 500 du gestionnaire d'exceptions ne produit ni résumé ni badge", async () => {
+    // `{"detail": …, "type": …}` n'a ni `materiel` ni `modeles` : le corps
+    // parse parfaitement, donc aucun `.catch()` ne le voit. C'est LE piège du
+    // §8, rejoué sur cette frontière-ci.
+    await ouvrirAvec({ status: 500, corps: ERREUR_500 })
+    await waitFor(() => expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0))
+    expect(screen.queryByText('verdicts calculés sur')).toBeNull()
+  })
+
+  it('un corps 200 de forme inattendue ne casse rien non plus', async () => {
+    // Un 200 ne garantit pas la forme : proxy, page d'erreur, version
+    // intermédiaire. `materiel: null` et `modeles: "oups"` doivent traverser.
+    await ouvrirAvec({ corps: { materiel: null, modeles: 'oups' } })
+    await waitFor(() => expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0))
+    expect(screen.queryByText('verdicts calculés sur')).toBeNull()
+  })
+})

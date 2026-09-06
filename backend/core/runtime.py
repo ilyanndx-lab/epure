@@ -73,6 +73,7 @@ from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.instance import est_modele_cloud, fiches_watch_paths, modele_local_defaut
 from core.llm import LLMEngine
+from core.materiel import prechauffer as prechauffer_materiel
 from core.memory import MemoryEngine
 from core.models import ModelsRegistry
 from core.orchestrator import OrchestratorEngine
@@ -329,6 +330,13 @@ def _warmup() -> None:
 
 
 threading.Thread(target=_warmup, daemon=True, name="epure-warmup").start()
+
+# Détection matérielle (RAM/GPU/NPU), une fois pour la durée du process. Son
+# PROPRE fil et non un appel dans `_warmup` : les deux sont indépendants, et
+# `dxdiag` coûte 16 s (mesuré) — les enchaîner ferait attendre l'un pour rien.
+# `prechauffer` ne bloque pas et ne fait rien quand les sondes sont coupées
+# (`EPURE_MATERIEL_SONDE=0`, posée par `_test_env`).
+prechauffer_materiel()
 
 
 # ── Utilitaires partagés ─────────────────────────────────────────────────────
