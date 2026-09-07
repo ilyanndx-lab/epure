@@ -172,8 +172,17 @@ def analyser(llm, chemin: str, question: str, modele: str) -> Optional[dict]:
     if not modele:
         logger.warning("Aucun modèle vision — analyse ciblée impossible pour %s", chemin)
         return None
+    # `stats` rempli sur place par `describe_image` : c'est ce qui permet à
+    # l'appelant de COMPTER un appel cloud dans `usage_tracker`. Un appel
+    # payant non compté est pire qu'un quota absent — il donne confiance dans
+    # un chiffre faux. Le dict est créé même pour un modèle local (le tracker
+    # ignore les providers locaux, cf. `_LOCAL_PROVIDERS`) : une branche de
+    # moins, et les tokens restent une information de diagnostic utile
+    # (`eval_count` proche de 0 est LE discriminant d'une réponse vide, §3.3
+    # bis de CLAUDE.md).
+    stats: dict = {}
     try:
-        texte = llm.describe_image(chemin, modele, question=question)
+        texte = llm.describe_image(chemin, modele, question=question, stats=stats)
     except Exception:
         logger.exception("Échec analyse ciblée de %s (modèle %s)", chemin, modele)
         return None
@@ -198,6 +207,7 @@ def analyser(llm, chemin: str, question: str, modele: str) -> Optional[dict]:
         # le lecteur du fichier de conversation doit pouvoir distinguer une
         # analyse courte d'une analyse coupée.
         "tronquée": len(texte) > MAX_CARACTERES_ANALYSE,
+        "tokens": dict(stats),
     }
 
 

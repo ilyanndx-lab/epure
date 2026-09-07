@@ -813,6 +813,25 @@ async def _analyser_images_du_tour(
                              "total": len(a_analyser)})
             continue
         cache[cle_chemin(str(chemin))] = analyse
+        # ⚠️ COMPTER l'appel, y compris — surtout — quand `modele_vision_pour`
+        # a fini par rendre un modèle CLOUD (son dernier étage, sur absence
+        # locale constatée). Sans cette ligne, un appel payant a lieu DANS un
+        # tour de chat sans entrer dans `usage_tracker`, alors que le reste du
+        # tour y entre (sentinelle `__stats__`, plus bas) : le quota affiché
+        # sous-compterait, ce qui est pire qu'un quota absent — il donne
+        # confiance dans un chiffre faux. `track` ignore de lui-même les
+        # providers locaux, donc aucune branche à écrire ici.
+        #
+        # Sur SUCCÈS seulement, et c'est un choix : un échec peut être
+        # pré-vol (clé absente → `ValueError` avant tout HTTP), et compter une
+        # requête qui n'est jamais partie serait un sur-comptage tout aussi
+        # faux. Le cas non couvert reste le timeout après envoi.
+        _tokens = analyse.get("tokens") or {}
+        usage_tracker.track(
+            _provider_of(modele),
+            _tokens.get("prompt_tokens", 0),
+            _tokens.get("output_tokens", 0),
+        )
         await loop.run_in_executor(
             None, history_engine.set_analyse_image, conv_id, str(chemin), analyse)
         await _annoncer({"état": "terminée", "fichier": nom, "index": index,

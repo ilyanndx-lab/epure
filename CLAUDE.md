@@ -572,6 +572,21 @@ modèles de cette table **n'ont pas été mesurés** — ils empruntent le chemi
 `image_url` base64 déjà mesuré sur `flm`, et `gemini` en est exclu parce qu'il
 n'est pas dans `_OPENAI_COMPAT` (`describe_image` lèverait au lieu de dégrader).
 
+**IMPÉRATIF — cet appel entre dans `usage_tracker`, comme le reste du tour.**
+Trou trouvé en relecture, avant merge : le tour de chat compte ses tokens
+cloud depuis la sentinelle `__stats__` de `stream()`, mais `describe_image`
+n'en émettait aucun — un appel **payant** avait donc lieu dans un tour de chat
+sans figurer au quota. Un quota qui sous-compte est pire qu'un quota absent :
+il donne confiance dans un chiffre faux. D'où le paramètre de sortie
+`describe_image(..., stats=None)`, rempli sur place (`prompt_eval_count`/
+`eval_count` côté Ollama, `usage.prompt_tokens`/`completion_tokens` côté
+openai — deux vocabulaires traduits une fois, pas chez chaque appelant), ignoré
+quand l'appelant n'en fournit pas, donc **invisible pour le chemin d'import**.
+Compté sur SUCCÈS seulement : un échec peut être pré-vol (clé absente →
+`ValueError` avant tout HTTP), et sur-compter serait tout aussi faux. Aucune
+branche « est-ce local ? » dans le routeur — `QuotaTracker.track` écarte
+lui-même les providers locaux.
+
 **Latence : `run_in_executor`, et l'attente rendue VISIBLE.** L'appel reste
 synchrone et borné à 60 s ; il part dans l'exécuteur comme les appels RAG et
 mémoire du même tour, sinon la boucle d'événements du backend entier est bloquée

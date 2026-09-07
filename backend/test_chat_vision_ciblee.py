@@ -228,11 +228,31 @@ class DeclenchementTest(unittest.TestCase):
                 raise AssertionError("ne doit pas être appelé sans modèle")
         self.assertIsNone(vision_chat.analyser(_Ok(), "/f/x.png", "q", ""))
 
+    def test_les_tokens_remontent_pour_la_comptabilite_des_quotas(self):
+        """Un appel CLOUD dans un tour de chat doit pouvoir être compté : sans
+        ces chiffres, `usage_tracker` sous-compterait un appel payant — pire
+        qu'un quota absent, il donne confiance dans un chiffre faux."""
+        class _AvecUsage:
+            def describe_image(self, path, model, question=None, stats=None):
+                if stats is not None:
+                    stats["prompt_tokens"], stats["output_tokens"] = 1200, 340
+                return _CIBLE
+        rec = vision_chat.analyser(_AvecUsage(), "/f/x.png", "q", "mistral:pixtral")
+        self.assertEqual(rec["tokens"], {"prompt_tokens": 1200, "output_tokens": 340})
+
+    def test_un_provider_muet_sur_ses_tokens_ne_casse_rien(self):
+        """Un serveur compatible OpenAI n'est pas obligé d'émettre `usage`."""
+        class _Muet:
+            def describe_image(self, path, model, question=None, stats=None):
+                return _CIBLE
+        rec = vision_chat.analyser(_Muet(), "/f/x.png", "q", "m")
+        self.assertEqual(rec["tokens"], {})
+
     def test_la_question_part_bien_au_modele(self):
         vues = {}
 
         class _Espion:
-            def describe_image(self, path, model, question=None):
+            def describe_image(self, path, model, question=None, stats=None):
                 vues["question"] = question
                 return _CIBLE
         rec = vision_chat.analyser(_Espion(), "/f/x.png", "Que vaut AB/AC ?", "m")
@@ -377,8 +397,10 @@ class TourDeChatTest(unittest.TestCase):
         # Appels vision COMPTÉS : c'est la mesure de « ne pas refaire l'analyse ».
         self.appels_vision: list[dict] = []
 
-        def faux_describe(path, model, question=None):
+        def faux_describe(path, model, question=None, stats=None):
             self.appels_vision.append({"path": path, "model": model, "question": question})
+            if stats is not None:
+                stats["prompt_tokens"], stats["output_tokens"] = 900, 120
             return _CIBLE
         self.addCleanup(setattr, routeur_chat.llm, "describe_image",
                         routeur_chat.llm.describe_image)
@@ -500,7 +522,7 @@ class TourDeChatTest(unittest.TestCase):
     def test_un_echec_d_analyse_n_empeche_pas_la_reponse(self):
         """Le pire cas sur le chemin d'un message : le modèle vision tombe. La
         réponse part quand même, et l'échec est annoncé."""
-        def casse(path, model, question=None):
+        def casse(path, model, question=None, stats=None):
             raise RuntimeError("timeout vision")
         routeur_chat.llm.describe_image = casse
         with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
@@ -510,6 +532,32 @@ class TourDeChatTest(unittest.TestCase):
         # L'image reste « à analyser » : le tour suivant réessaiera.
         conv = history_engine.get_conversation(self.conv_id)
         self.assertEqual(conv["analyses_image"], {})
+
+    def test_un_modele_vision_CLOUD_est_compte_dans_les_quotas(self):
+        """Le trou trouvé en relecture : le reste du tour entre dans
+        `usage_tracker` (sentinelle `__stats__`), l'appel vision n'y entrait
+        pas. Un appel payant non compté est pire qu'un quota absent."""
+        routeur_chat.modele_vision_pour = lambda actif=None: "mistral:pixtral-12b-2409"
+        vus: list[tuple] = []
+        self.addCleanup(setattr, routeur_chat.usage_tracker, "track",
+                        routeur_chat.usage_tracker.track)
+        routeur_chat.usage_tracker.track = lambda p, i=0, o=0: vus.append((p, i, o))
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            self._envoyer(ws, "Que vaut AB/AC ?")
+        self.assertIn(("mistral", 900, 120), vus)
+
+    def test_un_modele_vision_LOCAL_ne_pollue_pas_les_quotas(self):
+        """Aucune branche « est-ce local ? » n'est écrite dans le routeur, et ce
+        test vérifie qu'elle n'a pas à l'être : `QuotaTracker.track` écarte
+        lui-même les providers locaux. Le compteur RÉEL est donc consulté, pas
+        un double — c'est le seul moyen de prouver l'absence d'effet."""
+        from core.quota_tracker import _LOCAL_PROVIDERS
+        self.assertIn("flm", _LOCAL_PROVIDERS)
+        avant = json.dumps(routeur_chat.usage_tracker.get_usage(), sort_keys=True)
+        with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
+            self._envoyer(ws, "Que vaut AB/AC ?")
+        self.assertEqual(
+            json.dumps(routeur_chat.usage_tracker.get_usage(), sort_keys=True), avant)
 
     def test_sans_image_attachee_aucun_appel_vision(self):
         history_engine.set_conversation_files(self.conv_id, [])

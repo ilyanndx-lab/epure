@@ -324,7 +324,8 @@ class LLMEngine:
         load_dotenv(_ENV_FILE, override=True)
 
     def describe_image(self, path: str, model: str,
-                       question: Optional[str] = None) -> str:
+                       question: Optional[str] = None,
+                       stats: Optional[dict] = None) -> str:
         """Décrit une image et transcrit son texte visible, via un modèle vision.
 
         Dispatch par provider — même principe que :meth:`stream` (``_parse_model``
@@ -379,6 +380,27 @@ class LLMEngine:
         elle décrit, elle ne lit pas ce qu'on lui demande de lire. Le chat
         (`core/vision_chat.py`) passe donc la question de l'utilisateur.
 
+        ── ``stats`` : les tokens, pour la comptabilité des quotas ─────────────
+
+        Dictionnaire REMPLI SUR PLACE (``prompt_tokens`` / ``output_tokens``)
+        quand l'appelant en fournit un, et ignoré sinon — donc, là encore, le
+        chemin de l'import ne voit rien changer. Un paramètre de sortie plutôt
+        qu'un changement de type de retour, parce que ce dernier casserait les
+        deux appelants existants pour un besoin qui n'est pas le leur.
+
+        Pourquoi c'est nécessaire et pas confortable : `modele_vision_pour`
+        peut rendre un modèle **cloud** en dernier recours, et un appel cloud
+        dans un tour de chat qui n'entre pas dans `usage_tracker` est un appel
+        payant NON COMPTÉ — le reste du tour, lui, est compté (sentinelle
+        ``__stats__`` de :meth:`stream`, tracée par `modules/chat/router.py`).
+        Un quota qui sous-compte est pire qu'un quota absent : il donne
+        confiance dans un chiffre faux.
+
+        Les deux providers ne nomment pas la même chose pareil — Ollama compte
+        en ``prompt_eval_count``/``eval_count``, le SDK openai en
+        ``usage.prompt_tokens``/``usage.completion_tokens``. Traduit ici, une
+        fois, plutôt que chez chaque appelant.
+
         ⚠️ **Le timeout ne change pas de valeur, mais change de contexte.**
         Les 60 s ci-dessus étaient justifiées par « hors conversation active ».
         Appelée depuis un tour de chat, cette méthode reste SYNCHRONE : c'est à
@@ -396,6 +418,9 @@ class LLMEngine:
                 messages=[{"role": "user", "content": prompt, "images": [str(path)]}],
             )
             content = response["message"]["content"] or ""
+            if stats is not None:
+                stats["prompt_tokens"] = int(response.get("prompt_eval_count") or 0)
+                stats["output_tokens"] = int(response.get("eval_count") or 0)
             if not content:
                 # Diagnostic AVANT de rendre la chaîne vide : `_texte_image`
                 # (core/rag.py) ne voit plus que le résultat, pas la réponse
@@ -434,6 +459,13 @@ class LLMEngine:
             )
             message = response.choices[0].message
             content = message.content or ""
+            if stats is not None:
+                # `getattr` en cascade : `usage` peut être absent (un serveur
+                # local compatible OpenAI n'est pas obligé de l'émettre), et un
+                # `None` ne doit pas faire lever la comptabilité.
+                usage = getattr(response, "usage", None)
+                stats["prompt_tokens"] = int(getattr(usage, "prompt_tokens", 0) or 0)
+                stats["output_tokens"] = int(getattr(usage, "completion_tokens", 0) or 0)
             if not content:
                 # Même diagnostic côté openai-compat : `finish_reason` (`stop`
                 # vs `length` vs `content_filter`), `refusal` (schéma OpenAI
