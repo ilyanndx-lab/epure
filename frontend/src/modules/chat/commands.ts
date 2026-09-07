@@ -17,6 +17,7 @@ export const AT_COMMANDS = [
   { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
   { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
   { trigger: '@web',        desc: 'Recherche web complémentaire avant la réponse [sujet]' },
+  { trigger: '@image',      desc: 'Relit les images attachées pour CETTE question [question]' },
 ] as const
 
 /**

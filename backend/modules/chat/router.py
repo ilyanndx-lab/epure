@@ -21,9 +21,10 @@ from pydantic import BaseModel
 from core.auth import ws_require_token
 from core.embedding_install import EmbeddingIndisponible
 from core.instance import modele_local_defaut
-from core.models import ids_disponibles
+from core.models import ids_disponibles, modele_vision_pour
 from core.paths import PathOutsideDataError, cle_chemin, resolve_user_path
 from core.rag import RAGEngine
+from core import vision_chat
 from core.runtime import (
     SSE_HEADERS,
     consolidation_engine,
@@ -743,6 +744,82 @@ def _travaux_apres_tour(conv_id: str, use_cloud: bool, annoncer_titre) -> None:
         logger.exception("Travaux de fin de tour impossibles (%s)", conv_id)
 
 
+async def _analyser_images_du_tour(
+    websocket, loop, conv_id: str, active_files: list, cache: dict,
+    question: str, modele_actif: Optional[str], force: bool = False,
+) -> dict:
+    """Analyse ciblée des images attachées qui en ont besoin. Rend le cache À JOUR.
+
+    ── Pourquoi l'exécuteur, et pourquoi pas d'asynchrone plus fin ────────────
+
+    `LLMEngine.describe_image` est **synchrone** et borné à 60 s
+    (`_VISION_TIMEOUT_S`), avec un pire cas mesuré de 26 s. L'appeler
+    directement ici bloquerait la boucle d'événements de tout le backend
+    pendant ce temps : plus un token nulle part, plus de heartbeat, et le
+    précédent est connu — un flux muet finit coupé côté client. Il part donc
+    dans `loop.run_in_executor`, comme les appels RAG et mémoire du même tour.
+
+    Ce que l'exécuteur ne fait PAS, et qu'il ne faut pas croire qu'il fait : le
+    TOUR attend quand même. C'est inévitable et c'est le bon choix — l'analyse
+    doit être dans le prompt du message qui l'a demandée, sinon la réponse est
+    construite sans elle et l'utilisateur doit reposer sa question. On ne rend
+    donc pas l'attente plus courte, on la rend **visible** : un événement
+    ``vision_analyse`` par image et par transition d'état, envoyé avant le
+    premier token, sur le patron de `trace_recherche_etape`.
+
+    Le cache est rendu **mis à jour en mémoire** plutôt que relu du disque :
+    `set_analyse_image` ouvre sa propre transaction, donc la copie locale de la
+    conversation que détient l'appelant est périmée dès le premier succès. La
+    valeur en main est la seule qui soit sûrement fraîche.
+    """
+    a_analyser = vision_chat.images_a_analyser(active_files, cache, force=force)
+    if not a_analyser:
+        return cache
+
+    async def _annoncer(charge: dict) -> None:
+        """Best-effort : le socket peut se fermer pendant une analyse de 26 s."""
+        try:
+            await websocket.send_text(json.dumps(
+                {"type": "vision_analyse", **charge}, ensure_ascii=False))
+        except Exception:
+            logger.debug("Événement vision_analyse non poussé (socket fermé ?)")
+
+    reste = vision_chat.restantes(active_files, cache, force=force)
+    for index, chemin in enumerate(a_analyser, start=1):
+        nom = Path(str(chemin)).name
+        # Le modèle est résolu PAR IMAGE et non une fois pour le tour :
+        # `modele_vision_pour` sonde FLM et interroge Ollama, donc son verdict
+        # est une valeur FRAÎCHE et non un fait figé — la leçon de
+        # `core/materiel.py` (§8 de CLAUDE.md). Un FLM qui tombe entre deux
+        # images doit faire basculer la seconde sur le repli, pas échouer.
+        modele = await loop.run_in_executor(
+            None, modele_vision_pour, modele_actif)
+        await _annoncer({
+            "état": "en_cours", "fichier": nom, "index": index,
+            "total": len(a_analyser), "reste": reste,
+            "modèle": modele or "", "réanalyse": bool(force),
+        })
+        _t = time.time()
+        analyse = await loop.run_in_executor(
+            None, vision_chat.analyser, llm, str(chemin), question, modele or "")
+        logger.info("Analyse vision ciblée de %s : %.3fs (modèle=%s, succès=%s)",
+                    nom, time.time() - _t, modele, analyse is not None)
+        if analyse is None:
+            # Rien n'est écrit : l'image reste « à analyser », donc le tour
+            # suivant réessaiera. C'est le bon comportement — une panne de
+            # modèle vision ne doit pas condamner définitivement une image à
+            # n'avoir jamais été lue.
+            await _annoncer({"état": "échec", "fichier": nom, "index": index,
+                             "total": len(a_analyser)})
+            continue
+        cache[cle_chemin(str(chemin))] = analyse
+        await loop.run_in_executor(
+            None, history_engine.set_analyse_image, conv_id, str(chemin), analyse)
+        await _annoncer({"état": "terminée", "fichier": nom, "index": index,
+                         "total": len(a_analyser)})
+    return cache
+
+
 @router.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
     if not await ws_require_token(websocket):
@@ -902,6 +979,13 @@ async def ws_chat(websocket: WebSocket):
             rag_override: str | None = msg.get("rag_override")
             strict_override: bool = bool(msg.get("strict_override", False))
             web_search_override: bool = bool(msg.get("web_search_override", False))
+            # `@image` côté client. Force la RÉANALYSE des images attachées, et
+            # c'est le SEUL moyen de la déclencher : une analyse déjà faite
+            # n'est jamais refaite d'elle-même, quelle que soit la question
+            # suivante (cf. l'en-tête de `core/vision_chat.py`). Le premier
+            # déclenchement, lui, n'a besoin de rien — image attachée sans
+            # analyse suffit.
+            vision_override: bool = bool(msg.get("vision_override", False))
 
             ctx = memory.get_context()
             model_override = ctx.get("modèle_actif") or None
@@ -1096,14 +1180,42 @@ async def ws_chat(websocket: WebSocket):
             # orthogonal à l'attachement — c'est « cherche partout », pas
             # « attache tout ».
             active_files = conv.get("fichiers_attachés", [])
+
+            # ── Analyse vision CIBLÉE des images attachées ────────────────────
+            #
+            # AVANT le RAG, et ce n'est pas un détail d'ordre : ce qui en sort
+            # décide quels fichiers partent dans la requête documentaire
+            # (`fichiers_rag` ci-dessous). Une image dont l'analyse ciblée est
+            # en contexte ne doit pas ramener en plus sa légende générique
+            # d'import — cf. `core.vision_chat.chunk_redondant`.
+            analyses_cache = dict(conv.get("analyses_image") or {})
+            analyses_cache = await _analyser_images_du_tour(
+                websocket, loop, conv_id, active_files, analyses_cache,
+                user_text, model_override, force=vision_override,
+            )
+            vision_ctx = vision_chat.bloc_contexte(active_files, analyses_cache)
+
+            # Les images déjà lues pour cette question sortent de la requête
+            # documentaire : leurs chunks ne diraient que la légende générique
+            # d'import, et occuperaient une place de résultat au détriment d'un
+            # vrai document. Le filtre post-hoc de `chunk_redondant` couvre le
+            # cas `@cours`, qui n'a pas de liste de fichiers du tout.
+            fichiers_rag = [
+                p for p in active_files
+                if vision_chat.analyse_de(str(p), analyses_cache) is None
+            ]
+
             _t = time.time()
             chunks_struct: list[dict] = []
             if rag_override == "all":
                 chunks_struct = await loop.run_in_executor(None, rag.query_avec_sources, user_text)
-            elif active_files:
+            elif fichiers_rag:
                 chunks_struct = await loop.run_in_executor(
-                    None, rag.query_filtered_avec_sources, user_text, active_files
+                    None, rag.query_filtered_avec_sources, user_text, fichiers_rag
                 )
+            chunks_struct = [
+                c for c in chunks_struct if not vision_chat.chunk_redondant(c, analyses_cache)
+            ]
             chunks = "\n\n---\n\n".join(c["texte"] for c in chunks_struct)
             logger.info("TTFT RAG: %.3fs", time.time() - _t)
 
@@ -1171,6 +1283,14 @@ async def ws_chat(websocket: WebSocket):
                     f"{chunks}\n\n"
                     "Réponds à la question en te basant sur ce contexte si pertinent."
                 )
+            # EN DERNIER, et pour la règle déjà appliquée à `instruction_conv` :
+            # de deux contextes qui parlent de la même chose, le plus SPÉCIFIQUE
+            # se lit en dernier. Le résumé d'import (`[CONTEXTE ACTIF]`, plus
+            # haut) est une légende générique de l'image ; ceci est sa lecture
+            # faite pour la question posée. Les deux peuvent coexister sur une
+            # conversation — c'est justement le cas qui a motivé ce chantier.
+            if vision_ctx:
+                sys_parts.append(vision_ctx)
 
             # Horodatage du message qu'on vient d'écrire, renvoyé au client.
             #
