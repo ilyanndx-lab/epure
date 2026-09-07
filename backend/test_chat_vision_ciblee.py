@@ -191,10 +191,31 @@ class DeclenchementTest(unittest.TestCase):
             vision_chat.images_a_analyser(["/f/enonce.png"], cache, force=True),
             ["/f/enonce.png"])
 
-    def test_la_cle_tolere_deux_ecritures_du_meme_chemin(self):
-        """Sous Windows, `C:/x/a.png` et `C:\\x\\a.png` sont le même fichier —
-        l'analyser deux fois coûterait 26 s pour rien."""
-        cache = {cle_chemin("C:/f/enonce.png"): self._analyse()}
+    def test_la_cle_tolere_un_segment_redondant(self):
+        """`cle_chemin` passe par `normpath` : `/f/./enonce.png` et
+        `/f/enonce.png` sont le même fichier, et l'analyser deux fois coûterait
+        26 s pour rien. Vrai sur les deux plateformes — c'est la moitié de
+        l'invariant que la CI (Linux) peut vérifier."""
+        cache = {cle_chemin("/f/enonce.png"): self._analyse()}
+        self.assertEqual(
+            vision_chat.images_a_analyser(["/f/./enonce.png"], cache), [])
+
+    @unittest.skipUnless(sys.platform == "win32",
+                         "séparateur et casse : propriété de Windows, pas de POSIX")
+    def test_la_cle_tolere_deux_ecritures_du_meme_chemin_sous_windows(self):
+        """L'autre moitié, et elle est **platform-dependante par nature**.
+
+        Sous Windows, `C:/f/A.png` et `C:\\f\\a.png` sont le même fichier —
+        `normcase` abaisse la casse et convertit les séparateurs. Sous POSIX
+        c'est FAUX : la casse y est significative et `\\` est un caractère de
+        nom valide. Ce test a d'abord été écrit sans garde, et la CI l'a
+        attrapé — un test vert ici et rouge là-bas, sur un comportement
+        parfaitement correct des deux côtés. C'est l'écart local/CI de
+        CLAUDE.md §2 dans sa forme la plus discrète : pas une dépendance
+        manquante, une assertion qui n'était vraie que sur la plateforme
+        primaire.
+        """
+        cache = {cle_chemin("C:/f/Enonce.png"): self._analyse()}
         self.assertEqual(
             vision_chat.images_a_analyser(["C:\\f\\enonce.png"], cache), [])
 
