@@ -72,7 +72,19 @@ const CORE_DEFS: ModuleDef[] = [
 // On EXCLUT les dossiers préfixés '_' (ex. _workshop_check_<id>, créé/supprimé
 // par le type-check de l'atelier). Sinon leur apparition/disparition modifie
 // l'ensemble du glob → Vite recharge toute la page (F5) en pleine revue.
-const generatedLoaders = import.meta.glob(['./generated/**/*.tsx', '!./generated/_*/**'])
+//
+// On EXCLUT aussi les `*.test.tsx`. Un module versionné peut avoir son test de
+// composant à côté de son composant — `generated/encre/` est le premier — et
+// sans cette exclusion le fichier de test entre dans le glob : il produit une
+// SECONDE entrée du même id (celle qui gagne dépend de l'ordre alphabétique des
+// clés, donc d'un détail de nom de fichier), et surtout il devient un point
+// d'entrée du BUNDLE, ce qui y ferait entrer `vitest` et `@testing-library` —
+// des devDependencies, absentes d'une installation de production.
+const generatedLoaders = import.meta.glob([
+  './generated/**/*.tsx',
+  '!./generated/_*/**',
+  '!./generated/**/*.test.tsx',
+])
 const GENERATED_DEFS: ModuleDef[] = Object.entries(generatedLoaders)
   .filter(([path]) => !(path.split('/')[2] ?? '').startsWith('_'))
   .map(([path, loader]) => {

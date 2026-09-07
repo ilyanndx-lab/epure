@@ -1,9 +1,10 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
-Huit arborescences sont détournées vers des temporaires :
+Neuf arborescences sont détournées vers des temporaires :
 
     EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
     EPURE_HISTORY_DIR    backend/history/                (temporaire VIDE)
+    EPURE_ENCRE_DIR      backend/encre/                  (temporaire VIDE)
     EPURE_MODULES_DIR    backend/modules/                (copie)
     EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
     EPURE_MODELS_DIR     backend/piper_models/           (temporaire VIDE)
@@ -13,7 +14,8 @@ Huit arborescences sont détournées vers des temporaires :
 
 (Cet en-tête annonçait « cinq » et en listait cinq sur six : `EPURE_VECTOR_DIR`
 existait déjà et n'y figurait pas. Le compte est repris avec l'arrivée de
-`EPURE_EMBEDDING_DIR` le 2026-08-26, puis de `EPURE_HISTORY_DIR` le 2026-08-27.)
+`EPURE_EMBEDDING_DIR` le 2026-08-26, de `EPURE_HISTORY_DIR` le 2026-08-27, puis
+de `EPURE_ENCRE_DIR` le 2026-09-07.)
 
 ⚠️ « Temporaire VIDE » ne dit RIEN du fait d'être surveillé ou non — les deux
 propriétés sont indépendantes et les confondre est l'erreur naturelle ici.
@@ -83,6 +85,18 @@ REAL_DATA_DIR = _BACKEND / "memory"
 #: c'est-à-dire, sans cette ligne, la cible d'une écriture par tour d'assistant
 #: pendant toute la suite.
 REAL_HISTORY_DIR = _BACKEND / "history"
+#: Les pages d'encre manuscrite du module `encre`. Même régime que
+#: `REAL_HISTORY_DIR`, et pour la même raison exactement : ce sont des données
+#: utilisateur que rien ne reconstruit. `docs/module-encre.md` en fait la
+#: décision explicite du module — « stocker l'encre brute, toujours » — parce que
+#: le rendu bitmap et la transcription (phase 2) en sont DÉRIVÉS. Un dossier
+#: dérivé se recalcule ; des tracés perdus ne se réécrivent pas.
+#:
+#: Le dossier n'existe pas encore sur un poste qui n'a jamais ouvert le module :
+#: `_instantaner` rend `{}` dans ce cas, donc l'empreinte est vide et le
+#: garde-fou reste juste — il détectera une CRÉATION comme il détecte une
+#: modification.
+REAL_ENCRE_DIR = _BACKEND / "encre"
 REAL_MODULES_DIR = _BACKEND / "modules"
 REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
 #: Le catalogue est du code VERSIONNÉ, source des modules installables. Aucune
@@ -92,7 +106,7 @@ REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
 #: CycleReinstallationTest). Surveillé pour que l'oublier se voie.
 REAL_CATALOGUE_DIR = _REPO / "modules-catalogue"
 REAL_DIRS = (
-    REAL_DATA_DIR, REAL_HISTORY_DIR, REAL_MODULES_DIR,
+    REAL_DATA_DIR, REAL_HISTORY_DIR, REAL_ENCRE_DIR, REAL_MODULES_DIR,
     REAL_FRONTEND_MODULES, REAL_CATALOGUE_DIR,
 )
 
@@ -300,6 +314,19 @@ DATA_DIR = _installer()
 #: décompte (cf. `_installer_vide`) alors que ce sont bel et bien des données
 #: utilisateur, surveillées comme celles de `memory/`.
 HISTORY_DIR = _installer_vide("EPURE_HISTORY_DIR", "history")
+
+#: Pages d'encre manuscrite — temporaire VIDE, et **surveillé** (REAL_DIRS).
+#: Jumeau exact de `HISTORY_DIR` ci-dessus, les deux propriétés se lisant
+#: séparément (cf. l'avertissement de l'en-tête) : vide pour le DÉTERMINISME —
+#: un test « la liste contient 2 pages » doit dire la même chose ici et sur un
+#: runner de CI, donc il part d'un dossier neuf — et surveillé parce que ce sont
+#: des données utilisateur irremplaçables.
+#:
+#: Détourné avant même que le premier test n'existe, et c'est délibéré :
+#: `EncreEngine.__init__` fait un `mkdir(parents=True)` et il est construit à
+#: l'import de `core.runtime`. Sans cette ligne, importer `main` suffirait à
+#: créer `backend/encre/` — et `DELETE /encre/pages/{id}` fait un `unlink()`.
+ENCRE_DIR = _installer_vide("EPURE_ENCRE_DIR", "encre")
 
 #: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus. Les modules
 #: installés sur CE poste (catalogue, Atelier) en sont écartés : l'arbre de test

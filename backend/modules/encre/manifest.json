@@ -1,0 +1,13 @@
+{
+  "id": "encre",
+  "version": "1.0.0",
+  "nom": "Encre",
+  "icon": "PenTool",
+  "description": "Prise de notes manuscrites au stylet. Les tracés sont stockés bruts (vectoriels), jamais en image — cf. docs/module-encre.md.",
+  "frontend": { "component": "Component" },
+  "backend": { "prefix": "/encre" },
+  "core_module": false,
+  "origin": "builtin",
+  "status": "active",
+  "removable": true
+}

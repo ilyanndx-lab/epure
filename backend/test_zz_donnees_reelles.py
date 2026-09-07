@@ -53,6 +53,7 @@ import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de co
 
 from core.paths import (  # noqa: E402
     resolve_data_dir,
+    resolve_encre_dir,
     resolve_generated_dir,
     resolve_history_dir,
     resolve_modules_dir,
@@ -102,6 +103,16 @@ class RealDataUntouchedTest(unittest.TestCase):
         """Les conversations de l'utilisateur : irremplaçables, donc surveillées."""
         self._comparer(_test_env.REAL_HISTORY_DIR)
 
+    def test_le_vrai_dossier_encre_est_intact(self):
+        """Les pages manuscrites : irremplaçables, donc surveillées.
+
+        Le dossier peut ne pas exister — un poste qui n'a jamais ouvert le module
+        ``encre`` n'en a pas. ``_instantaner`` rend alors ``{}`` des deux côtés,
+        et l'assertion reste juste : une CRÉATION par la suite se lirait comme un
+        fichier « créé ». C'est le cas nominal en CI, sur un clone frais.
+        """
+        self._comparer(_test_env.REAL_ENCRE_DIR)
+
     def test_le_vrai_dossier_de_modules_est_intact(self):
         self._comparer(_test_env.REAL_MODULES_DIR)
 
@@ -121,6 +132,7 @@ class RealDataUntouchedTest(unittest.TestCase):
         for resolveur, reel in (
             (resolve_data_dir, _test_env.REAL_DATA_DIR),
             (resolve_history_dir, _test_env.REAL_HISTORY_DIR),
+            (resolve_encre_dir, _test_env.REAL_ENCRE_DIR),
             (resolve_modules_dir, _test_env.REAL_MODULES_DIR),
             (resolve_generated_dir, _test_env.REAL_FRONTEND_MODULES / "generated"),
         ):
