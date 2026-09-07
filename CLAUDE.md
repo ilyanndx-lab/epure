@@ -113,6 +113,7 @@ python test_mise_a_jour.py        # l'archive s'applique sans s'imbriquer (§8)
 python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté (§8)
 python test_ingestion_documents.py   # formats lus par le RAG : pptx/xlsx/docx réels
 python test_vision_images.py      # indexation d'une image : décrite par un modèle vision, pas un placeholder (§3.3 bis)
+python test_chat_vision_ciblee.py # analyse vision CIBLÉE dans le chat, cache par fichier, @image (§3.3 ter)
 python test_taches_locales.py     # aucune tâche de fond ne part en cloud (§3.7)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime + le vrai store vectoriel
@@ -516,6 +517,77 @@ annotations entre parenthèses, fait dégénérer ce modèle — réponse VIDE
 (`eval_count: 1`) ou boucle de répétition (1265 tokens de charabia pour la même
 image). La forme courte est robuste sur les deux providers câblés ; ne pas
 l'étoffer sans rejouer la mesure sur `moondream`.
+
+### 3.3 ter Analyse d'image dans le CHAT — un troisième chemin, pas le même
+
+Ne pas confondre avec le §3.3 bis ci-dessus : celui-là décrit ce qui se passe
+à l'**import** d'une image. Ce qui suit se passe dans un **tour de chat**, et
+les deux coexistent volontairement.
+
+| chemin | quand | prompt | où va le résultat |
+|---|---|---|---|
+| **import** (`RAGEngine._texte_image`) | à l'indexation du fichier | générique (`prompt_vision()` sans question) | chunk du RAG + `résumé_contexte` |
+| **chat** (`core/vision_chat.py`) | au premier tour qui a une image attachée sans analyse | **la question de l'utilisateur** | `analyses_image[clé du chemin]` de la conversation |
+
+Ce qui a forcé le second, mesuré et non supposé : la légende générique **ne
+permet pas de répondre** à une vraie question sur un énoncé dense — elle décrit
+une figure et des symboles. Et le chat ne voyait jamais l'image, seulement ce
+résumé recopié dans `[CONTEXTE ACTIF]`.
+
+Cinq points qui se déduisent mal :
+
+- **`describe_image(path, model, question=None)` — sans question, le
+  comportement d'avant, à l'octet.** C'est ce que vérifie `test_vision_images.py`,
+  qui n'a pas été modifié d'une ligne : le jour où il faut le toucher pour
+  faire passer un changement de ce chemin, c'est l'import qui a bougé.
+- **Le déclenchement est une règle, pas une heuristique** : image attachée +
+  pas encore d'analyse = on analyse. Aucune détection de « cette question
+  a-t-elle besoin de l'image ? ». La **réanalyse**, elle, n'est jamais
+  automatique : seul `@image` (`vision_override`) la force.
+- **Le cache est par FICHIER** (`analyses_image`, dict clé `cle_chemin`), pas
+  par conversation. C'est exactement ce que `résumé_contexte` ne sait pas
+  faire, et la raison de ne pas s'en servir ici. Écrit par
+  `HistoryEngine.set_analyse_image`, **une transaction par image**, distincte
+  des deux du tour — une transaction ouverte pendant un appel vision tiendrait
+  le verrou 26 s. Corollaire : la copie de `conv` que détient l'appelant est
+  périmée juste après, il doit assembler son contexte avec la valeur en main.
+- **Une image analysée sort de la requête documentaire du tour**, et ses chunks
+  sont filtrés (`vision_chat.chunk_redondant`). Sans ça le prompt porte les
+  DEUX descriptions de la même image — l'analyse ciblée et la légende d'import
+  remontée par le RAG, la seconde étant la plus longue et la moins utile. Le
+  filtre post-hoc existe *en plus* de l'exclusion, parce que `@cours`
+  (`rag_override == "all"`) n'a aucune liste de fichiers à filtrer.
+- **Trois bornes, pour `n_ctx: 4096`** (`core/vision_chat.py`) : par analyse
+  conservée (2 000 caractères, tronqué **à l'écriture** pour que le disque et
+  le prompt disent la même chose), par tour (2 images, borne de LATENCE — le
+  reste est reporté au tour suivant, pas perdu), et par contexte injecté
+  (4 000 caractères, l'omission étant **écrite dans le bloc**).
+
+Le modèle vient de `core.models.modele_vision_pour(modèle_actif)` : le modèle
+actif s'il **déclare** la vision (`vision is True`, jamais un `None` ni le nom
+du modèle — cf. `decrire_capacites`), sinon le choix de l'import, sinon
+seulement un repli **cloud** (`_VISION_CLOUD`), qui est la seule entorse
+assumée au §3.7 et n'est atteint que sur une absence locale constatée. Les deux
+modèles de cette table **n'ont pas été mesurés** — ils empruntent le chemin
+`image_url` base64 déjà mesuré sur `flm`, et `gemini` en est exclu parce qu'il
+n'est pas dans `_OPENAI_COMPAT` (`describe_image` lèverait au lieu de dégrader).
+
+**Latence : `run_in_executor`, et l'attente rendue VISIBLE.** L'appel reste
+synchrone et borné à 60 s ; il part dans l'exécuteur comme les appels RAG et
+mémoire du même tour, sinon la boucle d'événements du backend entier est bloquée
+6 à 26 s (plus un token nulle part, et le précédent est connu : un flux muet
+finit coupé côté client). Le TOUR attend quand même, et c'est le bon choix —
+l'analyse doit être dans le prompt du message qui l'a demandée. D'où
+l'événement `vision_analyse` (`en_cours` / `terminée` / `échec`), et un `échec`
+qui **survit au `done`** côté frontend : il dit que la réponse qu'on vient de
+lire a été construite sans l'image.
+
+**Périmètres explicitement laissés dehors** : LM Studio (`describe_image` le
+servirait par sa branche `_OPENAI_COMPAT`, mais son format vision n'a pas été
+mesuré et `modele_vision_pour` ne le propose jamais), et le **collage
+d'image** (Ctrl+V) dans la zone de saisie — aucun handler de collage n'existe
+dans le dépôt à ce jour ; le point d'accroche naturel serait `uploadFiles` de
+`ModuleBar.tsx`, déjà branché sur le `onDrop` du panneau 📎.
 
 ### 3.7 Le cloud ne part jamais sans qu'on l'ait demandé
 
