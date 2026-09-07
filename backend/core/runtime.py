@@ -65,6 +65,7 @@ from core.admin import AdminEngine
 from core.codeagent import CodeAgent, WORKSPACE as _CODE_WORKSPACE
 from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
+from core.encre import EncreEngine
 from core.embedding_install import (
     fichiers_manquants as fichiers_embedding_manquants,
     pile_presente as pile_embedding_presente,
@@ -126,6 +127,12 @@ memory = MemoryEngine(llm=llm)  # resets context_session on startup
 code_agent = CodeAgent(llm=llm)
 _CODE_WORKSPACE.mkdir(parents=True, exist_ok=True)
 flashcards_engine = FlashcardsEngine()
+# Module `encre` (pages manuscrites) : aucun modèle, aucun réseau. Construit tout
+# de suite comme flashcards, et non derrière un `_LazyEngine` — sa construction
+# se résume à un `mkdir` sur `resolve_encre_dir()`. La paresse est réservée à ce
+# qui coûte (embedding, voix) ; l'ajouter ici n'achèterait rien et masquerait le
+# coût réel des trois proxies qui, eux, en ont besoin.
+encre_engine = EncreEngine()
 models_registry = ModelsRegistry()
 orchestrator = OrchestratorEngine(llm)
 

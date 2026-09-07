@@ -57,6 +57,12 @@ backend/doc_uploads/
 # Historique des conversations (runtime, propre à chaque utilisateur)
 backend/history/
 
+# Pages d'encre manuscrite du module `encre` — défaut portable de
+# EPURE_ENCRE_DIR. Données utilisateur irremplaçables (docs/module-encre.md :
+# « stocker l'encre brute, toujours »), donc même régime que history/ : hors
+# dépôt, détourné ET surveillé par _test_env.
+backend/encre/
+
 # Config et état par instance (générés au runtime, propres à chaque utilisateur)
 # Tout backend/memory/*.json est runtime ; on conserve les règles explicites
 # historiques ci-dessous à titre de documentation (couvertes par le glob).
@@ -97,6 +103,7 @@ backend/modules/*/
 !backend/modules/_atelier/
 !backend/modules/admin/
 !backend/modules/chat/
+!backend/modules/encre/
 !backend/modules/hello/
 !backend/modules/history/
 !backend/modules/settings/
@@ -106,6 +113,7 @@ backend/modules/*/
 # que pour un module généré par l'Atelier — d'où l'absence d'exception pour les
 # six ci-dessus, désormais servis depuis modules-catalogue/.
 frontend/src/modules/generated/*/
+!frontend/src/modules/generated/encre/
 !frontend/src/modules/generated/hello/
 
 # Logs

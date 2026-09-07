@@ -240,6 +240,39 @@ def resolve_history_dir() -> Path:
     return base.resolve()
 
 
+def resolve_encre_dir() -> Path:
+    """Dossier des pages d'encre manuscrite du module ``encre``.
+
+    Priorité : ``$EPURE_ENCRE_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/encre``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Jumeau de :func:`resolve_history_dir`, et le régime est le même parce que la
+    nature de la donnée est la même : ce sont des **données utilisateur**, pas un
+    cache. Les tracés ``(x, y, pression, t)`` sont ce que l'utilisateur a
+    réellement écrit ; rien ne les reconstruit. C'est explicitement la décision
+    de ``docs/module-encre.md`` (« stocker l'encre brute, toujours ») : le rendu
+    bitmap et, plus tard, la transcription en sont **dérivés** et reproductibles,
+    l'encre non. Perdre ce dossier, c'est perdre les notes.
+
+    Conséquence, et c'est la seule chose à retenir avant d'écrire un test :
+    il est à la fois **détourné** par ``_test_env`` (sur un temporaire VIDE, pour
+    que le décompte des pages ne dépende pas de ce que l'utilisateur a écrit sur
+    ce poste — même raison que ``history``) **et surveillé** par ``REAL_DIRS``.
+    Ne pas le ranger avec ``resolve_models_dir`` / ``resolve_embedding_dir``, qui
+    sont détournés SANS être surveillés : eux sont des caches vérifiés par
+    sha256, ici il n'y a rien à revérifier contre quoi que ce soit.
+
+    Le module ``encre`` fait par ailleurs ce que ce dépôt évite ailleurs — un
+    fichier par page plutôt qu'un index central (cf. ``core/encre.py``) — donc ce
+    dossier grossit avec l'usage. Raison de plus pour qu'aucun test ne l'atteigne.
+    """
+    env = os.environ.get("EPURE_ENCRE_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "encre")
+    return base.resolve()
+
+
 def resolve_data_dir() -> Path:
     """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
 
