@@ -125,6 +125,49 @@ _OPENAI_COMPAT: dict[str, tuple[str, str | None]] = {
 #: providers plutôt que deux prompts à maintenir.
 _VISION_PROMPT = "Décris cette image et transcris tout texte visible."
 
+#: Longueur maximale de la question REPRISE dans le prompt vision ciblé.
+#:
+#: `_VISION_PROMPT` est court par nécessité MESURÉE (cf. juste au-dessus :
+#: `moondream` dégénère sur une formulation longue — réponse vide ou boucle de
+#: répétition). Le prompt ciblé, lui, contient un texte que nous n'écrivons
+#: pas : la question de l'utilisateur. Elle peut faire trois paragraphes, ce qui
+#: replacerait exactement le modèle dans la condition qui le fait dégénérer,
+#: sans qu'aucune ligne du dépôt n'ait changé. La borne est donc sur la
+#: question, pas sur le gabarit — 500 caractères, l'ordre de grandeur d'une
+#: question réellement posée à une image, et un budget qui laisse le gabarit
+#: dominer le prompt.
+_VISION_QUESTION_MAX = 500
+
+#: Gabarit du prompt vision CIBLÉ, quand un appelant fournit une question.
+#:
+#: Volontairement aussi court que `_VISION_PROMPT`, et pour la même raison
+#: mesurée. La question passe en PREMIER : sur un modèle qui s'arrête tôt
+#: (`eval_count` proche de 1, le mode d'échec déjà observé), ce qui a été lu en
+#: premier est ce qui a le plus de chances d'avoir orienté la lecture de
+#: l'image. La consigne de transcription est conservée — c'est elle qui fait la
+#: différence sur un énoncé dense, où une légende ne suffit pas (cf. la mesure
+#: `flm` vs `moondream` du §3.3 bis de CLAUDE.md).
+_VISION_PROMPT_CIBLE = (
+    "Question : {question}\n\n"
+    "Regarde l'image et réponds à cette question. "
+    "Transcris tout texte, formule ou annotation utile pour y répondre."
+)
+
+
+def prompt_vision(question: Optional[str] = None) -> str:
+    """Prompt de `describe_image` : générique sans question, ciblé avec.
+
+    Public (pas de `_`) parce que les tests l'éprouvent et qu'un appelant qui
+    veut savoir ce qui part au modèle ne doit pas avoir à lire une constante
+    privée. La question est nettoyée et bornée (`_VISION_QUESTION_MAX`) ; vide
+    ou blanche, elle rend le prompt générique — un appelant qui passe une
+    chaîne vide demande le comportement d'avant, pas un prompt ciblé creux.
+    """
+    q = (question or "").strip()
+    if not q:
+        return _VISION_PROMPT
+    return _VISION_PROMPT_CIBLE.format(question=q[:_VISION_QUESTION_MAX])
+
 
 def _provider_error_message(provider: str, model_id: str, exc: Exception) -> str:
     """Transforme une exception provider en message clair et actionnable.
@@ -280,7 +323,9 @@ class LLMEngine:
     def reload_dotenv(self) -> None:
         load_dotenv(_ENV_FILE, override=True)
 
-    def describe_image(self, path: str, model: str) -> str:
+    def describe_image(self, path: str, model: str,
+                       question: Optional[str] = None,
+                       stats: Optional[dict] = None) -> str:
         """Décrit une image et transcrit son texte visible, via un modèle vision.
 
         Dispatch par provider — même principe que :meth:`stream` (``_parse_model``
@@ -320,14 +365,62 @@ class LLMEngine:
         un ``timeout=0.5`` seul relève à 5,4 s avant de lever, contre 1,9 s avec
         ``max_retries=0``. Sans ce réglage, ``_VISION_TIMEOUT_S`` ne bornerait
         rien — le pire cas réel serait ~3x plus long que la valeur affichée.
+
+        ── ``question`` : la même méthode, informée ────────────────────────────
+
+        Sans ``question``, le prompt est ``_VISION_PROMPT`` et le comportement
+        est **identique à celui d'avant ce paramètre** — c'est ce que vérifie
+        `test_vision_images.py`, inchangé : le chemin de l'IMPORT (`RAGEngine.
+        _texte_image`) n'en passe aucune et ne doit rien voir changer.
+
+        Avec une question, `prompt_vision` la reprend dans un gabarit court.
+        Ce n'est pas un raffinement cosmétique mais la raison d'être du
+        paramètre : mesuré sur un énoncé mathématique dense, la légende
+        générique ne permet pas de répondre à une vraie question sur l'image —
+        elle décrit, elle ne lit pas ce qu'on lui demande de lire. Le chat
+        (`core/vision_chat.py`) passe donc la question de l'utilisateur.
+
+        ── ``stats`` : les tokens, pour la comptabilité des quotas ─────────────
+
+        Dictionnaire REMPLI SUR PLACE (``prompt_tokens`` / ``output_tokens``)
+        quand l'appelant en fournit un, et ignoré sinon — donc, là encore, le
+        chemin de l'import ne voit rien changer. Un paramètre de sortie plutôt
+        qu'un changement de type de retour, parce que ce dernier casserait les
+        deux appelants existants pour un besoin qui n'est pas le leur.
+
+        Pourquoi c'est nécessaire et pas confortable : `modele_vision_pour`
+        peut rendre un modèle **cloud** en dernier recours, et un appel cloud
+        dans un tour de chat qui n'entre pas dans `usage_tracker` est un appel
+        payant NON COMPTÉ — le reste du tour, lui, est compté (sentinelle
+        ``__stats__`` de :meth:`stream`, tracée par `modules/chat/router.py`).
+        Un quota qui sous-compte est pire qu'un quota absent : il donne
+        confiance dans un chiffre faux.
+
+        Les deux providers ne nomment pas la même chose pareil — Ollama compte
+        en ``prompt_eval_count``/``eval_count``, le SDK openai en
+        ``usage.prompt_tokens``/``usage.completion_tokens``. Traduit ici, une
+        fois, plutôt que chez chaque appelant.
+
+        ⚠️ **Le timeout ne change pas de valeur, mais change de contexte.**
+        Les 60 s ci-dessus étaient justifiées par « hors conversation active ».
+        Appelée depuis un tour de chat, cette méthode reste SYNCHRONE : c'est à
+        l'appelant de ne pas bloquer la boucle d'événements
+        (``loop.run_in_executor``, ce que fait `modules/chat/router.py`). La
+        valeur est conservée telle quelle — le pire cas mesuré reste 26 s
+        (`flm:qwen3vl-it:4b`, premier appel après chargement) et un timeout plus
+        court couperait une analyse parfaitement normale.
         """
         provider, model_id = self._parse_model(model)
+        prompt = prompt_vision(question)
         if provider == "ollama":
             response = _vision_ollama_client.chat(
                 model=model_id,
-                messages=[{"role": "user", "content": _VISION_PROMPT, "images": [str(path)]}],
+                messages=[{"role": "user", "content": prompt, "images": [str(path)]}],
             )
             content = response["message"]["content"] or ""
+            if stats is not None:
+                stats["prompt_tokens"] = int(response.get("prompt_eval_count") or 0)
+                stats["output_tokens"] = int(response.get("eval_count") or 0)
             if not content:
                 # Diagnostic AVANT de rendre la chaîne vide : `_texte_image`
                 # (core/rag.py) ne voit plus que le résultat, pas la réponse
@@ -358,7 +451,7 @@ class LLMEngine:
                 messages=[{
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": _VISION_PROMPT},
+                        {"type": "text", "text": prompt},
                         {"type": "image_url",
                          "image_url": {"url": f"data:image/{mime};base64,{b64}"}},
                     ],
@@ -366,6 +459,13 @@ class LLMEngine:
             )
             message = response.choices[0].message
             content = message.content or ""
+            if stats is not None:
+                # `getattr` en cascade : `usage` peut être absent (un serveur
+                # local compatible OpenAI n'est pas obligé de l'émettre), et un
+                # `None` ne doit pas faire lever la comptabilité.
+                usage = getattr(response, "usage", None)
+                stats["prompt_tokens"] = int(getattr(usage, "prompt_tokens", 0) or 0)
+                stats["output_tokens"] = int(getattr(usage, "completion_tokens", 0) or 0)
             if not content:
                 # Même diagnostic côté openai-compat : `finish_reason` (`stop`
                 # vs `length` vs `content_filter`), `refusal` (schéma OpenAI

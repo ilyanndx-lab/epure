@@ -689,6 +689,24 @@ export default function Chat({
   const [traceEnCours, setTraceEnCours] = useState<EtapeTrace[]>([])
   const [traceEnCoursOuverte, setTraceEnCoursOuverte] = useState(false)
 
+  /**
+   * Analyse vision d'une image attachée, EN COURS ou en échec.
+   *
+   * Elle a lieu avant le premier token et prend 6 a 26 s par image (mesure du
+   * poste, cf. CLAUDE.md §3.3 bis) : sans cette ligne, le chat resterait muet
+   * une demi-minute sur une question parfaitement normale. Le silence pendant
+   * un chargement est un mode d'echec deja paye ici (la webview coupait un flux
+   * SSE muet), donc l'afficher n'est pas de la decoration.
+   *
+   * Un ECHEC survit a `done`, contrairement a `en_cours` : « l'image n'a pas pu
+   * etre lue » est une information sur la reponse qu'on vient de recevoir, et
+   * l'effacer avec le curseur de frappe la rendrait invisible. Efface au
+   * message suivant.
+   */
+  const [visionAnalyse, setVisionAnalyse] = useState<
+    { etat: string; fichier: string; index: number; total: number; reste: number } | null
+  >(null)
+
   // Recherche web : active = force une recherche avant la réponse.
   // Mode 'once' = réinitialisé après chaque message (défaut, non handicapant) ;
   // 'always' = reste actif jusqu'à désactivation explicite.
@@ -975,6 +993,19 @@ export default function Chat({
           const elapsed = (Date.now() - (streamStartRef.current ?? Date.now())) / 1000
           if (elapsed > 0) setStreamStats({ tps: tokenCountRef.current / elapsed, count: tokenCountRef.current })
 
+        } else if (data.type === 'vision_analyse') {
+          // Emis par `_analyser_images_du_tour` (backend), un par image et par
+          // transition d'etat. On ne garde que le DERNIER : c'est une ligne
+          // d'etat, pas un journal — le deroule complet, lui, est dans les logs
+          // du backend, qui portent la duree et le modele.
+          setVisionAnalyse({
+            etat: String(data['état'] ?? ''),
+            fichier: String(data.fichier ?? ''),
+            index: Number(data.index ?? 0),
+            total: Number(data.total ?? 0),
+            reste: Number(data.reste ?? 0),
+          })
+
         } else if (data.type === 'trace_recherche_etape') {
           // Étape de recherche @web EN DIRECT (core/websearch.py, callback
           // `on_etape`) — remplit le panneau PENDANT la recherche, pas
@@ -1164,6 +1195,11 @@ export default function Chat({
           // message lui-même, fusionnée juste au-dessus.
           setTraceEnCours([])
           setTraceEnCoursOuverte(false)
+          // `en_cours` disparait avec le curseur de frappe ; un `échec` RESTE
+          // affiche — il dit que la reponse qu'on vient de lire a ete
+          // construite SANS l'image, ce qui change comment la lire. Efface au
+          // message suivant, pas ici.
+          setVisionAnalyse(v => (v && v.etat === 'échec' ? v : null))
           pendingOllamaStatsRef.current = null
           setStreaming(false)
           setStreamStats(null)
@@ -1215,6 +1251,7 @@ export default function Chat({
           lastAssistantRef.current = ''
           setTraceEnCours([])
           setTraceEnCoursOuverte(false)
+          setVisionAnalyse(v => (v && v.etat === 'échec' ? v : null))
         }
       }
       wsRef.current = ws
@@ -1615,6 +1652,11 @@ export default function Chat({
     let ragOverride: string | undefined
     let strictOverride = false
     let webSearchOverride = webSearch
+    // `@image` : force la RÉANALYSE des images attachées pour cette question.
+    // Pas de bascule d'interface associée, contrairement à `webSearch` — c'est
+    // un geste ponctuel, jamais un mode : une analyse vision coûte 6 à 26 s
+    // par image (mesuré), et un mode collant la referait à chaque message.
+    let visionOverride = false
 
     let again = true
     while (again) {
@@ -1625,6 +1667,8 @@ export default function Chat({
         strictOverride = true; cleanText = cleanText.replace(/^@strict\s*/, '').trim(); again = true
       } else if (cleanText === '@web' || cleanText.startsWith('@web ')) {
         webSearchOverride = true; cleanText = cleanText.replace(/^@web\s*/, '').trim(); again = true
+      } else if (cleanText === '@image' || cleanText.startsWith('@image ')) {
+        visionOverride = true; cleanText = cleanText.replace(/^@image\s*/, '').trim(); again = true
       }
     }
 
@@ -1658,6 +1702,10 @@ export default function Chat({
     pipelineUserMsgIdxRef.current = -1
     setTraceEnCours([])
     setTraceEnCoursOuverte(false)
+    // Un echec d'analyse d'image survit a `done` (il parle de la reponse
+    // precedente) ; il ne doit pas survivre a la question SUIVANTE, sinon il
+    // parlerait d'un tour que l'utilisateur a deja quitte.
+    setVisionAnalyse(null)
 
     const wsMsg: Record<string, unknown> = { role: 'user', content: cleanText || rawText, effort }
     // Vide au tout premier message : le serveur ouvre alors une conversation et
@@ -1669,6 +1717,7 @@ export default function Chat({
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
     if (webSearchOverride) wsMsg.web_search_override = true
+    if (visionOverride) wsMsg.vision_override = true
     if (compareActive) wsMsg.compare_models = compareModeles
     lastSentRef.current = wsMsg
     wsRef.current?.send(JSON.stringify(wsMsg))
@@ -2033,6 +2082,29 @@ export default function Chat({
                 onToggle={() => setTraceEnCoursOuverte(v => !v)}
               />
             </div>
+          </div>
+        )}
+        {visionAnalyse && visionAnalyse.etat !== 'terminée' && (
+          /* Analyse vision d'une image attachee : 6 a 26 s par image, avant le
+             premier token. Le cas `terminée` n'affiche RIEN — l'analyse est
+             alors dans le prompt, et le resultat sera visible dans la reponse
+             elle-meme ; une ligne « fait » de plus serait du bruit. */
+          <div className="flex justify-start items-center gap-2">
+            {visionAnalyse.etat === 'échec' ? (
+              <span className="text-xs font-mono text-warning">
+                image non lue ({visionAnalyse.fichier}) — reponse construite sans elle
+              </span>
+            ) : (
+              <>
+                <Loader2 size={13} className="animate-spin text-accent2" />
+                <span className="text-xs font-mono text-muted">
+                  lecture de l’image {visionAnalyse.fichier}
+                  {visionAnalyse.total > 1 && ` (${visionAnalyse.index}/${visionAnalyse.total})`}
+                  {visionAnalyse.reste > 0 && ` · ${visionAnalyse.reste} au tour suivant`}
+                  …
+                </span>
+              </>
+            )}
           </div>
         )}
         {streaming && messages[messages.length - 1]?.role !== 'assistant' && !inPipelineRef.current && (

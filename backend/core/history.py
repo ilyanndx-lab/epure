@@ -263,6 +263,20 @@ class HistoryEngine:
         resume = conv.get("résumé_contexte")
         conv["résumé_contexte"] = resume if isinstance(resume, str) else ""
 
+        # Analyses vision CIBLÉES, une par fichier image attaché (§ chantier
+        # 2026-09-07, `core/vision_chat.py`). Un DICTIONNAIRE et pas un champ
+        # texte de plus : le résumé d'import (`résumé_contexte` juste au-dessus)
+        # est un blob par conversation, et c'est précisément ce qu'il ne faut
+        # pas refaire ici — une analyse vaut pour UN fichier, la conversation
+        # peut en attacher plusieurs, et détacher une image ne doit pas
+        # invalider la lecture d'une autre.
+        #
+        # `isinstance(..., dict)` pour la même raison que `fichiers_attachés`
+        # juste au-dessus : un JSON de runtime a pu être édité à la main, et une
+        # chaîne à cette place ferait `.get()` sur des caractères.
+        analyses = conv.get("analyses_image")
+        conv["analyses_image"] = analyses if isinstance(analyses, dict) else {}
+
         # Consigne libre de CE fil. Absente des conversations d'avant ce champ :
         # vide, et surtout pas héritée de `instruction_générale` ni du profil —
         # ce sont trois portées différentes (cf. `set_instruction`).
@@ -452,6 +466,7 @@ class HistoryEngine:
             "messages": self._messages_propres(messages),
             "fichiers_attachés": [str(f) for f in (fichiers or [])],
             "résumé_contexte": "",
+            "analyses_image": {},
             "instruction": "",
             "dernière_consolidation": 0,
             "créée": _horodatage(),
@@ -664,6 +679,34 @@ class HistoryEngine:
                 conv["résumé_contexte"] = texte or ""
             return True
         except (_ConversationAbsente, PathOutsideDataError):
+            return False
+
+    def set_analyse_image(self, conv_id: str, chemin: str, analyse: dict) -> bool:
+        """Conserve l'analyse vision CIBLÉE d'une image, par fichier.
+
+        Clé `cle_chemin` — `normcase` + `normpath` — et pas la chaîne brute :
+        c'est la même raison que dans `set_conversation_files`, et elle mord
+        plus fort ici. Sous Windows, la même image attachée par
+        ``C:/Users/…`` puis ``C:\\Users\\…`` serait analysée deux fois, à 6-26 s
+        l'appel (§3.3 bis de CLAUDE.md).
+
+        ⚠️ **Une transaction par image, distincte de celles du tour.** Le tour
+        de chat en écrit déjà deux (le message utilisateur, puis la réponse) et
+        celle-ci s'insère entre les deux — jamais dedans. Trois écritures
+        courtes plutôt qu'une longue qui les enjamberait, pour la raison de
+        `docs/conversations-persistees.md` §6 : une transaction qui reste
+        ouverte pendant un appel au modèle vision tient le verrou 26 s.
+
+        Conséquence pour l'appelant : sa copie locale de la conversation est
+        PÉRIMÉE après cet appel. C'est voulu — il doit assembler son contexte
+        à partir de la valeur qu'il a en main, pas relire le disque.
+        """
+        try:
+            with self._conversation_transaction(conv_id) as conv:
+                conv["analyses_image"][cle_chemin(str(chemin))] = analyse
+            return True
+        except (_ConversationAbsente, PathOutsideDataError):
+            logger.warning("Analyse d'image non conservée, conversation %r", conv_id)
             return False
 
     def conversation_view(self, conv_id: str, sources_indexees=None) -> dict | None:

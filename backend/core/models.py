@@ -16,8 +16,10 @@ from typing import Optional
 
 import yaml
 
+from core.llm import LLMEngine as _LLMEngine
 from core.llm import lmstudio_host as _lmstudio_host
 from core.llm import ollama_host as _ollama_host
+from core.ollama_memoire import capacites_installees, decrire_capacites
 
 logger = logging.getLogger(__name__)
 
@@ -614,6 +616,125 @@ def premier_modele_vision_disponible() -> Optional[str]:
         return _match_ollama_model(ollama_model, ollama_installed)
 
     return None
+
+
+#: Modèles vision CLOUD, essayés uniquement quand aucun backend local n'en a
+#: (`modele_vision_pour`, dernier recours). Ordre = préférence.
+#:
+#: ⚠️ **Aucun de ces deux appels n'a été mesuré depuis ce dépôt** — l'éprouver
+#: veut dire appeler une API payante avec une image, ce qui n'a pas été fait.
+#: Ce qui EST vérifié, et ce qui rend la liste défendable malgré ça : les deux
+#: fournisseurs sont dans `core.llm._OPENAI_COMPAT`, donc `describe_image` les
+#: sert par le CHEMIN EXACT déjà mesuré sur `flm` (bloc ``image_url`` en base64,
+#: format vision standard du SDK openai) — pas un troisième format deviné,
+#: qui est l'erreur que la docstring de `describe_image` refuse explicitement
+#: pour `lmstudio`. Un identifiant périmé ou un fournisseur qui refuse l'image
+#: se solde par une exception, donc par le placeholder : dégradation, jamais
+#: une réponse fausse.
+#:
+#: `gemini` en est ABSENT et doit y rester : il n'est pas dans `_OPENAI_COMPAT`,
+#: donc `describe_image` tomberait sur son ``raise ValueError`` — un repli qui
+#: lève au lieu de dégrader.
+_VISION_CLOUD: list[tuple[str, str]] = [
+    ("mistral:pixtral-12b-2409", "MISTRAL_API_KEY"),
+    ("groq:meta-llama/llama-4-scout-17b-16e-instruct", "GROQ_API_KEY"),
+]
+
+
+def premier_modele_vision_cloud_disponible() -> Optional[str]:
+    """Premier modèle vision cloud dont la CLÉ est présente. Aucun appel réseau.
+
+    « Disponible » veut dire ici « la clé est là », et pas plus : contrairement
+    aux modèles locaux (FLM sondé, Ollama interrogé), on ne vérifie pas que le
+    fournisseur sert réellement ce modèle — ce serait une requête payante à
+    chaque tour de chat portant une image. L'échec éventuel est absorbé en aval
+    (placeholder + log), comme n'importe quelle panne de vision.
+    """
+    for model_id, cle_env in _VISION_CLOUD:
+        if os.environ.get(cle_env, "").strip():
+            return model_id
+    return None
+
+
+def _modele_local_a_vision(model_id: str) -> bool:
+    """``model_id`` est-il un modèle LOCAL déclarant la capacité vision ?
+
+    **Seul un ``True`` explicite compte.** `decrire_capacites` transporte
+    délibérément trois états, et son propre commentaire dit pourquoi : ``False``
+    est un fait (Ollama a déclaré ses capacités, celle-ci n'y est pas), ``None``
+    veut dire que personne n'a mesuré. Déduire « pas de vision » d'un ``None``
+    ferait ignorer un modèle qui sait voir ; en déduire l'inverse enverrait une
+    image à un modèle qui ne la lira pas. On ne déduit donc rien, et **jamais
+    du NOM du modèle** — `qwen3vl` se reconnaît à l'œil, mais un nom n'est pas
+    une déclaration.
+
+    Local seulement (`ollama`, `flm`), volontairement : le repli cloud a son
+    propre chemin, conditionné à une absence locale CONSTATÉE (CLAUDE.md §3.7).
+    Un modèle cloud choisi pour discuter ne devient pas pour autant le modèle
+    d'une analyse d'image.
+    """
+    if model_id.startswith("flm:"):
+        nom = model_id.split("flm:", 1)[1]
+        for m in FLM_MODELS_STATIC:
+            if m["id"] == model_id:
+                return bool(m.get("vision"))
+        # Un modèle FLM hors de la table statique : rien de déclaré, donc rien
+        # de su. `nom` reste utile au log, pas à la décision.
+        logger.debug("Capacité vision inconnue pour le modèle FLM %r", nom)
+        return False
+    # `_parse_model` et pas un découpage maison : c'est LUI qui décide ce
+    # qu'est un modèle Ollama, et il le décide autrement qu'un `":" in nom`
+    # naïf — `qwen2.5:7b` porte un « : » sans être préfixé d'un fournisseur
+    # (piège déjà documenté pour `est_modele_cloud`, CLAUDE.md §3.7).
+    provider, nom = _LLMEngine._parse_model(model_id)
+    if provider != "ollama":
+        return False
+    declarees = capacites_installees()
+    if declarees is None:
+        # Ollama injoignable : on ne sait rien, donc on ne prétend rien. Le
+        # `False` fait retomber l'appelant sur `premier_modele_vision_disponible()`
+        # (qui sondera FLM), jamais sur « aucune vision disponible ».
+        return False
+    corres = _match_ollama_model(nom, list(declarees.keys()))
+    if corres is None:
+        return False
+    return decrire_capacites(declarees.get(corres)).get("vision") is True
+
+
+def modele_vision_pour(modele_actif: Optional[str] = None) -> Optional[str]:
+    """Le modèle qui doit analyser une image DANS un tour de chat.
+
+    Trois étages, dans cet ordre, et chacun a une raison :
+
+    1. **``modele_actif``, s'il est local et déclare la vision.** C'est la
+       « sélection manuelle » demandée par le chantier, et elle n'a besoin
+       d'aucune interface neuve : la liste de modèles affiche déjà l'œil de
+       `iconesCapacites` (ModuleBar.tsx) pour les modèles qui déclarent voir.
+       Choisir un tel modèle pour discuter, c'est le choisir pour regarder —
+       et ça évite de charger un SECOND modèle en mémoire pour rien (le
+       verdict de `core/materiel.py` sait ce que coûte un modèle résident).
+    2. **`premier_modele_vision_disponible()`** — le choix du chemin d'import,
+       inchangé : FLM d'abord, l'Ollama de `config.yaml` en repli.
+    3. **`premier_modele_vision_cloud_disponible()`** — seulement ici, donc
+       seulement sur une absence locale CONSTATÉE par l'étage 2, jamais comme
+       défaut (CLAUDE.md §3.7). Journalisé en `info` : partir vers un
+       fournisseur distant avec une image de l'utilisateur ne doit pas être
+       muet.
+
+    ``None`` si rien de tout ça : l'appelant n'analyse pas, et le dit.
+    """
+    if modele_actif and _modele_local_a_vision(modele_actif):
+        return modele_actif
+    local = premier_modele_vision_disponible()
+    if local:
+        return local
+    cloud = premier_modele_vision_cloud_disponible()
+    if cloud:
+        logger.info(
+            "Aucun modèle vision LOCAL disponible — repli cloud sur %s "
+            "(l'image part chez un fournisseur distant)", cloud,
+        )
+    return cloud
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
