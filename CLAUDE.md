@@ -111,8 +111,8 @@ Ce que ce changement ne couvre PAS : le **process du tray lui-même**
 (`epure_tray.py`, celui qui importe `pystray`/`PIL`) reste sur l'interpréteur
 qui le lance — le Python partagé, sauf si le raccourci de bureau est repointé
 sur `.venv\Scripts\pythonw.exe`, ce qui n'a pas été fait. `pystray` et `Pillow`
-doivent donc rester installés sur le Python partagé pour que le tray démarre
-seulement — seul son enfant uvicorn a changé d'interpréteur.
+doivent donc rester installés sur le Python partagé, sans quoi le tray lui-même
+ne démarre plus — seul son enfant uvicorn a changé d'interpréteur.
 
 De même, `core/codeagent.py` (module Code) exécute les scripts de l'utilisateur
 et installe leurs paquets opt-in (`POST /code/install`) sur `sys.executable` du

@@ -330,6 +330,17 @@ def _demarrer():
         # avec tools\dev-epure.ps1. Aucun repli sur sys.executable si ça
         # échoue : ce serait réintroduire, en silence, le risque de
         # rétrogradation de dépendances que ce venv existe pour supprimer.
+        #
+        # Le premier lancement sur un poste neuf crée ce venv PUIS y installe
+        # requirements.txt — plusieurs minutes, réseau compris — dans le thread
+        # démon de `_start_processes`, donc sans qu'aucune console n'existe
+        # pour le dire (`pythonw`). Une icône d'apparence normale au-dessus
+        # d'un pip install en cours est exactement « le pire état possible »
+        # de la docstring de ce fichier : on le dit AVANT de s'y engager, pas
+        # seulement en cas d'échec (`_incident` couvre déjà ce cas-là).
+        if not lanceur.venv_python().exists() and not os.environ.get("EPURE_PYTHON", "").strip():
+            _log("venv dedie absent -- premier lancement, preparation de l'environnement Python")
+            _notifier("Épure", "Premier lancement : préparation de l'environnement Python (quelques minutes)…")
         python_backend = lanceur.assurer_venv_backend(log=_log)
         if python_backend is None:
             _incident("environnement Python dédié introuvable (.venv) et impossible à créer — backend non lancé")
