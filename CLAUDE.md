@@ -86,17 +86,42 @@ interpréteur (débogage, comparaison de versions) : quand elle est posée, la
 gestion du venv est court-circuitée et l'interpréteur nommé est utilisé tel
 quel — mais toujours vérifié, un mauvais chemin doit échouer nommé.
 
-**IMPÉRATIF — ce venv ne couvre que `dev-epure.ps1`.** `epure_tray.py` (l'usage
-normal, lancé par le raccourci de bureau) et son `sys.executable` restent sur
-l'interpréteur qui le lance — le Python **partagé**, sauf si son raccourci est
-repointé sur `.venv\Scripts\pythonw.exe`, ce qui n'a pas été fait ici. De même,
-`core/codeagent.py` (module Code) exécute les scripts de l'utilisateur et
-installe leurs paquets opt-in (`POST /code/install`) sur `sys.executable` du
-process qui tourne — donc sur le venv dédié quand le backend y tourne (via
-`dev-epure.ps1`), et sur le Python partagé sinon. Un paquet installé par ce
-biais pour un script (`matplotlib`, par exemple — support dédié dans
-`core/_plot_support/`, dépendance **volontairement** absente de
-`requirements.txt`, cf. `test_codeagent_plots.py`) ne traverse pas d'un
+**`epure_tray.py` (l'usage normal, lancé par le raccourci de bureau) lance
+désormais aussi le backend dans ce venv dédié.** Ce n'était pas le cas avant le
+2026-09-08 : le tray passait `sys.executable` — l'interpréteur qui le lance
+lui-même, le Python **partagé**, sauf raccourci repointé — tel quel à uvicorn,
+laissant le risque de rétrogradation de dépendances ouvert sur le seul chemin
+d'usage réel (`dev-epure.ps1` sert au développement, pas à l'usage quotidien).
+`lanceur.py` (le module partagé entre le tray et sa logique testable, cf.
+« Quatre lanceurs, quatre publics » plus bas) porte `assurer_venv_backend()` :
+au premier lancement sur
+un poste neuf, il **crée** `.venv/` et y installe `requirements.txt`, comme
+`dev-epure.ps1` ; ensuite il se contente de le **réutiliser**, sans
+resynchroniser à chaque démarrage — volontairement asymétrique avec
+`dev-epure.ps1`, qui est le workflow « après un `git pull` », pas le tray.
+`$env:EPURE_PYTHON` reste la même échappatoire des deux côtés, rendue telle
+quelle sans création ni vérification côté résolution — seulement vérifiée après
+coup (`fastapi`/`uvicorn` importables), comme dans le script PowerShell.
+**Aucun repli sur `sys.executable` si la résolution échoue** : ce serait
+réintroduire, en silence, le risque que ce venv existe pour supprimer — le
+backend ne démarre pas et l'incident est journalisé (`epure_tray.log`,
+infobulle de l'icône).
+
+Ce que ce changement ne couvre PAS : le **process du tray lui-même**
+(`epure_tray.py`, celui qui importe `pystray`/`PIL`) reste sur l'interpréteur
+qui le lance — le Python partagé, sauf si le raccourci de bureau est repointé
+sur `.venv\Scripts\pythonw.exe`, ce qui n'a pas été fait. `pystray` et `Pillow`
+doivent donc rester installés sur le Python partagé pour que le tray démarre
+seulement — seul son enfant uvicorn a changé d'interpréteur.
+
+De même, `core/codeagent.py` (module Code) exécute les scripts de l'utilisateur
+et installe leurs paquets opt-in (`POST /code/install`) sur `sys.executable` du
+process qui tourne — donc sur le venv dédié quand le backend y tourne, que ce
+soit via `dev-epure.ps1` ou désormais via `epure_tray.py`, et sur le Python
+partagé seulement si `$env:EPURE_PYTHON`/`EPURE_PYTHON` pointe ailleurs. Un
+paquet installé par ce biais pour un script (`matplotlib`, par exemple —
+support dédié dans `core/_plot_support/`, dépendance **volontairement** absente
+de `requirements.txt`, cf. `test_codeagent_plots.py`) ne traverse pas d'un
 interpréteur à l'autre : il se réinstalle depuis le panneau du module Code si
 besoin.
 
@@ -183,7 +208,9 @@ le vrai store vectoriel et tourne dans le job `integration`, manuel).
 
 **Quatre lanceurs, quatre publics** — ne pas les confondre :
 `tools/dev-epure.ps1` (ce poste, après un pull, logs visibles),
-`epure_tray.py` (usage normal : icône, Ollama, Vite, console masquée),
+`epure_tray.py` (usage normal : icône, Ollama, Vite, console masquée — le
+backend qu'il lance tourne dans le même venv dédié que `dev-epure.ps1`,
+cf. section 2, créé tout seul au premier lancement),
 `tools/Installer-Epure.cmd` + `installer-epure.ps1` (**le destinataire d'un
 paquet**, à ne pas toucher pour un besoin de dev),
 `tools/Mettre-A-Jour-Epure.cmd` + `mettre-a-jour-epure.ps1` (**le destinataire

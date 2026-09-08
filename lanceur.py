@@ -15,10 +15,20 @@ raisonne — quel port, tenu par qui, prêt ou non — vit ici.
 
 Les appels système (``netstat``, ``tasklist``, ``taskkill``) ne sont émis qu'à
 l'APPEL, jamais à l'import, et échouent proprement là où ils n'existent pas.
+
+**Le venv dédié du backend (CLAUDE.md section 2) est résolu ici, pas dans
+``epure_tray.py``.** Raison structurelle, pas de goût : ``backend/requirements.txt``
+le dit noir sur blanc à propos de ``pystray`` — « aucun test ne charge le tray ».
+Un module qui importe ``pystray``/``PIL`` est donc inimportable par la suite de
+tests, sur CI comme en local sans display. La résolution de l'interpréteur qui
+fera tourner uvicorn doit vivre dans un fichier testable : c'est celui-ci, pour
+la même raison que le reste.
 """
 
 import json
+import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -30,6 +40,12 @@ PORT_BACKEND = 8000
 PORT_OLLAMA = 11434
 PORT_FLM = 11435
 PORT_VITE = 5173
+
+#: Racine du dépôt — ancre STATIQUE dérivée de ``__file__`` (``lanceur.py`` vit
+#: à la racine, à côté de ``epure_tray.py``), jamais d'une variable
+#: d'environnement : c'est un repère de code, pas un dossier de données
+#: (même distinction que ``core.paths.REPO_ROOT``).
+RACINE = Path(__file__).resolve().parent
 
 
 def fenetre_masquee():
@@ -263,3 +279,183 @@ def taille_journal(journal) -> int:
         return Path(journal).stat().st_size
     except OSError:
         return 0
+
+
+# ── Venv dédié du backend (CLAUDE.md section 2) ──────────────────────────────
+#
+# `tools\dev-epure.ps1` possède déjà cette logique, en PowerShell : elle ne
+# peut pas être appelée depuis là pour la créer (il faut UN python pour lancer
+# quoi que ce soit côté Python, et PowerShell n'a besoin d'aucun python pour
+# exister — la dépendance ne peut aller que dans l'autre sens). Les DEUX
+# lanceurs résolvent donc le même chemin, chacun dans son langage ; ce qui ne
+# doit jamais diverger, et qui est vérifié par les tests des deux côtés, c'est
+# CE chemin (`$RACINE\.venv`) et la même échappatoire `$env:EPURE_PYTHON`/
+# `EPURE_PYTHON`.
+
+def venv_python(racine: Path | None = None) -> Path:
+    """Chemin de l'interpréteur du venv dédié — qu'il existe ou non.
+
+    Même arborescence que ``tools\\dev-epure.ps1`` (``$VENV_PYTHON``) : ne pas
+    diverger sous peine que les deux lanceurs se mettent à parler de deux
+    environnements différents sans que rien ne le signale.
+    """
+    base = (racine or RACINE) / ".venv"
+    return base / "Scripts" / "python.exe" if os.name == "nt" else base / "bin" / "python"
+
+
+def _pythons_du_path(nom: str) -> list[str]:
+    """Tous les ``nom`` trouvables sur le PATH, dans l'ordre, sans doublon.
+
+    ``shutil.which`` seul ne rend que le premier : il faut ici la liste
+    complète pour pouvoir écarter les alias du Microsoft Store (cf.
+    ``_bootstrap_python``) sans perdre les candidats réels qui les suivraient.
+    """
+    vus: set[str] = set()
+    resultat: list[str] = []
+    for dossier in os.environ.get("PATH", "").split(os.pathsep):
+        if not dossier:
+            continue
+        candidat = Path(dossier) / nom
+        chemin = str(candidat)
+        if candidat.exists() and chemin not in vus:
+            vus.add(chemin)
+            resultat.append(chemin)
+    return resultat
+
+
+def _python_utilisable(exe: str) -> bool:
+    try:
+        r = subprocess.run([exe, "--version"], capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _bootstrap_python() -> str | None:
+    """Un interpréteur CPython quelconque pour créer le venv — n'a plus besoin
+    d'exister ensuite. Même priorité que ``Trouver-Bootstrap-Python`` dans
+    ``tools\\dev-epure.ps1`` : ``py -3.14`` d'abord (version déjà validée sur ce
+    poste, CLAUDE.md section 2), sinon le premier ``python.exe`` RÉEL du PATH —
+    les alias ``WindowsApps`` (qui ouvrent le Store au lieu de lancer Python
+    quand l'appli n'est pas installée) en tout dernier recours.
+    """
+    py = shutil.which("py")
+    if py:
+        try:
+            r = subprocess.run(
+                [py, "-3.14", "-c", "import sys; print(sys.executable)"],
+                capture_output=True, text=True, timeout=15,
+            )
+            chemin = r.stdout.strip()
+            if r.returncode == 0 and chemin and Path(chemin).exists():
+                return chemin
+        except Exception:
+            pass
+
+    nom = "python.exe" if os.name == "nt" else "python3"
+    tous = _pythons_du_path(nom)
+    reels = [p for p in tous if "WindowsApps" not in p]
+    shims = [p for p in tous if "WindowsApps" in p]
+    for exe in reels + shims:
+        if _python_utilisable(exe):
+            return exe
+    return None
+
+
+def assurer_venv_backend(racine: Path | None = None, log=None) -> Path | None:
+    """Garantit un interpréteur pour le backend, en créant le venv dédié au
+    premier besoin. Rend ``None`` si aucun interpréteur utilisable n'a pu être
+    obtenu — **jamais un repli sur un autre python** : c'est précisément le
+    risque de rétrogradation de dépendances que ce venv existe pour supprimer
+    (CLAUDE.md section 2), un repli silencieux le réintroduirait par la porte
+    qu'on vient de fermer.
+
+    ``$EPURE_PYTHON``/``EPURE_PYTHON`` reste l'échappatoire de
+    ``tools\\dev-epure.ps1`` : posée, elle est rendue TELLE QUELLE, sans
+    création ni vérification ici — un chemin nommé explicitement doit échouer
+    nommé, pas être neutralisé par une garantie automatique. C'est l'appelant
+    (:func:`python_backend_verifie`) qui doit alors vérifier.
+
+    **Ne resynchronise PAS les dépendances d'un venv déjà présent.** Contraste
+    volontaire avec ``tools\\dev-epure.ps1``, qui relit ``requirements.txt`` à
+    CHAQUE lancement parce qu'il est le workflow « après un ``git pull`` ». Un
+    lanceur du quotidien n'a pas cette raison de payer un aller-retour pip à
+    chaque démarrage ; le venv est resynchronisé par ``dev-epure.ps1`` quand le
+    code a bougé. Seule la création initiale (poste neuf, premier lancement du
+    tray) installe ``requirements.txt`` — il n'y a alors rien d'autre à faire
+    pour obtenir un backend qui démarre.
+    """
+    def _log(msg: str) -> None:
+        if log:
+            log(msg)
+
+    force = os.environ.get("EPURE_PYTHON", "").strip()
+    if force:
+        return Path(force)
+
+    racine = racine or RACINE
+    python = venv_python(racine)
+    if python.exists():
+        return python
+
+    _log(f"venv dedie absent -- creation ({python.parent.parent})")
+    bootstrap = _bootstrap_python()
+    if not bootstrap:
+        _log("aucun interprete Python trouve pour creer le venv dedie")
+        return None
+
+    try:
+        r = subprocess.run(
+            [bootstrap, "-m", "venv", str(python.parent.parent)],
+            capture_output=True, text=True, timeout=180,
+        )
+    except Exception as exc:
+        _log(f"creation du venv dedie impossible : {exc}")
+        return None
+    if r.returncode != 0 or not python.exists():
+        _log("creation du venv dedie a echoue : " + (r.stdout + r.stderr).strip())
+        return None
+
+    requirements = racine / "backend" / "requirements.txt"
+    try:
+        r = subprocess.run(
+            [str(python), "-m", "pip", "install", "-r", str(requirements),
+             "--disable-pip-version-check"],
+            capture_output=True, text=True, timeout=900,
+        )
+    except Exception as exc:
+        _log(f"installation des dependances dans le venv dedie impossible : {exc}")
+        return None
+    if r.returncode != 0:
+        _log("pip install a echoue dans le venv dedie : " + (r.stdout + r.stderr).strip())
+        return None
+
+    _log("venv dedie cree et synchronise")
+    return python
+
+
+def python_backend_verifie(python: Path, log=None) -> bool:
+    """True si ``python`` a réellement ``fastapi``/``uvicorn`` importables.
+
+    Le VRAI gate, décorrélé de la création du venv : un ``$EPURE_PYTHON`` mal
+    pointé, ou un venv corrompu (suppression partielle, poste éteint en plein
+    ``pip install``), doit être détecté ICI plutôt que de laisser
+    ``subprocess.Popen`` démarrer un uvicorn qui plante sur ``ModuleNotFound``
+    sans que ``epure_tray.py`` sache pourquoi (il ne capte pas le stdout de son
+    backend, cf. sa docstring : le journal est le seul canal).
+    """
+    try:
+        r = subprocess.run(
+            [str(python), "-c", "import fastapi, uvicorn"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except Exception as exc:
+        if log:
+            log(f"verification de l'interprete backend impossible ({python}) : {exc}")
+        return False
+    if r.returncode != 0:
+        if log:
+            log(f"l'interprete backend n'a pas fastapi/uvicorn ({python}) : "
+                + (r.stdout + r.stderr).strip())
+        return False
+    return True

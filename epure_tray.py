@@ -31,7 +31,6 @@ tourne est le pire état possible.
 import ctypes
 import os
 import subprocess
-import sys
 import threading
 import time
 import webbrowser
@@ -322,45 +321,60 @@ def _demarrer():
     if not _liberer_port_backend():
         _notifier("Épure", f"Le port {PORT_BACKEND} est déjà pris. Voir epure_tray.log.")
     else:
-        _log("Lancement uvicorn")
-        # Interface d'écoute : LOOPBACK par défaut. Écouter sur 0.0.0.0 rendait le
-        # port 8000 visible de tout le réseau (wifi de la prépa) alors que l'API
-        # n'est protégée que par un token et expose l'exécution de commandes.
-        # EPURE_BIND=0.0.0.0 rouvre au LAN — penser alors à compléter
-        # EPURE_ALLOWED_HOSTS, sinon le middleware Host rejettera les requêtes.
-        _bind = _bind_host()
-        uvicorn_cmd = [
-            sys.executable, "-m", "uvicorn", "main:app",
-            "--host", _bind, "--port", str(PORT_BACKEND),
-            # Le token WebSocket voyage en query param (les navigateurs interdisent
-            # les en-têtes sur `new WebSocket()`), donc l'access-log recopierait
-            # « ?token=… » en clair dans epure_tray.log, non chiffré et conservé.
-            # Le tray a déjà son propre journal applicatif ; l'access-log uvicorn
-            # n'apporte rien de plus ici.
-            "--no-access-log",
-        ]
-        if _bind != "127.0.0.1":
-            _log(f"uvicorn : ATTENTION, écoute sur {_bind} — API exposée au-delà de la machine locale")
-        # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
-        # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
-        # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur
-        # non valide » → backend qui crashe/devient « injoignable ». Quand activé, on
-        # surveille UNIQUEMENT core/ (écrire un router.py dans modules/ lors d'une
-        # approbation atelier ne doit pas relancer le backend, qui monte déjà les
-        # routes à chaud).
-        if os.environ.get("EPURE_RELOAD", "0").strip().lower() in ("1", "true", "yes"):
-            uvicorn_cmd += ["--reload", "--reload-dir", "core"]
-            _log("uvicorn : rechargement auto activé sur core/ (instable sous Windows ; EPURE_RELOAD=0 pour désactiver)")
+        # Le backend tourne dans le venv DÉDIÉ (CLAUDE.md section 2), pas sous
+        # sys.executable — qui est celui du TRAY (le Python partagé de la
+        # machine, la plupart du temps) et n'a plus aucune raison de l'être
+        # aussi pour uvicorn. `lanceur.assurer_venv_backend` crée ce venv au
+        # premier lancement (poste neuf) et ne le resynchronise plus ensuite —
+        # cf. sa docstring pour pourquoi ça n'est délibérément pas symétrique
+        # avec tools\dev-epure.ps1. Aucun repli sur sys.executable si ça
+        # échoue : ce serait réintroduire, en silence, le risque de
+        # rétrogradation de dépendances que ce venv existe pour supprimer.
+        python_backend = lanceur.assurer_venv_backend(log=_log)
+        if python_backend is None:
+            _incident("environnement Python dédié introuvable (.venv) et impossible à créer — backend non lancé")
+        elif not lanceur.python_backend_verifie(python_backend, log=_log):
+            _incident(f"interpréteur backend sans fastapi/uvicorn ({python_backend}) — backend non lancé")
         else:
-            _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
-        if _lancer(
-            "uvicorn", uvicorn_cmd,
-            cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
-            encoding="utf-8", errors="ignore",
-        ) is None:
-            _incident(f"interpréteur introuvable ({sys.executable}) — backend non lancé")
-        else:
-            backend_lance = True
+            _log(f"Lancement uvicorn ({python_backend})")
+            # Interface d'écoute : LOOPBACK par défaut. Écouter sur 0.0.0.0 rendait le
+            # port 8000 visible de tout le réseau (wifi de la prépa) alors que l'API
+            # n'est protégée que par un token et expose l'exécution de commandes.
+            # EPURE_BIND=0.0.0.0 rouvre au LAN — penser alors à compléter
+            # EPURE_ALLOWED_HOSTS, sinon le middleware Host rejettera les requêtes.
+            _bind = _bind_host()
+            uvicorn_cmd = [
+                str(python_backend), "-m", "uvicorn", "main:app",
+                "--host", _bind, "--port", str(PORT_BACKEND),
+                # Le token WebSocket voyage en query param (les navigateurs interdisent
+                # les en-têtes sur `new WebSocket()`), donc l'access-log recopierait
+                # « ?token=… » en clair dans epure_tray.log, non chiffré et conservé.
+                # Le tray a déjà son propre journal applicatif ; l'access-log uvicorn
+                # n'apporte rien de plus ici.
+                "--no-access-log",
+            ]
+            if _bind != "127.0.0.1":
+                _log(f"uvicorn : ATTENTION, écoute sur {_bind} — API exposée au-delà de la machine locale")
+            # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
+            # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
+            # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur
+            # non valide » → backend qui crashe/devient « injoignable ». Quand activé, on
+            # surveille UNIQUEMENT core/ (écrire un router.py dans modules/ lors d'une
+            # approbation atelier ne doit pas relancer le backend, qui monte déjà les
+            # routes à chaud).
+            if os.environ.get("EPURE_RELOAD", "0").strip().lower() in ("1", "true", "yes"):
+                uvicorn_cmd += ["--reload", "--reload-dir", "core"]
+                _log("uvicorn : rechargement auto activé sur core/ (instable sous Windows ; EPURE_RELOAD=0 pour désactiver)")
+            else:
+                _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
+            if _lancer(
+                "uvicorn", uvicorn_cmd,
+                cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
+                encoding="utf-8", errors="ignore",
+            ) is None:
+                _incident(f"interpréteur introuvable ({python_backend}) — backend non lancé")
+            else:
+                backend_lance = True
 
     time.sleep(6)
     _elaguer_processus()

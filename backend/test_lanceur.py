@@ -389,5 +389,150 @@ class TestLirePortVite(unittest.TestCase):
         self.assertEqual(lanceur.taille_journal("/aucun/fichier/ici.log"), 0)
 
 
+class TestVenvPython(unittest.TestCase):
+    """Le chemin résolu doit rester celui de `tools\\dev-epure.ps1` — sinon les
+    deux lanceurs finissent par parler de deux environnements différents sans
+    que rien ne le signale.
+    """
+
+    def test_chemin_windows(self):
+        with mock.patch.object(lanceur.os, "name", "nt"):
+            self.assertEqual(
+                lanceur.venv_python(Path("C:/depot")),
+                Path("C:/depot/.venv/Scripts/python.exe"),
+            )
+
+    def test_chemin_pose_a_partir_de_la_racine_donnee(self):
+        with tempfile.TemporaryDirectory() as d:
+            racine = Path(d)
+            attendu = racine / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            self.assertEqual(lanceur.venv_python(racine), attendu)
+
+
+class TestAssurerVenvBackend(unittest.TestCase):
+    """`assurer_venv_backend` : jamais de repli sur un autre interpréteur.
+
+    C'est tout l'objet du venv dédié (CLAUDE.md section 2) — un repli silencieux
+    réintroduirait le risque de rétrogradation de dépendances qu'il existe pour
+    supprimer.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.racine = Path(self._tmp.name)
+        self._journal: list[str] = []
+        # EPURE_PYTHON ne doit jamais fuiter d'un test à l'autre.
+        self._env_avant = os.environ.pop("EPURE_PYTHON", None)
+        self.addCleanup(self._restaurer_env)
+
+    def _restaurer_env(self):
+        if self._env_avant is not None:
+            os.environ["EPURE_PYTHON"] = self._env_avant
+
+    def _log(self, msg: str) -> None:
+        self._journal.append(msg)
+
+    def test_epure_python_pose_court_circuite_tout_le_reste(self):
+        """Rendu TEL QUEL, sans création ni vérification — comme dans le .ps1."""
+        os.environ["EPURE_PYTHON"] = "C:/ailleurs/python.exe"
+        with mock.patch.object(lanceur.subprocess, "run") as run:
+            resultat = lanceur.assurer_venv_backend(racine=self.racine, log=self._log)
+        run.assert_not_called()
+        self.assertEqual(resultat, Path("C:/ailleurs/python.exe"))
+
+    def test_venv_deja_present_n_est_pas_resynchronise(self):
+        """Contraste voulu avec dev-epure.ps1 : pas de pip install à chaque appel."""
+        python = lanceur.venv_python(self.racine)
+        python.parent.mkdir(parents=True)
+        python.touch()
+        with mock.patch.object(lanceur.subprocess, "run") as run:
+            resultat = lanceur.assurer_venv_backend(racine=self.racine, log=self._log)
+        run.assert_not_called()
+        self.assertEqual(resultat, python)
+
+    def test_venv_absent_est_cree_puis_synchronise(self):
+        python = lanceur.venv_python(self.racine)
+
+        def faux_run(args, **kwargs):
+            if "venv" in args:
+                python.parent.mkdir(parents=True, exist_ok=True)
+                python.touch()
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(lanceur, "_bootstrap_python", return_value="C:/bootstrap/python.exe"), \
+             mock.patch.object(lanceur.subprocess, "run", side_effect=faux_run) as run:
+            resultat = lanceur.assurer_venv_backend(racine=self.racine, log=self._log)
+
+        self.assertEqual(resultat, python)
+        # Les deux étapes ont bien eu lieu, dans l'ordre : créer, puis installer.
+        appels = [c.args[0] for c in run.call_args_list]
+        self.assertTrue(any("venv" in a for a in appels))
+        self.assertTrue(any("pip" in a and "install" in a for a in appels))
+
+    def test_aucun_bootstrap_trouve_ne_leve_pas_et_rend_none(self):
+        with mock.patch.object(lanceur, "_bootstrap_python", return_value=None):
+            resultat = lanceur.assurer_venv_backend(racine=self.racine, log=self._log)
+        self.assertIsNone(resultat)
+        self.assertTrue(any("interprete" in m for m in self._journal))
+
+    def test_creation_du_venv_echouee_ne_leve_pas(self):
+        with mock.patch.object(lanceur, "_bootstrap_python", return_value="C:/bootstrap/python.exe"), \
+             mock.patch.object(
+                 lanceur.subprocess, "run",
+                 return_value=types.SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+             ):
+            resultat = lanceur.assurer_venv_backend(racine=self.racine, log=self._log)
+        self.assertIsNone(resultat)
+        self.assertTrue(any("boom" in m for m in self._journal))
+
+    def test_pip_install_echoue_apres_creation_ne_leve_pas(self):
+        python = lanceur.venv_python(self.racine)
+
+        def faux_run(args, **kwargs):
+            if "venv" in args:
+                python.parent.mkdir(parents=True, exist_ok=True)
+                python.touch()
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="reseau coupe")
+
+        with mock.patch.object(lanceur, "_bootstrap_python", return_value="C:/bootstrap/python.exe"), \
+             mock.patch.object(lanceur.subprocess, "run", side_effect=faux_run):
+            resultat = lanceur.assurer_venv_backend(racine=self.racine, log=self._log)
+        self.assertIsNone(resultat)
+        self.assertTrue(any("reseau coupe" in m for m in self._journal))
+
+
+class TestPythonBackendVerifie(unittest.TestCase):
+    """Le VRAI gate, décorrélé de la création — un `$EPURE_PYTHON` mal pointé
+    ou un venv corrompu doit être détecté avant `subprocess.Popen(uvicorn)`.
+    """
+
+    def test_fastapi_et_uvicorn_importables(self):
+        with mock.patch.object(
+            lanceur.subprocess, "run",
+            return_value=types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ):
+            self.assertTrue(lanceur.python_backend_verifie(Path("python.exe")))
+
+    def test_import_manquant_rend_false_et_logue(self):
+        journal = []
+        with mock.patch.object(
+            lanceur.subprocess, "run",
+            return_value=types.SimpleNamespace(
+                returncode=1, stdout="", stderr="ModuleNotFoundError: fastapi"),
+        ):
+            resultat = lanceur.python_backend_verifie(Path("python.exe"), log=journal.append)
+        self.assertFalse(resultat)
+        self.assertTrue(any("fastapi" in m for m in journal))
+
+    def test_interprete_introuvable_ne_leve_pas(self):
+        journal = []
+        with mock.patch.object(lanceur.subprocess, "run", side_effect=FileNotFoundError):
+            resultat = lanceur.python_backend_verifie(Path("python-absent.exe"), log=journal.append)
+        self.assertFalse(resultat)
+        self.assertEqual(len(journal), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
