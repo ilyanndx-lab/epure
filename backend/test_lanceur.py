@@ -29,7 +29,7 @@ import tempfile
 import time
 import types
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -396,10 +396,20 @@ class TestVenvPython(unittest.TestCase):
     """
 
     def test_chemin_windows(self):
+        """`PureWindowsPath`, jamais `Path` : `lanceur.os` EST le module `os`
+        partagé (pas une copie), donc mocker `.name` ici change `os.name`
+        pour tout le process pendant le `with` -- y compris pour `pathlib`.
+        Un `Path(...)` construit dans cette fenêtre tenterait une vraie
+        `WindowsPath`, que Python refuse d'instancier hors Windows :
+        `NotImplementedError: cannot instantiate 'WindowsPath' on your
+        system`, mesuré en CI (Linux) alors que ça passait ici (déjà `nt`).
+        `PureWindowsPath` ne touche jamais le système de fichiers, donc
+        s'instancie sur n'importe quel OS.
+        """
         with mock.patch.object(lanceur.os, "name", "nt"):
             self.assertEqual(
-                lanceur.venv_python(Path("C:/depot")),
-                Path("C:/depot/.venv/Scripts/python.exe"),
+                lanceur.venv_python(PureWindowsPath("C:/depot")),
+                PureWindowsPath("C:/depot/.venv/Scripts/python.exe"),
             )
 
     def test_chemin_pose_a_partir_de_la_racine_donnee(self):
