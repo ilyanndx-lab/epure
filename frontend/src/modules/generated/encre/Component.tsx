@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Eraser, PenLine, PenTool, Plus, Redo2, ScanText, Trash2, Undo2 } from 'lucide-react'
+import {
+  Eraser, PenLine, PenTool, Plus, Redo2, ScanText, Sigma, Trash2, Type, Undo2,
+} from 'lucide-react'
 import { getStroke } from 'perfect-freehand'
 import type { SharedModuleProps } from '../../registry'
 import { API, apiFetch } from '../../../api'
@@ -30,6 +32,17 @@ import { dico, liste, texte } from '../../../normaliser'
  *
  * Aucun appel LLM n'existe sur ce chemin, dans aucune branche — le modèle de
  * transcription est un HMER dédié qui tourne en local, pas le modèle du chat.
+ *
+ * **Mode "maths" / "lettres" par page (2026-09-08).** `pix2text-mfr` est un
+ * reconnaisseur de FORMULES mathématiques (sortie LaTeX), pas un OCR
+ * généraliste — lui donner du texte manuscrit normal ne produit pas une
+ * transcription dégradée mais des hallucinations de syntaxe math, un résultat
+ * qui a l'air d'un LaTeX plausible sans en être un. Une page prise de notes en
+ * mode "lettres" désactive donc le bouton « Transcrire ». **Le vrai refus est
+ * côté serveur** (`POST /encre/pages/{id}/transcrire` répond 400 en mode
+ * "lettres", cf. `modules/encre/router.py`) : le bouton désactivé n'est qu'un
+ * confort, pas la garde — un appel direct à l'API contournerait un bouton
+ * grisé sans jamais toucher un refus qui ne vivrait que côté client.
  *
  * ── Ce que ce fichier stocke, et pourquoi ça compte ──────────────────────────
  *
@@ -180,6 +193,13 @@ interface Etat {
 }
 
 /**
+ * Les deux seules valeurs connues côté client, miroir de `_MODES_VALIDES`
+ * (`core/encre.py`). Une page en mode "lettres" n'est pas transcriptible —
+ * `pix2text-mfr` reconnaît des formules, pas du texte manuscrit courant.
+ */
+type Mode = 'maths' | 'lettres'
+
+/**
  * Ce que le serveur a confirmé avoir enregistré. `null` = aucune page chargée.
  *
  * C'est un instantané par RÉFÉRENCE, pas une copie : `traits` y est le tableau
@@ -187,10 +207,15 @@ interface Etat {
  * enregistrer ? » est donc une égalité de références, et elle est juste parce
  * que toute modification de l'encre passe par `appliquer()`, qui construit un
  * NOUVEAU tableau. Voir `sale` plus bas pour ce que ça évite.
+ *
+ * `mode` y est comparé par VALEUR et non par référence — contrairement à
+ * `traits` — parce que c'est une chaîne : deux chaînes égales sont toujours le
+ * même mode, il n'y a pas d'équivalent au piège de `traits` ici.
  */
 interface Instantane {
   titre: string
   traits: Trait[]
+  mode: Mode
 }
 
 // ── Normalisation des réponses ───────────────────────────────────────────────
@@ -294,6 +319,20 @@ function versTraits(v: unknown): Trait[] {
 }
 
 /**
+ * Le mode d'une page, quoi qu'ait répondu le backend.
+ *
+ * Toute valeur qui n'est pas exactement `"lettres"` — absente, mal formée, un
+ * corps d'erreur qui n'a pas ce champ, une page écrite avant que ce champ
+ * existe — se lit comme `"maths"`. C'est le MÊME défaut que
+ * `EncreEngine._mode` côté serveur (`core/encre.py`) : une page ancienne doit
+ * se comporter à l'identique des deux côtés, sans qu'aucun des deux ait besoin
+ * de migrer quoi que ce soit.
+ */
+function versMode(v: unknown): Mode {
+  return texte(v) === 'lettres' ? 'lettres' : 'maths'
+}
+
+/**
  * Message d'erreur du backend, ou un repli.
  *
  * `detail` est lu en vérifiant son TYPE : une erreur de validation FastAPI y met
@@ -321,12 +360,14 @@ async function messageDErreur(res: Response, repli: string): Promise<string> {
  * automatique : deux chemins d'écriture qui divergeraient finiraient par ne pas
  * enregistrer la même chose.
  */
-async function sauvegarder(pageId: string, titre: string, traits: Trait[]): Promise<Etat> {
+async function sauvegarder(
+  pageId: string, titre: string, traits: Trait[], mode: Mode,
+): Promise<Etat> {
   try {
     const res = await apiFetch(`${API}/encre/pages/${encodeURIComponent(pageId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ titre, strokes: traits }),
+      body: JSON.stringify({ titre, strokes: traits, mode }),
     })
     // `res.ok` AVANT toute mise à jour d'état qui signifie un succès : `apiFetch`
     // résout sur un 404 comme sur un 200.
@@ -438,6 +479,9 @@ export default function EncreModule(_props: SharedModuleProps) {
   const [passe, setPasse] = useState<Trait[][]>([])
   const [futur, setFutur] = useState<Trait[][]>([])
   const [outil, setOutil] = useState<'stylo' | 'gomme'>('stylo')
+  //: Mode de la page courante. "maths" par défaut : c'est celui de toute page
+  //: créée avant ce champ, et le mode que ce module a toujours transcrit.
+  const [mode, setMode] = useState<Mode>('maths')
   //: Dernier état CONFIRMÉ par le serveur. Cf. `Instantane` et `sale`.
   const [enregistre, setEnregistre] = useState<Instantane | null>(null)
   const [etat, setEtat] = useState<Etat | null>(null)
@@ -490,7 +534,7 @@ export default function EncreModule(_props: SharedModuleProps) {
    * lieu de réenregistrer un contenu identique.
    */
   const sale = enregistre !== null
-    && (enregistre.titre !== titre || enregistre.traits !== traits)
+    && (enregistre.titre !== titre || enregistre.traits !== traits || enregistre.mode !== mode)
 
   // ── Chargement de la liste ────────────────────────────────────────────────
   useEffect(() => {
@@ -525,14 +569,16 @@ export default function EncreModule(_props: SharedModuleProps) {
         const page = objet(d)
         const titreCharge = texte(page.titre)
         const traitsCharges = versTraits(page.strokes)
+        const modeCharge = versMode(page.mode)
         setTitre(titreCharge)
         setTraits(traitsCharges)
+        setMode(modeCharge)
         setPasse([])
         setFutur([])
         // LES MÊMES objets que ceux posés dans l'état : l'instantané se compare
         // par référence, en poser une copie rendrait la page sale d'emblée et
         // déclencherait un enregistrement inutile à chaque ouverture.
-        setEnregistre({ titre: titreCharge, traits: traitsCharges })
+        setEnregistre({ titre: titreCharge, traits: traitsCharges, mode: modeCharge })
         setTranscription(versTranscription(page.transcription))
         setEtat(null)
       })
@@ -579,8 +625,8 @@ export default function EncreModule(_props: SharedModuleProps) {
     const minuteur = setTimeout(() => {
       // Capturé AVANT l'envoi : c'est exactement ce que le serveur va recevoir,
       // donc exactement ce qu'on aura le droit de dire « enregistré ».
-      const envoye: Instantane = { titre, traits }
-      void sauvegarder(pageId, envoye.titre, envoye.traits).then(resultat => {
+      const envoye: Instantane = { titre, traits, mode }
+      void sauvegarder(pageId, envoye.titre, envoye.traits, envoye.mode).then(resultat => {
         setEtat(resultat)
         // L'instantané n'avance QUE sur un succès confirmé : sur un refus, la
         // page reste sale et l'effet reprogrammera un envoi. Un enregistrement
@@ -592,7 +638,7 @@ export default function EncreModule(_props: SharedModuleProps) {
       })
     }, DELAI_ENREGISTREMENT_MS)
     return () => clearTimeout(minuteur)
-  }, [sale, pageId, titre, traits])
+  }, [sale, pageId, titre, traits, mode])
 
   // ── Avertissement avant fermeture ─────────────────────────────────────────
   useEffect(() => {
@@ -614,6 +660,7 @@ export default function EncreModule(_props: SharedModuleProps) {
     setPasse([])
     setFutur([])
     setTitre('')
+    setMode('maths')
     setTranscription(null)
     setEtat(null)
   }
@@ -633,11 +680,11 @@ export default function EncreModule(_props: SharedModuleProps) {
    */
   const ouvrirPage = (id: string) => {
     if (id === pageId) return
-    const enAttente = sale && pageId ? { pageId, titre, traits } : null
+    const enAttente = sale && pageId ? { pageId, titre, traits, mode } : null
     reinitialiser()
     setPageId(id)
     if (enAttente) {
-      void sauvegarder(enAttente.pageId, enAttente.titre, enAttente.traits)
+      void sauvegarder(enAttente.pageId, enAttente.titre, enAttente.traits, enAttente.mode)
         .then(resultat => { if (resultat.erreur) setEtat(resultat) })
     }
   }
@@ -831,8 +878,8 @@ export default function EncreModule(_props: SharedModuleProps) {
     // fenêtre écrirait une page blanche par-dessus de l'encre réelle — c'est
     // court, mais c'est un clic, et le résultat est irrécupérable.
     if (!pageId || !enregistre) return
-    const envoye: Instantane = { titre, traits }
-    const resultat = await sauvegarder(pageId, envoye.titre, envoye.traits)
+    const envoye: Instantane = { titre, traits, mode }
+    const resultat = await sauvegarder(pageId, envoye.titre, envoye.traits, envoye.mode)
     setEtat(resultat)
     if (!resultat.erreur) {
       setEnregistre(envoye)
@@ -854,17 +901,22 @@ export default function EncreModule(_props: SharedModuleProps) {
    * Si l'enregistrement échoue, on n'appelle PAS la transcription : mieux vaut
    * un message d'erreur que transcrire un contenu que l'utilisateur ne voit plus.
    *
+   * `mode === 'lettres'` coupe court AVANT tout appel réseau — même garde que
+   * le bouton désactivé. Ce n'est qu'un confort : le vrai refus, celui qui
+   * protège un appel direct à l'API, est le 400 posé par le serveur (cf.
+   * l'en-tête de ce fichier).
+   *
    * `res.ok` avant toute mise à jour d'état qui signifie un succès : `apiFetch`
    * résout sur un 500 comme sur un 200, et un 500 est ici un cas prévu — pile de
    * transcription absente, poids introuvables. Un `catch` seul ne le verrait pas.
    */
   const transcrire = async () => {
-    if (!pageId || !enregistre || transcrit) return
+    if (!pageId || !enregistre || transcrit || mode === 'lettres') return
     setTranscrit(true)
     try {
       if (sale) {
-        const envoye: Instantane = { titre, traits }
-        const enregistrement = await sauvegarder(pageId, envoye.titre, envoye.traits)
+        const envoye: Instantane = { titre, traits, mode }
+        const enregistrement = await sauvegarder(pageId, envoye.titre, envoye.traits, envoye.mode)
         if (enregistrement.erreur) { setEtat(enregistrement); return }
         setEnregistre(envoye)
       }
@@ -993,20 +1045,67 @@ export default function EncreModule(_props: SharedModuleProps) {
               >
                 {sale ? 'Enregistrer' : 'Enregistré'}
               </button>
+              {/* Le mode se change à tout moment, indépendamment de la
+                  transcription déjà présente ou non : c'est une propriété de
+                  la page, pas un état du bouton « Transcrire ». */}
+              <div
+                role="group"
+                aria-label="Mode de la page"
+                className="flex items-center gap-0.5 bg-elevated border border-line rounded-md p-0.5"
+              >
+                <button
+                  onClick={() => setMode('maths')}
+                  aria-pressed={mode === 'maths'}
+                  title="Mode maths — pix2text-mfr transcrit les formules en LaTeX"
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 transition-all duration-150 ${
+                    mode === 'maths'
+                      ? 'bg-gradient-primary text-on-accent shadow-sm'
+                      : 'text-secondary hover:text-primary'
+                  }`}
+                >
+                  <Sigma size={13} /> Maths
+                </button>
+                <button
+                  onClick={() => setMode('lettres')}
+                  aria-pressed={mode === 'lettres'}
+                  title="Mode lettres — transcription désactivée : pix2text-mfr ne reconnaît que des formules mathématiques, pas du texte manuscrit courant"
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 transition-all duration-150 ${
+                    mode === 'lettres'
+                      ? 'bg-gradient-primary text-on-accent shadow-sm'
+                      : 'text-secondary hover:text-primary'
+                  }`}
+                >
+                  <Type size={13} /> Lettres
+                </button>
+              </div>
               <button
                 onClick={() => { void transcrire() }}
-                // Désactivé sans encre : le backend répondrait 400, et proposer
-                // un bouton dont on connaît d'avance le refus est une invitation
-                // à un message d'erreur. Désactivé aussi pendant l'appel — le
-                // modèle tourne sur le CPU et peut prendre des dizaines de
-                // secondes au premier usage, le temps de charger ses poids.
-                disabled={transcrit || traits.length === 0}
-                title="Transcrire l'encre en LaTeX et l'ajouter aux fiches cherchables"
+                // Trois raisons de désactiver, et elles ne se confondent pas :
+                // sans encre (le backend répondrait 400, et proposer un bouton
+                // dont on connaît d'avance le refus est une invitation à un
+                // message d'erreur), pendant l'appel (le modèle tourne sur le
+                // CPU et peut prendre des dizaines de secondes au premier
+                // usage), et en mode "lettres" — cf. le texte explicatif juste
+                // en dessous, un `title` seul ne suffit pas à en avertir avant
+                // le clic.
+                disabled={transcrit || traits.length === 0 || mode === 'lettres'}
+                title={
+                  mode === 'lettres'
+                    ? 'Transcription désactivée en mode lettres'
+                    : "Transcrire l'encre en LaTeX et l'ajouter aux fiches cherchables"
+                }
                 className="px-3 py-2 rounded-md bg-elevated border border-line text-sm text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150 flex items-center gap-1.5"
               >
                 <ScanText size={15} />
                 {transcrit ? 'Transcription…' : 'Transcrire'}
               </button>
+              {mode === 'lettres' && (
+                <p className="w-full text-xs text-muted leading-relaxed">
+                  Transcription désactivée en mode lettres : pix2text-mfr est un
+                  reconnaisseur de formules mathématiques, pas un OCR généraliste —
+                  passe en mode « Maths » si cette page contient des formules.
+                </p>
+              )}
             </div>
 
             {transcription && (

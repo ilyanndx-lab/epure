@@ -381,3 +381,95 @@ describe('module encre — transcription', () => {
     expect((screen.getByTitle(/Transcrire l/) as HTMLButtonElement).disabled).toBe(true)
   })
 })
+
+/**
+ * Le mode "maths" / "lettres" (2026-09-08).
+ *
+ * `pix2text-mfr` est un reconnaisseur de formules, pas un OCR généraliste :
+ * lui donner du texte manuscrit courant produit des hallucinations de syntaxe
+ * math, pas une transcription dégradée. D'où le toggle — et surtout ce que ce
+ * bloc éprouve : le bouton désactivé n'est qu'un CONFORT (le vrai refus est le
+ * 400 du serveur, couvert côté backend par `test_encre_router.py`), donc ce
+ * qui compte ici n'est pas « le clic échoue » mais « le bouton dit pourquoi il
+ * est grisé », ce que `disabled` seul ne communique jamais à quelqu'un qui ne
+ * survole pas le bouton.
+ */
+describe('module encre — mode maths/lettres', () => {
+  it('une page sans champ `mode` s\'ouvre en mode maths, transcription activée', async () => {
+    // Rétrocompatibilité, vue depuis l'interface : `PAGE_NON_TRANSCRITE` n'a
+    // aucun champ `mode`, exactement comme une page écrite avant ce champ.
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_NON_TRANSCRITE },
+    })
+    await ouvrirPage()
+    expect(screen.getByRole('button', { name: 'Maths' }).getAttribute('aria-pressed'))
+      .toBe('true')
+    expect(screen.getByRole('button', { name: 'Lettres' }).getAttribute('aria-pressed'))
+      .toBe('false')
+    expect((screen.getByRole('button', { name: 'Transcrire' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+  })
+
+  it('une page chargée en mode lettres ouvre le toggle sur Lettres, Transcrire désactivé', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: { ...PAGE_NON_TRANSCRITE, mode: 'lettres' } },
+    })
+    await ouvrirPage()
+    expect(screen.getByRole('button', { name: 'Lettres' }).getAttribute('aria-pressed'))
+      .toBe('true')
+    expect((screen.getByRole('button', { name: 'Transcrire' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    // Pas juste grisé sans contexte : une explication est visible sans survol.
+    expect(screen.getByText(/reconnaisseur de formules mathématiques/)).toBeTruthy()
+  })
+
+  it('basculer sur Lettres désactive Transcrire et affiche une explication', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_NON_TRANSCRITE },
+    })
+    await ouvrirPage()
+    expect((screen.getByRole('button', { name: 'Transcrire' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+
+    await act(async () => { screen.getByRole('button', { name: 'Lettres' }).click() })
+
+    expect((screen.getByRole('button', { name: 'Transcrire' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+    expect(screen.getByText(/reconnaisseur de formules mathématiques/)).toBeTruthy()
+  })
+
+  it('rebasculer sur Maths réactive Transcrire et retire l\'explication', async () => {
+    // Modifiable À TOUT MOMENT, dans les deux sens — pas un choix figé à
+    // l'ouverture de la page.
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: { ...PAGE_NON_TRANSCRITE, mode: 'lettres' } },
+    })
+    await ouvrirPage()
+    expect((screen.getByRole('button', { name: 'Transcrire' }) as HTMLButtonElement).disabled)
+      .toBe(true)
+
+    await act(async () => { screen.getByRole('button', { name: 'Maths' }).click() })
+
+    expect((screen.getByRole('button', { name: 'Transcrire' }) as HTMLButtonElement).disabled)
+      .toBe(false)
+    expect(screen.queryByText(/reconnaisseur de formules mathématiques/)).toBeNull()
+  })
+
+  it('ignore un champ `mode` qui n\'est ni "maths" ni "lettres"', async () => {
+    // Même règle que `versTranscription`/`versTraits` : une valeur inconnue
+    // (autre version, corps inattendu) se lit comme le défaut, jamais comme un
+    // plantage. `versMode` doit se comporter comme `EncreEngine._mode` côté
+    // serveur — même défaut, pour la même page, des deux côtés.
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: { ...PAGE_NON_TRANSCRITE, mode: 'MATHS' } },
+    })
+    await ouvrirPage()
+    expect(screen.getByRole('button', { name: 'Maths' }).getAttribute('aria-pressed'))
+      .toBe('true')
+  })
+})
