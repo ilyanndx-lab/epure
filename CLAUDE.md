@@ -52,7 +52,8 @@ qui sont des explications historiques, jamais du comportement.
 # Tout-en-un (Ollama + backend + frontend + tray) — usage normal
 python epure_tray.py
 
-# Backend seul
+# Backend seul (activer le venv dédié d'abord, cf. section suivante)
+.\.venv\Scripts\Activate.ps1
 cd backend
 python -m uvicorn main:app --reload
 
@@ -61,12 +62,58 @@ cd frontend
 npm run dev
 ```
 
+### Interpréteur Python — venv dédié, géré par `dev-epure.ps1`
+
+Le backend tourne dans un **venv privé à Épure**, `.venv/` à la racine du dépôt
+(déjà dans `.gitignore`, et hors de portée de `tools/faire_paquet.py` — ce
+script ne copie que `backend/` et `frontend/dist`, jamais la racine du dépôt).
+Avant, `backend/` tournait sur le Python **partagé** de la machine, celui
+qu'utilisent aussi les autres projets d'Ilyann : chaque nouveau lot de
+dépendances ML d'Épure (`torch`/`transformers`/`optimum-onnx` pour
+`core/hmer.py` notamment) forçait une enquête de dépendances inverses sur les
+paquets **des autres projets** avant de savoir si une rétrogradation les
+casserait. Un venv dédié supprime ce risque structurellement.
+
+`tools\dev-epure.ps1` **crée et synchronise ce venv tout seul** : absent, il le
+crée (n'importe quel Python du poste sait faire `-m venv`, il n'est plus
+nécessaire ensuite) ; présent, il relit `requirements.txt` à chaque lancement
+(`pip install -r`, silencieux quand tout est déjà à jour) puis vérifie
+réellement que `fastapi`/`uvicorn` s'importent avant de continuer. Objectif :
+ne plus jamais se demander quel Python est actif ici.
+
+`$env:EPURE_PYTHON` reste l'échappatoire pour pointer sur un **autre**
+interpréteur (débogage, comparaison de versions) : quand elle est posée, la
+gestion du venv est court-circuitée et l'interpréteur nommé est utilisé tel
+quel — mais toujours vérifié, un mauvais chemin doit échouer nommé.
+
+**IMPÉRATIF — ce venv ne couvre que `dev-epure.ps1`.** `epure_tray.py` (l'usage
+normal, lancé par le raccourci de bureau) et son `sys.executable` restent sur
+l'interpréteur qui le lance — le Python **partagé**, sauf si son raccourci est
+repointé sur `.venv\Scripts\pythonw.exe`, ce qui n'a pas été fait ici. De même,
+`core/codeagent.py` (module Code) exécute les scripts de l'utilisateur et
+installe leurs paquets opt-in (`POST /code/install`) sur `sys.executable` du
+process qui tourne — donc sur le venv dédié quand le backend y tourne (via
+`dev-epure.ps1`), et sur le Python partagé sinon. Un paquet installé par ce
+biais pour un script (`matplotlib`, par exemple — support dédié dans
+`core/_plot_support/`, dépendance **volontairement** absente de
+`requirements.txt`, cf. `test_codeagent_plots.py`) ne traverse pas d'un
+interpréteur à l'autre : il se réinstalle depuis le panneau du module Code si
+besoin.
+
 ### Avant de pousser — `tools\verif-ci.ps1`
 
 ```powershell
 .\tools\verif-ci.ps1              # frontend + backend, périmètre de la CI
 .\tools\verif-ci.ps1 -Frontend    # ou -Backend
 ```
+
+**`verif-ci.ps1` n'est PAS conscient du venv** : sa commande de tests backend
+vient de `ci.yml` (`python -m unittest discover …`), donc `python` y est résolu
+sur le PATH de la session PowerShell **courante**, pas via `$env:EPURE_PYTHON`
+ni via `.venv/`. L'activer d'abord (`.\.venv\Scripts\Activate.ps1`) avant de
+lancer `-Backend` — sinon la mesure porte sur le Python partagé, un « vert »
+qui ne dit rien du venv réellement utilisé par le backend (cf. l'avertissement
+juste en dessous sur ce que ce script mesure et ne mesure pas).
 
 **IMPÉRATIF — `npm run lint` et la suite backend lancés à la main ne mesurent
 PAS ce que mesure la CI.** Deux fois le 2026-09-05, un « vert en local » est
@@ -179,9 +226,13 @@ npx vitest             # mode watch, pendant le développement
 
 ### Écart de version Python — piège actif
 
-Les `.pyc` locaux sont en `cpython-314` (Python 3.14) ; la CI tourne en **3.12**
-(`ci.yml`). Du code qui marche en local peut casser en CI. Si tu utilises une
-syntaxe récente, vérifie sa disponibilité en 3.12.
+Le venv dédié (section 2) tourne en **Python 3.14** — la même version que
+portait déjà le Python partagé avant lui, choisie pour ne pas ajouter une
+variable à un écart qui existe déjà : la CI tourne en **3.12** (`ci.yml`). Du
+code qui marche en local peut casser en CI. Si tu utilises une syntaxe
+récente, vérifie sa disponibilité en 3.12. Le venv dédié isole Épure des
+*autres projets* du poste ; il ne rapproche pas la version locale de celle de
+la CI, et ce n'est pas son rôle.
 
 ### Écart de DÉPENDANCES local/CI — le même piège, moins connu
 
@@ -1205,7 +1256,8 @@ dépôt : elle rend le code relisible après trois semaines d'absence. La respec
 
 **Ne jamais committer** : `backend/.env`, `backend/memory/*.json`,
 `backend/history/`, `backend/chroma_db/`, `backend/vector_db/`, `backend/doc_uploads/`,
-`backend/modules/_backups/`, `*.log`, `.aider.*`.
+`backend/modules/_backups/`, `*.log`, `.aider.*`, `.venv/` (le venv dédié, §2 —
+déjà dans `.gitignore`).
 
 ---
 
@@ -1222,3 +1274,6 @@ dépôt : elle rend le code relisible après trois semaines d'absence. La respec
   de l'état « actif » à côté de `modules_activés`.
 - Élargir le périmètre fonctionnel tant que la CI ne peut pas dire non
   (1 `response_model` sur 103 endpoints à ce jour).
+- Installer les dépendances du backend dans le Python **partagé** de la
+  machine (§2) — utiliser le venv dédié (`.venv/`), que `dev-epure.ps1` crée
+  et synchronise tout seul.
