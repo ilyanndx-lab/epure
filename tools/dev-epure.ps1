@@ -325,8 +325,31 @@ function Trouver-NodeDuCheckout {
              donc il est reconnaissable ;
           b. l'executable lui-meme est SOUS le checkout (certains paquets
              installent un .exe dans node_modules, qui se verrouille tout seul).
-             Critere irrefutable : si le binaire vient de mon node_modules, il est
-             a moi.
+
+        LES DEUX CRITERES SONT RESTREINTS A `Name='node.exe'` DEPUIS LE
+        2026-09-08 -- CA NE L'ETAIT PAS AVANT, ET C'ETAIT UN BUG REEL, PAS
+        THEORIQUE. Le critere (b) interrogeait TOUTE la table des process
+        (`Get-CimInstance Win32_Process` sans filtre de nom), sur le seul test
+        "son executable est sous $RACINE". Tant que le backend du tray tournait
+        sous le Python PARTAGE (hors de $RACINE), ca ne matchait jamais rien
+        d'autre que du node. Depuis que `epure_tray.py` lance uvicorn sous le
+        venv dedie `$RACINE\.venv\Scripts\python.exe` (CLAUDE.md section 2) --
+        DONC sous $RACINE -- ce critere large tuait ce backend en tant que
+        "processus node residuel", y compris depuis `-Diagnostic`, documente
+        "tout sauf uvicorn, pour verifier l'etat" et cense donc n'avoir AUCUN
+        effet de bord. Mesure : `.\tools\dev-epure.ps1 -Diagnostic` avec le
+        tray deja lance tuait son backend, sans jamais le relancer.
+
+        TRADE-OFF ACCEPTE en restreignant au nom : un paquet qui installerait
+        un binaire natif renomme (pas `node.exe`) directement dans
+        `node_modules\.bin`, sans que sa ligne de commande ne mentionne le
+        checkout, echapperait desormais aux deux criteres. C'est le meme filet
+        que la LIMITE CONNUE ci-dessous qui couvre deja ce cas : si `npm ci`
+        echoue quand meme en EPERM, l'etape 3 supprime `node_modules` en entier.
+        Le risque juge acceptable est de rater un nettoyage PROACTIF, pas de
+        tuer un process qui n'a rien a voir avec node -- exactement l'inverse
+        du risque qu'un filtre par CHEMIN SEUL fait courir maintenant que
+        `.venv\` vit, lui aussi, sous $RACINE.
 
         LIMITE CONNUE, a ne pas se cacher : un `node` lance depuis le checkout
         dont la ligne de commande ne le mentionne pas (`node -e "..."`, mesure)
@@ -335,16 +358,15 @@ function Trouver-NodeDuCheckout {
         EPERM, l'etape 3 nettoie node_modules -- c'est le filet.
     #>
     $tousNode = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue)
-    $autres   = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                  Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($RACINE, 'OrdinalIgnoreCase') })
 
     $suspects = @()
     foreach ($p in $tousNode) {
-        if ($p.CommandLine -and $p.CommandLine.ToLower().Contains($RACINE.ToLower())) {
+        $viaCommandLine = $p.CommandLine -and $p.CommandLine.ToLower().Contains($RACINE.ToLower())
+        $viaChemin      = $p.ExecutablePath -and $p.ExecutablePath.StartsWith($RACINE, 'OrdinalIgnoreCase')
+        if ($viaCommandLine -or $viaChemin) {
             $suspects += $p
         }
     }
-    $suspects += $autres
     return @($suspects | Sort-Object ProcessId -Unique)
 }
 
