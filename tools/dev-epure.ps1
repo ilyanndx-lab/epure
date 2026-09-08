@@ -47,6 +47,10 @@
 .PARAMETER SansInstall
     Saute `npm ci`. Utile quand seul le backend a bouge.
 
+.PARAMETER SansInstallPython
+    Saute la synchronisation `pip install -r requirements.txt` du venv dedie.
+    Utile quand seul le frontend a bouge, ou hors ligne.
+
 .PARAMETER SansBuild
     Saute `npm run build`.
 
@@ -103,6 +107,7 @@
 param(
     [switch]$SansPull,
     [switch]$SansInstall,
+    [switch]$SansInstallPython,
     [switch]$SansBuild,
     [switch]$Diagnostic,
     [switch]$PoserRaccourci,
@@ -118,6 +123,12 @@ $RACINE   = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $FRONTEND = Join-Path $RACINE 'frontend'
 $BACKEND  = Join-Path $RACINE 'backend'
 $PORT     = 8000
+
+# Venv dedie du backend -- deja dans .gitignore (.venv/), et hors de portee de
+# tools/faire_paquet.py : ce script ne copie que backend/ et frontend/dist,
+# jamais la racine du depot. Voir Assurer-Venv plus bas.
+$VENV        = Join-Path $RACINE '.venv'
+$VENV_PYTHON = Join-Path $VENV 'Scripts\python.exe'
 
 $script:Etape = 0
 
@@ -204,53 +215,99 @@ function Invoquer-Externe {
 
 # -- Interpreteur Python ------------------------------------------------------
 
-function Trouver-Python {
+<#
+    Panne 1 de l'en-tete visait a l'origine "un lanceur qui prend `python` du
+    PATH tombe sur n'importe quoi". La reponse d'alors (tester `import fastapi,
+    uvicorn` sur chaque python du PATH) reglait le symptome mais pas la cause :
+    le poste porte UN SEUL Python partage entre tous les projets d'Ilyann, et
+    chaque nouveau lot de dependances ML d'Epure (torch/transformers/
+    optimum-onnx pour core/hmer.py notamment) forcait une enquete de
+    dependances inverses sur les paquets DES AUTRES projets avant de savoir si
+    une retrogradation les casserait.
+
+    Depuis, ce script possede son propre venv, prive, sous $RACINE\.venv --
+    deja dans .gitignore, hors de portee de tools/faire_paquet.py (qui ne copie
+    que backend/ et frontend/dist, jamais la racine du depot). Objectif :
+    qu'il n'y ait plus jamais a se demander quel Python est actif ici. Trois
+    fonctions se partagent la tache :
+
+      Assurer-Venv                  cree $VENV s'il n'existe pas encore
+                                     (une seule fois, avec un python de
+                                     bootstrap quelconque -- il n'a plus
+                                     besoin d'exister ensuite) ;
+      Synchroniser-Dependances-Python  `pip install -r requirements.txt` dans
+                                     ce venv, APRES le git pull -- comme
+                                     `npm ci` pour node_modules, plus bas ;
+      Verifier-Python                le VRAI gate : `import fastapi, uvicorn`
+                                     sur l'interpreteur retenu. Une synchro qui
+                                     rate (reseau coupe) ne doit pas empecher
+                                     un poste deja installe de redemarrer --
+                                     voir la note de Synchroniser-Dependances-
+                                     Python plus bas.
+
+    $env:EPURE_PYTHON reste l'echappatoire : quand il est pose, tout ce qui
+    precede est court-circuite et l'interpreteur qu'il nomme est utilise tel
+    quel (Verifier-Python continue de s'appliquer -- un mauvais chemin doit
+    echouer nomme, pas silencieusement).
+#>
+
+function Lister-Pythons-Candidats {
     <#
-        Le premier interpreteur qui a REELLEMENT les dependances.
-
-        Panne 1 de l'en-tete : un lanceur qui prend `python` du PATH tombe sur ce
-        qui vient en premier, y compris l'alias du Microsoft Store. On ne devine
-        pas -- on teste `import fastapi, uvicorn` sur chaque candidat et on prend
-        celui qui repond. Un python sans les deps produit sinon un ModuleNotFound
-        au demarrage d'uvicorn, plusieurs etapes trop tard.
-
-        $env:EPURE_PYTHON passe devant : c'est le seul moyen de forcer un venv.
+        Les python.exe visibles sur le PATH, reels d'abord, alias du Microsoft
+        Store en dernier -- jamais exclus, mais prefereres en dernier recours
+        seulement : c'est un shim qui ouvre le Store au lieu de lancer python
+        sur une machine ou l'application n'est pas installee.
+        `-like` et non `-match` : le motif contient des antislashes, que
+        `-match` interpreterait comme une regex.
     #>
-    $candidats = @()
-    if ($env:EPURE_PYTHON) { $candidats += $env:EPURE_PYTHON }
     $duPath = @(Get-Command python.exe -All -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.Source }) | Where-Object { $_ }
-    # Les alias du Microsoft Store passent EN DERNIER, jamais exclus.
-    #
-    # Sur ce poste, `...\WindowsApps\python.exe` a bien les dependances (mesure :
-    # meme 3.14.5 que les autres, `import fastapi` passe) -- ce n'est donc pas un
-    # faux python et l'ecarter serait faux. Mais c'est un shim : il redirige, et
-    # sur une machine ou l'application Store n'est pas installee il ouvre le Store
-    # au lieu de lancer python. Preferer un chemin reel quand il y en a un evite
-    # ce detour sans rien casser quand il est le seul disponible.
-    # `-like` et non `-match` : le motif contient des antislashes, que `-match`
-    # interpreterait comme une regex (`\W` = "non-mot", et un antislash final
-    # rend le motif invalide -- erreur de parsing observee en ecrivant ceci).
     $reels = @($duPath | Where-Object { $_ -notlike '*\WindowsApps\*' })
     $shims = @($duPath | Where-Object { $_ -like    '*\WindowsApps\*' })
-    $candidats += $reels + $shims
-    $candidats = $candidats | Where-Object { $_ } | Select-Object -Unique
+    return @($reels + $shims | Where-Object { $_ } | Select-Object -Unique)
+}
 
-    foreach ($c in $candidats) {
-        if (-not (Test-Path $c)) { continue }
-        $r = Invoquer-Externe $c -c "import fastapi, uvicorn; print('ok')"
-        if ($r.Code -eq 0 -and $r.Texte -eq 'ok') { return $c }
-        Ecrire-Info "ecarte (dependances absentes) : $c"
+function Trouver-Bootstrap-Python {
+    <#
+        Un interprete CPython capable de creer le venv (`-m venv`) -- n'importe
+        lequel convient : il ne fait tourner Epure a aucun moment, seulement
+        `python -m venv`, present dans toute installation standard depuis
+        Python 3.3. Prefere le lanceur officiel `py -3.14` quand il repond
+        (version alignee sur celle deja validee sur ce poste, cf. CLAUDE.md
+        section 2), sinon le premier python.exe reel du PATH.
+    #>
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($py) {
+        $r = Invoquer-Externe $py.Source '-3.14' -c 'import sys; print(sys.executable)'
+        if ($r.Code -eq 0 -and (Test-Path $r.Texte)) { return $r.Texte }
     }
-    Arreter "aucun interpreteur Python n'a les dependances d'Epure" @"
-Candidats essayes :
-$($candidats -join "`n")
-
-Installer les dependances dans l'un d'eux :
-    <python> -m pip install -r "$BACKEND\requirements.txt"
-Ou designer le bon :
+    foreach ($c in (Lister-Pythons-Candidats)) {
+        if (-not (Test-Path $c)) { continue }
+        $r = Invoquer-Externe $c --version
+        if ($r.Code -eq 0) { return $c }
+    }
+    Arreter "aucun interpreteur Python trouve pour creer l'environnement virtuel" @"
+Installer Python (python.org, ou le lanceur "py"), ou pointer un venv existant :
     `$env:EPURE_PYTHON = 'C:\chemin\vers\python.exe'
 "@
+}
+
+function Assurer-Venv {
+    <#
+        Le venv EXISTE -- rien de plus. Ne verifie ni n'installe les
+        dependances : c'est le role de Synchroniser-Dependances-Python, qui
+        tourne apres le git pull pour lire le requirements.txt a jour.
+    #>
+    if (Test-Path $VENV_PYTHON) { return $VENV_PYTHON }
+
+    Ecrire-Alerte "venv absent -- creation ($VENV)"
+    $bootstrap = Trouver-Bootstrap-Python
+    $r = Invoquer-Externe $bootstrap -m venv $VENV
+    if ($r.Code -ne 0 -or -not (Test-Path $VENV_PYTHON)) {
+        Arreter "creation du venv a echoue" $r.Texte
+    }
+    Ecrire-Ok "venv cree avec $bootstrap"
+    return $VENV_PYTHON
 }
 
 # -- 1. Processus node residuels ----------------------------------------------
@@ -362,7 +419,60 @@ function Mettre-A-Jour {
     } finally { Pop-Location }
 }
 
-# -- 3. npm ci, avec reparation EPERM -----------------------------------------
+# -- 3. pip install (backend) -------------------------------------------------
+
+function Synchroniser-Dependances-Python([string]$python) {
+    <#
+        Echo de "npm ci" plus bas, pour le backend : relit requirements.txt a
+        CHAQUE lancement, silencieux quand tout est deja a jour. Pose donc APRES
+        Mettre-A-Jour, jamais avant.
+
+        Un echec ICI reste une ALERTE, pas un arret -- volontairement different
+        de npm ci. Ce depot est local-first (CLAUDE.md section 1) : un reseau
+        coupe ne doit pas empecher de relancer un poste deja installe. Le vrai
+        gate est Verifier-Python juste apres, qui ne regarde que l'etat REEL de
+        l'interpreteur, pas si la synchro a reussi.
+    #>
+    Ecrire-Etape 'pip install (backend)'
+    if ($SansInstallPython) { Ecrire-Info 'saute (-SansInstallPython)'; return }
+    if ($env:EPURE_PYTHON) {
+        Ecrire-Info 'EPURE_PYTHON force -- synchronisation sautee (venv gere hors de ce script)'
+        return
+    }
+    $req = Join-Path $BACKEND 'requirements.txt'
+    $r = Invoquer-Externe $python -m pip install -r $req --disable-pip-version-check
+    if ($r.Code -ne 0) {
+        Write-Host $r.Texte -ForegroundColor DarkGray
+        Ecrire-Alerte 'pip install a echoue -- poursuite avec les dependances deja installees'
+        return
+    }
+    Ecrire-Ok 'a jour'
+}
+
+function Verifier-Python([string]$python) {
+    <#
+        Le VRAI gate, decorrele d'un pip install qui a pu etre saute ou echoue
+        (reseau coupe, -SansInstallPython, EPURE_PYTHON pointant ailleurs).
+        Sans ce controle explicite, un python sans les deps produit un
+        ModuleNotFound au demarrage d'uvicorn, plusieurs etapes trop tard.
+    #>
+    Ecrire-Etape 'Dependances Python'
+    $r = Invoquer-Externe $python -c "import fastapi, uvicorn; print('ok')"
+    if ($r.Code -ne 0 -or $r.Texte -ne 'ok') {
+        Arreter "l'interpreteur Python n'a pas les dependances d'Epure" @"
+$python
+
+$($r.Texte)
+
+Installer :
+    "$python" -m pip install -r "$BACKEND\requirements.txt"
+Ou laisser ce script gerer son venv dedie (ne pas definir `$env:EPURE_PYTHON).
+"@
+    }
+    Ecrire-Ok 'fastapi, uvicorn'
+}
+
+# -- 4. npm ci, avec reparation EPERM -----------------------------------------
 
 function Installer-Dependances {
     Ecrire-Etape 'npm ci (frontend)'
@@ -434,7 +544,7 @@ Ou, si ca se reproduit : supprimer $FRONTEND\node_modules et relancer.
     } finally { Pop-Location }
 }
 
-# -- 4. npm run build --------------------------------------------------------
+# -- 5. npm run build --------------------------------------------------------
 
 function Construire-Interface {
     Ecrire-Etape 'npm run build'
@@ -459,7 +569,7 @@ function Construire-Interface {
     } finally { Pop-Location }
 }
 
-# -- 5. Port 8000 ------------------------------------------------------------
+# -- 6. Port 8000 ------------------------------------------------------------
 
 function Liberer-Port([string]$python) {
     <#
@@ -506,7 +616,7 @@ appartient a autre chose. A regler a la main, ou changer de port.
     }
 }
 
-# -- 6. uvicorn au premier plan ----------------------------------------------
+# -- 7. uvicorn au premier plan ----------------------------------------------
 
 function Lancer-Uvicorn([string]$python) {
     Ecrire-Etape 'uvicorn (premier plan)'
@@ -590,11 +700,13 @@ Write-Host "  depot : $RACINE" -ForegroundColor DarkGray
 
 if ($PoserRaccourci) { Poser-Raccourci; exit 0 }
 
-$python = Trouver-Python
+$python = if ($env:EPURE_PYTHON) { $env:EPURE_PYTHON } else { Assurer-Venv }
 Write-Host "  python : $python" -ForegroundColor DarkGray
 
 Liberer-NodeModules
 Mettre-A-Jour
+Synchroniser-Dependances-Python $python
+Verifier-Python $python
 Installer-Dependances
 Verifier-Outils
 Construire-Interface
