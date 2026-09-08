@@ -295,6 +295,28 @@ def _powershell() -> str | None:
     return shutil.which("powershell") or shutil.which("pwsh")
 
 
+def _dossier_python_plat() -> Path:
+    """Le dossier d'un runtime Python AUTONOME — jamais un venv.
+
+    `Echauffer` cible le runtime EMBARQUÉ dans le paquet livré (cf. le
+    docstring de `_jouer`), qui n'est jamais un venv : rien qui y ressemble
+    n'est distribué (§8 de CLAUDE.md, chantier venv dédié). Sous un venv,
+    `Path(sys.executable).parent` (`.venv\\Scripts`) exigerait `pyvenv.cfg`
+    pour retrouver son interpréteur de base — absent une fois ce dossier
+    accédé via la JONCTION que pose `_jouer`, l'exécutable échoue avant même
+    d'exécuter une ligne de Python (« failed to locate pyvenv.cfg »), ce que
+    `Echauffer` ne sait pas distinguer d'un blocage Smart App Control. Mesuré
+    en basculant les tests du Python partagé de la machine vers le venv dédié
+    du backend : ce test passait avant, échouait après, sans qu'aucune ligne
+    de `Echauffer` ni de son propre code n'ait changé.
+
+    `sys.base_prefix` est le dossier du VRAI runtime sous un venv (et vaut
+    `sys.prefix` hors venv, donc ce test ne change pas de comportement quand
+    l'interpréteur qui l'exécute n'est déjà pas un venv).
+    """
+    return Path(sys.base_prefix)
+
+
 _PS = _powershell()
 _RAISON = "cas propre à Windows (PowerShell + COM WScript.Shell) — cf. l'en-tête"
 
@@ -400,7 +422,9 @@ class EchauffementTest(unittest.TestCase):
         La racine est un dossier temporaire dont `python\` est un point de
         jonction vers l'interpréteur de ce poste : `Echauffer` cherche
         `<racine>\python\python.exe` et le trouve, sans qu'on ait à copier une
-        installation Python.
+        installation Python. `_dossier_python_plat()` et non
+        `Path(sys.executable).parent` : voir sa docstring, ce n'est pas
+        équivalent sous un venv.
         """
         with tempfile.TemporaryDirectory() as tmp:
             harnais = Path(tmp) / "harnais.ps1"
@@ -411,7 +435,7 @@ class EchauffementTest(unittest.TestCase):
             res = subprocess.run(
                 [_PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                  str(harnais), "-Installeur", str(cible),
-                 "-DossierPython", str(Path(sys.executable).parent),
+                 "-DossierPython", str(_dossier_python_plat()),
                  "-Modules", ",".join(modules)],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=180)
