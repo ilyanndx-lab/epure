@@ -239,6 +239,79 @@ class EncreStoreTest(unittest.TestCase):
 
     # ── Suppression ───────────────────────────────────────────────────────────
 
+    # ── Transcription (phase 2) ───────────────────────────────────────────────
+
+    def test_transcription_ajoute_le_bloc_sans_migration(self):
+        """Un champ NEUF sur une page écrite avant qu'il existe, sans rien migrer.
+
+        C'est la propriété que l'en-tête de `core/encre.py` promet — les tracés
+        sont opaques, la page est un dict libre — et elle ne vaut que si on la
+        vérifie sur une page créée par l'ancien chemin, ce que fait ce test.
+        """
+        page = self.moteur.create_page("Cours de méca", [TRAIT])
+        mise = self.moteur.set_transcription(page["id"], "x^{2}", "pix2text-mfr", "v1")
+        self.assertEqual({"texte", "modele", "version", "date"},
+                         set(mise["transcription"]))
+        self.assertEqual("x^{2}", mise["transcription"]["texte"])
+        self.assertEqual("pix2text-mfr", mise["transcription"]["modele"])
+        self.assertEqual("v1", mise["transcription"]["version"])
+        self.assertTrue(mise["transcription"]["date"])
+
+    def test_transcription_ne_touche_a_rien_d_autre(self):
+        """Titre, tracés ET LES DEUX DATES intacts.
+
+        `date_modification` est le point qui se déduit mal, et il est délibéré :
+        transcrire ne MODIFIE pas la page. Cette date trie la liste (« sur quoi
+        ai-je travaillé en dernier ? ») et décide si l'enregistrement automatique
+        a quelque chose à envoyer ; la faire avancer sur un traitement dérivé
+        remonterait la page en tête de liste sans qu'un trait ait bougé.
+        """
+        page = self.moteur.create_page("Cours de méca", [TRAIT])
+        mise = self.moteur.set_transcription(page["id"], "x", "m", "v")
+        for champ in ("titre", "strokes", "date_creation", "date_modification"):
+            with self.subTest(champ=champ):
+                self.assertEqual(page[champ], mise[champ])
+
+    def test_transcription_relue_depuis_le_disque(self):
+        """Écrite pour de bon, pas seulement rendue à l'appelant."""
+        page = self.moteur.create_page("T", [TRAIT])
+        self.moteur.set_transcription(page["id"], r"\\alpha", "m", "v")
+        relue = self.moteur.get_page(page["id"])
+        self.assertEqual(r"\\alpha", relue["transcription"]["texte"])
+
+    def test_une_seconde_transcription_remplace_la_premiere(self):
+        """Retranscrire ne doit pas empiler : c'est le geste prévu par
+        `docs/module-encre.md` le jour où le modèle change."""
+        page = self.moteur.create_page("T", [TRAIT])
+        self.moteur.set_transcription(page["id"], "ancien", "m", "v1")
+        mise = self.moteur.set_transcription(page["id"], "nouveau", "m", "v2")
+        self.assertEqual("nouveau", mise["transcription"]["texte"])
+        self.assertEqual("v2", mise["transcription"]["version"])
+
+    def test_un_texte_vide_est_conserve_tel_quel(self):
+        """Le modèle peut n'avoir rien lu ; c'est un résultat, pas une erreur. Le
+        moteur n'a pas à inventer, ni à refuser d'écrire."""
+        page = self.moteur.create_page("T", [TRAIT])
+        mise = self.moteur.set_transcription(page["id"], "", "m", "v")
+        self.assertEqual("", mise["transcription"]["texte"])
+
+    def test_transcription_d_une_page_absente_rend_none_sans_rien_creer(self):
+        """Même contrat que `update_page` : « cette page n'existe pas » est une
+        réponse normale, que le routeur traduit en 404."""
+        self.assertIsNone(self.moteur.set_transcription("inexistante", "x", "m", "v"))
+        self.assertEqual([], list(self.dir.glob("*.json")))
+
+    def test_transcription_d_un_fichier_corrompu_n_ecrase_rien(self):
+        """`transaction(chemin, None)` sur un fichier illisible n'échoue PAS :
+        `read_json` loggue et rend le défaut. Sans la sentinelle `_PageAbsente`,
+        le corps du `with` reconstruirait une page par-dessus — et ce qui serait
+        perdu ici est de l'encre manuscrite, que rien ne réécrit.
+        """
+        chemin = self.dir / "abimee.json"
+        chemin.write_text("{ pas du json", encoding="utf-8")
+        self.assertIsNone(self.moteur.set_transcription("abimee", "x", "m", "v"))
+        self.assertEqual("{ pas du json", chemin.read_text(encoding="utf-8"))
+
     def test_suppression(self):
         pid = self.moteur.create_page("x", [])["id"]
         self.assertTrue(self.moteur.delete_page(pid))

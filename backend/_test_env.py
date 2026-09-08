@@ -1,6 +1,6 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
-Neuf arborescences sont détournées vers des temporaires :
+Dix arborescences sont détournées vers des temporaires :
 
     EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
     EPURE_HISTORY_DIR    backend/history/                (temporaire VIDE)
@@ -11,11 +11,12 @@ Neuf arborescences sont détournées vers des temporaires :
     EPURE_WEB_DIR        frontend/dist/                  (temporaire VIDE)
     EPURE_VECTOR_DIR     backend/vector_db/              (temporaire VIDE)
     EPURE_EMBEDDING_DIR  backend/embedding_model/        (temporaire VIDE)
+    EPURE_HMER_DIR       backend/hmer_model/             (temporaire VIDE)
 
 (Cet en-tête annonçait « cinq » et en listait cinq sur six : `EPURE_VECTOR_DIR`
 existait déjà et n'y figurait pas. Le compte est repris avec l'arrivée de
 `EPURE_EMBEDDING_DIR` le 2026-08-26, de `EPURE_HISTORY_DIR` le 2026-08-27, puis
-de `EPURE_ENCRE_DIR` le 2026-09-07.)
+de `EPURE_ENCRE_DIR` et `EPURE_HMER_DIR` le 2026-09-07.)
 
 ⚠️ « Temporaire VIDE » ne dit RIEN du fait d'être surveillé ou non — les deux
 propriétés sont indépendantes et les confondre est l'erreur naturelle ici.
@@ -387,6 +388,42 @@ VECTOR_DIR = _installer_vide("EPURE_VECTOR_DIR", "vecteurs")
 #: Vide, donc `pile_presente()` est FAUX pendant toute la suite : c'est la
 #: configuration d'un paquet fraîchement installé, celle qu'il faut éprouver.
 EMBEDDING_DIR = _installer_vide("EPURE_EMBEDDING_DIR", "embedding")
+
+#: Cache des poids de transcription manuscrite (`core/hmer.py`) — temporaire
+#: VIDE, absent de REAL_DIRS, exactement le régime de MODELS_DIR et
+#: EMBEDDING_DIR ci-dessus, pour les deux mêmes raisons distinctes :
+#:
+#:   * détourné, parce qu'un test qui construirait `HmerEngine` par accident
+#:     tirerait 117,7 Mo dans le vrai cache ;
+#:   * non surveillé, parce que ce sont des poids reconstructibles à l'octet,
+#:     téléchargés sur une révision épinglée et vérifiés par sha256 — pas des
+#:     données utilisateur. L'encre, elle, est surveillée (REAL_ENCRE_DIR) : le
+#:     tableau des chemins de `docs/module-encre.md` sépare les deux
+#:     explicitement, et les ranger ensemble parce qu'ils appartiennent au même
+#:     module serait précisément l'erreur.
+HMER_DIR = _installer_vide("EPURE_HMER_DIR", "hmer")
+
+#: **Aucun test ne charge le modèle de transcription manuscrite.**
+#:
+#: Jumelle de `EPURE_EMBEDDING_AUTOINSTALL` juste en dessous, et posée pour la
+#: même raison — mais l'enjeu n'est pas seulement le téléchargement. `HmerEngine`
+#: importe `optimum.onnxruntime`, qui importe `torch` : 16 s d'import mesurées à
+#: chaud sur ce poste, 54 s à froid, avant même de toucher au réseau. Un test qui
+#: résoudrait le `_LazyEngine` par mégarde ferait donc payer ça à toute la suite,
+#: et en CI il échouerait — le job rapide n'installe aucune de ces dépendances,
+#: délibérément (cf. l'en-tête de `ci.yml`).
+#:
+#: Coupée, `HmerEngine.__init__` lève `HmerIndisponible` sans rien télécharger ni
+#: importer : c'est un état que le routeur doit de toute façon savoir servir (500
+#: avec un message clair, jamais un 200 vide), donc les tests l'éprouvent au lieu
+#: de le contourner. `test_hmer.py` remet la variable à `1` pour les cas qui
+#: visent l'installation elle-même, en mockant le téléchargement.
+#:
+#: Posée ici et non dans chaque fichier : comme pour les deux variables
+#: suivantes, la protection ne vaut que si elle couvre aussi les tests qui n'ont
+#: pas conscience de toucher au moteur — `core.runtime` expose `hmer_engine`, et
+#: tout test qui monte l'app l'a sous la main.
+os.environ.setdefault("EPURE_HMER_AUTOINSTALL", "0")
 
 #: **Aucun test n'a le droit de télécharger les 90 Mo du modèle d'embedding.**
 #:

@@ -76,19 +76,52 @@ PORTEUSES = {
     "httpx": (
         "fastapi.testclient.TestClient. Arrivait par ollama et openai."
     ),
+    "transformers": (
+        "core/hmer.py fait `from transformers import AutoProcessor`. Arrive aussi "
+        "par optimum-onnx, donc « déjà installé » masquerait sa disparition — le "
+        "scénario websockets, une troisième fois."
+    ),
     "pystray": (
         "epure_tray.py, la façon documentée de lancer Épure. Non déclaré, la "
         "commande du README échouait sur un poste neuf."
     ),
 }
 
-#: Ce qui ne doit PAS revenir. L'ancienne pile d'embedding réinstallerait
+#: Ce qui ne doit PAS être déclaré. L'ancienne pile d'embedding réinstallerait
 #: `scikit-learn`, donc `sklearn/utils/_isfinite` — le binaire non signé que
 #: Smart App Control bloque durablement sur la machine ARM64 du destinataire.
-#: `tokenizers` est dans la liste pour la même raison (son `.pyd` n'est pas signé
-#: non plus), et c'est précisément pourquoi `core/wordpiece.py` existe.
-BANNIES = ("sentence-transformers", "torch", "scikit-learn", "transformers",
-           "tokenizers")
+#:
+#: ⚠️ **CETTE LISTE A PERDU TROIS ENTRÉES LE 2026-09-07, ET C'EST UN
+#: AFFAIBLISSEMENT RÉEL — à lire avant de croire que le garde-fou dit encore la
+#: même chose.** Elle portait aussi `torch`, `transformers` et `tokenizers`, sur
+#: l'invariant « ces paquets n'existent nulle part dans ce dépôt ». La phase 2 du
+#: module `encre` (`core/hmer.py`) les ramène : `pix2text-mfr` se charge par
+#: `optimum-onnx`, qui déclare `optimum`, qui fait un `import torch` de niveau
+#: module — vérifié dans un venv propre, pas supposé (`pip uninstall torch` →
+#: `optimum/onnxruntime/modeling_seq2seq.py:23, ModuleNotFoundError`).
+#:
+#: Ce qui est PRÉSERVÉ, et qui était la vraie raison d'être des trois entrées
+#: retirées : **aucun de ces binaires n'atteint un destinataire**. L'invariant
+#: change de mécanisme, pas de but — « jamais déclaré » devient « déclaré, jamais
+#: livré », et c'est `HmerHorsPaquetTest` plus bas qui le tient, en vérifiant
+#: `HORS_PAQUET_PIP` **et** le fichier d'exigences réellement produit, sur les
+#: deux architectures. `BANNIES_TRANSITIVES` ci-dessous, qui lit le `pip freeze`
+#: d'un paquet réellement assemblé, continue de les interdire : c'est la mesure,
+#: là où `HmerHorsPaquetTest` est l'intention.
+#:
+#: Ne pas remettre ces trois noms ici sans retirer `core/hmer.py` : le test
+#: deviendrait rouge en permanence, et le réflexe serait alors de le désarmer.
+BANNIES = ("sentence-transformers", "scikit-learn")
+
+#: Les paquets qui ont le droit d'être déclarés **à la condition stricte** de ne
+#: jamais partir dans un paquet distribué. Sous-liste de ce qui vivait dans
+#: `BANNIES` avant le 2026-09-07 — cf. l'explication au-dessus.
+#:
+#: `torch` n'y figure pas parce qu'il n'est pas DÉCLARÉ : il arrive par
+#: `optimum`. Il est couvert deux fois quand même — retirer `optimum-onnx` du
+#: paquet emporte tout son arbre (même mécanisme que `google-generativeai`), et
+#: `BANNIES_TRANSITIVES` le vérifie sur le `pip freeze` réel.
+DECLARES_MAIS_JAMAIS_LIVRES = ("optimum-onnx", "transformers")
 
 #: Ce qui ne doit apparaître **NULLE PART DANS L'ARBRE RÉSOLU**, transitif
 #: compris — et c'est une liste différente de la précédente, pas un doublon.
@@ -243,9 +276,107 @@ class PaquetTest(unittest.TestCase):
         Il portait `sentence-transformers` avec la promesse « s'installe au
         premier usage » — une promesse qui a été de la prose pendant tout un été,
         puis 198 Mo de wheels chez le destinataire.
+
+        Ce que ce test NE dit pas, depuis que la liste est un dict à motifs :
+        que `HORS_PAQUET_PIP` soit vide de tout ce qui est lourd. La pile de
+        transcription manuscrite y est délibérément, et c'est
+        `HmerHorsPaquetTest` qui l'exige — deux affirmations opposées sur la même
+        constante, pour deux paquets dont la nature diffère.
         """
         for interdit in BANNIES:
             self.assertNotIn(interdit, self.paquet.HORS_PAQUET_PIP)
+
+
+class HmerHorsPaquetTest(unittest.TestCase):
+    """La pile de transcription manuscrite est déclarée, et jamais livrée.
+
+    **C'est le test qui remplace trois entrées de `BANNIES`** (cf. le
+    commentaire de cette constante). Avant le 2026-09-07, `torch`,
+    `transformers` et `tokenizers` étaient interdits de déclaration, ce qui
+    garantissait par construction qu'aucun destinataire ne les recevrait.
+    `core/hmer.py` les ramène dans l'arbre de DÉVELOPPEMENT ; il faut donc
+    vérifier explicitement ce qui était vrai gratuitement.
+
+    Ce que ça protège concrètement, si quelqu'un retirait ces entrées de
+    `HORS_PAQUET_PIP` en croyant simplifier : un paquet distribué de plusieurs
+    gigaoctets, contenant `tokenizers` et `regex` — les deux `.pyd` non signés
+    dont le blocage par Smart App Control est MESURÉ dans ce dépôt (`core/rag.py`
+    perdu sur la machine ARM64 d'un destinataire, deux fois) — pour une capacité
+    qu'aucun module livré n'appelle.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        import faire_paquet  # noqa: PLC0415
+        self.paquet = faire_paquet
+
+    def test_declares_dans_requirements(self):
+        """Sans déclaration, pas de pile : `core/hmer.py` lève `HmerIndisponible`.
+
+        La moitié qu'on oublie quand on ne regarde que l'exclusion — un paquet
+        exclu du livrable mais jamais déclaré n'est installé nulle part.
+        """
+        declares = noms_declares()
+        for nom in DECLARES_MAIS_JAMAIS_LIVRES:
+            with self.subTest(paquet=nom):
+                self.assertIn(nom, declares)
+
+    def test_exclus_de_l_installation_sur_les_deux_architectures(self):
+        """Dans `HORS_PAQUET_PIP` (toutes archs), pas seulement en ARM64.
+
+        La confusion à écarter est la même que celle documentée pour
+        `onnxruntime`, à l'envers : `HORS_PAQUET_PIP_ARM64` répond à « pip
+        échoue-t-il à installer ? ». Ici pip installerait parfaitement. Le motif
+        du retrait est autre — personne n'en a l'usage — donc il vaut pour toutes
+        les architectures, et l'écrire dans la liste ARM64 laisserait des
+        gigaoctets dans le paquet x64, celui que tout le monde reçoit.
+        """
+        for nom in DECLARES_MAIS_JAMAIS_LIVRES:
+            with self.subTest(paquet=nom):
+                self.assertIn(nom, self.paquet.HORS_PAQUET_PIP)
+
+    def test_absents_du_fichier_d_exigences_produit(self):
+        """La liste dit l'intention ; ceci vérifie le fichier RÉELLEMENT écrit.
+
+        `_exigences_du_paquet` est ce que `pip install` lira chez le
+        destinataire. Un filtrage qui laisserait passer une ligne — une
+        normalisation de nom qui diverge, un `optimum-onnx` écrit
+        `optimum_onnx` — ne se verrait dans aucune des deux assertions
+        ci-dessus.
+        """
+        for arch in self.paquet.ARCHS:
+            texte = self._exigences(arch)
+            actives = [l for l in texte.splitlines()
+                       if l.strip() and not l.lstrip().startswith("#")]
+            for nom in DECLARES_MAIS_JAMAIS_LIVRES:
+                with self.subTest(arch=arch, paquet=nom):
+                    self.assertFalse(
+                        [l for l in actives if l.lower().startswith(nom)],
+                        f"{nom} serait installé chez le destinataire ({arch})")
+
+    def test_le_motif_du_retrait_ne_promet_pas_une_installation(self):
+        """`google-generativeai` s'installe au premier usage ; celles-ci, jamais.
+
+        Le motif est écrit dans le fichier livré, en face de la ligne commentée.
+        Un « installé au premier usage » indifférencié — ce que faisait le code
+        avant que `HORS_PAQUET_PIP` devienne un dict — ferait attendre à
+        quelqu'un une installation que rien ne déclenchera : aucun module livré
+        n'importe `core/hmer.py`, et l'application ne lance plus aucun `pip`
+        (`test_embedding_install.AucuneInstallationALExecutionTest`).
+        """
+        texte = self._exigences("amd64")
+        for nom in DECLARES_MAIS_JAMAIS_LIVRES:
+            ligne = next(l for l in texte.splitlines()
+                         if l.lstrip().startswith("#") and nom in l and "RETIRÉ" in l)
+            with self.subTest(paquet=nom):
+                self.assertNotIn("installé au premier usage", ligne)
+                self.assertIn("aucun module livré", ligne)
+
+    def _exigences(self, arch: str) -> str:
+        import tempfile  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as tmp:
+            return self.paquet._exigences_du_paquet(
+                Path(tmp) / "req.txt", arch).read_text(encoding="utf-8")
 
 
 class CiTest(unittest.TestCase):

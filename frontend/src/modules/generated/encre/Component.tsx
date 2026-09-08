@@ -1,17 +1,35 @@
 import { useEffect, useRef, useState } from 'react'
-import { Eraser, PenLine, PenTool, Plus, Redo2, Trash2, Undo2 } from 'lucide-react'
+import { Eraser, PenLine, PenTool, Plus, Redo2, ScanText, Trash2, Undo2 } from 'lucide-react'
 import { getStroke } from 'perfect-freehand'
 import type { SharedModuleProps } from '../../registry'
 import { API, apiFetch } from '../../../api'
 import { dico, liste, texte } from '../../../normaliser'
 
 /**
- * Module « encre » — prise de notes manuscrites au stylet. Phase 1 : zéro ML.
+ * Module « encre » — prise de notes manuscrites au stylet, et leur transcription.
  *
- * Feuille de route complète dans `docs/module-encre.md`. Ce composant n'en
- * réalise que la première phase, dont la valeur est autonome : une page où
- * écrire, une liste de pages, rien qui prépare la transcription. Aucun appel
- * LLM n'existe sur ce chemin, dans aucune branche.
+ * Feuille de route complète dans `docs/module-encre.md`. La phase 1 (le canvas,
+ * l'encre, zéro ML) garde sa valeur autonome ; la phase 2 y ajoute UN bouton et
+ * une zone de lecture, et rien d'autre.
+ *
+ * ── Ce que la transcription est, et ce qu'elle n'est pas ─────────────────────
+ *
+ * **C'est un index, pas une sortie.** La décision §0 du document : l'encre reste
+ * le document, le LaTeX transcrit sert à rendre les notes cherchables au milieu
+ * des fiches. L'ExpRate mesuré en phase 0 est de 24 % — assez pour retrouver une
+ * page, très loin de ce qu'il faudrait pour la relire. D'où trois absences
+ * délibérées dans cette interface :
+ *
+ * 1. **le texte n'est pas éditable** (`readOnly`). La correction est la phase 3,
+ *    et elle vient avec la collecte de paires (encre, LaTeX) qui la justifie ;
+ * 2. **aucun rendu mathématique.** Afficher joliment un LaTeX faux à 76 % le
+ *    ferait passer pour un résultat ; le texte brut dit ce qu'il est ;
+ * 3. **le déclenchement est un BOUTON**, jamais automatique à l'enregistrement.
+ *    La latence CPU réelle du modèle sur ce poste n'était pas mesurée quand la
+ *    phase 2 a été décidée, donc un anti-rebond aurait été posé à l'aveugle.
+ *
+ * Aucun appel LLM n'existe sur ce chemin, dans aucune branche — le modèle de
+ * transcription est un HMER dédié qui tourne en local, pas le modèle du chat.
  *
  * ── Ce que ce fichier stocke, et pourquoi ça compte ──────────────────────────
  *
@@ -139,6 +157,22 @@ interface PageResume {
   n_traits: number
 }
 
+/**
+ * Ce que le backend a écrit dans `page.transcription` (cf. `EncreEngine`).
+ *
+ * `modele` et `version` sont AFFICHÉS et pas seulement stockés : ils disent sur
+ * quel pipeline ce texte a été produit, ce qui est la seule information capable
+ * d'expliquer pourquoi deux pages transcrites à trois mois d'écart ne se
+ * ressemblent pas. `docs/module-encre.md` les demande pour pouvoir retranscrire
+ * l'historique quand le modèle change.
+ */
+interface Transcription {
+  texte: string
+  modele: string
+  version: string
+  date: string
+}
+
 /** Résultat d'un appel d'écriture, tel qu'affiché dans le bandeau d'état. */
 interface Etat {
   texte: string
@@ -197,6 +231,30 @@ function versResumes(v: unknown): PageResume[] {
       }
     })
     .filter(p => p.id !== '')
+}
+
+/**
+ * La transcription d'une page, ou `null`.
+ *
+ * `null` et non un objet à champs vides : « cette page n'a jamais été
+ * transcrite » et « elle l'a été et le modèle n'a rien lu » sont deux états
+ * différents, et le second doit s'afficher — c'est lui qui dit à l'utilisateur
+ * que le bouton a bien fonctionné et que le modèle n'a rien reconnu.
+ *
+ * Une transcription sans `date` est écartée : le backend en écrit toujours une,
+ * donc son absence signifie qu'on lit autre chose que le champ attendu (un corps
+ * d'erreur, une réponse d'une autre instance). Cf. `src/normaliser.ts`.
+ */
+function versTranscription(v: unknown): Transcription | null {
+  const o = objet(v)
+  const date = texte(o.date)
+  if (!date) return null
+  return {
+    texte: texte(o.texte),
+    modele: texte(o.modele),
+    version: texte(o.version),
+    date,
+  }
 }
 
 /**
@@ -383,6 +441,15 @@ export default function EncreModule(_props: SharedModuleProps) {
   //: Dernier état CONFIRMÉ par le serveur. Cf. `Instantane` et `sale`.
   const [enregistre, setEnregistre] = useState<Instantane | null>(null)
   const [etat, setEtat] = useState<Etat | null>(null)
+  //: Transcription de la page courante, telle que le serveur l'a écrite. `null`
+  //: = jamais transcrite. Jamais dérivée d'autre chose : le texte affiché est
+  //: celui qui est SUR LE DISQUE et dans l'index, pas un résultat gardé en
+  //: mémoire — sinon un rechargement montrerait autre chose que le bouton.
+  const [transcription, setTranscription] = useState<Transcription | null>(null)
+  //: Un appel de transcription est-il en cours ? Le modèle tourne sur le CPU et
+  //: son premier appel charge 118 Mo de poids : sans cet état, l'interface reste
+  //: muette pendant des dizaines de secondes et l'utilisateur reclique.
+  const [transcrit, setTranscrit] = useState(false)
   //: Incrémenté pour redemander la liste. Un compteur plutôt qu'une fonction de
   //: rechargement : une fonction devrait figurer dans les dépendances de l'effet
   //: qui charge, et y changerait à chaque rendu.
@@ -466,6 +533,7 @@ export default function EncreModule(_props: SharedModuleProps) {
         // par référence, en poser une copie rendrait la page sale d'emblée et
         // déclencherait un enregistrement inutile à chaque ouverture.
         setEnregistre({ titre: titreCharge, traits: traitsCharges })
+        setTranscription(versTranscription(page.transcription))
         setEtat(null)
       })
       .catch((err: unknown) => {
@@ -546,6 +614,7 @@ export default function EncreModule(_props: SharedModuleProps) {
     setPasse([])
     setFutur([])
     setTitre('')
+    setTranscription(null)
     setEtat(null)
   }
 
@@ -771,6 +840,59 @@ export default function EncreModule(_props: SharedModuleProps) {
     }
   }
 
+  /**
+   * Transcrit la page courante. **Enregistre d'abord ce qui est en attente.**
+   *
+   * Ce premier point est le seul qui ne se déduit pas, et l'omettre donnerait un
+   * bug silencieux et déroutant : le backend transcrit la page TELLE QU'ELLE EST
+   * SUR LE DISQUE. Sans enregistrement préalable, écrire une formule puis
+   * cliquer aussitôt transcrirait l'état d'avant — au mieux la formule
+   * précédente, au pire une page vide — et rien dans l'interface ne dirait
+   * pourquoi. L'enregistrement automatique attend 1,2 s d'inactivité, donc la
+   * fenêtre n'a rien de théorique : c'est le geste normal.
+   *
+   * Si l'enregistrement échoue, on n'appelle PAS la transcription : mieux vaut
+   * un message d'erreur que transcrire un contenu que l'utilisateur ne voit plus.
+   *
+   * `res.ok` avant toute mise à jour d'état qui signifie un succès : `apiFetch`
+   * résout sur un 500 comme sur un 200, et un 500 est ici un cas prévu — pile de
+   * transcription absente, poids introuvables. Un `catch` seul ne le verrait pas.
+   */
+  const transcrire = async () => {
+    if (!pageId || !enregistre || transcrit) return
+    setTranscrit(true)
+    try {
+      if (sale) {
+        const envoye: Instantane = { titre, traits }
+        const enregistrement = await sauvegarder(pageId, envoye.titre, envoye.traits)
+        if (enregistrement.erreur) { setEtat(enregistrement); return }
+        setEnregistre(envoye)
+      }
+      setEtat({ texte: 'Transcription en cours…', erreur: false })
+      const res = await apiFetch(
+        `${API}/encre/pages/${encodeURIComponent(pageId)}/transcrire`,
+        { method: 'POST' })
+      if (!res.ok) {
+        setEtat({ texte: await messageDErreur(res, 'Transcription refusée'), erreur: true })
+        return
+      }
+      const page = objet(await res.json())
+      const lue = versTranscription(page.transcription)
+      setTranscription(lue)
+      setEtat(lue && lue.texte
+        ? { texte: 'Transcription terminée.', erreur: false }
+        // Un texte vide est un RÉSULTAT, pas une panne : le modèle n'a rien
+        // reconnu. Le dire explicitement, sinon le bouton a l'air d'être resté
+        // sans effet.
+        : { texte: "Transcription terminée : le modèle n'a rien reconnu.", erreur: false })
+      setRafraichir(n => n + 1)
+    } catch {
+      setEtat({ texte: 'Transcription impossible : backend injoignable.', erreur: true })
+    } finally {
+      setTranscrit(false)
+    }
+  }
+
   // ── Rendu ─────────────────────────────────────────────────────────────────
 
   const boutonOutil = (valeur: 'stylo' | 'gomme', Icone: typeof PenLine, libelle: string) => (
@@ -871,7 +993,55 @@ export default function EncreModule(_props: SharedModuleProps) {
               >
                 {sale ? 'Enregistrer' : 'Enregistré'}
               </button>
+              <button
+                onClick={() => { void transcrire() }}
+                // Désactivé sans encre : le backend répondrait 400, et proposer
+                // un bouton dont on connaît d'avance le refus est une invitation
+                // à un message d'erreur. Désactivé aussi pendant l'appel — le
+                // modèle tourne sur le CPU et peut prendre des dizaines de
+                // secondes au premier usage, le temps de charger ses poids.
+                disabled={transcrit || traits.length === 0}
+                title="Transcrire l'encre en LaTeX et l'ajouter aux fiches cherchables"
+                className="px-3 py-2 rounded-md bg-elevated border border-line text-sm text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150 flex items-center gap-1.5"
+              >
+                <ScanText size={15} />
+                {transcrit ? 'Transcription…' : 'Transcrire'}
+              </button>
             </div>
+
+            {transcription && (
+              <div className="px-4 py-3 border-b border-line flex flex-col gap-1.5">
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <span className="text-xs text-muted uppercase tracking-wide">
+                    Transcription
+                  </span>
+                  {/* Modèle, version et date sont AFFICHÉS, pas seulement
+                      stockés : c'est la seule information qui explique pourquoi
+                      deux pages transcrites à trois mois d'écart ne se
+                      ressemblent pas. */}
+                  <span className="text-xs font-mono text-muted">
+                    {transcription.modele} · {transcription.version} ·{' '}
+                    {transcription.date.replace('T', ' à ')}
+                  </span>
+                </div>
+                {transcription.texte ? (
+                  // `readOnly` et non `disabled` : le texte reste sélectionnable
+                  // et copiable, ce qui est tout l'usage qu'on en a ici. La
+                  // correction est la phase 3.
+                  <textarea
+                    readOnly
+                    value={transcription.texte}
+                    aria-label="Texte transcrit (lecture seule)"
+                    rows={Math.min(6, transcription.texte.split('\n').length + 1)}
+                    className="w-full bg-elevated border border-line rounded-md px-3 py-2 text-xs font-mono text-secondary resize-y focus:outline-none focus:border-accent"
+                  />
+                ) : (
+                  <p className="text-xs text-muted">
+                    Le modèle n&apos;a rien reconnu sur cette page.
+                  </p>
+                )}
+              </div>
+            )}
 
             {etat && (
               <p

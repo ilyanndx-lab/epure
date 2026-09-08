@@ -928,6 +928,22 @@ class RequirementsTest(unittest.TestCase):
         """La pile d'avant ne doit pas revenir par la bande : une ligne
         `sentence-transformers` réinstallerait scikit-learn, donc le binaire que
         Smart App Control bloque sur la machine cible.
+
+        ⚠️ **`transformers` est sorti de cette liste le 2026-09-07 et il faut
+        savoir pourquoi avant de l'y remettre.** Il est déclaré depuis, pour
+        `core/hmer.py` (transcription manuscrite, module `encre` phase 2), qui
+        n'est **pas** un chemin d'embedding : il ne touche ni
+        `core/embedding.py`, ni `core/vector_store.py`, ni `MODULE_RUNTIME`. Ce
+        que ce test-ci protège est la pile d'EMBEDDING, et elle est intacte —
+        `sentence-transformers` reste interdit, donc `scikit-learn` avec lui.
+
+        Ce que `transformers` réintroduit bel et bien, c'est `tokenizers` en
+        transitif, c'est-à-dire un `.pyd` non signé sur le poste de
+        développement. Ce risque-là est traité ailleurs et par un autre moyen :
+        la pile entière est dans `HORS_PAQUET_PIP`, donc aucun destinataire ne la
+        reçoit (`test_dependances_declarees.HmerHorsPaquetTest`). Ne pas dupliquer
+        cette vérification ici : ce fichier parle de l'embedding, et un test qui
+        parle de deux choses finit par n'en garder qu'une.
         """
         texte = (_BACKEND / "requirements.txt").read_text(encoding="utf-8")
         for ligne in texte.splitlines():
@@ -936,7 +952,7 @@ class RequirementsTest(unittest.TestCase):
                 continue
             nom = re.split(r"[=<>!~\[]", nu)[0].strip().lower()
             self.assertNotIn(nom, {"sentence-transformers", "torch", "scikit-learn",
-                                   "transformers", "tokenizers"}, ligne)
+                                   "tokenizers"}, ligne)
 
 
 if __name__ == "__main__":

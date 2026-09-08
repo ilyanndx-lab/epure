@@ -114,6 +114,7 @@ python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté
 python test_ingestion_documents.py   # formats lus par le RAG : pptx/xlsx/docx réels
 python test_vision_images.py      # indexation d'une image : décrite par un modèle vision, pas un placeholder (§3.3 bis)
 python test_chat_vision_ciblee.py # analyse vision CIBLÉE dans le chat, cache par fichier, @image (§3.3 ter)
+python test_hmer.py               # transcription manuscrite : rendu, recadrage, poids (§3.8)
 python test_taches_locales.py     # aucune tâche de fond ne part en cloud (§3.7)
 python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
 python integration_modules_mount.py  # LOURD : core.runtime + le vrai store vectoriel
@@ -648,6 +649,83 @@ pas une tâche de fond. Et l'Atelier, qui a sa propre configuration
 Verrouillé par `test_taches_locales.py`, qui pose le pire cas — `modèle_actif`
 cloud **et** toutes les clés d'API présentes — avant chaque vérification.
 
+### 3.8 Transcription manuscrite — la seule pile lourde du dépôt, et elle ne sort pas
+
+`core/hmer.py`, phase 2 du module `encre` (`docs/module-encre.md`). Rend une page
+de tracés en bitmap, la donne à **`pix2text-mfr`** (TrOCR ré-entraîné sur
+formules, ONNX, CPU), rend du LaTeX. Déclenché par un BOUTON, une page à la fois
+(`POST /encre/pages/{id}/transcrire`), jamais en tâche de fond.
+
+**Ce que la transcription EST : un index, pas une sortie.** ExpRate mesuré en
+phase 0 sur 50 expressions manuscrites réelles : **24,0 %**. C'est assez pour
+retrouver une page au milieu des fiches, et très loin de ce qu'il faudrait pour
+la relire. D'où : texte affiché brut, en lecture seule, sans rendu mathématique,
+et aucune post-correction par LLM (`docs/module-encre.md` en fait une phase
+séparée — un LLM transforme volontiers une expression juste en expression
+plausible et fausse).
+
+**IMPÉRATIF — `core/hmer.py` n'importe QUE la bibliothèque standard au niveau
+module.** `core/runtime.py` fait `from core.hmer import HmerEngine` au niveau
+module ; `optimum`/`transformers`/`Pillow` sont importés **dans les méthodes**.
+Un import en tête de fichier ne coûterait pas « quelques secondes » : il ferait
+échouer à la COLLECTE tout test qui importe `main`, puisque le job rapide de la
+CI n'installe aucune de ces dépendances — l'incident `readability-lxml` rejoué
+(§8). Mesuré : 16,7 s d'import à chaud, 54,2 s à froid, parce
+qu'`optimum.onnxruntime` fait un `import torch` de niveau module.
+
+**IMPÉRATIF — `optimum-onnx` et `transformers` sont dans `HORS_PAQUET_PIP`, et
+c'est ce qui autorise leur existence.** `torch` part avec eux (≈765 Mo sur ce
+poste, plusieurs Go de plus sur Linux où il déclare `nvidia-*` et `triton`), et
+`tokenizers`/`regex` aussi — les deux `.pyd` non signés dont le blocage par Smart
+App Control est mesuré dans ce dépôt. Aucun module livré n'importe `core/hmer.py`
+(`encre` n'est ni dans `MODULES_COEUR` ni dans `modules-catalogue/`), donc aucun
+destinataire n'en a besoin. **L'invariant a changé de mécanisme le 2026-09-07** :
+`test_dependances_declarees.py` interdisait ces paquets de DÉCLARATION, il exige
+maintenant leur ABSENCE DU LIVRABLE (`HmerHorsPaquetTest`). C'est plus faible et
+il faut le savoir : retirer ces deux entrées de `HORS_PAQUET_PIP` livrerait des
+gigaoctets et deux binaires non signés, sans qu'aucun autre garde-fou proteste.
+
+**`torch` est requis, mesuré, pas supposé.** La question valait d'être posée —
+l'inférence est en ONNX Runtime, on n'appelle jamais torch. Vérification dans un
+venv propre : `pip uninstall torch` puis `from optimum.onnxruntime import
+ORTModelForVision2Seq` → `optimum/onnxruntime/modeling_seq2seq.py:23, import
+torch, ModuleNotFoundError`. Il n'existe pas de version sans torch de cette pile ;
+il existe le choix de réécrire le décodage seq2seq en numpy pur, que
+`docs/module-encre.md` §1 réserve au jour où ce module deviendrait livrable.
+
+Cinq points qui se déduisent mal :
+
+- **Les poids se chargent depuis un dossier LOCAL, jamais depuis le hub.**
+  `_hf_offline_if_cached()` pose `HF_HUB_OFFLINE=1` dès que le cache Whisper
+  existe (§3.2), c'est-à-dire sur ce poste : un
+  `from_pretrained("breezedeus/pix2text-mfr")` échouerait, en disant « absent du
+  cache ». On télécharge par `urllib` + sha256 dans `resolve_hmer_dir()` sur une
+  **révision épinglée**, puis on charge ce dossier — idiome de `core/voice.py`.
+  L'épinglage n'est pas de la prudence rituelle : la baseline de la phase 0 a été
+  mesurée sur ces poids-là.
+- **Le canevas est dimensionné sur le bounding box des POINTS**, jamais sur la
+  taille logique de la page côté frontend, puis recadré au contenu (+10 % de
+  marge). Ce recadrage est le geste qui a fait passer la phase 0 de **0 % à 24 %**
+  d'ExpRate — une encre occupant 2 % du canevas devient illisible une fois écrasée
+  en 384×384. Il est presque neutre sur une page rendue ici (le canevas est déjà
+  serré) ; il porte tout le gain le jour où l'entrée vient d'une photo. C'est
+  pour ça que `test_hmer.py` l'éprouve sur une image fabriquée à marges blanches
+  et non de bout en bout, où il ne prouverait rien.
+- **`.convert("RGB")` à l'entrée du modèle, et pas plus tôt.** Le rendu est en
+  niveaux de gris (`L`) — un canal, et le seuil du recadrage raisonne en
+  luminance — mais `DeiTImageProcessor` lève `Unsupported number of image
+  dimensions: 2` sur une image à un canal. Trouvé par un essai de bout en bout et
+  par rien d'autre : aucun test de rendu ne pouvait le voir.
+- **La source RAG est `encre:<id>`, pas un chemin de fichier fabriqué**
+  (`RAGEngine.index_page_encre`, méthode dédiée — `index_file` lit le disque et
+  relève un `mtime`, ce qu'une page n'a pas). Conséquence à ne pas oublier :
+  `GET /rag/files/ouvrir` passait le contrôle d'appartenance au corpus puis
+  levait sur `FileResponse`, donc 500. Refus explicite désormais
+  (`core.rag.est_source_virtuelle`).
+- **`set_transcription` ne touche pas `date_modification`.** Transcrire ne
+  MODIFIE pas la page : faire avancer cette date remonterait la page en tête de
+  liste sans qu'un trait ait bougé. La transcription porte sa propre date.
+
 ### 3.4 Persistance
 
 Aucune base de données côté application. Deux stockages :
@@ -707,13 +785,18 @@ Aucune base de données côté application. Deux stockages :
   - **Le tokeniseur est en Python pur**, et pas `tokenizers`. Son `.pyd` n'est pas
     signé, c'est-à-dire la catégorie exacte de binaire que Smart App Control
     bloque — et le blocage se décide **par fichier**, sur réputation : les `.pyd`
-    de numpy, non signés eux aussi, passent sur cette machine ; celui de
+    de numpy, non signés eux aussi, passaient sur la machine ARM64 ; celui de
     scikit-learn non. On ne peut donc pas *raisonner* qu'un binaire non signé
-    passera. Les trois binaires d'`onnxruntime`, eux, sont signés
-    `CN=Microsoft Corporation` — vérifié sur la machine cible. Parité du
-    tokeniseur prouvée identifiant par identifiant sur 200 échantillons
-    (`test_wordpiece.py`, table figée : la CI la tient sans installer
-    `tokenizers`).
+    passera. **Et la réputation dépend du FICHIER, donc de la version** : le
+    2026-09-07, sur CE poste, une wheel `numpy==2.5.3` fraîchement téléchargée
+    dans un venv neuf a été bloquée (`ImportError: DLL load failed while
+    importing _umath_linalg : une stratégie de contrôle d'application a bloqué ce
+    fichier`) alors que la `2.5.2` installée de longue date fonctionne. Même
+    paquet, même éditeur, verdict inverse — cf. la ligne SAC du §8. Les trois
+    binaires d'`onnxruntime`, eux, sont signés `CN=Microsoft Corporation` —
+    vérifié sur la machine cible. Parité du tokeniseur prouvée identifiant par
+    identifiant sur 200 échantillons (`test_wordpiece.py`, table figée : la CI la
+    tient sans installer `tokenizers`).
   - **`core/embedding_install.py` a changé de nature, pas de rôle.** Il
     n'installe plus de paquets — il télécharge les **90 Mo de poids** du modèle
     (`urllib` + sha256, `.part` puis renommage atomique), exactement comme
@@ -768,6 +851,13 @@ Aucune base de données côté application. Deux stockages :
   `REAL_DIRS`. Dossier séparé de `piper_models` et non un sous-dossier : les deux
   caches n'ont pas le même sort dans un paquet ARM64, où la voix est retirée de
   l'installation alors que l'embedding y fonctionne.
+- `resolve_hmer_dir()` — `$EPURE_HMER_DIR`, sinon `<backend>/hmer_model`. Troisième
+  jumeau des deux précédents : cache de 117,7 Mo (`pix2text-mfr`, deux `.onnx` et
+  six fichiers de configuration), téléchargé au premier usage sur une révision
+  HuggingFace **épinglée** et vérifié par sha256. Détourné par `_test_env`,
+  **absent** de `REAL_DIRS`. Ne pas le ranger avec `resolve_encre_dir()` sous
+  prétexte qu'ils appartiennent au même module : l'encre est irremplaçable, les
+  poids se retéléchargent à l'octet (§3.8).
 - `resolve_models_dir()` — `$EPURE_MODELS_DIR`, sinon `<backend>/piper_models`.
   **C'est un cache de modèles, pas des données utilisateur**, et la distinction
   a des conséquences. Le `.onnx` de Piper (76 Mo) y est téléchargé au premier
@@ -1070,7 +1160,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
 | Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
 | La recherche documentaire répond **500 « ImportError »** dans un paquet livré | La pile d'embedding n'y était pas installée et rien ne l'installait — la promesse « s'installe au premier usage » était de la prose. Depuis le 2026-08-23, `VectorStore.__init__` appelle `exiger_pile()` : préparation en tâche de fond, 503 avec état, `GET /rag/capabilities`. Ne pas remettre `pip` dans `PURGE_SITE_PACKAGES`, ne pas préchauffer le RAG sans le modèle. Cf. §3.4 et `test_embedding_install.py`. |
-| Un binaire **non signé** bloqué par Smart App Control, dans un paquet que personne n'a choisi | Vu deux fois sur la même machine ARM64, à un jour d'intervalle : `sklearn/utils/_isfinite` (plus de recherche documentaire), puis `regex/_regex.pyd` (plus aucun import de fichier). Deux paquets, une seule cause : **l'application lançait elle-même `pip install sentence-transformers`** au premier usage, faisant entrer ~40 paquets non relus — dont la chaîne `sentence-transformers` → `transformers` → `regex`. Corriger un binaire puis attendre le suivant n'est pas une stratégie : depuis le 2026-08-26, **le chemin d'embedding n'exécute plus aucun sous-processus** et ne fait entrer que deux fichiers dont il connaît le sha256. Verrouillé par `AucuneInstallationALExecutionTest` (`test_embedding_install.py`). Le seul `pip` d'exécution qui subsiste est `POST /code/install`, du module de catalogue `code` — opt-in, nom de paquet tapé par l'utilisateur. |
+| Un binaire **non signé** bloqué par Smart App Control | ⚠️ **SAC N'EST PAS UN PROBLÈME DE DESTINATAIRE — c'est ce que cette ligne a laissé croire pendant deux semaines.** Elle ne parlait que de la machine ARM64 d'un destinataire, et on en a déduit que le poste de développement était hors de portée. Faux : `VerifiedAndReputablePolicyState = 1` sur CE poste (x64) — SAC y est **actif et en application**. Mesuré le 2026-09-07 en montant la pile de transcription manuscrite : dans un venv NEUF, une wheel `numpy==2.5.3` fraîchement téléchargée est bloquée à l'import (`DLL load failed while importing _umath_linalg`), alors que la `2.5.2` installée de longue date passe. La réputation se décide **par fichier**, donc **par version** : un `pip install -r requirements.txt` dans un environnement neuf n'est pas reproductible ici, et une montée de version d'un paquet à extension compilée peut casser le poste de dev lui-même. Épingler les versions n'est donc pas qu'une question de reproductibilité — c'est aussi ce qui évite de tirer un fichier sans réputation. Les deux incidents d'origine, sur la machine ARM64 et à un jour d'intervalle : `sklearn/utils/_isfinite` (plus de recherche documentaire), puis `regex/_regex.pyd` (plus aucun import de fichier). Deux paquets, une seule cause : **l'application lançait elle-même `pip install sentence-transformers`** au premier usage, faisant entrer ~40 paquets non relus — dont la chaîne `sentence-transformers` → `transformers` → `regex`. Corriger un binaire puis attendre le suivant n'est pas une stratégie : depuis le 2026-08-26, **le chemin d'embedding n'exécute plus aucun sous-processus** et ne fait entrer que deux fichiers dont il connaît le sha256. Verrouillé par `AucuneInstallationALExecutionTest` (`test_embedding_install.py`). Le seul `pip` d'exécution qui subsiste est `POST /code/install`, du module de catalogue `code` — opt-in, nom de paquet tapé par l'utilisateur. |
 | Une dépendance **porteuse** qui arrive par un paquet tiers finit par disparaître avec lui | Vu deux fois. `websockets` arrivait par l'extra `standard` d'`uvicorn`, déclaré par `chromadb` : son retrait a tué tout `/ws/*` dans un paquet livré, sur toutes les architectures, et le poste de dev n'a rien vu (il en gardait un orphelin). `onnxruntime` allait rejouer la même chose — installé en transitif par `faster-whisper`/`piper-tts`, tous deux exclus des paquets ARM64, alors qu'il porte désormais TOUT l'embedding. Règle : **ce dont on dépend directement est déclaré directement, même si c'est déjà installé.** « Installé » n'est pas « déclaré », et la différence n'apparaît que chez quelqu'un d'autre. Verrouillé par `test_dependances_declarees.py`. |
 | Un `.ps1` sans BOM meurt sur une **cascade d'erreurs de parsing** loin de sa cause | `powershell.exe` (5.1) lit un `.ps1` sans BOM avec la page de code système — Windows-1252, pas UTF-8. Le tiret cadratin `—` (E2 80 94) et le filet `─` (E2 94 80) y produisent tous deux un **U+201D**, que PowerShell traite comme un délimiteur de chaîne : une chaîne ouverte par `"` peut donc être fermée par lui. Mesuré : 33 erreurs, la première annoncée ligne 253 sur une ligne strictement ASCII, et 0 erreur sous `pwsh 7`. **ASCII pur** dans tout `.ps1`/`.cmd` versionné (`test_encodage_scripts.py`). |
 | `Expand-Archive` **s'imbrique** au lieu de remplacer, et tout réussit ensuite | `Expand-Archive -DestinationPath .` lancé depuis `epure\` n'écrase pas son contenu : il y crée `epure-main\`. Les étapes suivantes tournent alors sur l'ANCIEN code — `npm install` réussit, `faire_paquet.py` réussit, l'installation réussit, et le destinataire reçoit le paquet qu'il avait déjà. La pire forme d'échec : celle qui rend un succès. Extraire dans un **temporaire**, y trouver l'unique dossier de sommet, vérifier qu'il ressemble au dépôt, puis copier son CONTENU — jamais d'extraction dans le dossier de destination. Un piège de même nature guette une couche plus bas : `Copy-Item -Recurse` avec `-Destination <racine>\backend` crée `backend\backend` ; c'est `-Destination <racine>` qui fusionne. Verrouillé par `test_mise_a_jour.py`, cas de contrôle compris. |
@@ -1085,6 +1175,7 @@ production, et `test_module_isolation.py` tourne en CI.
 | Une regex `(?m)…$` sur un fichier du dépôt ne matche **jamais** | Les fichiers sont en CRLF sur ce poste. `(?m)$` ne se place qu'avant le `\n`, donc une classe `[^\r\n]*` s'arrête avant le `\r` et l'ancre ne peut plus coller — sur un fichier parfaitement conforme. Vu en lisant `ci.yml` depuis `tools/verif-ci.ps1`. Terminer par `\s*$`, ou ne pas ancrer. |
 | Un verdict « tient » sur un modèle qui **ne peut pas se charger** | Une valeur DYNAMIQUE mise en cache avec les faits figés qui l'entourent. `core/materiel.py` comparait la taille d'un modèle à la mémoire **totale**, calculée une fois pour la vie du process : un modèle déjà résident n'était jamais déduit. Mesuré le 2026-09-06 — `qwen2.5:7b` chargé fait tomber `ullAvailPhys` de 15,65 à 9,47 Gio sur 31,32 Gio ; `mistral-small:24b` (13,35 Gio) sortait donc « tient » (43 % du total) alors qu'il en réclamait **141 % de ce qui restait**. Le défaut n'était PAS dans la donnée mise en cache — RAM totale, GPU, NPU sont des faits matériels justes — mais dans le fait que le verdict avait besoin d'une valeur de plus, celle qui ne peut pas être mise en cache. Règle : **`materiel()` ne contient QUE des faits figés** (RAM/VRAM totales, GPU) ; ce qui bouge — RAM/VRAM libres, joignabilité de FLM — est relu par `etat_frais()`, **une fois par requête et jamais par modèle**. Le NPU portait la même faute et a été corrigé en même temps : figé au démarrage, un FLM lancé APRÈS l'application restait « éteint » à vie. Deux corollaires qui se déduisent mal : une lecture fraîche ratée rend `inconnu` et **ne retombe jamais sur le total** (c'est justement la valeur fausse), et **on ne déduit pas `/api/ps` du libre** — `ullAvailPhys` compte déjà les modèles résidents (-6,18 Gio mesurés pour 6,44 Gio), les soustraire doublerait la note. Verrouillé par `test_materiel.py` (`ModeleResidentTest` rejoue la mesure, `CacheTest` interdit toute valeur périssable dans le cache). |
 | Un script d'intégration lancé « pour voir » **efface les réglages de la séance en cours** | `backend/integration_modules_mount.py` n'importe pas `_test_env` — c'est ce qui lui donne le vrai arbre de modules, et c'est aussi ce qui laisse `core.runtime` construire ses moteurs sur les VRAIES données : `MemoryEngine.__init__` réinitialise `backend/memory/context_session.json` (modèle actif, mode strict, raisonnement) au seul import. Aucune assertion n'échoue, rien ne l'annonce — c'est un effet de bord du chargement. Invisible en CI, où le job `integration` part d'un clone neuf. Sa docstring `Usage` porte désormais la réserve et le contournement : `EPURE_DATA_DIR` sur un temporaire (vérifié), **jamais `EPURE_MODULES_DIR`**, qui est l'arbre qu'on vient éprouver. Même famille que le §3.5 : un test qui touche les données réelles ne se voit qu'une fois qu'il a coûté quelque chose. |
+| Une dépendance de DÉVELOPPEMENT qui réintroduit ce qu'un chantier entier avait retiré | `core/hmer.py` (transcription manuscrite) ramène `optimum-onnx` → `optimum` → **`torch`**, plus `transformers` → `tokenizers` → `regex` : ≈765 Mo sur ce poste, et les deux `.pyd` non signés dont le blocage par Smart App Control est mesuré ici. C'est à peu de chose près ce que le remplacement de la pile d'embedding avait sorti du disque le 2026-08-26 (850,7 Mo). Acceptable **uniquement** parce que `HORS_PAQUET_PIP` les retire de tout paquet distribué et qu'aucun module livré n'importe ce fichier. La règle générale : une dépendance lourde n'entre que si on peut nommer le mécanisme qui l'empêche d'atteindre un destinataire, et écrire un test qui le vérifie — `HmerHorsPaquetTest`. L'ancien invariant (« ces paquets ne sont déclarés nulle part ») était plus fort et ne tient plus ; ne pas le croire encore vrai en lisant `BANNIES`. |
 | Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
 
 ---

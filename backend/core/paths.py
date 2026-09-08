@@ -152,6 +152,39 @@ def resolve_embedding_dir() -> Path:
     return base.resolve()
 
 
+def resolve_hmer_dir() -> Path:
+    """Cache des poids du modèle de transcription manuscrite (`core/hmer.py`).
+
+    Priorité : ``$EPURE_HMER_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/hmer_model``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Troisième jumeau de :func:`resolve_models_dir` et :func:`resolve_embedding_dir`,
+    et le régime est le même : **cache reconstructible, pas données utilisateur**.
+    Les 117,7 Mo de `pix2text-mfr` (deux `.onnx` plus six fichiers de
+    configuration et de tokenisation) se téléchargent au premier usage et sont
+    vérifiés par sha256 sur une révision ÉPINGLÉE — rien ne s'y perd qu'un
+    second téléchargement ne rétablisse à l'octet. Donc **détourné** par
+    ``_test_env`` et délibérément **absent** de ``REAL_DIRS``.
+
+    ``docs/module-encre.md`` pose explicitement cette distinction dans son
+    tableau des chemins, en face de :func:`resolve_encre_dir` : l'encre est
+    irremplaçable, les poids ne le sont pas. Ne pas les ranger ensemble par
+    ressemblance de nom (« les deux appartiennent au module encre »), c'est le
+    contraire de ce qui décide du régime.
+
+    Dossier séparé de ``embedding_model`` pour la même raison qui sépare celui-ci
+    de ``piper_models`` : les trois caches n'ont ni la même durée de vie ni le
+    même sort dans un paquet. Celui-ci n'en a AUCUN — la pile de transcription
+    est retirée de tout paquet distribué (``HORS_PAQUET_PIP``), donc ce dossier
+    n'existe que sur un poste de développement.
+    """
+    env = os.environ.get("EPURE_HMER_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "hmer_model")
+    return base.resolve()
+
+
 def resolve_web_dir() -> Path:
     """Frontend **construit** que FastAPI sert lui-même (paquet distribué).
 

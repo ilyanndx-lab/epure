@@ -294,6 +294,61 @@ class EncreEngine:
             return None
         return resultat
 
+    def set_transcription(self, page_id: str, texte: str, modele: str,
+                          version: str) -> Optional[dict]:
+        """Écrit la transcription d'une page. ``None`` si elle n'existe pas.
+
+        Même contrat que :meth:`update_page` — ``None`` pour une page absente ou
+        illisible, jamais une exception — et pour la même raison : une page
+        supprimée pendant qu'un onglet était ouvert est un état normal, que le
+        routeur traduit en 404.
+
+        **Ne touche à AUCUN autre champ**, ``date_modification`` comprise. C'est
+        la seule chose surprenante ici et elle est délibérée : transcrire ne
+        modifie pas la page. La date de modification sert à trier la liste (« sur
+        quoi ai-je travaillé en dernier ? ») et à décider si l'enregistrement
+        automatique a quelque chose à envoyer ; la faire avancer sur un
+        traitement dérivé remonterait la page en tête de liste sans qu'un seul
+        trait ait bougé. La transcription porte donc SA date à elle, dans son
+        propre bloc.
+
+        Read-modify-write sous ``transaction`` (CLAUDE.md §3.4) et non
+        ``read_json`` + ``write_json`` : la transcription part d'un bouton
+        pendant que l'enregistrement automatique du canvas tourne toujours. Sans
+        verrou, celui des deux qui finit en dernier écrase l'autre — et le
+        perdant le plus probable est l'encre, c'est-à-dire la donnée
+        irremplaçable.
+
+        Le bloc écrit est un dict et non quatre champs à plat : c'est ce qui
+        permet de le remplacer d'un coup à la retranscription, et de tester sa
+        présence sans énumérer ses membres. ``docs/module-encre.md`` demande
+        ``modèle + version`` justement pour pouvoir retranscrire tout
+        l'historique quand le pipeline change.
+        """
+        chemin = self._page_path(page_id)
+        if not chemin.is_file():
+            return None
+        try:
+            with transaction(chemin, None) as page:
+                if not isinstance(page, dict):
+                    raise _PageAbsente
+                page["id"] = page_id
+                page["transcription"] = {
+                    "texte": texte,
+                    "modele": modele,
+                    "version": version,
+                    "date": _horodatage(),
+                }
+                # Copie prise DANS le ``with``, comme dans `update_page` : après
+                # la sortie, l'objet cédé a déjà été écrit et rien ne garantit
+                # qu'on puisse encore le relire sans reprendre le verrou.
+                resultat = dict(page)
+        except _PageAbsente:
+            logger.warning("Page d'encre illisible, transcription non écrite : %s",
+                           chemin.name)
+            return None
+        return resultat
+
     def delete_page(self, page_id: str) -> bool:
         """Supprime une page. ``False`` si elle n'existait pas.
 

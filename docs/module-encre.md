@@ -212,6 +212,49 @@ sans une ligne de ML.*
 
 *Valeur : tes notes manuscrites deviennent cherchables au milieu de tes fiches.*
 
+**FAITE le 2026-09-07.** Ce qui a été construit, et les écarts avec ce qui était
+prévu ci-dessus :
+
+- `core/hmer.py` + `hmer_engine` (`_LazyEngine`), `EncreEngine.set_transcription`,
+  `RAGEngine.index_page_encre`, `POST /encre/pages/{id}/transcrire`, un bouton et
+  une zone de lecture dans `Component.tsx`. Tests : `backend/test_hmer.py`,
+  extensions de `test_encre_store.py`, `test_rag_sources.py`,
+  `test_dependances_declarees.py`, `test_paquet.py`, et sept cas de plus dans
+  `Component.test.tsx`.
+- **Déclenchement MANUEL, une page à la fois** — pas « en tâche de fond »
+  comme l'annonçait le §2 ci-dessus. La latence CPU réelle n'était pas mesurée
+  quand la phase a été décidée, donc un anti-rebond aurait été posé à l'aveugle.
+  Elle l'est maintenant : **0,4 à 0,5 s par page** une fois le modèle chargé,
+  **8,7 s** de construction du moteur (poids déjà présents), 16,7 s d'import
+  d'`optimum`/`torch` à chaud. L'automatisation redevient une décision informée ;
+  elle n'est pas prise.
+- **Pas de post-correction LLM**, conformément au §2 : ce sera un lot séparé, une
+  fois l'exactitude réelle vue en usage.
+- **`torch` est une dépendance DURE**, contre ce qu'annonçait le §1 (« l'inférence
+  tient avec `onnxruntime`, `numpy` et `Pillow`, tous déjà déclarés »). Mesuré,
+  pas supposé : `optimum/onnxruntime/modeling_seq2seq.py` fait un `import torch`
+  de niveau module, et `pip uninstall torch` casse l'import. Coût réel :
+  **890,1 Mo** de `site-packages` dans un venv propre, dont ≈765 Mo de nouveau
+  pour Épure (torch 509,0 · transformers 106,8 · sympy 69,3 · onnx 35,1 ·
+  networkx 15,0 · tokenizers 7,4 · optimum 2,9 · …). Le §1 reste vrai sur le
+  fond — rien de tout ça n'atteint un destinataire — mais par
+  `HORS_PAQUET_PIP` et non parce que la pile serait légère.
+- **Poids** : `breezedeus/pix2text-mfr`, révision épinglée
+  `bea257edb2653f2ae413b084f2ac0e8299d08df0`, 117,7 Mo en huit fichiers,
+  téléchargés en 44,7 s et vérifiés par sha256 — l'idiome de `core/voice.py`,
+  comme annoncé. Le hub n'est jamais interrogé par `from_pretrained` :
+  `core/runtime.py` pose `HF_HUB_OFFLINE=1` dès que le cache Whisper existe, donc
+  un chargement par identifiant de dépôt échouerait sur ce poste.
+- **Le recadrage de la phase 0 est porté à l'identique** — bounding box du contenu
+  non-blanc, +10 % de marge, clippé aux bords. À noter : `machinelearn/` n'existe
+  plus sur cette machine, donc il a été réécrit d'après la description de ce
+  document et non recopié du fichier d'origine.
+- **La source RAG est `encre:<id>`** et non un chemin de fichier synthétique. Elle
+  apparaît telle quelle dans le panneau fichiers du chat (icône générique, pas de
+  nom de fichier à afficher) ; « retirer » y fonctionne, « ouvrir dans un nouvel
+  onglet » est refusé explicitement (404) au lieu de produire un 500.
+
+
 ### Phase 3 — Correction et collecte.
 
 Deux modes dans le même écran :
