@@ -32,7 +32,7 @@ from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config, modele_local_defaut
 from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
 from core.models import premier_modele_vision_disponible
-from core.rag import SUPPORTED_EXTENSIONS, _IMAGE_EXTENSIONS
+from core.rag import SUPPORTED_EXTENSIONS, _IMAGE_EXTENSIONS, est_source_virtuelle
 from core.runtime import (
     API_KEY_NAMES,
     PIPER_VOICE,
@@ -746,6 +746,18 @@ async def rag_file_ouvrir(path: str = Query(..., description="Chemin indexé à 
     fichiers = await loop.run_in_executor(None, rag.get_indexed_files)
     if path not in fichiers:
         raise HTTPException(status_code=404, detail="Ce fichier n'est pas dans le corpus indexé")
+    # Appartenir au corpus ne veut plus dire « exister sur le disque » depuis que
+    # `RAGEngine.index_page_encre` y range des pages manuscrites sous une source
+    # `encre:<id>`. Sans ce refus, le contrôle juste au-dessus PASSAIT et
+    # `FileResponse` levait un `RuntimeError` sur un chemin inexistant : un 500
+    # « Erreur interne » pour une demande parfaitement bien formée, que le
+    # panneau fichiers avale en silence (`if (!res.ok) return`). 404 avec un
+    # message qui dit pourquoi, comme au-dessus.
+    if est_source_virtuelle(path):
+        raise HTTPException(
+            status_code=404,
+            detail="Cette source est indexée mais n'est pas un fichier sur le disque "
+                   "(page manuscrite du module Encre) — elle s'ouvre depuis ce module.")
     media_type, _ = mimetypes.guess_type(path)
     return FileResponse(
         path,

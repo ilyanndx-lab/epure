@@ -71,6 +71,7 @@ from core.embedding_install import (
     pile_presente as pile_embedding_presente,
 )
 from core.flashcards import FlashcardsEngine
+from core.hmer import HmerEngine
 from core.history import HistoryEngine
 from core.instance import est_modele_cloud, fiches_watch_paths, modele_local_defaut
 from core.llm import LLMEngine
@@ -177,6 +178,24 @@ history_engine = _LazyEngine(
     "Historique des conversations",
 )
 consolidation_engine = ConsolidationEngine(llm, memory, history_engine)
+
+# Transcription manuscrite (module `encre`, phase 2). PARESSEUX, et pas pour la
+# même raison qu'`encre_engine` juste au-dessus est immédiat : celui-ci ne fait
+# qu'un `mkdir`, celui-là charge deux sessions ONNX et, avant elles,
+# `optimum`/`torch` — 16,7 s d'import à chaud, 54,2 s à froid, plus 117,7 Mo de
+# poids à télécharger au tout premier usage. Même famille que `whisper` et
+# `piper` : une capacité optionnelle dont personne ne doit payer le coût au
+# démarrage.
+#
+# ⚠️ `from core.hmer import HmerEngine` en tête de ce fichier est SANS DANGER, et
+# ce n'est pas un hasard : `core/hmer.py` n'importe que la bibliothèque standard
+# au niveau module, et fait entrer `optimum`/`transformers`/`Pillow` dans ses
+# méthodes. La paresse du proxy ne couvre que la CONSTRUCTION, jamais l'import
+# (CLAUDE.md §3.4) — la seconde moitié est tenue là-bas.
+hmer_engine = _LazyEngine(
+    lambda: HmerEngine(),
+    "HMER (transcription manuscrite, pix2text-mfr ONNX)",
+)
 
 _voice_cfg = cfg.get("voice", {})
 # Voix chargée à la 1re utilisation (transcribe/synthesize), pas au démarrage :

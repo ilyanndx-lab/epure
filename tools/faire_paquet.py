@@ -279,7 +279,44 @@ CONTRAINTES_DEFAUT = REPO / "tools" / "contraintes-paquet.txt"
 #: (`core/voice.py`). Ne pas rajouter `onnxruntime` ici : ce serait rendre la
 #: recherche documentaire impossible à réparer depuis l'application, puisque
 #: rien dans Épure n'installe plus de paquet Python.
-HORS_PAQUET_PIP = ("google-generativeai",)
+#: **DICT et non tuple depuis le 2026-09-07**, et la raison est celle du fichier
+#: généré : chaque entrée porte SON motif, parce qu'un motif unique mentirait.
+#: `_exigences_du_paquet` écrivait « RETIRÉ DU PAQUET (installé au premier
+#: usage) » pour tout le monde — vrai de `google-generativeai`, faux de la pile
+#: de transcription manuscrite, que personne n'installera jamais et qu'aucun
+#: module livré n'importe. Le destinataire qui relit ses exigences doit pouvoir
+#: distinguer « ça viendra si tu le veux » de « ça n'a rien à faire ici ».
+#: Un dict et non une seconde constante à côté : deux structures pour une notion
+#: divergent (CLAUDE.md §3.3), et `nom in HORS_PAQUET_PIP` marche à l'identique
+#: sur les clés.
+HORS_PAQUET_PIP = {
+    "google-generativeai":
+        "installé au premier usage",
+    # Pile de transcription manuscrite (`core/hmer.py`, module `encre` phase 2).
+    # `optimum-onnx` tire `optimum`, qui tire `torch` — vérifié : c'est un
+    # `import torch` de niveau module dans `optimum/onnxruntime/modeling_seq2seq.py`,
+    # pas une dépendance dormante. Avec `transformers` et leur arbre commun, c'est
+    # ~765 Mo sur disque en x64, et plusieurs Go de plus sur Linux (torch y
+    # déclare `nvidia-cudnn-cu13`, `nvidia-nccl-cu13`, `triton`…).
+    #
+    # AUCUN module livré ne les importe, et ce n'est pas une estimation : `encre`
+    # n'est ni dans `MODULES_COEUR` ci-dessus ni dans `modules-catalogue/`, donc
+    # aucun paquet distribué ne contient le seul routeur qui appelle
+    # `core/hmer.py`. Le fichier `core/hmer.py` lui-même part bien dans le
+    # paquet — il n'importe que la bibliothèque standard au niveau module, donc
+    # il y dort sans rien exiger.
+    #
+    # Retirés sur TOUTES les architectures et pas seulement ARM64 : le critère
+    # de `HORS_PAQUET_PIP_ARM64` est « pip échoue-t-il à installer ? », et ici
+    # il installerait très bien. Le critère est autre — personne n'en a besoin.
+    # Corollaire qui vaut d'être écrit : ça garde aussi `tokenizers` et `regex`
+    # hors du paquet, c'est-à-dire deux `.pyd` non signés de la famille que
+    # Smart App Control bloque (cf. `core/embedding.py`).
+    "optimum-onnx":
+        "pile de transcription manuscrite, aucun module livré ne l'importe",
+    "transformers":
+        "pile de transcription manuscrite, aucun module livré ne l'importe",
+}
 
 #: Exclus **de l'installation ARM64 seulement** : la voix y est déclarée
 #: indisponible (décision du 2026-08-22, `docs/remplacement-vectoriel.md`). Le x64
@@ -724,10 +761,14 @@ def _exigences_du_paquet(cible: Path, arch: str = "amd64") -> Path:
     fichier produit :
 
     - `HORS_PAQUET_PIP` (toutes architectures) — **récupérable** : rien n'empêche
-      de l'installer plus tard, le paquet garde `pip`. Ne contient plus que
-      `google-generativeai` depuis que la pile d'embedding est embarquée
-      (décision 3) : le fournisseur Gemini reste utilisable en cloud par les
-      autres chemins, et personne ne perd de capacité en attendant.
+      de l'installer plus tard, le paquet garde `pip`. Chaque entrée y porte son
+      propre motif, écrit tel quel dans le fichier généré, parce que les entrées
+      n'ont plus la même nature : `google-generativeai` s'installe au premier
+      usage (le fournisseur Gemini reste utilisable en cloud par les autres
+      chemins), alors que la pile de transcription manuscrite n'a aucun
+      utilisateur chez le destinataire — aucun module livré n'importe
+      `core/hmer.py`. Un « installé au premier usage » indifférencié ferait
+      attendre à quelqu'un une installation qui n'a aucune raison d'arriver.
     - `HORS_PAQUET_PIP_ARM64` (ARM64 seulement) — **définitif** : il n'existe rien
       à installer pour cette architecture, ni maintenant ni plus tard.
 
@@ -747,7 +788,7 @@ def _exigences_du_paquet(cible: Path, arch: str = "amd64") -> Path:
         nom = ligne.split("==")[0].split(">=")[0].strip().lower()
         est_exigence = bool(nom) and not ligne.lstrip().startswith("#")
         if est_exigence and nom in HORS_PAQUET_PIP:
-            gardees.append(f"# RETIRÉ DU PAQUET (installé au premier usage) : {ligne}")
+            gardees.append(f"# RETIRÉ DU PAQUET ({HORS_PAQUET_PIP[nom]}) : {ligne}")
             continue
         if est_exigence and arch == "arm64" and nom in HORS_PAQUET_PIP_ARM64:
             gardees.append(

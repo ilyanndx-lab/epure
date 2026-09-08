@@ -44,6 +44,39 @@ SUPPORTED_EXTENSIONS = {
 #: référence à cette constante ne satisferait pas.
 _IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp'}
 
+#: Préfixe des sources qui ne sont PAS des fichiers du disque. Aujourd'hui une
+#: seule : les pages d'encre manuscrite du module `encre` (`index_page_encre`).
+#:
+#: Un préfixe et non un chemin de fichier synthétique, et ce n'est pas
+#: cosmétique. La métadonnée `source` est lue par `get_indexed_files()`,
+#: `describe_indexed_files()`, `remove_source()`, `query_filtered()` — et surtout
+#: par `GET /rag/files/ouvrir`, qui la passe à `FileResponse`. Un faux chemin
+#: (`<encre>/<id>.png`) aurait donc l'air ouvrable et ne le serait pas ; le `:` en
+#: fait au contraire une valeur qu'aucun chemin Windows ne peut prendre en
+#: première position, donc reconnaissable d'un test. Cf. `est_source_virtuelle`.
+SOURCE_VIRTUELLE_PREFIXES = ("encre:",)
+
+
+def source_encre(page_id: str) -> str:
+    """Identifiant de source d'une page d'encre dans la collection `fiches`.
+
+    Fonction et non f-string recopiée : le routeur du module `encre` en a besoin
+    pour désindexer une page supprimée, et deux façons d'écrire la même clé
+    finiraient par diverger d'un tiret.
+    """
+    return f"encre:{page_id}"
+
+
+def est_source_virtuelle(source: str) -> bool:
+    """La source désigne-t-elle autre chose qu'un fichier du disque ?
+
+    Existe pour que les appelants qui vont TOUCHER le disque (`FileResponse`,
+    `os.path.getmtime`) puissent refuser proprement au lieu de lever. Retirer de
+    l'index, en revanche, marche pour tout le monde et ne doit pas être gardé.
+    """
+    return str(source).startswith(SOURCE_VIRTUELLE_PREFIXES)
+
+
 #: Nombre de lignes lues par feuille d'un classeur. Même borne que le `nrows=500`
 #: du `.csv` juste en dessous, et pour la même raison : au-delà, on indexe un
 #: export de base de données, pas un document qu'on lit.
@@ -334,15 +367,7 @@ class RAGEngine:
         except Exception:
             logger.exception("Erreur suppression chunks existants pour %s", path)
 
-        chunk_chars = self._chunk_size * 4
-        overlap_chars = self._chunk_overlap * 4
-        step = max(1, chunk_chars - overlap_chars)
-
-        chunks = []
-        start = 0
-        while start < len(full_text):
-            chunks.append(full_text[start: start + chunk_chars])
-            start += step
+        chunks = self._decouper(full_text)
 
         # mtime stocké pour la re-indexation incrémentale au démarrage (cf. watch) :
         # on saute le ré-embedding des fichiers inchangés.
@@ -371,6 +396,97 @@ class RAGEngine:
         self._query_filtered_lru.cache_clear()
 
         return full_text
+
+    def _decouper(self, texte: str) -> list[str]:
+        """Découpe en chunks qui se recouvrent, selon la config de `config.yaml`.
+
+        Extraite d'`index_file` quand `index_page_encre` est arrivé : deux
+        découpages pour une même collection dériveraient, et un chunk d'encre
+        deux fois plus long qu'un chunk de fiche fausserait la comparaison de
+        similarité sur laquelle repose toute la recherche.
+
+        Les tailles sont en JETONS dans `config.yaml` et converties en caractères
+        par un facteur 4 — approximation d'origine, conservée telle quelle : la
+        changer ici reviendrait à rendre les chunks déjà indexés incomparables
+        aux nouveaux, sans réindexation.
+        """
+        chunk_chars = self._chunk_size * 4
+        overlap_chars = self._chunk_overlap * 4
+        step = max(1, chunk_chars - overlap_chars)
+        chunks: list[str] = []
+        depart = 0
+        while depart < len(texte):
+            chunks.append(texte[depart: depart + chunk_chars])
+            depart += step
+        return chunks
+
+    def index_page_encre(self, page_id: str, texte: str, titre: str = "") -> int:
+        """Indexe la transcription d'une page manuscrite. Rend le nombre de chunks.
+
+        Méthode DÉDIÉE et non un `index_file` sur un chemin fabriqué, et c'est le
+        point de conception de ce bloc. `index_file` est *un usage* de la
+        collection `fiches`, construit pour des fichiers réels : il déduit
+        l'extension, lit le disque, relève un `mtime` pour la réindexation
+        incrémentale et rend le texte extrait. Une page d'encre n'a rien de tout
+        ça — le texte lui est DONNÉ, il n'y a pas de fichier, et le `mtime`
+        n'aurait aucun sens. Le forcer dans `index_file` aurait demandé un faux
+        chemin sur le disque, donc un fichier à écrire et à tenir synchronisé
+        avec la page : un second stockage de la même chose, exactement ce que
+        `core/encre.py` refuse en tête de fichier.
+
+        Ce qui est repris tel quel d'`index_file`, en revanche, parce que
+        l'oublier casse en silence :
+
+        * **suppression des chunks existants avant l'upsert** — une
+          retranscription doit remplacer, pas s'ajouter. Sans ça la page apparaît
+          deux fois dans les résultats, avec deux textes différents dont l'ancien ;
+        * **invalidation des deux caches de requête** — `query()` continuerait
+          sinon à servir l'ancienne transcription d'une page qu'on vient de
+          reprendre ;
+        * **la forme des identifiants** (`<source>::<n>`), pour que rien dans le
+          store n'ait à savoir d'où vient un chunk.
+
+        Le TITRE est préfixé au texte plutôt que rangé en métadonnée : la
+        recherche est vectorielle, donc seul ce qui est dans le document est
+        cherchable. « Cours de méca » ne se retrouve pas si on le range à côté.
+
+        Un texte vide DÉSINDEXE la page et rend 0 — ce n'est pas une erreur mais
+        le cas normal d'une transcription qui n'a rien lu. Laisser l'ancienne en
+        place serait pire : la page répondrait sur un contenu qu'elle n'a plus.
+        """
+        source = source_encre(page_id)
+        try:
+            self._col.delete(where={"source": source})
+        except Exception:
+            logger.exception("Erreur suppression des chunks de %s", source)
+
+        titre_propre = titre.strip()
+        entete = f"Page manuscrite : {titre_propre}\n\n" if titre_propre else ""
+        contenu = f"{entete}{texte}".strip()
+        if not contenu:
+            self._query_lru.cache_clear()
+            self._query_filtered_lru.cache_clear()
+            logger.info("Transcription vide pour %s — page désindexée", source)
+            return 0
+
+        chunks = self._decouper(contenu)
+        indexe_le = datetime.now().isoformat(timespec="seconds")
+        self._col.upsert(
+            documents=chunks,
+            ids=[f"{source}::{i}" for i in range(len(chunks))],
+            # `mtime` à 0.0 et non omis : `describe_indexed_files` le lit avec un
+            # défaut, mais `_indexed_mtimes` construit sa table sur sa PRÉSENCE.
+            # Une source sans `mtime` y serait absente, ce qui est correct
+            # aujourd'hui (le scan incrémental ne voit que des fichiers) et le
+            # resterait par accident. 0.0 dit « pas de fichier derrière », et
+            # aucun `os.path.getmtime` ne rendra jamais cette valeur.
+            metadatas=[{"source": source, "chunk": i, "mtime": 0.0,
+                        "indexé_le": indexe_le} for i in range(len(chunks))],
+        )
+        self._query_lru.cache_clear()
+        self._query_filtered_lru.cache_clear()
+        logger.info("Page d'encre indexée : %s (%d chunk(s))", source, len(chunks))
+        return len(chunks)
 
     def index_pdf(self, path: str) -> Optional[str]:
         """Backward-compat alias for index_file."""

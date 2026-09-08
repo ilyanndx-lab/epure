@@ -227,3 +227,157 @@ describe('module encre — frontières .json()', () => {
     expect(screen.getByLabelText('Titre de la page')).toBeTruthy()
   })
 })
+
+/**
+ * La transcription (phase 2), et surtout ce qu'elle NE doit pas faire.
+ *
+ * Le mode d'échec visé n'est pas « le texte ne s'affiche pas » — ça se verrait —
+ * mais les deux qui ne se voient pas :
+ *
+ * 1. **un 500 affiché comme un succès.** `apiFetch` ne lève JAMAIS sur un statut
+ *    HTTP (`src/api.ts` rend la `Response` telle quelle), donc un
+ *    `try { await apiFetch(…); afficher() } catch {}` s'exécuterait entièrement
+ *    sur un 500. Or 500 est ici un cas PRÉVU et fréquent : la pile de
+ *    transcription (`optimum-onnx`, `transformers`) n'est installée que sur un
+ *    poste de développement, jamais dans un paquet distribué ;
+ * 2. **une transcription d'un contenu périmé.** Le backend transcrit la page
+ *    telle qu'elle est SUR LE DISQUE ; sans enregistrement préalable, le bouton
+ *    transcrirait l'état d'avant les derniers traits — au mieux la formule
+ *    précédente, au pire une page vide, et rien ne dirait pourquoi.
+ */
+const TRAITS_REELS = [{
+  couleur: '#111827', taille: 3,
+  points: [{ x: 1, y: 2, pression: 0.5, t: 0 }, { x: 8, y: 9, pression: 0.6, t: 8 }],
+}]
+
+const PAGE_TRANSCRITE = {
+  id: 'a1b2', titre: 'Mécanique du point', strokes: TRAITS_REELS,
+  transcription: {
+    texte: 'x^{2} + 1', modele: 'pix2text-mfr',
+    version: 'bea257edb265+rendu1', date: '2026-09-07T12:00:00',
+  },
+}
+
+const PAGE_NON_TRANSCRITE = {
+  id: 'a1b2', titre: 'Mécanique du point', strokes: TRAITS_REELS,
+}
+
+/** Ouvre la page `a1b2` et laisse ses effets se résoudre. */
+async function ouvrirPage() {
+  const entree = screen.getByText('Mécanique du point')
+  await act(async () => { entree.click() })
+  await act(async () => { await Promise.resolve() })
+}
+
+/** Clique « Transcrire » et laisse la requête se résoudre. */
+async function cliquerTranscrire() {
+  await act(async () => { screen.getByTitle(/Transcrire l/).click() })
+  await act(async () => { await Promise.resolve() })
+  await act(async () => { await Promise.resolve() })
+}
+
+describe('module encre — transcription', () => {
+  it('affiche le texte transcrit, en lecture seule, avec modèle et version', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_TRANSCRITE },
+    })
+    await ouvrirPage()
+    const zone = screen.getByLabelText('Texte transcrit (lecture seule)') as HTMLTextAreaElement
+    expect(zone.value).toBe('x^{2} + 1')
+    // Lecture SEULE : l'édition est la phase 3, et elle vient avec la collecte
+    // de paires (encre, LaTeX) qui la justifie. `readOnly` et non `disabled` —
+    // le texte doit rester sélectionnable et copiable.
+    expect(zone.readOnly).toBe(true)
+    // Modèle et version AFFICHÉS : la seule information qui explique pourquoi
+    // deux pages transcrites à trois mois d'écart ne se ressemblent pas.
+    expect(screen.getByText(/pix2text-mfr/)).toBeTruthy()
+    expect(screen.getByText(/rendu1/)).toBeTruthy()
+  })
+
+  it("n'affiche aucune zone de transcription sur une page qui n'en a pas", async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_NON_TRANSCRITE },
+    })
+    await ouvrirPage()
+    expect(screen.queryByLabelText('Texte transcrit (lecture seule)')).toBeNull()
+  })
+
+  it("ignore un champ transcription qui n'a pas la forme annoncée", async () => {
+    // Même règle que partout ailleurs dans ce fichier : le champ peut venir d'un
+    // backend plus ancien, d'un corps d'erreur, d'une autre instance. Sans
+    // `date`, ce n'est pas une transcription — et un objet à champs `undefined`
+    // planterait au rendu, sur `.split()`.
+    for (const transcription of [null, 'du texte', { texte: 'x' }, [], 42]) {
+      const { unmount } = await rendre({
+        '/encre/pages': { corps: PAGES_OK },
+        '/encre/pages/a1b2': { corps: { ...PAGE_NON_TRANSCRITE, transcription } },
+      })
+      await ouvrirPage()
+      expect(screen.queryByLabelText('Texte transcrit (lecture seule)')).toBeNull()
+      expect(screen.getByLabelText('Titre de la page')).toBeTruthy()
+      unmount()
+    }
+  })
+
+  it('affiche le message du backend sur un 500 au lieu de faire semblant', async () => {
+    // LE test de ce bloc. `apiFetch` RÉSOUT sur un 500 : sans `res.ok`, le code
+    // de succès s'exécuterait et l'interface annoncerait une transcription
+    // terminée alors que rien n'a été produit. Le corps reproduit celui que le
+    // routeur envoie réellement quand la pile n'est pas installée — c'est-à-dire
+    // dans TOUT paquet distribué.
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_NON_TRANSCRITE },
+      '/encre/pages/a1b2/transcrire': {
+        status: 500,
+        corps: { detail: 'Pile de transcription manuscrite absente (optimum-onnx, transformers)' },
+      },
+    })
+    await ouvrirPage()
+    await cliquerTranscrire()
+    expect(screen.getByRole('status').textContent).toContain('optimum-onnx')
+    expect(screen.queryByLabelText('Texte transcrit (lecture seule)')).toBeNull()
+  })
+
+  it("dit explicitement quand le modèle n'a rien reconnu", async () => {
+    // Un texte vide est un RÉSULTAT, pas une panne. Sans message, le bouton a
+    // l'air d'être resté sans effet et l'utilisateur reclique.
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_NON_TRANSCRITE },
+      '/encre/pages/a1b2/transcrire': {
+        corps: { ...PAGE_TRANSCRITE,
+                 transcription: { ...PAGE_TRANSCRITE.transcription, texte: '' } },
+      },
+    })
+    await ouvrirPage()
+    await cliquerTranscrire()
+    expect(screen.getByRole('status').textContent).toContain('rien reconnu')
+  })
+
+  it('met le texte à jour depuis la réponse du POST, pas depuis un état local', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: PAGE_NON_TRANSCRITE },
+      '/encre/pages/a1b2/transcrire': { corps: PAGE_TRANSCRITE },
+    })
+    await ouvrirPage()
+    expect(screen.queryByLabelText('Texte transcrit (lecture seule)')).toBeNull()
+    await cliquerTranscrire()
+    const zone = screen.getByLabelText('Texte transcrit (lecture seule)') as HTMLTextAreaElement
+    expect(zone.value).toBe('x^{2} + 1')
+  })
+
+  it('désactive le bouton sur une page sans aucun trait', async () => {
+    // Le backend répondrait 400 : proposer un bouton dont on connaît d'avance le
+    // refus est une invitation à un message d'erreur.
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/pages/a1b2': { corps: { id: 'a1b2', titre: 'Mécanique du point', strokes: [] } },
+    })
+    await ouvrirPage()
+    expect((screen.getByTitle(/Transcrire l/) as HTMLButtonElement).disabled).toBe(true)
+  })
+})

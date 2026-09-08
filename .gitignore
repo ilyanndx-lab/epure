@@ -50,6 +50,21 @@ backend/piper_models/
 # s'enlèvent qu'avec une purge (docs/purge-onnx.md l'a déjà appris une fois).
 backend/embedding_model/
 
+# Poids de transcription manuscrite (`encoder_model.onnx` 87,5 Mo +
+# `decoder_model.onnx` 30,1 Mo + six fichiers de configuration) — défaut portable
+# de EPURE_HMER_DIR, arrivé le 2026-09-07 avec la phase 2 du module `encre`.
+# Troisième cache de la même famille que les deux ci-dessus : téléchargé au
+# premier usage sur une révision HuggingFace ÉPINGLÉE et vérifié par sha256, donc
+# reconstructible à l'octet. À ne jamais suivre, pour la raison écrite plus haut :
+# 118 Mo de binaire dans l'historique ne s'enlèvent qu'avec une purge.
+backend/hmer_model/
+
+# Exigences dérivées, produites par le job `integration` de la CI (et par
+# `tools/faire_paquet.py` si on l'invoque à la main) : `requirements.txt` moins
+# `HORS_PAQUET_PIP`. Un artefact, jamais une source — la seule liste que l'on
+# tient est `backend/requirements.txt`.
+requirements-integration.txt
+
 # Données utilisateur (fiches PDF) — défaut portable de EPURE_FICHES_DIR
 /data/
 backend/doc_uploads/

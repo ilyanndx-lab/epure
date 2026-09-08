@@ -400,6 +400,52 @@ class ExigencesTest(unittest.TestCase):
         """
         self.assertIn("google-generativeai", paquet.HORS_PAQUET_PIP)
 
+    def test_chaque_exclusion_porte_son_propre_motif(self):
+        """`HORS_PAQUET_PIP` est un DICT depuis le 2026-09-07, et c'est structurel.
+
+        Il portait un tuple, et `_exigences_du_paquet` écrivait le même
+        « installé au premier usage » en face de chaque ligne retirée. Vrai de
+        `google-generativeai` — le fournisseur Gemini reste installable, on ne
+        perd qu'un délai — et faux de la pile de transcription manuscrite, que
+        rien n'installera jamais chez un destinataire puisque aucun module livré
+        n'importe `core/hmer.py`. Un motif unique fait attendre à quelqu'un une
+        installation qui n'arrivera pas.
+
+        Ce que ce test tient, c'est la propriété qui rend le dict utile : **une
+        entrée sans motif est impossible**. Un `""` glissé rendrait le fichier
+        généré illisible (« RETIRÉ DU PAQUET () ») sans casser quoi que ce soit
+        d'autre.
+        """
+        self.assertIsInstance(paquet.HORS_PAQUET_PIP, dict)
+        for nom, motif in paquet.HORS_PAQUET_PIP.items():
+            with self.subTest(paquet=nom):
+                self.assertIsInstance(motif, str)
+                self.assertGreater(len(motif.strip()), 10, nom)
+        with tempfile.TemporaryDirectory() as tmp:
+            texte = paquet._exigences_du_paquet(Path(tmp) / "req.txt").read_text(encoding="utf-8")
+        for nom, motif in paquet.HORS_PAQUET_PIP.items():
+            with self.subTest(motif_ecrit=nom):
+                self.assertIn(f"RETIRÉ DU PAQUET ({motif})", texte)
+
+    def test_onnxruntime_reste_installe_malgre_le_voisinage_ml(self):
+        """Contre-épreuve du lot de transcription manuscrite, et pas un doublon.
+
+        `test_dependances_declarees.py` dit la même chose depuis l'angle de la
+        déclaration. Ici l'angle est celui du PAQUET, et le risque est neuf : la
+        pile de transcription (`optimum-onnx`, `transformers`, donc `torch`) vient
+        d'entrer dans `HORS_PAQUET_PIP` juste à côté. `onnxruntime` a tout l'air
+        d'appartenir au même lot — c'est de l'ONNX, c'est du ML, c'est lourd — et
+        l'y glisser livrerait un paquet sans moteur d'embedding, c'est-à-dire sans
+        recherche documentaire, sur toutes les architectures. La même confusion a
+        déjà failli se produire avec la voix (cf. `HORS_PAQUET_PIP_ARM64`).
+        """
+        self.assertNotIn("onnxruntime", paquet.HORS_PAQUET_PIP)
+        self.assertNotIn("onnxruntime", paquet.HORS_PAQUET_PIP_ARM64)
+        for arch in paquet.ARCHS:
+            _, actives = _exigences(arch)
+            with self.subTest(arch=arch):
+                self.assertTrue(any(l.lower().startswith("onnxruntime") for l in actives))
+
     def test_chromadb_et_sa_grappe_ne_sont_plus_installes_ni_purges(self):
         """Le retrait de chromadb (`docs/remplacement-vectoriel.md`, étape D) doit
         se voir aux DEUX bouts, sinon il n'est pas fait.

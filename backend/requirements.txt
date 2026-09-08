@@ -188,6 +188,79 @@ pandas==3.0.3
 # cp312 et est déjà accepté dans l'arbre depuis le lot bureautique.
 readability-lxml==0.9
 
+# ── Transcription manuscrite (core/hmer.py, module `encre` phase 2) ─────────
+# AJOUTÉ le 2026-09-07. C'est de loin le lot le plus lourd du fichier, et il est
+# le seul dont AUCUN destinataire ne reçoit quoi que ce soit : les deux lignes
+# ci-dessous sont dans `HORS_PAQUET_PIP` (`tools/faire_paquet.py`), toutes
+# architectures confondues. Ce qui suit explique pourquoi c'est acceptable ici et
+# pourquoi ça ne doit jamais franchir cette frontière.
+#
+# CE QU'ON UTILISE : `pix2text-mfr`, un TrOCR ré-entraîné sur formules dont
+# HuggingFace publie l'export ONNX (encoder + decoder, sans cache fusionné). La
+# phase 0 (`docs/module-encre.md`) l'a mesuré sur 50 expressions manuscrites
+# réelles : 24,0 % d'ExpRate, ce qui suffit pour un INDEX cherchable et pour
+# rien d'autre. Le chargement passe par
+# `optimum.onnxruntime.ORTModelForVision2Seq.from_pretrained(..., use_cache=False,
+# use_io_binding=False, provider="CPUExecutionProvider")` — la configuration
+# validée en phase 0, pas une reconstruction.
+#
+# `torch` N'EST PAS UNE DÉPENDANCE TRANSITIVE INUTILISÉE — MESURÉ, PAS SUPPOSÉ.
+# La question méritait d'être posée : on n'appelle jamais torch, l'inférence est
+# en ONNX Runtime. Vérification faite dans un venv propre (Python 3.14, wheels du
+# 2026-09-07) : `pip uninstall torch` puis
+# `from optimum.onnxruntime import ORTModelForVision2Seq` →
+# `optimum/onnxruntime/modeling_seq2seq.py:23, import torch, ModuleNotFoundError`.
+# C'est un import de NIVEAU MODULE, inconditionnel, pas un chemin optionnel. Il
+# n'y a donc pas de version « sans torch » de cette pile ; il y a un choix entre
+# l'accepter et réécrire le décodage seq2seq en numpy pur, ce que
+# `docs/module-encre.md` §1 réserve explicitement au jour où ce module
+# deviendrait livrable. Il ne l'est pas.
+#
+# COÛT MESURÉ sur ce poste (site-packages du venv propre, wheels Windows x64) :
+# 890,1 Mo au total, dont ~765 Mo de NOUVEAU pour Épure — torch 509,0 ·
+# transformers 106,8 · sympy 69,3 · onnx 35,1 · networkx 15,0 · tokenizers 7,4 ·
+# huggingface_hub 4,6 · mpmath 4,5 · torchgen 3,3 · optimum 2,9 · le reste sous
+# 2 Mo. C'est, à la louche près, exactement ce que le remplacement de la pile
+# d'embedding avait retiré du disque le 2026-08-26 (850,7 Mo). La différence est
+# entière et c'est elle qui autorise ce lot : ces 765 Mo vivent sur le poste de
+# DÉVELOPPEMENT, pas chez un destinataire.
+#
+# ⚠️ SUR LINUX C'EST PIRE, et ça concerne le job `integration` de la CI, seul
+# endroit qui installe ce fichier en entier. `torch==2.14.0` déclare, sous
+# marqueur `platform_system == "Linux"` : `nvidia-cudnn-cu13`,
+# `nvidia-cusparselt-cu13`, `nvidia-nccl-cu13`, `nvidia-nvshmem-cu13` et
+# `triton` — plusieurs Go que la résolution Windows ne montre pas. Ce job est
+# `workflow_dispatch` uniquement, donc aucun push n'en dépend, mais il a un
+# `timeout-minutes: 30` et le disque d'un runner n'est pas infini. Constaté, pas
+# corrigé : le corriger demande de décider si ce job doit installer une pile de
+# développement, ce qui n'est pas une question de ce lot.
+#
+# ⚠️ CE QUE CES DEUX LIGNES RÉINTRODUISENT DANS L'ARBRE DE DÉVELOPPEMENT, et
+# qu'il faut avoir en tête en lisant `test_dependances_declarees.py` :
+# `tokenizers` et `regex`, c'est-à-dire deux `.pyd` non signés de la famille que
+# Smart App Control bloque (`sklearn/utils/_isfinite`, `regex/_regex.pyd`, tous
+# deux mesurés sur la machine ARM64 d'un destinataire). Ils sont ACCEPTABLES ici
+# et seulement ici parce qu'aucun destinataire ne les reçoit — et l'invariant
+# n'est plus « ces paquets ne sont pas déclarés » mais « ces paquets ne sortent
+# jamais d'un paquet distribué ». C'est un affaiblissement réel du garde-fou :
+# `test_dependances_declarees.py` le remplace par une vérification directe de
+# `HORS_PAQUET_PIP`, à ne pas retirer.
+#
+# `optimum-onnx` ET NON `optimum[onnxruntime]` : c'est bien `optimum-onnx` qui
+# possède `optimum/onnxruntime/modeling_seq2seq.py` (vérifié par
+# `importlib.metadata.files`, pas déduit du nom d'import — depuis optimum 2.x le
+# paquet historique ne fournit plus ce sous-module). Déclarer `optimum` seul
+# donnerait un `requirements.txt` qui résout aujourd'hui par accident.
+# `transformers` est déclaré EN DIRECT bien qu'`optimum` le tire : `core/hmer.py`
+# fait `from transformers import AutoProcessor`, donc c'est une dépendance
+# directe au sens du §8 — la règle qui a déjà coûté `websockets` puis failli
+# coûter `onnxruntime`.
+#
+# `onnxruntime` n'est PAS ici : il est déclaré plus haut, il porte l'embedding,
+# et il PART dans le paquet. Ne pas le déplacer dans ce bloc par ressemblance.
+optimum-onnx==0.1.0
+transformers==4.57.6
+
 # ── Lanceur système : epure_tray.py, PAS le backend ──────────────────────────
 # Ni `main.py` ni `core/*` ne les importent — le backend démarre sans. Elles
 # sont déclarées ici parce que requirements.txt est le seul fichier de
