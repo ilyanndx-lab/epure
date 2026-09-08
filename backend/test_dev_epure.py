@@ -244,6 +244,73 @@ class UnSeulPointDePassage(unittest.TestCase):
                  if l.startswith("$ErrorActionPreference")]
         self.assertIn("$ErrorActionPreference = 'Stop'", poses)
 
+    def test_le_nettoyage_node_residuel_ne_filtre_plus_par_seul_chemin(self):
+        """Incident PR #35 : `Trouver-NodeDuCheckout` interrogeait TOUTE la
+        table des process sur le seul critere « executable sous $RACINE ».
+        Inoffensif tant que le backend du tray tournait sous le Python
+        partage (hors du checkout) ; devenu destructeur depuis qu'il tourne
+        sous `.venv\\Scripts\\python.exe`, DONC sous $RACINE -- `-Diagnostic`,
+        documente sans effet de bord, tuait alors le backend d'un tray deja
+        lance. Verifie statiquement qu'une seule requete Win32_Process
+        subsiste, et qu'elle est filtree par nom.
+        """
+        corps = extraire_fonction("Trouver-NodeDuCheckout")
+        code = corps[corps.index("#>") + 2:]  # exclut le bloc <# ... #> ci-dessus
+        requetes = [l.strip() for l in code.split("\n") if "Win32_Process" in l]
+        self.assertEqual(
+            1, len(requetes),
+            "une seule requete Win32_Process attendue dans cette fonction ; "
+            "trouvee(s) : " + repr(requetes))
+        self.assertIn("Name='node.exe'", requetes[0])
+
+
+class TrouverNodeDuCheckoutRestreintAuNom(_Harnais):
+    """Preuve en conditions reelles, pas seulement statique : un executable
+    RENOMME (donc pas `node.exe`) place sous le checkout ne doit plus etre
+    tue -- c'est exactement ce qui arrivait au backend du tray, lance depuis
+    le 2026-09-08 sous `.venv\\Scripts\\python.exe`.
+
+    `PING.EXE` sert de process de longue duree sans dependance a copier a
+    cote de lui (contrairement a `python.exe`, qui a besoin de ses propres
+    DLL pour demarrer) : copie sous deux noms dans un faux checkout, l'un
+    `node.exe`, l'autre non, seul le premier doit ressortir de la fonction.
+    """
+
+    def corps_test(self):
+        return "\n".join([
+            '$dir = Join-Path $env:TEMP ("epure-test-checkout-" + '
+            '[guid]::NewGuid().ToString("N"))',
+            'New-Item -ItemType Directory -Path $dir -Force | Out-Null',
+            '$ping = Join-Path $env:WINDIR "System32\\PING.EXE"',
+            'Copy-Item $ping (Join-Path $dir "node.exe")',
+            'Copy-Item $ping (Join-Path $dir "pas-node.exe")',
+            '$RACINE = $dir',
+            extraire_fonction("Trouver-NodeDuCheckout"),
+            '$pNode = Start-Process -FilePath (Join-Path $dir "node.exe") '
+            '-ArgumentList "-n","20","127.0.0.1" -PassThru -WindowStyle Hidden',
+            '$pAutre = Start-Process -FilePath (Join-Path $dir "pas-node.exe") '
+            '-ArgumentList "-n","20","127.0.0.1" -PassThru -WindowStyle Hidden',
+            'try {',
+            '    Start-Sleep -Milliseconds 800',
+            '    $suspects = Trouver-NodeDuCheckout',
+            '    $ids = @($suspects | ForEach-Object { $_.ProcessId })',
+            '    Write-Host ("NODE_TROUVE=" + ($ids -contains $pNode.Id))',
+            '    Write-Host ("AUTRE_TROUVE=" + ($ids -contains $pAutre.Id))',
+            '} finally {',
+            '    Stop-Process -Id $pNode.Id -Force -ErrorAction SilentlyContinue',
+            '    Stop-Process -Id $pAutre.Id -Force -ErrorAction SilentlyContinue',
+            '    Start-Sleep -Milliseconds 300',
+            '    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue',
+            '}',
+            "Write-Host 'ATTEINT'",
+        ])
+
+    def test_un_executable_renomme_sous_le_checkout_n_est_plus_tue(self):
+        res = self.jouer(self.corps_test())
+        self.assertIn("ATTEINT", res.stdout, res.stdout + res.stderr)
+        self.assertIn("NODE_TROUVE=True", res.stdout, res.stdout + res.stderr)
+        self.assertIn("AUTRE_TROUVE=False", res.stdout, res.stdout + res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
