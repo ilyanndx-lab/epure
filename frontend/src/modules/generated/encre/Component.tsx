@@ -1072,8 +1072,8 @@ export default function EncreModule(_props: SharedModuleProps) {
                   value={texteCorrection}
                   onChange={e => setTexteCorrection(e.target.value)}
                   aria-label="Texte à corriger"
-                  rows={4}
-                  className="w-full bg-elevated border border-line rounded-md px-3 py-2 text-xs font-mono text-secondary resize-y focus:outline-none focus:border-accent"
+                  rows={8}
+                  className="w-full bg-elevated border border-line rounded-md px-3 py-2 text-sm font-mono text-secondary resize-y focus:outline-none focus:border-accent"
                 />
                 <div className="bg-elevated border border-line rounded-md p-3">
                   <span className="text-xs text-muted uppercase tracking-wide">
