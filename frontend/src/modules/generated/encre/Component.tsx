@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   CheckCircle2, Eraser, GraduationCap, PenLine, PenTool, Plus, Redo2, ScanText,
   SkipForward, Sigma, Trash2, Type, Undo2,
@@ -7,7 +7,10 @@ import katex from 'katex'
 import type { SharedModuleProps } from '../../registry'
 import { API, apiFetch } from '../../../api'
 import { dico, liste, texte } from '../../../normaliser'
-import { COULEUR_ENCRE, TAILLE_TRAIT, type Trait, useDessinStylet } from './useCanvasEncre'
+import {
+  COULEUR_ENCRE, dimensionner, HAUTEUR, LARGEUR, peindre, TAILLE_TRAIT, type Trait,
+  useDessinStylet,
+} from './useCanvasEncre'
 
 /**
  * Module « encre » — prise de notes manuscrites au stylet, et leur transcription.
@@ -719,6 +722,14 @@ export default function EncreModule(_props: SharedModuleProps) {
   const [texteCorrection, setTexteCorrection] = useState('')
   const [etatCorrection, setEtatCorrection] = useState<Etat | null>(null)
   const [validationEnCours, setValidationEnCours] = useState(false)
+  //: Tracés de la page en correction, pour l'aperçu en lecture seule sous le
+  //: texte édité. `GET /encre/entrainement/a_corriger` (ci-dessous) ne les
+  //: porte PAS — cf. `PageACorreger` : la correction ne touche jamais l'encre,
+  //: donc cette liste s'en passe. Redemandés via le MÊME endpoint que la vue
+  //: Notes (`GET /encre/pages/{id}`), qui les rend.
+  const [traitsCorrection, setTraitsCorrection] = useState<Trait[]>([])
+  const canvasRefCorrection = useRef<HTMLCanvasElement | null>(null)
+  const zoneRefCorrection = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (vue !== 'entrainement' || sousVue !== 'correction') return
@@ -730,10 +741,52 @@ export default function EncreModule(_props: SharedModuleProps) {
     return () => { vivant = false }
   }, [vue, sousVue, rafraichirCorrection])
 
+  useEffect(() => {
+    // Sortie SANS `setState`, même idiome que le chargement de la page de
+    // notes plus haut : `traitsCorrection` vaut déjà `[]` à l'initialisation,
+    // et `choisirPageCorrection` (hors effet) le vide explicitement à chaque
+    // changement de page — un `setState` synchrone ici déclencherait un rendu
+    // en cascade qu'eslint refuse (`react-hooks/set-state-in-effect`).
+    if (!pageCorrectionId) return
+    let vivant = true
+    apiFetch(`${API}/encre/pages/${encodeURIComponent(pageCorrectionId)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (vivant) setTraitsCorrection(d ? versTraits(objet(d).strokes) : []) })
+      .catch(() => { if (vivant) setTraitsCorrection([]) })
+    return () => { vivant = false }
+  }, [pageCorrectionId])
+
+  /**
+   * Peint l'aperçu en lecture seule — `dimensionner`/`peindre` de
+   * `useCanvasEncre.ts` directement, SANS passer par `useDessinStylet` : ce
+   * canvas n'a ni gomme, ni undo/redo, ni gestionnaire de pointeur à porter,
+   * juste l'encre déjà écrite à afficher telle quelle.
+   */
+  useEffect(() => {
+    const canvas = canvasRefCorrection.current
+    const zone = zoneRefCorrection.current
+    if (!canvas || !zone) return
+    if (dimensionner(canvas, zone, LARGEUR, HAUTEUR)) {
+      peindre(canvas, LARGEUR, HAUTEUR, traitsCorrection, null)
+    }
+    if (typeof ResizeObserver === 'undefined') return
+    const observateur = new ResizeObserver(() => {
+      if (dimensionner(canvas, zone, LARGEUR, HAUTEUR)) {
+        peindre(canvas, LARGEUR, HAUTEUR, traitsCorrection, null)
+      }
+    })
+    observateur.observe(zone)
+    return () => observateur.disconnect()
+  }, [traitsCorrection])
+
   const choisirPageCorrection = (p: PageACorreger) => {
     setPageCorrectionId(p.id)
     setTexteCorrection(p.texte_modele)
     setEtatCorrection(null)
+    // Vidé ICI, dans le gestionnaire, et pas dans l'effet ci-dessus : sinon
+    // l'aperçu de la page qu'on QUITTE resterait affiché sous le texte de
+    // celle qu'on OUVRE le temps que la requête réponde.
+    setTraitsCorrection([])
   }
 
   /**
@@ -1022,6 +1075,20 @@ export default function EncreModule(_props: SharedModuleProps) {
                   rows={4}
                   className="w-full bg-elevated border border-line rounded-md px-3 py-2 text-xs font-mono text-secondary resize-y focus:outline-none focus:border-accent"
                 />
+                <div className="bg-elevated border border-line rounded-md p-3">
+                  <span className="text-xs text-muted uppercase tracking-wide">
+                    Encre d&apos;origine
+                  </span>
+                  {/* Aperçu en lecture seule de la page manuscrite — pour
+                      vérifier la transcription contre l'encre réelle plutôt
+                      que de corriger à l'aveugle. */}
+                  <div ref={zoneRefCorrection} className="mt-2">
+                    <canvas
+                      ref={canvasRefCorrection}
+                      className="block rounded-md border border-line shadow-sm"
+                    />
+                  </div>
+                </div>
                 <div className="flex gap-2 flex-wrap">
                   <button
                     onClick={() => { void validerCorrection(true) }}
