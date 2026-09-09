@@ -381,6 +381,63 @@ class EncreStoreTest(unittest.TestCase):
         self.assertIsNone(self.moteur.set_transcription("abimee", "x", "m", "v"))
         self.assertEqual("{ pas du json", chemin.read_text(encoding="utf-8"))
 
+    # ── Correction et collecte (phase 3) ─────────────────────────────────────
+
+    def test_marquer_valide_pose_le_marqueur_sans_toucher_au_reste(self):
+        page = self.moteur.create_page("Cours de méca", [TRAIT])
+        self.moteur.set_transcription(page["id"], "x^{2}", "pix2text-mfr", "v1")
+        marquee = self.moteur.marquer_transcription_validee(page["id"])
+        self.assertTrue(marquee["transcription"]["validee_le"])
+        for champ in ("titre", "strokes", "date_creation", "date_modification"):
+            with self.subTest(champ=champ):
+                self.assertEqual(page[champ], marquee[champ])
+        self.assertEqual("x^{2}", marquee["transcription"]["texte"])
+        self.assertEqual("pix2text-mfr", marquee["transcription"]["modele"])
+        self.assertEqual("v1", marquee["transcription"]["version"])
+
+    def test_marquer_valide_ne_bloque_jamais_une_re_correction(self):
+        """Rappeler la méthode une seconde fois doit réussir et avancer
+        l'horodatage — jamais un refus, cf. la consigne de la phase 3."""
+        page = self.moteur.create_page("x", [TRAIT])
+        self.moteur.set_transcription(page["id"], "x", "m", "v")
+        premiere = self.moteur.marquer_transcription_validee(page["id"])["transcription"]["validee_le"]
+        seconde = self.moteur.marquer_transcription_validee(page["id"])["transcription"]["validee_le"]
+        self.assertTrue(seconde)
+        self.assertTrue(premiere)
+
+    def test_marquer_valide_sans_transcription_rend_none_sans_rien_ecrire(self):
+        page = self.moteur.create_page("x", [TRAIT])
+        self.assertIsNone(self.moteur.marquer_transcription_validee(page["id"]))
+        self.assertNotIn("transcription", self.moteur.get_page(page["id"]))
+
+    def test_marquer_valide_page_absente_rend_none(self):
+        self.assertIsNone(self.moteur.marquer_transcription_validee("0" * 32))
+
+    def test_liste_a_corriger_ne_contient_que_les_pages_maths_transcrites(self):
+        transcrite = self.moteur.create_page("Transcrite", [TRAIT])
+        self.moteur.set_transcription(transcrite["id"], "x", "m", "v")
+        self.moteur.create_page("Jamais transcrite", [TRAIT])
+        lettres = self.moteur.create_page("Lettres", [TRAIT], mode="lettres")
+        # Une page "lettres" ne devrait jamais avoir de transcription (le
+        # routeur le refuse), mais si elle en portait une malgré tout — fichier
+        # écrit à la main, régression amont — elle reste exclue par le mode.
+        self.moteur.update_page(lettres["id"], mode="lettres")
+
+        resultat = self.moteur.list_pages_transcrites()
+        self.assertEqual([transcrite["id"]], [p["id"] for p in resultat])
+        self.assertEqual("x", resultat[0]["transcription"]["texte"])
+        self.assertNotIn("strokes", resultat[0])
+
+    def test_liste_a_corriger_garde_les_pages_deja_validees(self):
+        """Ne bloque jamais une re-correction : la page validée reste listée,
+        c'est au frontend de choisir de la filtrer par défaut."""
+        page = self.moteur.create_page("x", [TRAIT])
+        self.moteur.set_transcription(page["id"], "x", "m", "v")
+        self.moteur.marquer_transcription_validee(page["id"])
+        resultat = self.moteur.list_pages_transcrites()
+        self.assertEqual(1, len(resultat))
+        self.assertTrue(resultat[0]["transcription"]["validee_le"])
+
     def test_suppression(self):
         pid = self.moteur.create_page("x", [])["id"]
         self.assertTrue(self.moteur.delete_page(pid))

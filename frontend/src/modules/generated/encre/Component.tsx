@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
-  Eraser, PenLine, PenTool, Plus, Redo2, ScanText, Sigma, Trash2, Type, Undo2,
+  CheckCircle2, Eraser, GraduationCap, PenLine, PenTool, Plus, Redo2, ScanText,
+  SkipForward, Sigma, Trash2, Type, Undo2,
 } from 'lucide-react'
-import { getStroke } from 'perfect-freehand'
+import katex from 'katex'
 import type { SharedModuleProps } from '../../registry'
 import { API, apiFetch } from '../../../api'
 import { dico, liste, texte } from '../../../normaliser'
+import { COULEUR_ENCRE, TAILLE_TRAIT, type Trait, useDessinStylet } from './useCanvasEncre'
 
 /**
  * Module « encre » — prise de notes manuscrites au stylet, et leur transcription.
@@ -92,75 +94,10 @@ import { dico, liste, texte } from '../../../normaliser'
  * donc gardée par `res.ok`, et le message du backend est affiché.
  */
 
-//: Taille logique d'une page, en unités de coordonnées. Le rapport est celui
-//: d'une A4 en portrait ; les valeurs elles-mêmes n'ont d'importance que par
-//: leur constance — elles sont figées dans les fichiers déjà écrits, donc les
-//: changer déplacerait l'encre existante.
-const LARGEUR = 1240
-const HAUTEUR = 1754
-
-//: Encre et papier. Une seule couleur et une seule épaisseur : la phase 1 n'a
-//: pas de palette, et en ajouter une n'est pas dans son périmètre. Les deux
-//: valeurs sont malgré tout écrites DANS chaque trait plutôt que déduites à
-//: l'affichage — le jour où une palette arrive, les pages déjà écrites n'auront
-//: pas à être migrées, et une page ancienne gardera l'aspect qu'elle avait.
-const COULEUR_ENCRE = '#111827'
-const TAILLE_TRAIT = 3.5
-
-//: Le papier reste blanc dans les deux thèmes. Ce n'est pas un oubli : la
-//: couleur de l'encre est une donnée de la page, donc inverser le fond en thème
-//: sombre rendrait invisible une encre foncée écrite la veille. Le contour de la
-//: zone, lui, suit le thème.
-const PAPIER = '#ffffff'
-
-//: Rayon de la gomme, en unités logiques. La gomme supprime le TRAIT sous le
-//: curseur — pas des pixels : les traits sont des vecteurs, il n'y a pas de
-//: pixels à effacer, et une gomme par pixel obligerait à découper un trait en
-//: deux, donc à inventer une notion de trait partiel que la phase 2 devrait
-//: ensuite savoir transcrire.
-const RAYON_GOMME = 14
-
-//: Réglage de `perfect-freehand`. `thinning` est ce qui rend le trait sensible à
-//: la pression ; `simulatePressure: false` parce qu'un stylet actif FOURNIT la
-//: pression — la simuler à partir de la vitesse par-dessus une vraie mesure
-//: donne un trait qui ne suit pas la main.
-const RENDU = { thinning: 0.6, smoothing: 0.5, streamline: 0.5, simulatePressure: false }
-
 //: Délai d'inactivité avant l'enregistrement automatique. Assez court pour
 //: qu'une pause entre deux mots suffise, assez long pour ne pas envoyer une
 //: requête par trait.
 const DELAI_ENREGISTREMENT_MS = 1200
-
-//: Profondeur de la pile d'annulation. Les instantanés partagent leurs traits
-//: (ce sont les mêmes objets), donc le coût est celui des références, pas celui
-//: de l'encre — la borne est là pour éviter une croissance non bornée sur une
-//: séance de plusieurs heures, pas pour économiser de la mémoire.
-const PROFONDEUR_HISTORIQUE = 60
-
-interface Point {
-  x: number
-  y: number
-  /** 0…1 tel que rendu par le stylet ; 0,5 par défaut pour une souris. */
-  pression: number
-  /**
-   * Millisecondes depuis le début DU TRAIT.
-   *
-   * `docs/module-encre.md` désigne `(x, y, t, pression)` comme la donnée
-   * irremplaçable, et le temps en fait partie : c'est lui qui porte la vitesse
-   * du geste, dont dépendent la segmentation et le rendu d'un tracé. Il ne sert
-   * à rien aujourd'hui — le rendu n'en a pas besoin — et c'est exactement pour
-   * ça qu'il faut l'écrire maintenant : on ne le retrouvera jamais après coup.
-   * Relatif au trait et non absolu, pour ne pas semer un horodatage
-   * d'utilisation dans chaque point.
-   */
-  t: number
-}
-
-interface Trait {
-  couleur: string
-  taille: number
-  points: Point[]
-}
 
 interface PageResume {
   id: string
@@ -216,6 +153,26 @@ interface Instantane {
   titre: string
   traits: Trait[]
   mode: Mode
+}
+
+/**
+ * Une entrée de `GET /encre/entrainement/a_corriger` (phase 3). Pas de tracés
+ * ici — cf. `EncreEngine.list_pages_transcrites` côté backend : la correction
+ * ne modifie que le TEXTE, jamais l'encre, donc rien ne les affiche.
+ */
+interface PageACorreger {
+  id: string
+  titre: string
+  texte_modele: string
+  /** `null` = jamais validée. Présent, c'est un horodatage — sa VALEUR ne
+   * sert à rien ici, seule sa présence compte (filtrage par défaut). */
+  validee_le: string | null
+}
+
+/** Une expression à recopier (`GET /encre/entrainement/dictee/expression`). */
+interface ExpressionDictee {
+  id: string
+  latex: string
 }
 
 // ── Normalisation des réponses ───────────────────────────────────────────────
@@ -333,6 +290,28 @@ function versMode(v: unknown): Mode {
 }
 
 /**
+ * Les pages « à corriger » (phase 3), quoi qu'ait répondu le backend.
+ *
+ * Une entrée sans `id` est écartée, même règle que `versResumes` : affichée et
+ * cliquable, elle mènerait à une validation sur un identifiant vide.
+ */
+function versPagesACorreger(v: unknown): PageACorreger[] {
+  return liste<unknown>(v)
+    .map(brut => {
+      const o = objet(brut)
+      const transcription = objet(o.transcription)
+      const validee = texte(transcription.validee_le)
+      return {
+        id: texte(o.id),
+        titre: texte(o.titre),
+        texte_modele: texte(transcription.texte),
+        validee_le: validee || null,
+      }
+    })
+    .filter(p => p.id !== '')
+}
+
+/**
  * Message d'erreur du backend, ou un repli.
  *
  * `detail` est lu en vérifiant son TYPE : une erreur de validation FastAPI y met
@@ -381,88 +360,34 @@ async function sauvegarder(
   }
 }
 
-// ── Géométrie et rendu ───────────────────────────────────────────────────────
+// ── Rendu LaTeX (phase 3) ────────────────────────────────────────────────────
 
 /**
- * Ajuste le canvas à la largeur disponible. Rend `false` s'il n'y a rien à
- * dessiner (zone de largeur nulle : panneau replié, ou jsdom en test).
- *
- * Trois tailles cohabitent et les confondre donne un tracé flou ou décalé :
- * la taille LOGIQUE (`LARGEUR`×`HAUTEUR`, dans laquelle vivent les points), la
- * taille CSS (ce que l'utilisateur voit), et la taille en pixels du canvas
- * (CSS × `devicePixelRatio`, la finesse réelle du rendu). Seule la première est
- * stockée ; les deux autres se recalculent à chaque redimensionnement.
+ * Rendu KaTeX d'une expression, jamais une exception. `katex` est déjà une
+ * dépendance du dépôt (`RichMessage.tsx`, via `rehype-katex`) — appelé ici
+ * directement (`renderToString`) puisqu'on rend une expression ISOLÉE, pas un
+ * document markdown complet. `throwOnError: false` rend un message d'erreur
+ * KaTeX inline plutôt que de lever : une expression mal formée (LaTeX vérité en
+ * cours de frappe, sortie du modèle syntaxiquement fausse) ne doit pas faire
+ * planter l'écran de correction ou de dictée.
  */
-function dimensionner(canvas: HTMLCanvasElement, zone: HTMLElement): boolean {
-  const largeurCss = zone.clientWidth
-  if (largeurCss <= 0) return false
-  const hauteurCss = (largeurCss * HAUTEUR) / LARGEUR
-  const dpr = window.devicePixelRatio || 1
-  canvas.style.width = `${largeurCss}px`
-  canvas.style.height = `${hauteurCss}px`
-  canvas.width = Math.max(1, Math.round(largeurCss * dpr))
-  canvas.height = Math.max(1, Math.round(hauteurCss * dpr))
-  return true
-}
-
-/** Le contour d'un trait, prêt à remplir. `null` si le trait ne produit rien. */
-function chemin(trait: Trait): Path2D | null {
-  const contour = getStroke(
-    trait.points.map(p => [p.x, p.y, p.pression]),
-    { ...RENDU, size: trait.taille },
-  )
-  if (contour.length < 3) return null
-  const p = new Path2D()
-  p.moveTo(contour[0][0], contour[0][1])
-  for (let i = 1; i < contour.length; i++) p.lineTo(contour[i][0], contour[i][1])
-  p.closePath()
-  return p
-}
-
-/**
- * Repeint la page entière : papier, traits enregistrés, puis le trait en cours.
- *
- * Tout est redessiné à chaque trame plutôt que d'entretenir un calque des traits
- * déjà posés. C'est le choix simple, et il est assumé pour cette phase : une
- * page de notes tient dans quelques centaines de traits, et un calque
- * introduirait un second état à garder cohérent avec `traits` — exactement le
- * genre de doublon qui finit par diverger. Si une page réelle devient lente,
- * c'est ici que ça se corrige, et la mesure existera alors.
- *
- * `getContext('2d')` peut rendre `null` (jsdom sans canvas, contexte perdu) :
- * on sort, on ne lève pas. Un module dont le rendu jette casserait la page
- * entière — `ModuleErrorBoundary` n'attrape pas les erreurs d'un gestionnaire
- * d'événements.
- */
-function peindre(canvas: HTMLCanvasElement, traits: Trait[], enCours: Trait | null): void {
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  const k = canvas.width / LARGEUR
-  ctx.setTransform(k, 0, 0, k, 0, 0)
-  ctx.clearRect(0, 0, LARGEUR, HAUTEUR)
-  ctx.fillStyle = PAPIER
-  ctx.fillRect(0, 0, LARGEUR, HAUTEUR)
-  for (const trait of enCours ? [...traits, enCours] : traits) {
-    const forme = chemin(trait)
-    if (!forme) continue
-    ctx.fillStyle = trait.couleur
-    ctx.fill(forme)
+function rendreLatex(tex: string): string {
+  try {
+    return katex.renderToString(tex, {
+      throwOnError: false, strict: false, trust: false,
+      macros: { '\\R': '\\mathbb{R}', '\\N': '\\mathbb{N}', '\\Z': '\\mathbb{Z}' },
+    })
+  } catch {
+    return ''
   }
 }
 
-/** Coordonnées logiques d'un événement, quelle que soit l'échelle d'affichage. */
-function versLogique(canvas: HTMLCanvasElement, e: PointerEvent): { x: number; y: number } {
-  const r = canvas.getBoundingClientRect()
-  if (r.width <= 0 || r.height <= 0) return { x: 0, y: 0 }
-  return {
-    x: ((e.clientX - r.left) / r.width) * LARGEUR,
-    y: ((e.clientY - r.top) / r.height) * HAUTEUR,
+function RenduLatex({ tex }: { tex: string }) {
+  if (!tex.trim()) {
+    return <p className="text-xs text-muted italic">Rien à afficher.</p>
   }
-}
-
-/** Le trait est-il sous la gomme ? Distance au point le plus proche. */
-function souLaGomme(trait: Trait, x: number, y: number): boolean {
-  return trait.points.some(p => Math.hypot(p.x - x, p.y - y) <= RAYON_GOMME)
+  // dangerouslySetInnerHTML : sortie de KaTeX (`rendreLatex`), jamais du HTML utilisateur brut.
+  return <div className="text-sm text-primary overflow-x-auto" dangerouslySetInnerHTML={{ __html: rendreLatex(tex) }} />
 }
 
 // ── Composant ────────────────────────────────────────────────────────────────
@@ -471,14 +396,22 @@ export default function EncreModule(_props: SharedModuleProps) {
   const [pages, setPages] = useState<PageResume[]>([])
   const [pageId, setPageId] = useState('')
   const [titre, setTitre] = useState('')
-  const [traits, setTraits] = useState<Trait[]>([])
-  //: Instantanés de `traits`, pas une pile de traits ajoutés. C'est ce qui rend
-  //: la gomme annulable au même titre que l'écriture : une pile de traits ne
-  //: saurait pas restaurer une suppression. Les instantanés partagent leurs
-  //: objets `Trait`, donc ils ne coûtent que des références.
-  const [passe, setPasse] = useState<Trait[][]>([])
-  const [futur, setFutur] = useState<Trait[][]>([])
-  const [outil, setOutil] = useState<'stylo' | 'gomme'>('stylo')
+  //: Toute la mécanique du canvas (traits, outil, undo/redo, rendu) — extraite
+  //: dans `useCanvasEncre.ts` (phase 3) pour être partagée avec le canvas de
+  //: dictée inversée plus bas. Cf. son en-tête pour les trois pièges du stylet
+  //: qu'elle tient à elle seule.
+  //
+  // Déstructuré ICI plutôt que gardé comme un seul objet `canvas.xxx` : un
+  // outil de lint du dépôt (`react-hooks/refs`) signale toute lecture PAR
+  // PROPRIÉTÉ d'un objet renvoyé par un hook et contenant une ref quelque
+  // part, y compris sur des champs qui n'en sont pas (`onPointerDown`, une
+  // simple fonction) — mesuré sur ce fichier avant ce commit. La
+  // déstructuration donne des liaisons locales que l'outil suit correctement,
+  // sans changer le comportement runtime.
+  const {
+    traits, outil, setOutil, peutAnnuler, peutRefaire, annuler, refaire, charger,
+    canvasRef, zoneRef, onPointerDown, onPointerMove, terminer,
+  } = useDessinStylet()
   //: Mode de la page courante. "maths" par défaut : c'est celui de toute page
   //: créée avant ce champ, et le mode que ce module a toujours transcrit.
   const [mode, setMode] = useState<Mode>('maths')
@@ -498,21 +431,6 @@ export default function EncreModule(_props: SharedModuleProps) {
   //: rechargement : une fonction devrait figurer dans les dépendances de l'effet
   //: qui charge, et y changerait à chaque rendu.
   const [rafraichir, setRafraichir] = useState(0)
-
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const zoneRef = useRef<HTMLDivElement | null>(null)
-  //: Le trait en cours de tracé. Dans une ref et NON dans l'état : un stylet
-  //: produit plusieurs centaines de points par seconde, et un rendu React par
-  //: point rendrait l'écriture inutilisable. Il est peint impérativement, puis
-  //: versé dans `traits` une seule fois, au relevé du stylet.
-  const enCoursRef = useRef<Trait | null>(null)
-  const pointeurRef = useRef<number | null>(null)
-  const typeEnCoursRef = useRef<string>('')
-  const debutRef = useRef(0)
-  //: Un stylet est-il en contact ? Tant que oui, tout événement tactile est
-  //: ignoré — c'est la paume posée sur l'écran.
-  const styletActifRef = useRef(false)
-  const trameRef = useRef(0)
 
   /**
    * Y a-t-il quelque chose à enregistrer ? **Dérivé, jamais stocké.**
@@ -571,10 +489,8 @@ export default function EncreModule(_props: SharedModuleProps) {
         const traitsCharges = versTraits(page.strokes)
         const modeCharge = versMode(page.mode)
         setTitre(titreCharge)
-        setTraits(traitsCharges)
+        charger(traitsCharges)
         setMode(modeCharge)
-        setPasse([])
-        setFutur([])
         // LES MÊMES objets que ceux posés dans l'état : l'instantané se compare
         // par référence, en poser une copie rendrait la page sale d'emblée et
         // déclencherait un enregistrement inutile à chaque ouverture.
@@ -594,30 +510,10 @@ export default function EncreModule(_props: SharedModuleProps) {
         setEtat({ texte: err instanceof Error ? err.message : 'Page illisible', erreur: true })
       })
     return () => { vivant = false }
-  }, [pageId])
-
-  // ── Dimensionnement et rendu ──────────────────────────────────────────────
-  //
-  // Un seul effet pour les deux, et il dépend de `traits` : redimensionner
-  // remet à zéro le contenu du canvas (toute écriture de `canvas.width` l'efface),
-  // donc les deux opérations sont indissociables et les séparer laisserait une
-  // page blanche après chaque redimensionnement.
-  useEffect(() => {
-    const canvas = canvasRef.current
-    const zone = zoneRef.current
-    if (!canvas || !zone) return
-    const ajuster = () => {
-      if (dimensionner(canvas, zone)) peindre(canvas, traits, enCoursRef.current)
-    }
-    ajuster()
-    // jsdom n'implémente pas ResizeObserver : le test en pose un bouchon. Le
-    // garde ici couvrirait aussi un navigateur trop ancien, où la page reste
-    // simplement figée à sa taille initiale au lieu de ne pas s'afficher.
-    if (typeof ResizeObserver === 'undefined') return
-    const observateur = new ResizeObserver(ajuster)
-    observateur.observe(zone)
-    return () => observateur.disconnect()
-  }, [traits])
+    // `charger` est stable (`useCallback([])` dans `useCanvasEncre.ts`) :
+    // l'ajouter aux dépendances satisfait `react-hooks/exhaustive-deps` sans
+    // faire rejouer cet effet à chaque trait dessiné.
+  }, [pageId, charger])
 
   // ── Enregistrement automatique ────────────────────────────────────────────
   useEffect(() => {
@@ -656,9 +552,7 @@ export default function EncreModule(_props: SharedModuleProps) {
   /** Vide l'état de la page courante. Ne touche pas à `pageId`. */
   const reinitialiser = () => {
     setEnregistre(null)
-    setTraits([])
-    setPasse([])
-    setFutur([])
+    charger([])
     setTitre('')
     setMode('maths')
     setTranscription(null)
@@ -687,141 +581,6 @@ export default function EncreModule(_props: SharedModuleProps) {
       void sauvegarder(enAttente.pageId, enAttente.titre, enAttente.traits, enAttente.mode)
         .then(resultat => { if (resultat.erreur) setEtat(resultat) })
     }
-  }
-
-  // ── Mutations de l'encre ──────────────────────────────────────────────────
-
-  /** Point d'entrée UNIQUE de toute modification des traits.
-   *
-   * Empile l'état précédent, vide la pile de rétablissement et marque la page
-   * comme non enregistrée — trois choses qu'un appelant qui ferait `setTraits`
-   * directement oublierait tôt ou tard, et dont l'oubli le plus probable (le
-   * marquage) donne le pire symptôme : une modification qui ne part jamais.
-   */
-  const appliquer = (suivant: Trait[]) => {
-    setPasse(p => [...p, traits].slice(-PROFONDEUR_HISTORIQUE))
-    setFutur([])
-    setTraits(suivant)
-  }
-
-  const annuler = () => {
-    if (passe.length === 0) return
-    setFutur(f => [traits, ...f])
-    setTraits(passe[passe.length - 1])
-    setPasse(p => p.slice(0, -1))
-  }
-
-  const refaire = () => {
-    if (futur.length === 0) return
-    setPasse(p => [...p, traits].slice(-PROFONDEUR_HISTORIQUE))
-    setTraits(futur[0])
-    setFutur(f => f.slice(1))
-  }
-
-  // ── Événements du stylet ──────────────────────────────────────────────────
-
-  /** Repeint hors du cycle React, au plus une fois par trame. */
-  const repeindre = () => {
-    if (trameRef.current) return
-    trameRef.current = requestAnimationFrame(() => {
-      trameRef.current = 0
-      const canvas = canvasRef.current
-      if (canvas) peindre(canvas, traits, enCoursRef.current)
-    })
-  }
-
-  const abandonner = () => {
-    enCoursRef.current = null
-    pointeurRef.current = null
-    typeEnCoursRef.current = ''
-    repeindre()
-  }
-
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const natif = e.nativeEvent
-    if (natif.pointerType === 'touch' && styletActifRef.current) return
-    if (natif.pointerType === 'pen') {
-      styletActifRef.current = true
-      // La paume touche l'écran AVANT la pointe : le trait qu'elle a commencé
-      // est abandonné, pas seulement interrompu. Sans ça, la règle « ignorer le
-      // tactile pendant qu'un stylet écrit » arrive toujours trop tard.
-      if (typeEnCoursRef.current === 'touch') abandonner()
-    }
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const { x, y } = versLogique(canvas, natif)
-
-    if (outil === 'gomme') {
-      pointeurRef.current = natif.pointerId
-      typeEnCoursRef.current = natif.pointerType
-      canvas.setPointerCapture(natif.pointerId)
-      const restants = traits.filter(t => !souLaGomme(t, x, y))
-      if (restants.length !== traits.length) appliquer(restants)
-      return
-    }
-
-    pointeurRef.current = natif.pointerId
-    typeEnCoursRef.current = natif.pointerType
-    debutRef.current = natif.timeStamp
-    canvas.setPointerCapture(natif.pointerId)
-    enCoursRef.current = {
-      couleur: COULEUR_ENCRE,
-      taille: TAILLE_TRAIT,
-      points: [{ x, y, pression: natif.pressure > 0 ? natif.pressure : 0.5, t: 0 }],
-    }
-    repeindre()
-  }
-
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const natif = e.nativeEvent
-    if (pointeurRef.current !== natif.pointerId) return
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    // LE point du stylet : un `pointermove` en regroupe plusieurs. Sans cet
-    // appel, la moitié des points d'un stylet à 240 Hz est perdue et les
-    // courbes rapides deviennent des segments. Le test de présence couvre
-    // jsdom et les navigateurs qui ne l'implémentent pas.
-    const bruts = typeof natif.getCoalescedEvents === 'function'
-      ? natif.getCoalescedEvents()
-      : [natif]
-    const echantillons = bruts.length > 0 ? bruts : [natif]
-
-    if (outil === 'gomme') {
-      let restants = traits
-      for (const ev of echantillons) {
-        const { x, y } = versLogique(canvas, ev)
-        restants = restants.filter(t => !souLaGomme(t, x, y))
-      }
-      if (restants.length !== traits.length) appliquer(restants)
-      return
-    }
-
-    const enCours = enCoursRef.current
-    if (!enCours) return
-    for (const ev of echantillons) {
-      const { x, y } = versLogique(canvas, ev)
-      enCours.points.push({
-        x, y,
-        pression: ev.pressure > 0 ? ev.pressure : 0.5,
-        t: Math.round(ev.timeStamp - debutRef.current),
-      })
-    }
-    repeindre()
-  }
-
-  const terminer = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const natif = e.nativeEvent
-    if (natif.pointerType === 'pen') styletActifRef.current = false
-    if (pointeurRef.current !== natif.pointerId) return
-    const enCours = enCoursRef.current
-    // La ref est vidée AVANT `appliquer` : sinon l'effet de rendu, déclenché par
-    // le changement de `traits`, dessinerait le trait deux fois.
-    enCoursRef.current = null
-    pointeurRef.current = null
-    typeEnCoursRef.current = ''
-    if (enCours && enCours.points.length > 0) appliquer([...traits, enCours])
-    else repeindre()
   }
 
   // ── Actions sur les pages ─────────────────────────────────────────────────
@@ -945,15 +704,150 @@ export default function EncreModule(_props: SharedModuleProps) {
     }
   }
 
+  // ── Phase 3 : correction ──────────────────────────────────────────────────
+
+  const [vue, setVue] = useState<'notes' | 'entrainement'>('notes')
+  const [sousVue, setSousVue] = useState<'correction' | 'dictee'>('correction')
+
+  const [pagesACorreger, setPagesACorreger] = useState<PageACorreger[]>([])
+  //: Cache les pages déjà validées par défaut — « ne pas re-proposer » sans
+  //: jamais bloquer un retour dessus, cf. `docs/module-encre.md` (phase 3) :
+  //: c'est un choix d'AFFICHAGE, le backend continue de les rendre.
+  const [afficherValidees, setAfficherValidees] = useState(false)
+  const [rafraichirCorrection, setRafraichirCorrection] = useState(0)
+  const [pageCorrectionId, setPageCorrectionId] = useState('')
+  const [texteCorrection, setTexteCorrection] = useState('')
+  const [etatCorrection, setEtatCorrection] = useState<Etat | null>(null)
+  const [validationEnCours, setValidationEnCours] = useState(false)
+
+  useEffect(() => {
+    if (vue !== 'entrainement' || sousVue !== 'correction') return
+    let vivant = true
+    apiFetch(`${API}/encre/entrainement/a_corriger`)
+      .then(r => r.json())
+      .then(d => { if (vivant) setPagesACorreger(versPagesACorreger(objet(d).pages)) })
+      .catch(() => { if (vivant) setPagesACorreger([]) })
+    return () => { vivant = false }
+  }, [vue, sousVue, rafraichirCorrection])
+
+  const choisirPageCorrection = (p: PageACorreger) => {
+    setPageCorrectionId(p.id)
+    setTexteCorrection(p.texte_modele)
+    setEtatCorrection(null)
+  }
+
+  /**
+   * Valide la transcription courante. `telQuel` omet `texte` du corps :
+   * `EncreEngine`/le routeur reprennent alors `texte_modele` comme vérité —
+   * c'est le chemin à friction nulle quand la transcription était déjà bonne.
+   */
+  const validerCorrection = async (telQuel: boolean) => {
+    if (!pageCorrectionId || validationEnCours) return
+    setValidationEnCours(true)
+    try {
+      const res = await apiFetch(
+        `${API}/encre/pages/${encodeURIComponent(pageCorrectionId)}/transcription/valider`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(telQuel ? {} : { texte: texteCorrection }),
+        })
+      if (!res.ok) {
+        setEtatCorrection({ texte: await messageDErreur(res, 'Validation refusée'), erreur: true })
+        return
+      }
+      setEtatCorrection({ texte: 'Exemple enregistré.', erreur: false })
+      setRafraichirCorrection(n => n + 1)
+    } catch {
+      setEtatCorrection({ texte: 'Validation impossible : backend injoignable.', erreur: true })
+    } finally {
+      setValidationEnCours(false)
+    }
+  }
+
+  const pagesAffichees = pagesACorreger.filter(p => afficherValidees || !p.validee_le)
+
+  // ── Phase 3 : dictée inversée ─────────────────────────────────────────────
+
+  //: Même déstructuration immédiate que le canvas de notes ci-dessus, et pour
+  //: la même raison (cf. son commentaire).
+  const {
+    traits: traitsDictee, outil: outilDictee, setOutil: setOutilDictee,
+    peutAnnuler: peutAnnulerDictee, peutRefaire: peutRefaireDictee,
+    annuler: annulerDictee, refaire: refaireDictee, charger: chargerDictee,
+    canvasRef: canvasRefDictee, zoneRef: zoneRefDictee,
+    onPointerDown: onPointerDownDictee, onPointerMove: onPointerMoveDictee,
+    terminer: terminerDictee,
+  } = useDessinStylet()
+  const [expressionDictee, setExpressionDictee] = useState<ExpressionDictee | null>(null)
+  const [rafraichirDictee, setRafraichirDictee] = useState(0)
+  const [etatDictee, setEtatDictee] = useState<Etat | null>(null)
+  const [validationDicteeEnCours, setValidationDicteeEnCours] = useState(false)
+
+  useEffect(() => {
+    if (vue !== 'entrainement' || sousVue !== 'dictee') return
+    let vivant = true
+    apiFetch(`${API}/encre/entrainement/dictee/expression`)
+      .then(r => r.json())
+      .then(d => {
+        if (!vivant) return
+        const o = objet(d)
+        const id = texte(o.id)
+        // Un id vide viendrait d'un corps d'erreur (401 avant appairage, 404) —
+        // rien à afficher plutôt qu'une expression fantôme.
+        setExpressionDictee(id ? { id, latex: texte(o.latex) } : null)
+      })
+      .catch(() => { if (vivant) setExpressionDictee(null) })
+    return () => { vivant = false }
+  }, [vue, sousVue, rafraichirDictee])
+
+  /** Change d'expression SANS valider — l'utilisateur passe une expression
+   * trop difficile, elle reste dans la banque pour une prochaine fois. */
+  const passerExpression = () => {
+    chargerDictee([])
+    setEtatDictee(null)
+    setRafraichirDictee(n => n + 1)
+  }
+
+  const validerDictee = async () => {
+    if (!expressionDictee || validationDicteeEnCours) return
+    if (traitsDictee.length === 0) {
+      setEtatDictee({ texte: 'Dessine la copie avant de valider.', erreur: true })
+      return
+    }
+    setValidationDicteeEnCours(true)
+    try {
+      const res = await apiFetch(`${API}/encre/entrainement/dictee/valider`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expression_id: expressionDictee.id, strokes: traitsDictee }),
+      })
+      if (!res.ok) {
+        setEtatDictee({ texte: await messageDErreur(res, 'Validation refusée'), erreur: true })
+        return
+      }
+      setEtatDictee({ texte: 'Exemple enregistré.', erreur: false })
+      chargerDictee([])
+      setRafraichirDictee(n => n + 1)
+    } catch {
+      setEtatDictee({ texte: 'Validation impossible : backend injoignable.', erreur: true })
+    } finally {
+      setValidationDicteeEnCours(false)
+    }
+  }
+
   // ── Rendu ─────────────────────────────────────────────────────────────────
 
-  const boutonOutil = (valeur: 'stylo' | 'gomme', Icone: typeof PenLine, libelle: string) => (
+  const boutonOutil = (
+    outilActif: 'stylo' | 'gomme', choisir: (o: 'stylo' | 'gomme') => void,
+    valeur: 'stylo' | 'gomme', Icone: typeof PenLine, libelle: string,
+  ) => (
     <button
-      onClick={() => setOutil(valeur)}
+      onClick={() => choisir(valeur)}
       title={libelle}
-      aria-pressed={outil === valeur}
+      aria-pressed={outilActif === valeur}
       className={`px-2 py-2 rounded-md text-sm transition-all duration-150 ${
-        outil === valeur
+        outilActif === valeur
           ? 'bg-gradient-primary text-on-accent shadow-sm'
           : 'bg-elevated border border-line text-secondary hover:text-primary'
       }`}
@@ -969,49 +863,260 @@ export default function EncreModule(_props: SharedModuleProps) {
           <h1 className="text-sm font-semibold text-primary flex items-center gap-2">
             <PenTool size={16} className="text-accent" /> Encre
           </h1>
+          {vue === 'notes' && (
+            <button
+              onClick={nouvellePage}
+              title="Nouvelle page"
+              className="px-2 py-1 rounded-md bg-gradient-primary text-on-accent text-xs shadow-sm hover:opacity-90 transition-all duration-150"
+            >
+              <Plus size={14} />
+            </button>
+          )}
+        </div>
+        {/* Phase 3 : deux vues du module, indépendantes de la page ouverte —
+            basculer n'abandonne ni ne ferme la page de notes en cours, elle
+            est simplement hors écran tant que `vue !== 'notes'`. */}
+        <div role="tablist" aria-label="Vue du module" className="flex border-b border-line">
           <button
-            onClick={nouvellePage}
-            title="Nouvelle page"
-            className="px-2 py-1 rounded-md bg-gradient-primary text-on-accent text-xs shadow-sm hover:opacity-90 transition-all duration-150"
+            role="tab"
+            aria-selected={vue === 'notes'}
+            onClick={() => setVue('notes')}
+            className={`flex-1 px-3 py-2 text-xs flex items-center justify-center gap-1.5 transition-all duration-150 ${
+              vue === 'notes' ? 'text-primary border-b-2 border-accent' : 'text-muted hover:text-secondary'
+            }`}
           >
-            <Plus size={14} />
+            <PenTool size={13} /> Notes
+          </button>
+          <button
+            role="tab"
+            aria-selected={vue === 'entrainement'}
+            onClick={() => setVue('entrainement')}
+            className={`flex-1 px-3 py-2 text-xs flex items-center justify-center gap-1.5 transition-all duration-150 ${
+              vue === 'entrainement' ? 'text-primary border-b-2 border-accent' : 'text-muted hover:text-secondary'
+            }`}
+          >
+            <GraduationCap size={13} /> Entraînement
           </button>
         </div>
-        <ul className="flex-1 overflow-y-auto px-2 py-2 flex flex-col gap-1">
-          {pages.length === 0 && (
-            <li className="px-2 py-3 text-xs text-muted leading-relaxed">
-              Aucune page. « + » en crée une.
-            </li>
-          )}
-          {pages.map(p => (
-            <li key={p.id} className="flex items-center gap-1">
+
+        {vue === 'notes' ? (
+          <ul className="flex-1 overflow-y-auto px-2 py-2 flex flex-col gap-1">
+            {pages.length === 0 && (
+              <li className="px-2 py-3 text-xs text-muted leading-relaxed">
+                Aucune page. « + » en crée une.
+              </li>
+            )}
+            {pages.map(p => (
+              <li key={p.id} className="flex items-center gap-1">
+                <button
+                  onClick={() => ouvrirPage(p.id)}
+                  className={`flex-1 text-left px-2 py-2 rounded-md text-xs transition-all duration-150 ${
+                    p.id === pageId
+                      ? 'bg-elevated text-primary border border-accent'
+                      : 'text-secondary hover:bg-elevated'
+                  }`}
+                >
+                  <span className="block truncate">{p.titre || 'Page sans titre'}</span>
+                  <span className="block text-muted mt-0.5">
+                    {p.n_traits} trait{p.n_traits > 1 ? 's' : ''}
+                  </span>
+                </button>
+                <button
+                  onClick={() => { void supprimerPage(p.id) }}
+                  title="Supprimer cette page"
+                  className="px-1.5 py-2 rounded-md text-muted hover:text-primary transition-all duration-150"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="flex-1 overflow-hidden flex flex-col">
+            <div role="tablist" aria-label="Mode d'entraînement" className="flex gap-1 px-2 py-2">
               <button
-                onClick={() => ouvrirPage(p.id)}
-                className={`flex-1 text-left px-2 py-2 rounded-md text-xs transition-all duration-150 ${
-                  p.id === pageId
-                    ? 'bg-elevated text-primary border border-accent'
-                    : 'text-secondary hover:bg-elevated'
+                role="tab"
+                aria-selected={sousVue === 'correction'}
+                onClick={() => setSousVue('correction')}
+                className={`flex-1 px-2 py-1.5 rounded-md text-xs transition-all duration-150 ${
+                  sousVue === 'correction'
+                    ? 'bg-gradient-primary text-on-accent shadow-sm'
+                    : 'bg-elevated border border-line text-secondary hover:text-primary'
                 }`}
               >
-                <span className="block truncate">{p.titre || 'Page sans titre'}</span>
-                <span className="block text-muted mt-0.5">
-                  {p.n_traits} trait{p.n_traits > 1 ? 's' : ''}
-                </span>
+                Correction
               </button>
               <button
-                onClick={() => { void supprimerPage(p.id) }}
-                title="Supprimer cette page"
-                className="px-1.5 py-2 rounded-md text-muted hover:text-primary transition-all duration-150"
+                role="tab"
+                aria-selected={sousVue === 'dictee'}
+                onClick={() => setSousVue('dictee')}
+                className={`flex-1 px-2 py-1.5 rounded-md text-xs transition-all duration-150 ${
+                  sousVue === 'dictee'
+                    ? 'bg-gradient-primary text-on-accent shadow-sm'
+                    : 'bg-elevated border border-line text-secondary hover:text-primary'
+                }`}
               >
-                <Trash2 size={13} />
+                Dictée
               </button>
-            </li>
-          ))}
-        </ul>
+            </div>
+            {sousVue === 'correction' && (
+              <>
+                <label className="px-3 py-1.5 text-xs text-muted flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={afficherValidees}
+                    onChange={e => setAfficherValidees(e.target.checked)}
+                  />
+                  Afficher aussi les pages déjà corrigées
+                </label>
+                <ul className="flex-1 overflow-y-auto px-2 py-1 flex flex-col gap-1">
+                  {pagesAffichees.length === 0 && (
+                    <li className="px-2 py-3 text-xs text-muted leading-relaxed">
+                      Rien à corriger pour l&apos;instant.
+                    </li>
+                  )}
+                  {pagesAffichees.map(p => (
+                    <li key={p.id}>
+                      <button
+                        onClick={() => choisirPageCorrection(p)}
+                        className={`w-full text-left px-2 py-2 rounded-md text-xs transition-all duration-150 ${
+                          p.id === pageCorrectionId
+                            ? 'bg-elevated text-primary border border-accent'
+                            : 'text-secondary hover:bg-elevated'
+                        }`}
+                      >
+                        <span className="block truncate">{p.titre || 'Page sans titre'}</span>
+                        {p.validee_le && (
+                          <span className="block text-muted mt-0.5">Déjà corrigée</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {sousVue === 'dictee' && (
+              <p className="px-3 py-2 text-xs text-muted leading-relaxed">
+                Recopie l&apos;expression affichée sur le canvas, puis valide —
+                aucune page à choisir, une nouvelle expression arrive à chaque
+                validation.
+              </p>
+            )}
+          </div>
+        )}
       </aside>
 
       <section className="flex-1 flex flex-col overflow-hidden">
-        {pageId ? (
+        {vue === 'entrainement' ? (
+          sousVue === 'correction' ? (
+            pageCorrectionId ? (
+              <div className="flex-1 overflow-auto px-4 py-4 flex flex-col gap-3">
+                <div className="bg-elevated border border-line rounded-md p-3">
+                  <span className="text-xs text-muted uppercase tracking-wide">Aperçu</span>
+                  <RenduLatex tex={texteCorrection} />
+                </div>
+                <textarea
+                  value={texteCorrection}
+                  onChange={e => setTexteCorrection(e.target.value)}
+                  aria-label="Texte à corriger"
+                  rows={4}
+                  className="w-full bg-elevated border border-line rounded-md px-3 py-2 text-xs font-mono text-secondary resize-y focus:outline-none focus:border-accent"
+                />
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={() => { void validerCorrection(true) }}
+                    disabled={validationEnCours}
+                    className="px-3 py-2 rounded-md bg-elevated border border-line text-sm text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150"
+                  >
+                    Valider tel quel
+                  </button>
+                  <button
+                    onClick={() => { void validerCorrection(false) }}
+                    disabled={validationEnCours}
+                    className="px-3 py-2 rounded-md bg-gradient-primary text-on-accent text-sm shadow-sm disabled:opacity-40 transition-all duration-150"
+                  >
+                    Valider la correction
+                  </button>
+                </div>
+                {etatCorrection && (
+                  <p
+                    role="status"
+                    className={`text-xs ${etatCorrection.erreur ? 'text-red-400' : 'text-muted'}`}
+                  >
+                    {etatCorrection.texte}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-sm text-muted text-center px-8">
+                Choisis une page à corriger dans la liste.
+              </div>
+            )
+          ) : (
+            <>
+              <div className="px-4 py-3 border-b border-line flex items-center gap-2 flex-wrap">
+                {boutonOutil(outilDictee, setOutilDictee, 'stylo', PenLine, 'Stylo')}
+                {boutonOutil(outilDictee, setOutilDictee, 'gomme', Eraser, 'Gomme — supprime le trait sous le curseur')}
+                <button
+                  onClick={annulerDictee}
+                  disabled={!peutAnnulerDictee}
+                  title="Annuler"
+                  className="px-2 py-2 rounded-md bg-elevated border border-line text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150"
+                >
+                  <Undo2 size={16} />
+                </button>
+                <button
+                  onClick={refaireDictee}
+                  disabled={!peutRefaireDictee}
+                  title="Rétablir"
+                  className="px-2 py-2 rounded-md bg-elevated border border-line text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150"
+                >
+                  <Redo2 size={16} />
+                </button>
+                <button
+                  onClick={passerExpression}
+                  title="Passer à une autre expression sans valider"
+                  className="px-3 py-2 rounded-md bg-elevated border border-line text-sm text-secondary hover:text-primary transition-all duration-150 flex items-center gap-1.5"
+                >
+                  <SkipForward size={15} /> Nouvelle expression
+                </button>
+                <button
+                  onClick={() => { void validerDictee() }}
+                  disabled={validationDicteeEnCours || traitsDictee.length === 0}
+                  className="px-3 py-2 rounded-md bg-gradient-primary text-on-accent text-sm shadow-sm disabled:opacity-40 transition-all duration-150 flex items-center gap-1.5"
+                >
+                  <CheckCircle2 size={15} /> Valider
+                </button>
+              </div>
+              {expressionDictee && (
+                <div className="px-4 py-3 border-b border-line">
+                  <span className="text-xs text-muted uppercase tracking-wide">À recopier</span>
+                  <RenduLatex tex={expressionDictee.latex} />
+                </div>
+              )}
+              {etatDictee && (
+                <p
+                  role="status"
+                  className={`px-4 py-2 text-xs ${etatDictee.erreur ? 'text-red-400' : 'text-muted'}`}
+                >
+                  {etatDictee.texte}
+                </p>
+              )}
+              <div ref={zoneRefDictee} className="flex-1 overflow-auto px-4 py-4">
+                <canvas
+                  ref={canvasRefDictee}
+                  onPointerDown={onPointerDownDictee}
+                  onPointerMove={onPointerMoveDictee}
+                  onPointerUp={terminerDictee}
+                  onPointerCancel={terminerDictee}
+                  onPointerLeave={terminerDictee}
+                  style={{ touchAction: 'none' }}
+                  className="block rounded-md border border-line shadow-sm cursor-crosshair"
+                />
+              </div>
+            </>
+          )
+        ) : pageId ? (
           <>
             <div className="px-4 py-3 border-b border-line flex items-center gap-2 flex-wrap">
               <input
@@ -1021,11 +1126,11 @@ export default function EncreModule(_props: SharedModuleProps) {
                 aria-label="Titre de la page"
                 className="flex-1 min-w-40 bg-elevated border border-line rounded-md px-3 py-2 text-sm text-primary placeholder-muted focus:outline-none focus:border-accent"
               />
-              {boutonOutil('stylo', PenLine, 'Stylo')}
-              {boutonOutil('gomme', Eraser, 'Gomme — supprime le trait sous le curseur')}
+              {boutonOutil(outil, setOutil, 'stylo', PenLine, 'Stylo')}
+              {boutonOutil(outil, setOutil, 'gomme', Eraser, 'Gomme — supprime le trait sous le curseur')}
               <button
                 onClick={annuler}
-                disabled={passe.length === 0}
+                disabled={!peutAnnuler}
                 title="Annuler"
                 className="px-2 py-2 rounded-md bg-elevated border border-line text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150"
               >
@@ -1033,7 +1138,7 @@ export default function EncreModule(_props: SharedModuleProps) {
               </button>
               <button
                 onClick={refaire}
-                disabled={futur.length === 0}
+                disabled={!peutRefaire}
                 title="Rétablir"
                 className="px-2 py-2 rounded-md bg-elevated border border-line text-secondary hover:text-primary disabled:opacity-40 transition-all duration-150"
               >

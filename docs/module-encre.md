@@ -94,12 +94,15 @@ vérification sha256, comme `core/embedding_install.py` et `core/voice.py` — e
 
 | chemin | nature | `_test_env` |
 |---|---|---|
-| `resolve_encre_dir()` — encre + dataset | **données utilisateur, irremplaçables** | détourné **et** dans `REAL_DIRS` |
+| `resolve_encre_dir()` — pages d'encre | **données utilisateur, irremplaçables** | détourné **et** dans `REAL_DIRS` |
+| `resolve_encre_dataset_dir()` — exemples d'entraînement (phase 3) | **données utilisateur, irremplaçables** | détourné **et** dans `REAL_DIRS` |
 | `resolve_hmer_dir()` — poids du modèle | cache reconstructible | détourné, **absent** de `REAL_DIRS` |
 
-Même distinction que `memory/` contre `piper_models/` (§3.5). Ajouter les deux
-variables à `_test_env` (qui en pose sept aujourd'hui) et `resolve_encre_dir()`
-au `.gitignore`.
+Même distinction que `memory/` contre `piper_models/` (§3.5). Dossier séparé
+pour les exemples d'entraînement plutôt qu'un sous-dossier de `encre/` : une
+page peut être supprimée sans que l'exemple qui en est issu disparaisse
+(chaque exemple garde sa propre copie des tracés), donc les deux ont des
+cycles de vie indépendants.
 
 **Stocker l'encre brute, toujours.** Les tracés `(x, y, t, pression)` sont la
 donnée irremplaçable ; le rendu PNG et la transcription sont dérivés et
@@ -300,15 +303,15 @@ domaine.
 
 ### Phase 3 — Correction et collecte.
 
-Deux modes dans le même écran :
+Deux modes, dans un écran dédié (« Entraînement », à côté de « Notes » — pas
+une greffe sur l'écran de prise de notes) :
 
 - **Correction** : une expression transcrite, tu corriges le LaTeX → paire
   (encre, LaTeX) stockée. C'est ici que vit l'export LaTeX ponctuel.
-- **Dictée inversée** : l'app tire une expression LaTeX **de tes propres fiches
-  via le RAG**, l'affiche rendue, tu la recopies au stylet → vérité terrain
-  gratuite, distribution réaliste et **ciblable** sur les symboles que tu
-  confonds (profil issu de la phase 0). ~15–25 s la paire contre 60–90 s en
-  annotant des notes existantes : c'est ce qui rend la phase 4 atteignable.
+- **Dictée inversée** : l'app tire une expression LaTeX, l'affiche rendue, tu
+  la recopies au stylet → vérité terrain gratuite. ~15–25 s la paire contre
+  60–90 s en annotant des notes existantes : c'est ce qui rend la phase 4
+  atteignable.
 
 Ce n'est **pas** du renforcement — c'est de la collecte supervisée. Écrire des
 symboles isolés est cheap mais transfère mal (la difficulté est la segmentation
@@ -319,6 +322,156 @@ Export : `.jsonl` + PNG rendus. C'est le contrat avec le module ML.
 
 *Valeur : un profil de confusions, et un dataset qui grossit tout seul en
 usage normal.*
+
+**FAITE le 2026-09-09.** Ce qui a été construit, et les écarts avec ce qui
+était prévu ci-dessus :
+
+- **Écart assumé : la dictée inversée ne tire PAS d'expression depuis les
+  fiches via le RAG**, contrairement à ce que ce paragraphe annonçait. Une
+  **banque fixe committée**, `backend/core/banque_dictee_encre.py` (~40
+  expressions en LaTeX brut, Python et non JSON — un backslash LaTeX se
+  double dans une chaîne JSON, pénible sur un fichier explicitement destiné à
+  être retouché à la main), couvre pour ce premier lot fractions,
+  sommes/intégrales avec bornes, matrices, indices/exposants imbriqués,
+  lettres grecques, vecteurs, limites. **Point de départ révisable, pas
+  figé** : ajouter, retirer ou reformuler une entrée n'a besoin de rien
+  d'autre qu'éditer cette liste. Tirer depuis le RAG reste une évolution
+  possible — elle demanderait de construire l'extraction d'expressions LaTeX
+  isolées depuis des fiches réelles, un problème distinct que ce lot n'a pas
+  attaqué.
+- **Un magasin d'exemples INDÉPENDANT des pages** : `core/encre_exemples.py`
+  (`ExemplesEncreEngine`), même patron qu'`EncreEngine` — un fichier JSON par
+  exemple, aucun index central, confinement de chemin par `resolve()` +
+  comparaison de chemins. Chaque exemple porte SA PROPRE copie des tracés
+  plutôt qu'une référence vers une page : si la page d'origine est supprimée
+  plus tard, l'exemple doit rester utilisable pour l'entraînement. Schéma :
+
+  ```json
+  {
+    "id": "…", "source": "correction" | "dictee_inversee",
+    "date": "…", "strokes": […],
+    "texte_verite": "…", "texte_modele": "…" | null
+  }
+  ```
+
+  `texte_modele` vaut `null` (pas une chaîne vide) pour la dictée inversée :
+  « aucun modèle consulté » et « le modèle a lu du vide » (source correction,
+  transcription vide validée) sont deux états différents.
+- **Nouveau chemin de données**, `resolve_encre_dataset_dir()` (défaut
+  `<backend>/encre_dataset`, `$EPURE_ENCRE_DATASET_DIR`), dans le même régime
+  que `resolve_encre_dir()` : données utilisateur **irremplaçables**, détourné
+  ET surveillé par `_test_env`. Dossier séparé de `encre/` — cycles de vie
+  indépendants, cf. le docstring de la fonction — jamais un sous-dossier.
+- **`core/encre.py` gagne deux méthodes, sa structure de page ne change pas** :
+  `marquer_transcription_validee(page_id)` ajoute `transcription.validee_le`
+  SANS toucher à rien d'autre (ni les tracés, ni les deux dates de la page, ni
+  `texte`/`modele`/`version`) — rappelable indéfiniment, jamais un refus, donc
+  une re-correction n'est jamais bloquée. `list_pages_transcrites()` rend les
+  pages "maths" déjà transcrites, transcription comprise (`validee_le` inclus),
+  pour l'écran de correction — sans les tracés, que la correction ne touche
+  jamais.
+- **Quatre routes**, toutes sous `modules/encre/router.py` :
+  - `GET /encre/entrainement/a_corriger` — les pages "à corriger", validées
+    comprises. Le filtrage « cacher les pages déjà corrigées » est un choix
+    d'AFFICHAGE (case à cocher côté frontend, décochée par défaut), pas un
+    refus du backend : rien n'empêche d'y revenir.
+  - `POST /encre/pages/{id}/transcription/valider`, corps `{"texte"?: string}`.
+    `texte` absent = « valider tel quel » (texte_verite = texte_modele, zéro
+    friction) ; fourni = la correction (texte_verite = texte édité,
+    texte_modele = sortie originale conservée). Trois refus AVANT tout
+    traitement : 404 (page absente), 400 (aucune transcription — couvre aussi
+    le mode "lettres", qui n'en a jamais), 400 (la page a été vidée de son
+    encre depuis la transcription).
+  - `GET /encre/entrainement/dictee/expression` — une expression à recopier,
+    LECTURE PURE (aucun effet de bord, y compris à l'épuisement de la banque :
+    le reset de progression vit dans la validation, pas ici, pour qu'un `GET`
+    rejoué ne fasse jamais courir de course entre deux résets).
+  - `POST /encre/entrainement/dictee/valider`, corps
+    `{"expression_id", "strokes"}`. Le LaTeX vérité est résolu CÔTÉ SERVEUR
+    contre la banque — jamais envoyé par le client — pour qu'un appel direct à
+    l'API ne puisse pas faire passer n'importe quel texte pour une vraie copie.
+  - **Aucun appel LLM ni HMER sur aucune de ces quatre routes** : la correction
+    réutilise une transcription déjà produite ailleurs, la dictée inversée
+    n'appelle aucun modèle — c'est l'utilisateur qui juge la conformité de son
+    tracé.
+- **Non-répétition de la banque** : `core/banque_dictee_encre.py` calcule
+  l'identifiant d'une expression par hash de son CONTENU (pas sa position dans
+  la liste — reformuler une entrée existante lui donne un nouvel identifiant et
+  la remet dans le tirage, ce qui est l'arbitrage voulu : le contenu réellement
+  proposé a changé). La progression (« déjà faites ») est un petit JSON sous
+  `resolve_data_dir()` (`memory/dictee_encre_progres.json`, reconstructible
+  sans drame — au pire quelques répétitions plus tôt que prévu, donc PAS le
+  régime irremplaçable de `encre_dataset/`). Épuisée, la banque boucle sur
+  l'ensemble complet plutôt que de lever ; le reset se produit au moment de la
+  validation qui vient de tout compléter, pas à la lecture suivante.
+- **Interface** : un onglet « Entraînement » à côté de « Notes » dans la barre
+  latérale du module, avec deux sous-onglets Correction/Dictée — un écran
+  dédié, conformément à ce que l'addendum du 2026-09-08 (phase 2, ci-dessus)
+  annonçait déjà (« l'écran de correction/dictée inversée »). La correction
+  affiche le LaTeX du modèle **rendu** (KaTeX, déjà une dépendance du dépôt via
+  `RichMessage.tsx`/`rehype-katex` — appelé ici directement,
+  `katex.renderToString`, sur une expression isolée plutôt qu'un document
+  markdown complet) et une zone éditable ; la dictée affiche l'expression cible
+  rendue au-dessus d'un second canvas, vierge, sans persistance ni
+  enregistrement automatique.
+- **Le canvas à stylet est partagé entre les deux écrans**, extrait dans
+  `frontend/src/modules/generated/encre/useCanvasEncre.ts` (`useDessinStylet`) :
+  traits, outil (stylo/gomme), undo/redo, rendu — les trois pièges du stylet
+  (`getCoalescedEvents`, `touch-action`, le double rejet de paume) n'existent
+  plus qu'à un seul endroit. La prise de notes garde sa persistance propre
+  (autosave, chargement d'une page) autour de ce même hook ; le canvas de
+  dictée n'a ni l'une ni l'autre — il se vide après chaque validation.
+- **Tests** : `test_encre_exemples.py` (confinement de chemin, les deux flux de
+  création d'exemple, non-répétition de la banque drainée entièrement — sans
+  mock de `random`), extensions de `test_encre_store.py` (le marqueur de
+  validation, la liste des pages à corriger), `test_encre_entrainement.py`
+  (câblage HTTP des quatre routes), et des cas de plus dans `Component.test.tsx`
+  côté frontend.
+- **Conséquence non fermée, à garder pour la phase 4** : re-corriger une page
+  déjà validée crée un SECOND exemple, avec une encre strictement identique et
+  un label potentiellement différent (« chaque validation crée un exemple »,
+  la consigne de ce lot). Phase 4 prévoit déjà un split train/val PAR SESSION
+  D'ÉCRITURE plutôt qu'aléatoire pour éviter les fuites d'une expression
+  recopiée deux fois le même jour — c'est le même risque, et le futur module ML
+  devra le fermer délibérément (dédupliquer sur les tracés, ou grouper par
+  page d'origine) plutôt que le découvrir en marge d'entraînement anormalement
+  optimiste.
+
+### Export du dataset (`tools/export_dataset_encre.py`)
+
+Script MANUEL et occasionnel — pas une route HTTP, cf. la décision « le
+contrat entre les deux machines est un fichier » du §1. Bundle les exemples en
+paires image+label portables :
+
+- réutilise le rendu bitmap déjà dans `core/hmer.py`
+  (`HmerEngine._bitmap`/`_recadrer`, méthodes STATIQUES : aucun modèle n'est
+  construit, aucun poids n'est chargé — le script n'importe que la
+  bibliothèque standard côté `core.hmer`) ;
+- écrit une image PNG par exemple sous `images/`, plus `manifest.jsonl` (une
+  ligne JSON par exemple : `id`, `source`, `date`, `texte_verite`,
+  `texte_modele`, `image`, et `rendu_version` — la version du RENDU bitmap,
+  `core.hmer.VERSION`, pour la même raison que `modele`+`version` dans
+  `EncreEngine.set_transcription` : la même encre rendue autrement donne une
+  image différente, donc un dataset exporté sous un rendu et un sous un autre
+  ne sont mélangeables qu'en le sachant) ;
+- **n'importe jamais `core.runtime`** — ce module a des effets de bord assumés
+  (instancie tous les moteurs, charge `config.yaml`) dont ce script n'a besoin
+  d'aucun, même choix que `smoke_runner.py`/`module_worker.py` (CLAUDE.md
+  §3.2) ;
+- ne nettoie rien d'un export précédent (pas de suppression automatique d'un
+  dossier fourni par l'utilisateur) : une image dont l'exemple a été supprimé
+  depuis reste sur le disque de sortie, à vider à la main si besoin.
+
+```
+python tools/export_dataset_encre.py
+python tools/export_dataset_encre.py --out D:\dataset --source-dir D:\encre_dataset
+```
+
+Testé sur un jeu de fixtures (`test_export_dataset_encre.py`) : une paire par
+source, un exemple aux tracés vides ignoré sans faire échouer tout l'export, et
+`--source-dir`/`--out` toujours explicites dans les tests — le défaut
+(`<repo>/dataset_encre_export/`) n'est ni détourné ni surveillé par
+`_test_env`.
 
 ### Phase 4 — Module ML et fine-tuning. **Conditionnelle.**
 

@@ -78,6 +78,16 @@ backend/history/
 # dépôt, détourné ET surveillé par _test_env.
 backend/encre/
 
+# Exemples d'entraînement (encre, LaTeX vérité) du module `encre`, phase 3 —
+# défaut portable de EPURE_ENCRE_DATASET_DIR. Chaque exemple porte sa PROPRE
+# copie des tracés (survit à la suppression de la page d'origine) : données
+# utilisateur irremplaçables, même régime que backend/encre/ ci-dessus.
+backend/encre_dataset/
+
+# Export manuel du dataset (tools/export_dataset_encre.py) — artefact de build
+# régénérable depuis backend/encre_dataset/, jamais versionné.
+dataset_encre_export/
+
 # Config et état par instance (générés au runtime, propres à chaque utilisateur)
 # Tout backend/memory/*.json est runtime ; on conserve les règles explicites
 # historiques ci-dessous à titre de documentation (couvertes par le glob).

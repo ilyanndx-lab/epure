@@ -473,3 +473,152 @@ describe('module encre — mode maths/lettres', () => {
       .toBe('true')
   })
 })
+
+/**
+ * Phase 3 — correction et dictée inversée : le CÂBLAGE frontend, pas la
+ * mécanique de dessin (jsdom n'implémente ni `setPointerCapture` ni des
+ * `getBoundingClientRect` non nuls — comme pour la prise de notes, ce fichier
+ * n'a jamais simulé de tracé réel, cf. l'en-tête ci-dessus). Ce qui compte ici
+ * est la même chose que pour la phase 2 : aucune réponse n'est crue sur sa
+ * forme.
+ */
+describe('module encre — phase 3 : entraînement', () => {
+  it('bascule vers la vue Entraînement et ses deux sous-onglets', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/a_corriger': { corps: { pages: [] } },
+    })
+    await act(async () => {
+      screen.getByRole('tab', { name: /Entraînement/ }).click()
+    })
+    expect(screen.getByRole('tab', { name: 'Correction' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'Dictée' })).toBeTruthy()
+  })
+
+  const PAGE_A_CORRIGER = {
+    id: 'a1b2', titre: 'Mécanique du point',
+    date_creation: '2026-09-07T10:00:00', date_modification: '2026-09-07T10:30:00',
+    n_traits: 12,
+    transcription: {
+      texte: 'x^{2} + 1', modele: 'pix2text-mfr',
+      version: 'bea257edb265+rendu1', date: '2026-09-07T12:00:00',
+    },
+  }
+
+  async function ouvrirEntrainementCorrection(pages: unknown[]) {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/a_corriger': { corps: { pages } },
+    })
+    await act(async () => { screen.getByRole('tab', { name: /Entraînement/ }).click() })
+    await act(async () => { await Promise.resolve() })
+  }
+
+  it("affiche une liste vide plutôt que de planter sur un 500 de `a_corriger`", async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/a_corriger': { status: 500, corps: ERREUR_500 },
+    })
+    await act(async () => { screen.getByRole('tab', { name: /Entraînement/ }).click() })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText(/Rien à corriger/)).toBeTruthy()
+  })
+
+  it('liste une page transcrite et permet de valider tel quel', async () => {
+    await ouvrirEntrainementCorrection([PAGE_A_CORRIGER])
+    await act(async () => { screen.getByText('Mécanique du point').click() })
+
+    // Le texte du modèle est repris dans la zone éditable, prêt à être validé
+    // sans y toucher.
+    const zone = screen.getByLabelText('Texte à corriger') as HTMLTextAreaElement
+    expect(zone.value).toBe('x^{2} + 1')
+
+    poserFetch(table({
+      '/encre/entrainement/a_corriger': { corps: { pages: [PAGE_A_CORRIGER] } },
+      '/encre/pages/a1b2/transcription/valider': {
+        corps: { page: PAGE_A_CORRIGER, exemple_id: 'ex1' },
+      },
+    }))
+    await act(async () => { screen.getByText('Valider tel quel').click() })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('status').textContent).toContain('enregistré')
+  })
+
+  it("affiche le message du backend sur un refus de validation, jamais un faux succès", async () => {
+    // Même piège que la transcription (phase 2) : `apiFetch` résout sur un
+    // statut d'erreur, `res.ok` doit être vérifié avant d'afficher un succès.
+    await ouvrirEntrainementCorrection([PAGE_A_CORRIGER])
+    await act(async () => { screen.getByText('Mécanique du point').click() })
+
+    poserFetch(table({
+      '/encre/entrainement/a_corriger': { corps: { pages: [PAGE_A_CORRIGER] } },
+      '/encre/pages/a1b2/transcription/valider': {
+        status: 400, corps: { detail: 'Cette page ne contient plus aucun tracé' },
+      },
+    }))
+    await act(async () => { screen.getByText('Valider tel quel').click() })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('status').textContent).toContain('tracé')
+  })
+
+  it('cache par défaut les pages déjà corrigées, sans les rendre inatteignables', async () => {
+    const validee = { ...PAGE_A_CORRIGER, transcription: {
+      ...PAGE_A_CORRIGER.transcription, validee_le: '2026-09-08T09:00:00' } }
+    await ouvrirEntrainementCorrection([validee])
+    expect(screen.queryByText('Mécanique du point')).toBeNull()
+
+    await act(async () => {
+      screen.getByLabelText(/Afficher aussi les pages déjà corrigées/).click()
+    })
+    expect(screen.getByText('Mécanique du point')).toBeTruthy()
+  })
+
+  it("survit à un corps `a_corriger` dont le champ `pages` a le mauvais type", async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/a_corriger': { corps: { pages: 'pas une liste' } },
+    })
+    await act(async () => { screen.getByRole('tab', { name: /Entraînement/ }).click() })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText(/Rien à corriger/)).toBeTruthy()
+  })
+
+  it('la dictée affiche une expression rendue, jamais son code LaTeX brut tel quel', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/dictee/expression': {
+        corps: { id: 'e1', latex: '\\alpha + \\beta' },
+      },
+    })
+    await act(async () => { screen.getByRole('tab', { name: /Entraînement/ }).click() })
+    await act(async () => { screen.getByRole('tab', { name: 'Dictée' }).click() })
+    await act(async () => { await Promise.resolve() })
+    // KaTeX rend une arborescence HTML (classe `katex`) plutôt que le texte
+    // source : on vérifie la présence du conteneur, pas une égalité de texte
+    // brut qui dépendrait du moteur de rendu.
+    expect(document.querySelector('.katex')).toBeTruthy()
+  })
+
+  it("survit à un 500 sur l'expression de dictée sans planter l'écran", async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/dictee/expression': { status: 500, corps: ERREUR_500 },
+    })
+    await act(async () => { screen.getByRole('tab', { name: /Entraînement/ }).click() })
+    await act(async () => { screen.getByRole('tab', { name: 'Dictée' }).click() })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole('button', { name: /Valider/ })).toBeTruthy()
+  })
+
+  it('désactive Valider tant que rien n\'a été tracé', async () => {
+    await rendre({
+      '/encre/pages': { corps: PAGES_OK },
+      '/encre/entrainement/dictee/expression': { corps: { id: 'e1', latex: 'x' } },
+    })
+    await act(async () => { screen.getByRole('tab', { name: /Entraînement/ }).click() })
+    await act(async () => { screen.getByRole('tab', { name: 'Dictée' }).click() })
+    await act(async () => { await Promise.resolve() })
+    expect((screen.getByRole('button', { name: /Valider/ }) as HTMLButtonElement).disabled)
+      .toBe(true)
+  })
+})

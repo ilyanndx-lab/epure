@@ -53,6 +53,7 @@ import _test_env  # noqa: F401  — isole EPURE_DATA_DIR AVANT tout import de co
 
 from core.paths import (  # noqa: E402
     resolve_data_dir,
+    resolve_encre_dataset_dir,
     resolve_encre_dir,
     resolve_generated_dir,
     resolve_history_dir,
@@ -113,6 +114,12 @@ class RealDataUntouchedTest(unittest.TestCase):
         """
         self._comparer(_test_env.REAL_ENCRE_DIR)
 
+    def test_le_vrai_dossier_dataset_encre_est_intact(self):
+        """Les exemples d'entraînement (phase 3) : irremplaçables, même régime
+        que la page d'encre dont ils peuvent être issus — cf.
+        ``test_le_vrai_dossier_encre_est_intact`` juste au-dessus."""
+        self._comparer(_test_env.REAL_ENCRE_DATASET_DIR)
+
     def test_le_vrai_dossier_de_modules_est_intact(self):
         self._comparer(_test_env.REAL_MODULES_DIR)
 
@@ -133,6 +140,7 @@ class RealDataUntouchedTest(unittest.TestCase):
             (resolve_data_dir, _test_env.REAL_DATA_DIR),
             (resolve_history_dir, _test_env.REAL_HISTORY_DIR),
             (resolve_encre_dir, _test_env.REAL_ENCRE_DIR),
+            (resolve_encre_dataset_dir, _test_env.REAL_ENCRE_DATASET_DIR),
             (resolve_modules_dir, _test_env.REAL_MODULES_DIR),
             (resolve_generated_dir, _test_env.REAL_FRONTEND_MODULES / "generated"),
         ):
