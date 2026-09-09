@@ -66,6 +66,7 @@ from core.codeagent import CodeAgent, WORKSPACE as _CODE_WORKSPACE
 from core.consolidation import ConsolidationEngine
 from core.docanalysis import DocAnalysisEngine
 from core.encre import EncreEngine
+from core.encre_exemples import ExemplesEncreEngine
 from core.embedding_install import (
     fichiers_manquants as fichiers_embedding_manquants,
     pile_presente as pile_embedding_presente,
@@ -134,6 +135,9 @@ flashcards_engine = FlashcardsEngine()
 # qui coûte (embedding, voix) ; l'ajouter ici n'achèterait rien et masquerait le
 # coût réel des trois proxies qui, eux, en ont besoin.
 encre_engine = EncreEngine()
+# Exemples d'entraînement (module `encre`, phase 3) : même famille qu'`encre_engine`
+# juste au-dessus, pour la même raison — un `mkdir`, rien de coûteux à construire.
+encre_exemples_engine = ExemplesEncreEngine()
 models_registry = ModelsRegistry()
 orchestrator = OrchestratorEngine(llm)
 

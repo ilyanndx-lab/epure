@@ -26,6 +26,16 @@ comme suggestion et jamais substituée. Le jour où elle arrive, c'est elle qui
 devra passer par ``modele_pour_tache(use_cloud=False)``, et c'est ce
 paragraphe-ci qu'il faudra reprendre.
 
+**Phase 3 — correction et dictée inversée.** Quatre routes de plus, toutes sous
+``/entrainement/`` sauf la validation d'une correction (qui reste sous
+``/pages/{page_id}/`` : elle agit sur UNE page précise). Aucune n'appelle de
+modèle : la correction réutilise une transcription déjà produite par
+``/pages/{page_id}/transcrire``, et la dictée inversée n'a besoin d'aucune
+inférence — c'est l'utilisateur qui juge que son tracé correspond. Les exemples
+créés vivent dans ``core.encre_exemples`` (``core.runtime.encre_exemples_engine``),
+un magasin INDÉPENDANT des pages : cf. son en-tête pour pourquoi chaque exemple
+porte sa propre copie des tracés plutôt qu'une référence.
+
 Le moteur est injecté depuis ``core.runtime`` — jamais instancié ici (§3.2).
 """
 
@@ -39,7 +49,7 @@ from pydantic import BaseModel
 from core.hmer import HmerIndisponible, PageSansEncre, points_de_page
 from core.paths import PathOutsideDataError
 from core.rag import source_encre
-from core.runtime import encre_engine, hmer_engine, rag
+from core.runtime import encre_engine, encre_exemples_engine, hmer_engine, rag
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +84,33 @@ class PageEcriture(BaseModel):
     titre: Optional[str] = None
     strokes: Optional[list[Any]] = None
     mode: Optional[str] = None
+
+
+class ValidationTranscription(BaseModel):
+    """Corps de ``POST /encre/pages/{page_id}/transcription/valider`` (phase 3).
+
+    ``texte`` absent ou ``None`` veut dire « valider tel quel » : le texte de
+    vérité de l'exemple créé sera la sortie du modèle, inchangée — c'est le
+    chemin à friction nulle quand la transcription était déjà bonne. Fourni,
+    c'est le texte ÉDITÉ par l'utilisateur qui devient la vérité, et la sortie
+    originale du modèle reste conservée à côté (``texte_modele``), jamais
+    écrasée — c'est ce qui rend la comparaison possible plus tard.
+    """
+
+    texte: Optional[str] = None
+
+
+class ValidationDictee(BaseModel):
+    """Corps de ``POST /encre/entrainement/dictee/valider`` (phase 3).
+
+    ``strokes`` n'est PAS typé plus finement, pour la même raison que
+    ``PageEcriture.strokes`` : le serveur ne regarde jamais à l'intérieur d'un
+    trait (cf. l'en-tête de ``core/encre.py``), et un ``list[dict[str, float]]``
+    figerait ici la forme d'un point manuscrit.
+    """
+
+    expression_id: str
+    strokes: list[Any] = []
 
 
 def _invalide(exc: PathOutsideDataError) -> HTTPException:
@@ -305,3 +342,109 @@ async def encre_page_transcrire(page_id: str):
     except Exception:
         logger.exception("Page %s transcrite mais non indexée", page_id)
     return page
+
+
+# ── Phase 3 : correction ──────────────────────────────────────────────────────
+
+
+@router.get("/entrainement/a_corriger")
+async def encre_entrainement_a_corriger():
+    """Pages en mode "maths" déjà transcrites, validées comprises.
+
+    Le FILTRAGE « cacher les pages déjà corrigées » est un choix d'affichage du
+    frontend, pas un refus de ce endpoint — cf. `EncreEngine.list_pages_transcrites`
+    pour pourquoi une page validée reste ici : ça n'a pas à bloquer une
+    re-correction si l'utilisateur y revient.
+    """
+    loop = asyncio.get_running_loop()
+    pages = await loop.run_in_executor(None, encre_engine.list_pages_transcrites)
+    return {"pages": pages}
+
+
+@router.post("/pages/{page_id}/transcription/valider")
+async def encre_transcription_valider(page_id: str, req: ValidationTranscription):
+    """Valide (tel quel ou corrigé) la transcription d'une page, crée un exemple.
+
+    Trois refus, avant tout traitement :
+
+    * **404** — la page n'existe pas ;
+    * **400 (pas de transcription)** — rien à valider. Une page en mode
+      "lettres" n'a jamais de transcription (cf. `docs/module-encre.md` §2, phase
+      2), donc ce même refus la couvre sans cas particulier ;
+    * **400 (page vidée)** — la page a bien une transcription, mais plus aucun
+      tracé actuel (l'utilisateur a tout effacé après avoir transcrit) :
+      l'exemple copierait des tracés vides, inutilisable pour l'entraînement.
+
+    L'ordre compte : la page est relue ICI, pas réutilisée depuis un appel
+    précédent — c'est l'état COURANT de ses tracés qui est copié dans l'exemple,
+    pas celui qui existait au moment de la transcription (la même course connue
+    et acceptée que documente `encre_page_transcrire` ci-dessus peut avoir
+    changé l'encre entre-temps, et ce n'est pas ce endpoint qui la referme).
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        page = await loop.run_in_executor(None, encre_engine.get_page, page_id)
+    except PathOutsideDataError as exc:
+        raise _invalide(exc) from exc
+    if page is None:
+        raise HTTPException(status_code=404, detail="Page introuvable")
+
+    transcription = page.get("transcription")
+    if not isinstance(transcription, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Cette page n'a pas de transcription à valider.")
+
+    traits = await loop.run_in_executor(None, points_de_page, page)
+    if not traits:
+        raise HTTPException(
+            status_code=400,
+            detail="Cette page ne contient plus aucun tracé — rien à enregistrer.")
+
+    texte_modele = transcription.get("texte") or ""
+    texte_verite = req.texte if req.texte is not None else texte_modele
+
+    exemple = await loop.run_in_executor(
+        None, encre_exemples_engine.create_exemple, "correction",
+        page.get("strokes") or [], texte_verite, texte_modele)
+
+    page_marquee = await loop.run_in_executor(
+        None, encre_engine.marquer_transcription_validee, page_id)
+    if page_marquee is None:
+        # Course rare : la page (ou sa transcription) a disparu entre la lecture
+        # ci-dessus et cette écriture. L'exemple, lui, est déjà créé et reste
+        # valide — on ne le défait pas pour un marqueur qui n'a plus de page où
+        # se poser.
+        raise HTTPException(status_code=404, detail="Page introuvable")
+
+    return {"page": page_marquee, "exemple_id": exemple["id"]}
+
+
+# ── Phase 3 : dictée inversée ─────────────────────────────────────────────────
+
+
+@router.get("/entrainement/dictee/expression")
+async def encre_dictee_expression():
+    """Une expression LaTeX à recopier — tirée sans répétition tant que la
+    banque n'est pas épuisée (`core.banque_dictee_encre`)."""
+    loop = asyncio.get_running_loop()
+    expr = await loop.run_in_executor(None, encre_exemples_engine.expression_a_copier)
+    return expr
+
+
+@router.post("/entrainement/dictee/valider")
+async def encre_dictee_valider(req: ValidationDictee):
+    """Enregistre la copie manuscrite d'une expression tirée, crée un exemple.
+
+    `expression_id` est résolu contre la banque CÔTÉ SERVEUR
+    (`ExemplesEncreEngine.valider_dictee`) : le `texte_verite` de l'exemple créé
+    n'est donc jamais le texte qu'un client aurait pu envoyer, seulement celui de
+    l'expression réellement tirée.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        exemple = await loop.run_in_executor(
+            None, encre_exemples_engine.valider_dictee, req.expression_id, req.strokes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"exemple_id": exemple["id"]}

@@ -306,6 +306,37 @@ def resolve_encre_dir() -> Path:
     return base.resolve()
 
 
+def resolve_encre_dataset_dir() -> Path:
+    """Dossier des exemples d'entraînement (encre, LaTeX vérité) — module ``encre``, phase 3.
+
+    Priorité : ``$EPURE_ENCRE_DATASET_DIR`` (``~`` accepté) puis défaut
+    ``<backend>/encre_dataset``. Toujours résolu.
+
+    ⚠️ **À APPELER, JAMAIS À FIGER** — cf. :func:`resolve_data_dir`.
+
+    Même régime que :func:`resolve_encre_dir` (données utilisateur
+    **irremplaçables**), et pour la raison même qui motive la phase 3 : chaque
+    exemple porte SA PROPRE COPIE des tracés, précisément pour survivre à la
+    suppression de la page d'origine. Un exemple perdu ici n'est reconstructible
+    par rien — contrairement aux poids de :func:`resolve_hmer_dir`, qui sont
+    vérifiés par sha256 contre une source amont.
+
+    Dossier SÉPARÉ de :func:`resolve_encre_dir`, et non un sous-dossier : les
+    deux ont des cycles de vie indépendants. Une page peut être supprimée sans
+    que l'exemple qui en est issu disparaisse — c'est tout le sens de la « copie
+    propre » ci-dessus — donc les ranger ensemble donnerait l'impression fausse
+    que supprimer un dossier supprime l'autre.
+
+    Détourné **et** surveillé par ``_test_env``, comme :func:`resolve_encre_dir` :
+    cf. son docstring pour la distinction avec les caches (:func:`resolve_hmer_dir`,
+    détournés mais non surveillés) — le tableau des chemins de
+    ``docs/module-encre.md`` la pose explicitement.
+    """
+    env = os.environ.get("EPURE_ENCRE_DATASET_DIR", "").strip()
+    base = Path(env).expanduser() if env else (_BACKEND_DIR / "encre_dataset")
+    return base.resolve()
+
+
 def resolve_data_dir() -> Path:
     """Dossier des JSON de runtime (l'ancien ``backend/memory/`` en dur).
 

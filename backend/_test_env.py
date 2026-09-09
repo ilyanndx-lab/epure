@@ -1,22 +1,24 @@
 """Isolation des données de runtime pendant les tests. **À IMPORTER EN PREMIER.**
 
-Dix arborescences sont détournées vers des temporaires :
+Onze arborescences sont détournées vers des temporaires :
 
-    EPURE_DATA_DIR       backend/memory/                 (JSON de runtime)
-    EPURE_HISTORY_DIR    backend/history/                (temporaire VIDE)
-    EPURE_ENCRE_DIR      backend/encre/                  (temporaire VIDE)
-    EPURE_MODULES_DIR    backend/modules/                (copie)
-    EPURE_GENERATED_DIR  frontend/src/modules/generated/ (copie)
-    EPURE_MODELS_DIR     backend/piper_models/           (temporaire VIDE)
-    EPURE_WEB_DIR        frontend/dist/                  (temporaire VIDE)
-    EPURE_VECTOR_DIR     backend/vector_db/              (temporaire VIDE)
-    EPURE_EMBEDDING_DIR  backend/embedding_model/        (temporaire VIDE)
-    EPURE_HMER_DIR       backend/hmer_model/             (temporaire VIDE)
+    EPURE_DATA_DIR          backend/memory/                 (JSON de runtime)
+    EPURE_HISTORY_DIR       backend/history/                (temporaire VIDE)
+    EPURE_ENCRE_DIR         backend/encre/                  (temporaire VIDE)
+    EPURE_ENCRE_DATASET_DIR backend/encre_dataset/           (temporaire VIDE)
+    EPURE_MODULES_DIR       backend/modules/                (copie)
+    EPURE_GENERATED_DIR     frontend/src/modules/generated/ (copie)
+    EPURE_MODELS_DIR        backend/piper_models/           (temporaire VIDE)
+    EPURE_WEB_DIR           frontend/dist/                  (temporaire VIDE)
+    EPURE_VECTOR_DIR        backend/vector_db/              (temporaire VIDE)
+    EPURE_EMBEDDING_DIR     backend/embedding_model/        (temporaire VIDE)
+    EPURE_HMER_DIR          backend/hmer_model/             (temporaire VIDE)
 
 (Cet en-tête annonçait « cinq » et en listait cinq sur six : `EPURE_VECTOR_DIR`
 existait déjà et n'y figurait pas. Le compte est repris avec l'arrivée de
-`EPURE_EMBEDDING_DIR` le 2026-08-26, de `EPURE_HISTORY_DIR` le 2026-08-27, puis
-de `EPURE_ENCRE_DIR` et `EPURE_HMER_DIR` le 2026-09-07.)
+`EPURE_EMBEDDING_DIR` le 2026-08-26, de `EPURE_HISTORY_DIR` le 2026-08-27, de
+`EPURE_ENCRE_DIR` et `EPURE_HMER_DIR` le 2026-09-07, puis de
+`EPURE_ENCRE_DATASET_DIR` le 2026-09-09.)
 
 ⚠️ « Temporaire VIDE » ne dit RIEN du fait d'être surveillé ou non — les deux
 propriétés sont indépendantes et les confondre est l'erreur naturelle ici.
@@ -98,6 +100,13 @@ REAL_HISTORY_DIR = _BACKEND / "history"
 #: garde-fou reste juste — il détectera une CRÉATION comme il détecte une
 #: modification.
 REAL_ENCRE_DIR = _BACKEND / "encre"
+#: Les exemples d'entraînement (encre, LaTeX vérité) du module `encre`, phase 3.
+#: Même régime que `REAL_ENCRE_DIR` et pour la même raison : chaque exemple
+#: porte sa PROPRE copie des tracés (pour survivre à la suppression de la page
+#: d'origine), donc rien ne les reconstruit. Le dossier n'existe pas non plus
+#: sur un poste qui n'a jamais utilisé la correction/dictée inversée —
+#: `_instantaner` rend `{}` dans ce cas, comme pour `REAL_ENCRE_DIR`.
+REAL_ENCRE_DATASET_DIR = _BACKEND / "encre_dataset"
 REAL_MODULES_DIR = _BACKEND / "modules"
 REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
 #: Le catalogue est du code VERSIONNÉ, source des modules installables. Aucune
@@ -107,8 +116,8 @@ REAL_FRONTEND_MODULES = _REPO / "frontend" / "src" / "modules"
 #: CycleReinstallationTest). Surveillé pour que l'oublier se voie.
 REAL_CATALOGUE_DIR = _REPO / "modules-catalogue"
 REAL_DIRS = (
-    REAL_DATA_DIR, REAL_HISTORY_DIR, REAL_ENCRE_DIR, REAL_MODULES_DIR,
-    REAL_FRONTEND_MODULES, REAL_CATALOGUE_DIR,
+    REAL_DATA_DIR, REAL_HISTORY_DIR, REAL_ENCRE_DIR, REAL_ENCRE_DATASET_DIR,
+    REAL_MODULES_DIR, REAL_FRONTEND_MODULES, REAL_CATALOGUE_DIR,
 )
 
 #: Non copiés dans l'arbre temporaire : `_backups` pèse 1,2 Mo des 1,6 Mo de
@@ -328,6 +337,13 @@ HISTORY_DIR = _installer_vide("EPURE_HISTORY_DIR", "history")
 #: l'import de `core.runtime`. Sans cette ligne, importer `main` suffirait à
 #: créer `backend/encre/` — et `DELETE /encre/pages/{id}` fait un `unlink()`.
 ENCRE_DIR = _installer_vide("EPURE_ENCRE_DIR", "encre")
+
+#: Exemples d'entraînement (encre, LaTeX vérité) — temporaire VIDE, et
+#: **surveillé** (REAL_DIRS). Jumeau exact de `ENCRE_DIR` ci-dessus, pour la
+#: même raison exactement : ce sont des données utilisateur qu'aucun
+#: téléchargement ne reconstruit — chaque exemple garde sa propre copie des
+#: tracés justement pour survivre à la suppression de la page d'origine.
+ENCRE_DATASET_DIR = _installer_vide("EPURE_ENCRE_DATASET_DIR", "encre_dataset")
 
 #: Copie de backend/modules/ — EPURE_MODULES_DIR pointe dessus. Les modules
 #: installés sur CE poste (catalogue, Atelier) en sont écartés : l'arbre de test

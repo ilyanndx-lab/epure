@@ -246,6 +246,43 @@ class EncreEngine:
         pages.sort(key=lambda p: (p["date_modification"], p["id"]), reverse=True)
         return pages
 
+    def list_pages_transcrites(self) -> list[dict]:
+        """Pages en mode "maths" déjà transcrites — candidates à la correction (phase 3).
+
+        Résumé plus riche que :meth:`list_pages` : la phase 3 a besoin du mode
+        (déjà implicite — seules les pages "maths" ont une transcription — mais
+        vérifié explicitement plutôt que supposé, cf. le §3.3 de
+        ``docs/module-encre.md``) et du bloc ``transcription`` complet, dont
+        ``validee_le``, pour que l'écran de correction sache distinguer une page
+        jamais corrigée d'une page déjà validée SANS bloquer d'y revenir — la
+        distinction se lit ici, le filtre par défaut est un choix du frontend, pas
+        un refus du backend.
+
+        N'ouvre PAS les tracés dans le résultat : la correction ne modifie que le
+        TEXTE, jamais l'encre (`update_page` reste le seul chemin d'écriture des
+        traits) — les transmettre alourdirait la réponse sans aucun usage côté
+        client.
+        """
+        if not self._dir.is_dir():
+            return []
+        pages: list[dict] = []
+        for chemin in self._dir.glob("*.json"):
+            if not chemin.is_file():
+                continue
+            page = read_json(chemin, None)
+            if not isinstance(page, dict):
+                continue
+            if self._mode(page.get("mode")) != "maths":
+                continue
+            transcription = page.get("transcription")
+            if not isinstance(transcription, dict):
+                continue
+            resume = self._resume(page, chemin.stem)
+            resume["transcription"] = transcription
+            pages.append(resume)
+        pages.sort(key=lambda p: (p["date_modification"], p["id"]), reverse=True)
+        return pages
+
     def get_page(self, page_id: str) -> Optional[dict]:
         """La page complète, tracés compris — ou ``None`` si elle n'existe pas.
 
@@ -388,6 +425,46 @@ class EncreEngine:
         except _PageAbsente:
             logger.warning("Page d'encre illisible, transcription non écrite : %s",
                            chemin.name)
+            return None
+        return resultat
+
+    def marquer_transcription_validee(self, page_id: str) -> Optional[dict]:
+        """Pose `transcription.validee_le`, sans toucher à rien d'autre (phase 3).
+
+        Même contrat que :meth:`set_transcription` : `None` si la page n'existe
+        pas ou est illisible — jamais une exception, le routeur traduit en 404.
+
+        **N'écrit RIEN si la page n'a pas de transcription.** Une page qu'on
+        essaie de « valider » sans qu'elle ait jamais été transcrite est un état
+        que le routeur doit avoir déjà écarté (mode "lettres", ou transcription
+        absente) — arriver ici dans ce cas serait un bug du côté appelant, pas
+        une situation à réparer en silence en créant un bloc `transcription`
+        vide qui n'aurait pas de sens (`texte`/`modele`/`version` absents).
+
+        Ne modifie ni `titre`, ni `strokes`, ni les deux dates de la page, ni les
+        champs `texte`/`modele`/`version`/`date` de la transcription elle-même :
+        ce marqueur dit seulement « la sortie du modèle a été revue », il ne
+        redécrit pas ce qui a été revu. C'est ce qui permet de rappeler cette
+        méthode une seconde fois sans perdre l'horodatage de la validation
+        précédente au profit d'un artefact bénin — le marqueur avance, point.
+        """
+        chemin = self._page_path(page_id)
+        if not chemin.is_file():
+            return None
+        try:
+            with transaction(chemin, None) as page:
+                if not isinstance(page, dict):
+                    raise _PageAbsente
+                transcription = page.get("transcription")
+                if not isinstance(transcription, dict):
+                    raise _PageAbsente
+                page["id"] = page_id
+                transcription["validee_le"] = _horodatage()
+                resultat = dict(page)
+        except _PageAbsente:
+            logger.warning(
+                "Page d'encre illisible ou non transcrite, validation non posée : %s",
+                chemin.name)
             return None
         return resultat
 
