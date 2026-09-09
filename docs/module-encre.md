@@ -254,6 +254,49 @@ prévu ci-dessus :
   nom de fichier à afficher) ; « retirer » y fonctionne, « ouvrir dans un nouvel
   onglet » est refusé explicitement (404) au lieu de produire un 500.
 
+**AJOUTÉ le 2026-09-08 — mode "maths" / "lettres" par page.** `pix2text-mfr`
+est un reconnaisseur de **formules mathématiques** (sortie LaTeX), pas un OCR
+généraliste : lui donner du texte manuscrit courant ne produit pas une
+transcription dégradée mais des **hallucinations de syntaxe math** — un
+résultat qui a l'aspect d'un LaTeX plausible sans en être un, donc le pire cas
+pour un index (une entrée fausse qu'on croit vraie coûte plus qu'une entrée
+absente). Décision : **pas de second modèle HWR pour l'instant.** Un
+reconnaisseur généraliste séparé pour les pages de texte courant est resté
+hors de ce lot — non écarté par principe, simplement non mesuré, et il
+demanderait sa propre phase 0 (baselines, ExpRate, coût CPU) avant d'être
+construit. En attendant, un champ `mode` par page (`"maths"` par défaut,
+`"lettres"`) permet de dire explicitement « ne transcris pas ceci » plutôt que
+de laisser `pix2text-mfr` produire du bruit sur du contenu hors de son
+domaine.
+
+- `EncreEngine._mode()` (`core/encre.py`) normalise vers ces deux seules
+  valeurs ; toute autre valeur — absente, mal orthographiée, héritée d'un
+  fichier écrit avant ce champ — se lit comme `"maths"`. **Aucune migration** :
+  la lecture par défaut suffit, exactement comme pour `titre`/`strokes` sur des
+  pages plus anciennes encore.
+- Le refus est **côté serveur** : `POST /encre/pages/{id}/transcrire` répond
+  400 sur une page en mode "lettres", vérifié AVANT `points_de_page` (un refus
+  de principe n'a pas besoin de savoir si la page a de l'encre) et donc avant
+  tout appel à `hmer_engine`. Le bouton désactivé côté `Component.tsx` n'est
+  qu'un confort — un appel direct à l'API (curl, une extension, une régression
+  frontend future) doit retomber sur le même refus, pas sur une transcription
+  hallucinée.
+- Conséquence directe et non un garde-fou séparé : `rag.index_page_encre`
+  n'est appelé qu'APRÈS un `set_transcription` réussi (`modules/encre/router.py`),
+  lui-même inatteignable sur une page en mode "lettres" puisque la requête est
+  refusée avant. Une page en mode "lettres" n'est donc **jamais indexée** —
+  vérifié dans le code du routeur, pas supposé.
+- Le toggle frontend est modifiable à tout moment, indépendamment d'une
+  transcription déjà présente : c'est une propriété de la page, pas un état du
+  bouton. Il partage le circuit d'enregistrement automatique du titre/de
+  l'encre (`Instantane` porte désormais `mode`) plutôt que d'ouvrir un second
+  chemin d'écriture.
+- **Pour la phase 3 (à venir séparément)** : l'écran de correction/dictée
+  inversée ne doit s'appliquer qu'aux pages en mode "maths" **et** déjà
+  transcrites. Une page "lettres" n'a et n'aura jamais de transcription à
+  corriger par ce chemin ; la future UI n'a pas besoin d'un cas particulier
+  pour l'exclure, il suffit de filtrer sur `page.transcription` étant donné
+  qu'il n'existera simplement jamais pour ces pages-là.
 
 ### Phase 3 — Correction et collecte.
 

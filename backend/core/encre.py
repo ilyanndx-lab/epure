@@ -49,6 +49,22 @@ logger = logging.getLogger(__name__)
 #: « l'utilisateur a effacé le titre », et on le conserve tel quel).
 TITRE_DEFAUT = "Page sans titre"
 
+#: Mode par défaut d'une page, y compris celles écrites avant que ce champ
+#: existe (2026-09-08) — aucune migration n'est nécessaire tant que la LECTURE
+#: applique ce défaut, cf. :meth:`EncreEngine._mode`. C'est aussi le mode qui a
+#: toujours été transcrit jusqu'ici : `pix2text-mfr` est un reconnaisseur de
+#: formules mathématiques (sortie LaTeX), pas un OCR généraliste. Une page de
+#: texte manuscrit courant qu'on lui donne ne produit pas une transcription
+#: dégradée mais des hallucinations de syntaxe math — d'où le second mode,
+#: "lettres", qui désactive la transcription plutôt que de la laisser produire
+#: du bruit qui ressemble à un résultat.
+MODE_DEFAUT = "maths"
+
+#: Les deux seules valeurs connues. Toute autre valeur — absente, mal
+#: orthographiée, héritée d'un client d'une autre version — se lit comme
+#: :data:`MODE_DEFAUT`, cf. :meth:`EncreEngine._mode`.
+_MODES_VALIDES = frozenset({"maths", "lettres"})
+
 
 class _PageAbsente(Exception):
     """Sentinelle interne : abandonne une ``transaction`` SANS rien écrire.
@@ -167,6 +183,21 @@ class EncreEngine:
         """
         return titre if isinstance(titre, str) else TITRE_DEFAUT
 
+    @staticmethod
+    def _mode(mode) -> str:
+        """Mode ramené à une valeur connue — jamais une exception, jamais un 422.
+
+        Même philosophie que :meth:`_titre` et :meth:`_traits` : une page
+        d'encre ne doit jamais devenir illisible parce qu'un client a envoyé
+        autre chose que prévu. Ici, « autre chose » recouvre aussi le cas
+        normal et attendu — une page écrite avant le 2026-09-08, dont le
+        fichier n'a tout simplement pas ce champ : ``page.get("mode")`` y rend
+        ``None``, qui n'est pas dans :data:`_MODES_VALIDES` et retombe donc sur
+        :data:`MODE_DEFAUT`. C'est la totalité de la « migration » — aucun
+        script, aucune réécriture des fichiers existants.
+        """
+        return mode if isinstance(mode, str) and mode in _MODES_VALIDES else MODE_DEFAUT
+
     def _resume(self, page: dict, page_id: str) -> dict:
         """Entrée de liste : tout SAUF les tracés.
 
@@ -232,9 +263,10 @@ class EncreEngine:
         page["id"] = chemin.stem
         page["titre"] = self._titre(page.get("titre"))
         page["strokes"] = self._traits(page.get("strokes"))
+        page["mode"] = self._mode(page.get("mode"))
         return page
 
-    def create_page(self, titre=None, strokes=None) -> dict:
+    def create_page(self, titre=None, strokes=None, mode=None) -> dict:
         """Crée une page et rend son contenu complet.
 
         L'identifiant est fabriqué ici (``uuid4().hex``) et jamais accepté du
@@ -244,6 +276,10 @@ class EncreEngine:
         Rend la page ENTIÈRE et pas seulement son id : le client vient de la
         créer, il a besoin des deux dates pour afficher son état sans un second
         aller-retour.
+
+        ``mode`` non fourni (ou invalide) vaut :data:`MODE_DEFAUT` — une page
+        neuve créée sans que l'utilisateur ait touché au sélecteur est une page
+        de maths, comme toutes les pages d'avant ce champ.
         """
         page_id = uuid.uuid4().hex
         maintenant = _horodatage()
@@ -253,12 +289,14 @@ class EncreEngine:
             "date_creation": maintenant,
             "date_modification": maintenant,
             "strokes": self._traits(strokes),
+            "mode": self._mode(mode),
         }
         write_json(self._page_path(page_id), page)
         return page
 
-    def update_page(self, page_id: str, titre=None, strokes=None) -> Optional[dict]:
-        """Remplace titre et/ou tracés d'une page existante. ``None`` si absente.
+    def update_page(self, page_id: str, titre=None, strokes=None,
+                     mode=None) -> Optional[dict]:
+        """Remplace titre, tracés et/ou mode d'une page existante. ``None`` si absente.
 
         Read-modify-write sous ``transaction`` et non ``read_json`` +
         ``write_json`` (CLAUDE.md §3.4) : la sauvegarde automatique du canvas et
@@ -269,7 +307,9 @@ class EncreEngine:
         ``None`` laisse le champ INCHANGÉ, il ne l'efface pas — c'est ce qui rend
         possible le « renomme sans me faire remonter 3 Mo d'encre ». Un
         ``strokes`` explicitement vide (``[]``) efface bien la page : c'est une
-        liste, pas une absence.
+        liste, pas une absence. ``mode`` suit la même règle que ``titre`` : il
+        n'y a pas de valeur « efface le mode », seulement « maths » et
+        « lettres » — donc rien à distinguer d'une liste vide ici.
         """
         chemin = self._page_path(page_id)
         if not chemin.is_file():
@@ -283,6 +323,8 @@ class EncreEngine:
                     page["titre"] = self._titre(titre)
                 if strokes is not None:
                     page["strokes"] = self._traits(strokes)
+                if mode is not None:
+                    page["mode"] = self._mode(mode)
                 page.setdefault("date_creation", _horodatage())
                 page["date_modification"] = _horodatage()
                 # Copie prise DANS le ``with`` : après la sortie, l'objet cédé a

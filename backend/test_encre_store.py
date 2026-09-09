@@ -30,6 +30,7 @@ Usage :
     python test_encre_store.py
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -40,7 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _test_env  # noqa: F401  — isole EPURE_ENCRE_DIR AVANT tout import de core.*
 
-from core.encre import TITRE_DEFAUT, EncreEngine  # noqa: E402
+from core.encre import MODE_DEFAUT, TITRE_DEFAUT, EncreEngine  # noqa: E402
 from core.jsonstore import read_json  # noqa: E402
 from core.paths import PathOutsideDataError, resolve_encre_dir  # noqa: E402
 
@@ -236,6 +237,74 @@ class EncreStoreTest(unittest.TestCase):
         (self.dir / "abime.json").write_text(brut, encoding="utf-8")
         self.assertIsNone(self.moteur.update_page("abime", "x", [TRAIT]))
         self.assertEqual((self.dir / "abime.json").read_text(encoding="utf-8"), brut)
+
+    # ── Mode maths/lettres (2026-09-08) ──────────────────────────────────────
+
+    def test_creation_sans_mode_prend_le_defaut_maths(self):
+        """Aucune migration : une page créée sans mode est une page de maths,
+        comme toutes celles écrites avant ce champ."""
+        self.assertEqual(self.moteur.create_page("x", [])["mode"], MODE_DEFAUT)
+        self.assertEqual(MODE_DEFAUT, "maths")
+
+    def test_creation_avec_mode_lettres(self):
+        page = self.moteur.create_page("Dissert", [], mode="lettres")
+        self.assertEqual(page["mode"], "lettres")
+
+    def test_creation_avec_mode_invalide_retombe_sur_le_defaut(self):
+        """Un mode qui n'est ni "maths" ni "lettres" ne doit pas rendre la page
+        illisible — même philosophie que ``_titre``/``_traits``, jamais un 422
+        sur une page par ailleurs valide."""
+        for valeur in ("MATHS", "lettre", "", None, 42, ["maths"]):
+            with self.subTest(valeur=valeur):
+                page = self.moteur.create_page("x", [], mode=valeur)
+                self.assertEqual(page["mode"], MODE_DEFAUT)
+
+    def test_une_page_ecrite_avant_ce_champ_se_lit_comme_maths(self):
+        """Rétrocompatibilité : un fichier sans clé ``mode`` du tout, tel qu'en
+        écrivait toute version antérieure au 2026-09-08.
+
+        Écrit directement sur disque plutôt que via le moteur, précisément pour
+        simuler une page ancienne — ``create_page`` écrirait toujours le champ
+        désormais.
+        """
+        pid = self.moteur.create_page("Cours", [TRAIT])["id"]
+        chemin = self.dir / f"{pid}.json"
+        brut = read_json(chemin, {})
+        self.assertIn("mode", brut)  # contrôle du contrôle
+        del brut["mode"]
+        chemin.write_text(json.dumps(brut), encoding="utf-8")
+        self.assertEqual(self.moteur.get_page(pid)["mode"], "maths")
+
+    def test_mise_a_jour_du_mode_seul_ne_touche_pas_titre_ni_traits(self):
+        pid = self.moteur.create_page("titre", [TRAIT])["id"]
+        page = self.moteur.update_page(pid, mode="lettres")
+        self.assertEqual(page["mode"], "lettres")
+        self.assertEqual(page["titre"], "titre")
+        self.assertEqual(page["strokes"], [TRAIT])
+
+    def test_aller_retour_du_mode(self):
+        """Le geste du toggle : lettres, puis retour à maths."""
+        pid = self.moteur.create_page("x", [])["id"]
+        self.assertEqual(
+            self.moteur.update_page(pid, mode="lettres")["mode"], "lettres")
+        self.assertEqual(
+            self.moteur.get_page(pid)["mode"], "lettres")
+        self.assertEqual(
+            self.moteur.update_page(pid, mode="maths")["mode"], "maths")
+        self.assertEqual(
+            self.moteur.get_page(pid)["mode"], "maths")
+
+    def test_mode_non_fourni_sur_mise_a_jour_laisse_le_mode_inchange(self):
+        """``None`` veut dire « ne touche pas », exactement comme pour
+        ``titre``/``strokes`` — pas de valeur qui « efface » le mode."""
+        pid = self.moteur.create_page("x", [], mode="lettres")["id"]
+        self.moteur.update_page(pid, titre="renommée")
+        self.assertEqual(self.moteur.get_page(pid)["mode"], "lettres")
+
+    def test_mise_a_jour_avec_mode_invalide_retombe_sur_le_defaut(self):
+        pid = self.moteur.create_page("x", [], mode="lettres")["id"]
+        page = self.moteur.update_page(pid, mode="mathematiques")
+        self.assertEqual(page["mode"], MODE_DEFAUT)
 
     # ── Suppression ───────────────────────────────────────────────────────────
 

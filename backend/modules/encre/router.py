@@ -58,15 +58,22 @@ class PageEcriture(BaseModel):
     d'encre parfaitement dessinée serait le pire résultat possible de cette
     validation.
 
-    Les deux champs sont optionnels et valent ``None`` par défaut, ce qui, sur le
-    ``PUT``, signifie « ne touche pas à ce champ » et non « efface-le » : c'est
-    ce qui permet à l'interface de renommer une page sans lui renvoyer l'encre
-    entière. Un ``strokes: []`` explicite efface bien, lui — une liste vide est
-    une valeur, pas une absence.
+    Les trois champs sont optionnels et valent ``None`` par défaut, ce qui, sur
+    le ``PUT``, signifie « ne touche pas à ce champ » et non « efface-le » :
+    c'est ce qui permet à l'interface de renommer une page sans lui renvoyer
+    l'encre entière. Un ``strokes: []`` explicite efface bien, lui — une liste
+    vide est une valeur, pas une absence.
+
+    ``mode`` n'est pas un ``Literal["maths", "lettres"]`` — délibérément : une
+    valeur inconnue ne doit pas produire un 422 sur une page par ailleurs
+    valide, elle doit se lire comme "maths" (``EncreEngine._mode``), exactement
+    comme un ``strokes`` mal formé se lit comme une page vide. La validation
+    stricte vivrait ici pour de mauvaises raisons ; elle vit dans le moteur.
     """
 
     titre: Optional[str] = None
     strokes: Optional[list[Any]] = None
+    mode: Optional[str] = None
 
 
 def _invalide(exc: PathOutsideDataError) -> HTTPException:
@@ -104,7 +111,7 @@ async def encre_page_create(req: PageEcriture):
     """Crée une page et rend son contenu complet, id et dates compris."""
     loop = asyncio.get_running_loop()
     page = await loop.run_in_executor(
-        None, encre_engine.create_page, req.titre, req.strokes)
+        None, encre_engine.create_page, req.titre, req.strokes, req.mode)
     return page
 
 
@@ -125,7 +132,7 @@ async def encre_page_update(page_id: str, req: PageEcriture):
     loop = asyncio.get_running_loop()
     try:
         page = await loop.run_in_executor(
-            None, encre_engine.update_page, page_id, req.titre, req.strokes)
+            None, encre_engine.update_page, page_id, req.titre, req.strokes, req.mode)
     except PathOutsideDataError as exc:
         raise _invalide(exc) from exc
     if page is None:
@@ -187,12 +194,21 @@ async def encre_page_transcrire(page_id: str):
     le laisser sur la boucle d'événements, où il figerait le backend entier
     (chat compris) pendant tout le chargement du modèle au premier appel.
 
-    Trois codes d'erreur, trois causes qui ne se confondent pas :
+    Quatre codes d'erreur, quatre causes qui ne se confondent pas :
 
     * **404** — la page n'existe pas (onglet resté ouvert sur une page effacée) ;
-    * **400** — la page existe et n'a aucun tracé. Vérifié AVANT de toucher au
-      moteur, avec `points_de_page`, qui n'importe rien de lourd : découvrir
-      qu'une page est vide ne doit pas coûter 118 Mo de poids et 16 s d'import ;
+    * **400 (mode)** — la page est en mode "lettres". Refusé ICI, côté serveur,
+      et pas seulement par un bouton désactivé côté frontend : `pix2text-mfr`
+      est un reconnaisseur de formules mathématiques (sortie LaTeX), pas un OCR
+      généraliste, et lui donner du texte manuscrit courant ne produit pas une
+      transcription dégradée mais des hallucinations de syntaxe math — un
+      résultat qui a l'air d'un LaTeX plausible et qui n'en est pas un. Vérifié
+      AVANT `points_de_page` : un refus de principe n'a pas besoin de savoir si
+      la page a de l'encre ;
+    * **400 (vide)** — la page existe, est en mode "maths", et n'a aucun tracé.
+      Vérifié AVANT de toucher au moteur, avec `points_de_page`, qui n'importe
+      rien de lourd : découvrir qu'une page est vide ne doit pas coûter 118 Mo
+      de poids et 16 s d'import ;
     * **500** — le moteur ne peut pas se construire (dépendances absentes, poids
       introuvables) ou la transcription lève. **Jamais un 200 avec un texte
       vide**, qui aurait l'air d'un succès et écraserait une transcription
@@ -233,6 +249,20 @@ async def encre_page_transcrire(page_id: str):
         raise _invalide(exc) from exc
     if page is None:
         raise HTTPException(status_code=404, detail="Page introuvable")
+    if page.get("mode") == "lettres":
+        # `page.get("mode")` est déjà normalisé par `encre_engine.get_page`
+        # (`EncreEngine._mode`) : une page écrite avant ce champ vaut "maths"
+        # ici, jamais "lettres" par accident.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cette page est en mode « lettres » : la transcription est "
+                "désactivée. pix2text-mfr reconnaît des formules "
+                "mathématiques (sortie LaTeX), pas du texte manuscrit "
+                "courant — bascule la page en mode « maths » si elle "
+                "contient des formules à transcrire."
+            ),
+        )
     # `run_in_executor` comme tout le reste de ce fichier, et pas par symétrie
     # décorative : MESURÉ sur ce poste, 135 ms pour 300 traits de 200 points et
     # 335 ms pour 600 × 300. C'est une boucle Python sur des dizaines de milliers
