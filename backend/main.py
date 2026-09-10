@@ -61,7 +61,7 @@ from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
     get_ollama_installed, check_lmstudio, get_lmstudio_installed,
-    lmstudio_chargement_en_cours,
+    lmstudio_chargement_en_cours, start_flm,
 )
 from core.quota_tracker import QuotaTracker
 from core.rag import RAGEngine
@@ -526,6 +526,21 @@ async def models_unload(req: ModeleMemoireRequest):
     et `ok: false` porte alors l'explication."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, ollama_memoire.decharger, req.model)
+
+
+@app.post("/models/flm/start")
+async def models_flm_start():
+    """Démarre `flm serve` s'il ne répond pas déjà. Ne bloque pas : le lancement
+    lui-même est synchrone et rapide (`Popen` rend la main immédiatement), mais
+    FLM lui met ensuite plusieurs secondes à répondre — le frontend re-sonde
+    séparément (`GET /health`, champ `flm`), comme pour la passerelle Atelier.
+
+    `run_in_executor` comme ses voisines : `shutil.which` et `subprocess.Popen`
+    sont synchrones, et un lancement refusé (verrou déjà pris, binaire absent)
+    doit répondre aussi vite qu'un `check_flm()` réussi.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, start_flm)
 
 
 @app.get("/models/lmstudio/chargement")

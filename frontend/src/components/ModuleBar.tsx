@@ -123,6 +123,20 @@ type VerdictModele =
  */
 const DELAI_RELECTURE_MATERIEL_MS = 800
 
+/**
+ * Intervalle de sonde de `GET /health` pendant le démarrage de FLM, et borne
+ * avant d'abandonner.
+ *
+ * Même ordre de grandeur que `DELAI_RELECTURE_MATERIEL_MS` ci-dessus (repris
+ * par cohérence avec Ollama/LM Studio), mais **pas mesuré pour FLM** — `flm
+ * serve` ouvre son port HTTP avant tout chargement de modèle (comme `ollama
+ * serve`, qui répond avant qu'un modèle soit chargé), donc l'attente devrait
+ * rester courte ; ça n'a pas été chronométré en conditions réelles, contrairement
+ * aux délais mesurés ailleurs dans ce fichier.
+ */
+const DELAI_SONDE_FLM_MS = 1000
+const TIMEOUT_DEMARRAGE_FLM_MS = 30000
+
 /** Recopie de `core/materiel.py::VERDICTS` — sert de filtre, pas de decor. */
 const VERDICTS_CONNUS: readonly VerdictModele[] = [
   'tient', 'limite', 'ne_tiendra_pas', 'inconnu', 'disponible', 'indisponible',
@@ -601,6 +615,18 @@ export default function ModuleBar({
   //: Dernier refus expliqué (typiquement : une génération tient le modèle).
   const [memoireMessage, setMemoireMessage] = useState<string | null>(null)
 
+  //: Démarrage de FLM en vol — bouton verrouillé, spinner affiché.
+  const [flmStarting, setFlmStarting] = useState(false)
+  //: Dernier message (échec de lancement, ou timeout d'attente).
+  const [flmStartMsg, setFlmStartMsg] = useState<string | null>(null)
+  //: Vérifié de façon SYNCHRONE au tout début du handler — `flmStarting`
+  //: (state React) ne l'est pas : deux clics dans le même tick voient tous
+  //: les deux sa valeur d'AVANT le premier rendu, et déclencheraient deux
+  //: requêtes. Un ref, lui, est à jour immédiatement.
+  const flmStartingRef = useRef(false)
+  const flmPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => () => { if (flmPollRef.current) clearInterval(flmPollRef.current) }, [])
+
   // Preset state (for effort panel)
   const [presets, setPresets] = useState<Preset[]>([])
   const [saveModalOpen, setSaveModalOpen] = useState(false)
@@ -648,6 +674,30 @@ export default function ModuleBar({
       .catch(() => { setMateriel(null); setVerdicts({}) })
   }, [])
 
+  /**
+   * Lit `/models` et pose les quatre listes (local/NPU/LM Studio/cloud) +
+   * fournisseurs.
+   *
+   * Extrait de l'effet d'ouverture du panneau modèle pour que `startFlm`
+   * puisse la rejouer après un démarrage réussi — sans ça le bouton
+   * disparaît (NPU redevenu joignable) mais `localNpuModels` reste vide
+   * jusqu'à ce que l'utilisateur referme et rouvre le panneau.
+   */
+  const chargerModeles = useCallback(() => {
+    apiFetch(`${API}/models`)
+      .then(r => r.json())
+      // Aucun champ n'est annoncé non-optionnel : la seule chose qu'on sache
+      // de ce corps, c'est qu'il a été parsé.
+      .then((d: { local?: unknown; local_npu?: unknown; local_lmstudio?: unknown; cloud?: unknown; fournisseurs?: unknown }) => {
+        setLocalModels(liste<ModelInfo>(d.local))
+        setLocalNpuModels(liste<ModelInfo>(d.local_npu))
+        setLocalLmstudioModels(liste<ModelInfo>(d.local_lmstudio))
+        setCloudCategories(categories(d.cloud))
+        setFournisseurs(dico(d.fournisseurs))
+      })
+      .catch(() => {})
+  }, [])
+
   //: Relecture differee en vol — annulee au demontage, sinon React previent
   //: d'un `setState` sur un composant disparu a chaque panneau referme vite.
   const relectureRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -685,6 +735,63 @@ export default function ModuleBar({
       relectureRef.current = setTimeout(chargerMateriel, DELAI_RELECTURE_MATERIEL_MS)
     }
   }, [chargerMateriel])
+
+  /**
+   * Démarre `flm serve` (`POST /models/flm/start`) puis sonde `GET /health`
+   * jusqu'à ce que FLM réponde, ou jusqu'au timeout.
+   *
+   * **Aucun pourcentage de chargement** : FLM ne publie rien de tel (cf.
+   * `claude/idees-ux-modeles-locaux.md`), le spinner reste non chiffré.
+   *
+   * Le double-clic est bloqué par `flmStartingRef`, vérifié en tout premier —
+   * un `useState` seul ne le pourrait pas : deux clics dans le même tick
+   * liraient tous les deux la valeur d'avant le premier rendu.
+   */
+  const startFlm = useCallback(() => {
+    if (flmStartingRef.current) return
+    flmStartingRef.current = true
+    setFlmStarting(true)
+    setFlmStartMsg(null)
+
+    const terminer = (message: string | null) => {
+      if (flmPollRef.current) { clearInterval(flmPollRef.current); flmPollRef.current = null }
+      flmStartingRef.current = false
+      setFlmStarting(false)
+      setFlmStartMsg(message)
+    }
+
+    apiFetch(`${API}/models/flm/start`, { method: 'POST' })
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { ok?: unknown; raison?: unknown } | null) => {
+        if (!d || d.ok !== true) {
+          terminer(typeof d?.raison === 'string' && d.raison ? d.raison : 'Le backend a refusé la demande.')
+          return
+        }
+        // Lancé (ou déjà joignable) : `/health` est public (aucun token requis,
+        // CLAUDE.md §1) et déjà borné à 2 s côté backend — la sonde la moins
+        // chère pour ce qu'on cherche à savoir ici (`flm: bool`).
+        const debut = Date.now()
+        flmPollRef.current = setInterval(() => {
+          apiFetch(`${API}/health`)
+            .then(r => (r.ok ? r.json() : null))
+            .then((h: { flm?: unknown } | null) => {
+              if (h?.flm === true) {
+                terminer(null)
+                chargerMateriel()
+                chargerModeles()
+                return
+              }
+              if (Date.now() - debut > TIMEOUT_DEMARRAGE_FLM_MS) {
+                terminer("FLM ne répond toujours pas — vérifie qu'il a bien démarré.")
+              }
+            })
+            .catch(() => {
+              if (Date.now() - debut > TIMEOUT_DEMARRAGE_FLM_MS) terminer('Backend injoignable.')
+            })
+        }, DELAI_SONDE_FLM_MS)
+      })
+      .catch(() => terminer('Backend injoignable.'))
+  }, [chargerMateriel, chargerModeles])
 
   const allModels = useCallback((): ModelInfo[] => [
     ...localModels,
@@ -887,18 +994,7 @@ export default function ModuleBar({
       .catch(() => {})
 
     if (showModel) {
-      apiFetch(`${API}/models`)
-        .then(r => r.json())
-        // Aucun champ n'est annoncé non-optionnel : la seule chose qu'on sache
-        // de ce corps, c'est qu'il a été parsé.
-        .then((d: { local?: unknown; local_npu?: unknown; local_lmstudio?: unknown; cloud?: unknown; fournisseurs?: unknown }) => {
-          setLocalModels(liste<ModelInfo>(d.local))
-          setLocalNpuModels(liste<ModelInfo>(d.local_npu))
-          setLocalLmstudioModels(liste<ModelInfo>(d.local_lmstudio))
-          setCloudCategories(categories(d.cloud))
-          setFournisseurs(dico(d.fournisseurs))
-        })
-        .catch(() => {})
+      chargerModeles()
 
       // Ce qui est CHARGÉ, en plus de ce qui est installé. Requête séparée
       // parce que la réponse a une autre nature : `/models` liste le disque et
@@ -928,7 +1024,7 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel])
+  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel, chargerModeles])
 
   /**
    * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.
@@ -1806,10 +1902,26 @@ export default function ModuleBar({
               )}
               <div className="flex items-center justify-between gap-2">
                 <span>NPU</span>
-                <span className={materiel.npu.disponible ? 'text-accent' : 'text-muted/70'}>
-                  {materiel.npu.disponible ? 'FastFlowLM répond' : 'aucun (FastFlowLM éteint)'}
-                </span>
+                {materiel.npu.disponible ? (
+                  <span className="text-accent">FastFlowLM répond</span>
+                ) : flmStarting ? (
+                  <span className="text-muted flex items-center gap-1.5">
+                    <Loader2 size={11} className="animate-spin" />
+                    Démarrage…
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => startFlm()}
+                    className="text-accent hover:underline underline-offset-2"
+                    title="Lance flm serve en arrière-plan, sans fenêtre de console"
+                  >
+                    Démarrer FLM
+                  </button>
+                )}
               </div>
+              {flmStartMsg && (
+                <p className="text-warning text-right">{flmStartMsg}</p>
+              )}
               {/* D'où sort le dénominateur des verdicts. Sans cette ligne,
                   « ne tient pas » est un jugement sans motif — et le motif est
                   ce qui est LIBRE, pas ce que la machine contient. */}

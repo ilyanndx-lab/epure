@@ -867,7 +867,9 @@ describe('ModuleBar — faisabilité matérielle', () => {
     await ouvrirAvec({ corps: { materiel: MATERIEL_IGPU, modeles: [] } })
     await waitFor(() => expect(screen.getByText('31,3 Go')).toBeTruthy())
     expect(screen.getByText(/AMD Radeon\(TM\) 840M Graphics/)).toBeTruthy()
-    expect(screen.getByText(/aucun \(FastFlowLM éteint\)/)).toBeTruthy()
+    // NPU éteint : plus de badge muet, un bouton actionnable (cf. « Démarrer
+    // FLM » ci-dessous).
+    expect(screen.getByText('Démarrer FLM')).toBeTruthy()
   })
 
   it('garde la mémoire dédiée et la partagée SÉPARÉES — jamais leur somme', async () => {
@@ -1031,6 +1033,113 @@ describe('ModuleBar — faisabilité matérielle', () => {
     )
     await waitFor(() => expect(screen.getByText('FastFlowLM répond')).toBeTruthy())
     expect(screen.getByText('NPU pret')).toBeTruthy()
+  })
+
+  /**
+   * Démarrage de FLM depuis le bouton — la table statique de `ouvrirAvec` ne
+   * suffit plus ici : la réponse de `/health` et `/models/materiel` doit
+   * changer APRÈS le clic, pour rejouer le sondage réel du composant. Un
+   * `fetch` maison, à la place de `poserFetch`, porte cette progression.
+   */
+  it('« Démarrer FLM » : lance le serveur, sonde /health, et se retire une fois joignable', async () => {
+    let appelsDemarrage = 0
+    let appelsHealth = 0
+    const impl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input)
+      if (url.includes('/models/flm/start')) {
+        appelsDemarrage += 1
+        return new Response(JSON.stringify({
+          ok: true, raison: 'FLM démarre — patientez quelques secondes puis re-testez.',
+        }), { status: 200 })
+      }
+      if (url.includes('/health')) {
+        appelsHealth += 1
+        // Joignable qu'à partir du DEUXIÈME sondage : la première sonde arrive
+        // quasi tout de suite après le lancement, FLM n'a pas encore ouvert
+        // son port — sans quoi ce test ne prouverait rien du sondage lui-même.
+        return new Response(JSON.stringify({
+          ollama: true, model: '', models: [], flm: appelsHealth >= 2, lmstudio: false,
+        }), { status: 200 })
+      }
+      if (url.includes('/models/materiel')) {
+        return new Response(JSON.stringify({
+          materiel: { ...MATERIEL_IGPU, npu: { disponible: appelsHealth >= 2 } },
+          modeles: [],
+        }), { status: 200 })
+      }
+      const table: Record<string, Reponse> = { ...tableSaine(), '/models': { corps: MODELES_OK } }
+      const cle = Object.keys(table).filter(k => url.includes(k)).sort((a, b) => b.length - a.length)[0]
+      const { status = 200, corps } = cle ? table[cle] : { corps: ERREUR_500, status: 500 }
+      return new Response(JSON.stringify(corps), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', impl)
+
+    render(<ModuleBar module="docs" conversationId="" showFile showModel />)
+    await act(async () => { await Promise.resolve() })
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Démarrer FLM')).toBeTruthy())
+
+    await act(async () => { screen.getByText('Démarrer FLM').click() })
+    expect(appelsDemarrage).toBe(1)
+    await waitFor(() => expect(screen.getByText('Démarrage…')).toBeTruthy())
+
+    // Le sondage tourne réellement toutes les DELAI_SONDE_FLM_MS (1 s) — vraie
+    // horloge, comme le test de relecture matérielle un peu plus haut.
+    await waitFor(
+      () => expect(screen.getByText('FastFlowLM répond')).toBeTruthy(),
+      { timeout: 6000 },
+    )
+    expect(screen.queryByText('Démarrer FLM')).toBeNull()
+    expect(screen.queryByText('Démarrage…')).toBeNull()
+  }, 10000)
+
+  it('double-clic sur « Démarrer FLM » ne déclenche qu’un seul appel réseau', async () => {
+    // `/health` ne répond jamais joignable : le bouton doit rester bloqué en
+    // « Démarrage… » pendant tout le test, pour isoler la seule question posée
+    // ici — combien de fois `/models/flm/start` a été appelé.
+    let appelsDemarrage = 0
+    const impl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input)
+      if (url.includes('/models/flm/start')) {
+        appelsDemarrage += 1
+        return new Response(JSON.stringify({ ok: true, raison: '' }), { status: 200 })
+      }
+      if (url.includes('/health')) {
+        return new Response(JSON.stringify({
+          ollama: true, model: '', models: [], flm: false, lmstudio: false,
+        }), { status: 200 })
+      }
+      const table: Record<string, Reponse> = {
+        ...tableSaine(),
+        '/models': { corps: MODELES_OK },
+        '/models/materiel': { corps: { materiel: MATERIEL_IGPU, modeles: [] } },
+      }
+      const cle = Object.keys(table).filter(k => url.includes(k)).sort((a, b) => b.length - a.length)[0]
+      const { status = 200, corps } = cle ? table[cle] : { corps: ERREUR_500, status: 500 }
+      return new Response(JSON.stringify(corps), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', impl)
+
+    render(<ModuleBar module="docs" conversationId="" showFile showModel />)
+    await act(async () => { await Promise.resolve() })
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Démarrer FLM')).toBeTruthy())
+
+    // Les deux clics partent dans le MÊME lot synchrone — c'est le double-clic
+    // qu'un `useState` seul ne verrait pas (les deux liraient sa valeur d'avant
+    // le premier rendu). `flmStartingRef` doit les départager.
+    const bouton = screen.getByText('Démarrer FLM')
+    await act(async () => {
+      bouton.click()
+      bouton.click()
+    })
+    expect(appelsDemarrage).toBe(1)
   })
 
   it('GPU indétectable : « inconnu », et surtout pas « aucun »', async () => {

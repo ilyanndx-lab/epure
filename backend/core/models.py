@@ -7,6 +7,9 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -20,6 +23,7 @@ from core.llm import LLMEngine as _LLMEngine
 from core.llm import lmstudio_host as _lmstudio_host
 from core.llm import ollama_host as _ollama_host
 from core.ollama_memoire import capacites_installees, decrire_capacites
+from core.paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -341,10 +345,19 @@ def get_ollama_installed() -> Optional[list[str]]:
         return None
 
 
+#: Port du serveur FastFlowLM — même valeur que ``lanceur.PORT_FLM`` (racine du
+#: dépôt, inatteignable d'ici : le tray et le backend ne partagent pas de
+#: package Python). Source UNIQUE ici : la sonde (`check_flm`, `flm_model_ids`)
+#: et le lancement (`start_flm`) le lisent tous les trois — un port qui diverge
+#: entre ce qu'on lance et ce qu'on sonde serait un FLM démarré que personne ne
+#: verrait jamais répondre.
+_FLM_PORT = 11435
+
+
 def check_flm() -> bool:
     """Return True if the FastFlowLM server responds on localhost:11435."""
     try:
-        req = urllib.request.Request("http://localhost:11435/v1/models")
+        req = urllib.request.Request(f"http://localhost:{_FLM_PORT}/v1/models")
         with urllib.request.urlopen(req, timeout=2) as resp:
             return resp.status == 200
     except Exception:
@@ -354,12 +367,88 @@ def check_flm() -> bool:
 def flm_model_ids() -> Optional[set[str]]:
     """Model IDs known by the FLM server catalog, or None if unreachable."""
     try:
-        req = urllib.request.Request("http://localhost:11435/v1/models")
+        req = urllib.request.Request(f"http://localhost:{_FLM_PORT}/v1/models")
         with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return {m.get("id", "") for m in data.get("data", []) if m.get("id")}
     except Exception:
         return None
+
+
+#: Verrou + process mémorisé : protège `start_flm()` contre un double lancement,
+#: dans les DEUX sens du double-clic. Un `threading.Lock` seul ne couvrirait que
+#: deux appels strictement concurrents (fenêtre de quelques microsecondes) ; le
+#: `Popen` mémorisé couvre aussi deux clics successifs pendant que FLM met du
+#: temps à répondre — tant que `_flm_process.poll() is None`, un second appel
+#: est refusé sans spawn, même arrivé une fois le premier `start_flm()` terminé.
+#:
+#: Portée = durée de vie de CE process backend. Un rechargement à chaud
+#: (`uvicorn --reload`) réimporte ce module et remet `_flm_process` à `None` :
+#: le vrai `flm serve`, lui, continue de tourner (processus détaché,
+#: `DETACHED_PROCESS` sous Windows) — seule la mémoire du GARDE est perdue, pas
+#: le serveur. `check_flm()` reprend alors seul le rôle de source de vérité,
+#: ce qui est le comportement correct : FLM est joignable ou non, peu importe
+#: qui l'a lancé.
+_flm_launch_lock = threading.Lock()
+_flm_process: Optional["subprocess.Popen"] = None
+
+_FLM_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def start_flm() -> dict:
+    """Lance ``flm serve --port <port>`` en arrière-plan si FLM ne répond pas.
+
+    Précédent direct : `core.module_workshop.start_gateway()` — même patron
+    (binaire vérifié par `shutil.which`, process détaché sans fenêtre, jamais
+    de kill d'un occupant du port). Contrairement à la passerelle, la commande
+    n'est pas une chaîne libre configurée par l'utilisateur : elle est fixe,
+    reprise telle quelle de `epure_tray.py::_demarrer` (``["flm", "serve",
+    "--port", str(_FLM_PORT)]``, sans modèle en argument — `flm serve` sert le
+    NPU à la demande, comme `ollama serve` sert un modèle par requête, il n'y a
+    pas de « modèle par défaut » à choisir ici).
+
+    Ne tue et ne remplace RIEN sur `_FLM_PORT` : un serveur déjà présent — le
+    nôtre ou un FLM lancé à la main par l'utilisateur — répond ou échoue tel
+    quel, comme documenté pour la passerelle.
+
+    Logs redirigés vers `resolve_data_dir()/flm_serve.log` (append), jamais
+    `DEVNULL` : c'est le seul moyen de diagnostiquer après coup un blocage côté
+    FLM (cf. les gels mesurés sur d'autres modèles NPU ailleurs dans ce
+    fichier).
+    """
+    global _flm_process
+    with _flm_launch_lock:
+        if check_flm():
+            return {"ok": True, "raison": "FLM répond déjà."}
+        if _flm_process is not None and _flm_process.poll() is None:
+            return {"ok": False, "raison": "Un lancement de FLM est déjà en cours."}
+        binaire = shutil.which("flm")
+        if not binaire:
+            return {
+                "ok": False,
+                "raison": "FLM introuvable dans le PATH — vérifie l'installation.",
+            }
+        try:
+            flags = _FLM_NO_WINDOW
+            if os.name == "nt":
+                flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            log_path = resolve_data_dir() / "flm_serve.log"
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                # Le parent ferme sa copie du descripteur juste après le Popen ;
+                # l'enfant a la sienne (dupliquée par CreateProcess), qui reste
+                # valide — même idiome que `module_workshop.start_gateway()`.
+                _flm_process = subprocess.Popen(
+                    [binaire, "serve", "--port", str(_FLM_PORT)],
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, creationflags=flags,
+                )
+        except Exception as exc:
+            logger.exception("Lancement FLM échoué")
+            return {"ok": False, "raison": f"Échec du lancement : {exc}"}
+        return {
+            "ok": True,
+            "raison": "FLM démarre — patientez quelques secondes puis re-testez.",
+        }
 
 
 def check_lmstudio() -> bool:
