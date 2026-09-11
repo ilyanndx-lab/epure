@@ -522,7 +522,20 @@ class HmerEngine:
         soit une erreur : c'est ce que le modèle a lu, et l'appelant l'écrit tel
         quel plutôt que d'inventer.
         """
-        image = self._recadrer(self._bitmap(page))
+        return self.transcrire_image(self._bitmap(page))
+
+    def transcrire_image(self, image) -> dict:
+        """Transcrit une image Pillow déjà rendue. Rend ``{"texte", "modele", "version"}``.
+
+        Extrait de :meth:`transcrire` pour donner un point d'entrée à ce qui
+        n'a pas de tracés à rendre : `tools/eval/hmer.py` (banc ExpRate,
+        `docs/module-encre.md` phase 0) part de PNG externes, pas de pages
+        d'encre — leur seul point commun avec :meth:`transcrire` est TOUT ce
+        qui suit le rendu bitmap. `transcrire(page)` n'est donc plus qu'un
+        appel à :meth:`_bitmap` suivi de celui-ci ; le recadrage et l'appel au
+        modèle ne sont écrits qu'une fois.
+        """
+        image = self._recadrer(image)
         depart = time.monotonic()
         with self._verrou:
             # `.convert("RGB")` À L'ENTRÉE DU MODÈLE, et pas plus tôt. Mesuré, pas
