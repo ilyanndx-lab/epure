@@ -1,0 +1,50 @@
+{"fichier":"001.png","latex":"\\frac{1}{2}"}
+{"fichier":"002.png","latex":"\\frac{a+b}{c-d}"}
+{"fichier":"003.png","latex":"\\frac{x^2-1}{x+1}"}
+{"fichier":"004.png","latex":"\\frac{1}{n(n+1)}"}
+{"fichier":"005.png","latex":"\\frac{3}{4} + \\frac{1}{6}"}
+{"fichier":"006.png","latex":"x^2 + y^2"}
+{"fichier":"007.png","latex":"2^{10}"}
+{"fichier":"008.png","latex":"e^{-x}"}
+{"fichier":"009.png","latex":"(a+b)^3"}
+{"fichier":"010.png","latex":"10^{-3}"}
+{"fichier":"011.png","latex":"u_n"}
+{"fichier":"012.png","latex":"a_{n+1} = a_n + r"}
+{"fichier":"013.png","latex":"x_1, x_2, \\dots, x_n"}
+{"fichier":"014.png","latex":"v_{max}"}
+{"fichier":"015.png","latex":"T_{i,j}"}
+{"fichier":"016.png","latex":"\\int_0^1 x^2\\,dx"}
+{"fichier":"017.png","latex":"\\int_0^{+\\infty} e^{-t}\\,dt"}
+{"fichier":"018.png","latex":"\\int_a^b f(x)\\,dx = F(b)-F(a)"}
+{"fichier":"019.png","latex":"\\int_0^{\\pi} \\sin(x)\\,dx"}
+{"fichier":"020.png","latex":"\\int_1^{e} \\frac{1}{x}\\,dx"}
+{"fichier":"021.png","latex":"\\sum_{k=0}^{n} k"}
+{"fichier":"022.png","latex":"\\sum_{k=1}^{n} \\frac{1}{k^2}"}
+{"fichier":"023.png","latex":"\\prod_{k=1}^{n} k"}
+{"fichier":"024.png","latex":"\\sum_{i=1}^{n} x_i"}
+{"fichier":"025.png","latex":"\\prod_{k=2}^{n} \\left(1-\\frac{1}{k}\\right)"}
+{"fichier":"026.png","latex":"\\sqrt{2}"}
+{"fichier":"027.png","latex":"\\sqrt{a^2+b^2}"}
+{"fichier":"028.png","latex":"\\sqrt[3]{8}"}
+{"fichier":"029.png","latex":"\\sqrt{x+1} - \\sqrt{x}"}
+{"fichier":"030.png","latex":"\\sqrt{\\frac{a}{b}}"}
+{"fichier":"031.png","latex":"\\lim_{x \\to 0} \\frac{\\sin x}{x}"}
+{"fichier":"032.png","latex":"\\lim_{n \\to +\\infty} \\frac{1}{n}"}
+{"fichier":"033.png","latex":"\\lim_{x \\to +\\infty} \\left(1+\\frac{1}{x}\\right)^x"}
+{"fichier":"034.png","latex":"\\lim_{x \\to 0^+} \\ln x"}
+{"fichier":"035.png","latex":"\\lim_{h \\to 0} \\frac{f(x+h)-f(x)}{h}"}
+{"fichier":"036.png","latex":"\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}"}
+{"fichier":"037.png","latex":"\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}"}
+{"fichier":"038.png","latex":"\\begin{cases} x+y=1 \\\\ x-y=3 \\end{cases}"}
+{"fichier":"039.png","latex":"\\det\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} = ad-bc"}
+{"fichier":"040.png","latex":"\\begin{pmatrix} 1 & 0 & 0 \\\\ 0 & 1 & 0 \\\\ 0 & 0 & 1 \\end{pmatrix}"}
+{"fichier":"041.png","latex":"f'(x) = 2x"}
+{"fichier":"042.png","latex":"\\frac{d^2y}{dx^2}"}
+{"fichier":"043.png","latex":"\\frac{\\partial f}{\\partial x}"}
+{"fichier":"044.png","latex":"\\frac{\\partial^2 f}{\\partial x \\partial y}"}
+{"fichier":"045.png","latex":"(uv)' = u'v + uv'"}
+{"fichier":"046.png","latex":"\\vec{u} + \\vec{v}"}
+{"fichier":"047.png","latex":"\\|\\vec{u}\\|"}
+{"fichier":"048.png","latex":"\\vec{u} \\cdot \\vec{v} = 0"}
+{"fichier":"049.png","latex":"\\vec{OM} = x\\vec{i} + y\\vec{j}"}
+{"fichier":"050.png","latex":"\\vec{F} = m\\vec{a}"}
