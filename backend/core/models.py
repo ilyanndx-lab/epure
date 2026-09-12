@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -394,6 +395,44 @@ _flm_process: Optional["subprocess.Popen"] = None
 
 _FLM_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+#: Rotation de `flm_serve.log` — sans plafond, un `flm serve` relancé à
+#: répétition (crash, redémarrages successifs) écrit dans ce fichier pour la
+#: durée de vie de l'installation. 5 Mo/3 secours est arbitraire mais large :
+#: un blocage récent tient largement dedans, ce qui est tout ce que ce fichier
+#: sert à diagnostiquer (cf. docstring de `start_flm`).
+_FLM_LOG_MAX_OCTETS = 5 * 1024 * 1024
+_FLM_LOG_BACKUPS = 3
+
+
+def _ouvrir_log_flm_avec_rotation(log_path: Path):
+    """Ouvre `flm_serve.log` en ajout, après rotation si le fichier dépasse déjà
+    `_FLM_LOG_MAX_OCTETS`.
+
+    **Pourquoi pas simplement écrire via le `RotatingFileHandler` lui-même** :
+    ce fichier ne reçoit pas des lignes de `logging`, il reçoit le
+    stdout/stderr BRUT du process `flm serve` (redirection de `Popen`, plus
+    bas). `RotatingFileHandler` ne vérifie la taille et ne bascule vers un
+    nouveau fichier qu'à l'intérieur de sa propre méthode `emit()` — jamais
+    appelée pour des octets qu'un process externe écrit directement sur le
+    descripteur de fichier. Le brancher tel quel comme cible de `stdout=`
+    donnerait un fichier qui grossit sans jamais roter : la classe serait là
+    sans que sa logique de rotation s'exécute une seule fois.
+
+    La rotation qui a un sens ici est donc faite au moment où NOUS avons la
+    main, c'est-à-dire à chaque lancement : on regarde la taille du fichier
+    d'une éventuelle session précédente et on bascule AVANT de rouvrir en
+    ajout — pas en continu pendant que `flm serve` tourne. `delay=True` : on ne
+    veut de `RotatingFileHandler` que sa mécanique de renommage
+    (`doRollover()`), jamais qu'il ouvre ou détienne lui-même le fichier.
+    """
+    handler = RotatingFileHandler(
+        str(log_path), maxBytes=_FLM_LOG_MAX_OCTETS, backupCount=_FLM_LOG_BACKUPS,
+        encoding="utf-8", delay=True,
+    )
+    if log_path.exists() and log_path.stat().st_size >= _FLM_LOG_MAX_OCTETS:
+        handler.doRollover()
+    return open(log_path, "a", encoding="utf-8")
+
 
 def start_flm() -> dict:
     """Lance ``flm serve --port <port>`` en arrière-plan si FLM ne répond pas.
@@ -411,10 +450,10 @@ def start_flm() -> dict:
     nôtre ou un FLM lancé à la main par l'utilisateur — répond ou échoue tel
     quel, comme documenté pour la passerelle.
 
-    Logs redirigés vers `resolve_data_dir()/flm_serve.log` (append), jamais
-    `DEVNULL` : c'est le seul moyen de diagnostiquer après coup un blocage côté
-    FLM (cf. les gels mesurés sur d'autres modèles NPU ailleurs dans ce
-    fichier).
+    Logs redirigés vers `resolve_data_dir()/flm_serve.log` (append, avec
+    rotation — cf. `_ouvrir_log_flm_avec_rotation`), jamais `DEVNULL` : c'est
+    le seul moyen de diagnostiquer après coup un blocage côté FLM (cf. les
+    gels mesurés sur d'autres modèles NPU ailleurs dans ce fichier).
     """
     global _flm_process
     with _flm_launch_lock:
@@ -433,7 +472,7 @@ def start_flm() -> dict:
             if os.name == "nt":
                 flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
             log_path = resolve_data_dir() / "flm_serve.log"
-            with open(log_path, "a", encoding="utf-8") as log_file:
+            with _ouvrir_log_flm_avec_rotation(log_path) as log_file:
                 # Le parent ferme sa copie du descripteur juste après le Popen ;
                 # l'enfant a la sienne (dupliquée par CreateProcess), qui reste
                 # valide — même idiome que `module_workshop.start_gateway()`.
