@@ -1,0 +1,281 @@
+{
+  "date": "2026-09-13T16:05:18.096178+00:00",
+  "sha_git": "b786aa7",
+  "corpus": "C:\\Users\\Ilyan\\epure\\tools\\eval\\data\\hmer_baseline",
+  "n": 50,
+  "modele": "pix2text-mfr",
+  "version_pipeline": "bea257edb265+rendu1",
+  "brut": {
+    "k": 0,
+    "n": 50,
+    "taux": 0.0,
+    "borne_basse": 0.0,
+    "borne_haute": 0.07135003417431873
+  },
+  "normalise": {
+    "k": 12,
+    "n": 50,
+    "taux": 0.24,
+    "borne_basse": 0.14297252401872207,
+    "borne_haute": 0.37412949375192367
+  },
+  "journal_normalisation": {
+    "espaces_fins": 6,
+    "left_right": 7,
+    "dfrac_vers_frac": 0,
+    "cdot_vers_etoile": 2,
+    "groupes_token_unique": 65
+  },
+  "fichiers_passes_grace_a_la_normalisation": [
+    "001.png",
+    "002.png",
+    "003.png",
+    "004.png",
+    "006.png",
+    "009.png",
+    "016.png",
+    "017.png",
+    "018.png",
+    "019.png",
+    "020.png",
+    "042.png"
+  ],
+  "echecs": [
+    {
+      "fichier": "005.png",
+      "latex_predit": "\\frac { 3 } { 9 } + \\frac { 1 } { 6 }",
+      "latex_verite": "\\frac{3}{4} + \\frac{1}{6}",
+      "erreur": null
+    },
+    {
+      "fichier": "007.png",
+      "latex_predit": "\\L ^ { \\imath ^ { 6 } }",
+      "latex_verite": "2^{10}",
+      "erreur": null
+    },
+    {
+      "fichier": "008.png",
+      "latex_predit": "\\check { e } ^ { - x }",
+      "latex_verite": "e^{-x}",
+      "erreur": null
+    },
+    {
+      "fichier": "010.png",
+      "latex_predit": "\\eta o ^ { - 3 }",
+      "latex_verite": "10^{-3}",
+      "erreur": null
+    },
+    {
+      "fichier": "011.png",
+      "latex_predit": "\\mathrm { u } ^ { m }",
+      "latex_verite": "u_n",
+      "erreur": null
+    },
+    {
+      "fichier": "012.png",
+      "latex_predit": "a ^ { m + 1 } = a ^ { m } + \\lambda",
+      "latex_verite": "a_{n+1} = a_n + r",
+      "erreur": null
+    },
+    {
+      "fichier": "013.png",
+      "latex_predit": "x _ { j } ^ { 1 } x _ { j } ^ { 2 }, \\cdots, x ^ { m }",
+      "latex_verite": "x_1, x_2, \\dots, x_n",
+      "erreur": null
+    },
+    {
+      "fichier": "014.png",
+      "latex_predit": "N _ { M a o c }",
+      "latex_verite": "v_{max}",
+      "erreur": null
+    },
+    {
+      "fichier": "015.png",
+      "latex_predit": "T _ { i j ^ { - j } }",
+      "latex_verite": "T_{i,j}",
+      "erreur": null
+    },
+    {
+      "fichier": "021.png",
+      "latex_predit": "\\sum _ { R = 0 } ^ { m } R",
+      "latex_verite": "\\sum_{k=0}^{n} k",
+      "erreur": null
+    },
+    {
+      "fichier": "022.png",
+      "latex_predit": "\\sum _ { k = 1 } ^ { m } \\frac { 1 } { k ^ { 2 } }",
+      "latex_verite": "\\sum_{k=1}^{n} \\frac{1}{k^2}",
+      "erreur": null
+    },
+    {
+      "fichier": "023.png",
+      "latex_predit": "\\prod _ { k = 1 } ^ { m } k",
+      "latex_verite": "\\prod_{k=1}^{n} k",
+      "erreur": null
+    },
+    {
+      "fichier": "024.png",
+      "latex_predit": "\\sum _ { i = 1 } ^ { m } x ^ { i }",
+      "latex_verite": "\\sum_{i=1}^{n} x_i",
+      "erreur": null
+    },
+    {
+      "fichier": "025.png",
+      "latex_predit": "\\prod _ { R = 2 } ^ { m } ( 1 - \\frac { 1 } { R } )",
+      "latex_verite": "\\prod_{k=2}^{n} \\left(1-\\frac{1}{k}\\right)",
+      "erreur": null
+    },
+    {
+      "fichier": "026.png",
+      "latex_predit": "\\sqrt { \\pi }",
+      "latex_verite": "\\sqrt{2}",
+      "erreur": null
+    },
+    {
+      "fichier": "027.png",
+      "latex_predit": "\\sqrt { \\left( a ^ { 2 } + b ^ { 2 } \\right) }",
+      "latex_verite": "\\sqrt{a^2+b^2}",
+      "erreur": null
+    },
+    {
+      "fichier": "028.png",
+      "latex_predit": "3 \\sqrt { 8 }",
+      "latex_verite": "\\sqrt[3]{8}",
+      "erreur": null
+    },
+    {
+      "fichier": "029.png",
+      "latex_predit": "\\sqrt { ( 2 + 1 ) } - \\sqrt \\pi",
+      "latex_verite": "\\sqrt{x+1} - \\sqrt{x}",
+      "erreur": null
+    },
+    {
+      "fichier": "030.png",
+      "latex_predit": "\\sqrt { ( \\frac { a } { b } ) }",
+      "latex_verite": "\\sqrt{\\frac{a}{b}}",
+      "erreur": null
+    },
+    {
+      "fichier": "031.png",
+      "latex_predit": "\\lim _ { x \\rightarrow 0 } \\frac { \\sin x } { x }",
+      "latex_verite": "\\lim_{x \\to 0} \\frac{\\sin x}{x}",
+      "erreur": null
+    },
+    {
+      "fichier": "032.png",
+      "latex_predit": "\\lim _ { m \\rightarrow + \\infty } \\frac { 1 } { m }",
+      "latex_verite": "\\lim_{n \\to +\\infty} \\frac{1}{n}",
+      "erreur": null
+    },
+    {
+      "fichier": "033.png",
+      "latex_predit": "\\lim _ { x \\rightarrow + \\infty } ( 1 + \\frac { 1 } { x } ) ^ { x }",
+      "latex_verite": "\\lim_{x \\to +\\infty} \\left(1+\\frac{1}{x}\\right)^x",
+      "erreur": null
+    },
+    {
+      "fichier": "034.png",
+      "latex_predit": "\\lim _ { x \\rightarrow 0 ^ { + } } R _ { n } x",
+      "latex_verite": "\\lim_{x \\to 0^+} \\ln x",
+      "erreur": null
+    },
+    {
+      "fichier": "035.png",
+      "latex_predit": "\\lim _ { R \\rightarrow 0 } \\frac { 9 ( x + R ) - 8 ( x ) } { R }",
+      "latex_verite": "\\lim_{h \\to 0} \\frac{f(x+h)-f(x)}{h}",
+      "erreur": null
+    },
+    {
+      "fichier": "036.png",
+      "latex_predit": "\\left( \\begin{matrix} { 1 } & { 2 } \\\\ { 3 } & { 9 } \\\\ \\end{matrix} \\right)",
+      "latex_verite": "\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}",
+      "erreur": null
+    },
+    {
+      "fichier": "037.png",
+      "latex_predit": "( \\begin{array} { c c } { a } & { b } \\\\ { c } & { d } \\\\ \\end{array} )",
+      "latex_verite": "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}",
+      "erreur": null
+    },
+    {
+      "fichier": "038.png",
+      "latex_predit": "\\left\\{ \\begin{matrix} x + y = 1 \\\\ x - y = 3 \\end{matrix} \\right.",
+      "latex_verite": "\\begin{cases} x+y=1 \\\\ x-y=3 \\end{cases}",
+      "erreur": null
+    },
+    {
+      "fichier": "039.png",
+      "latex_predit": "\\det \\left( \\begin{matrix} a b } \\\\ c \\end{matrix} \\right) = a d - b c",
+      "latex_verite": "\\det\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} = ad-bc",
+      "erreur": null
+    },
+    {
+      "fichier": "040.png",
+      "latex_predit": "\\left( \\begin{matrix} { 1 } & { 0 } & { 0 } \\\\ { 0 } & { 1 } & { 0 } \\\\ { 0 } & { 0 } & { 1 } \\\\ \\end{matrix} \\right)",
+      "latex_verite": "\\begin{pmatrix} 1 & 0 & 0 \\\\ 0 & 1 & 0 \\\\ 0 & 0 & 1 \\end{pmatrix}",
+      "erreur": null
+    },
+    {
+      "fichier": "041.png",
+      "latex_predit": "8 ( x ) = 2 x",
+      "latex_verite": "f'(x) = 2x",
+      "erreur": null
+    },
+    {
+      "fichier": "043.png",
+      "latex_predit": "\\underbrace { \\Im \\AA } _ { \\partial \\chi }",
+      "latex_verite": "\\frac{\\partial f}{\\partial x}",
+      "erreur": null
+    },
+    {
+      "fichier": "044.png",
+      "latex_predit": "\\frac { \\partial ^ { 2 } y } { \\partial x \\partial y }",
+      "latex_verite": "\\frac{\\partial^2 f}{\\partial x \\partial y}",
+      "erreur": null
+    },
+    {
+      "fichier": "045.png",
+      "latex_predit": "( i v ) ^ { 3 } = ( i N + i N )",
+      "latex_verite": "(uv)' = u'v + uv'",
+      "erreur": null
+    },
+    {
+      "fichier": "046.png",
+      "latex_predit": "\\vec { u } + \\vec { u }",
+      "latex_verite": "\\vec{u} + \\vec{v}",
+      "erreur": null
+    },
+    {
+      "fichier": "047.png",
+      "latex_predit": "\\parallel \\vec { \\omicron } \\parallel",
+      "latex_verite": "\\|\\vec{u}\\|",
+      "erreur": null
+    },
+    {
+      "fichier": "048.png",
+      "latex_predit": "\\overrightarrow { U } \\cdot \\overrightarrow { N } = 0",
+      "latex_verite": "\\vec{u} \\cdot \\vec{v} = 0",
+      "erreur": null
+    },
+    {
+      "fichier": "049.png",
+      "latex_predit": "\\overrightarrow { O M } = x ^ { \\overrightarrow { i } } + y \\overrightarrow { j }",
+      "latex_verite": "\\vec{OM} = x\\vec{i} + y\\vec{j}",
+      "erreur": null
+    },
+    {
+      "fichier": "050.png",
+      "latex_predit": "\\overrightarrow { f } \\ = \\eta \\star \\overrightarrow { a }",
+      "latex_verite": "\\vec{F} = m\\vec{a}",
+      "erreur": null
+    }
+  ],
+  "comparaison_phase0": {
+    "phase0_normalise": 0.24,
+    "phase0_ic95": {
+      "borne_basse": 0.143,
+      "borne_haute": 0.374
+    },
+    "mesure_dans_l_ic95_phase0": true
+  }
+}
