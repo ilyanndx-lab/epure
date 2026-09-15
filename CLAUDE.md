@@ -169,6 +169,7 @@ python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_arbre_modules_deterministe.py  # l'arbre de _test_env ne dépend pas du poste (§3.5)
 python test_web_search.py         # recherche web, HTTP mocké
 python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
+python test_chat_conversation_id_trames.py  # chaque trame /ws/chat porte conversation_id (§3.6)
 python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
 python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
 python test_voice_indisponible.py # voix absente proprement (paquet, pas modèle) — ARM64
@@ -1019,6 +1020,26 @@ par `startswith` de chaînes (contournable par un dossier frère `modules-autre/
 Référence correcte : `codeagent._safe_path`, couverte par `test_safe_path.py`.
 
 ### 3.6 SSE et WebSocket
+
+**IMPÉRATIF — chaque trame de `/ws/chat` porte `conversation_id`.** Une seule
+connexion WebSocket sert TOUTES les conversations d'un onglet (voulu — on ne
+la ferme/rouvre pas à chaque bascule de fil), donc rien dans le protocole
+n'identifiait, avant le 2026-09-15, à quel fil appartenait un `token` : basculer
+vers une conversation B pendant qu'une conversation A générait encore laissait
+le texte de A s'accumuler dans l'écran de B. Chaque
+`websocket.send_text(json.dumps({...}))` de `modules/chat/router.py` porte
+donc `conversation_id`, capturé au moment de l'émission (jamais relu depuis un
+état mutable) ; le frontend le compare à une ref synchrone du fil affiché
+(`conversationIdRef`, `Component.tsx`) et ignore tout événement qui ne
+correspond pas, AVANT toute mutation d'état — un `conversation_id` absent ou
+vide reste permissif (appliqué quand même), pour ne jamais faire disparaître
+en silence un événement dont le serveur ne peut identifier le fil avec
+certitude. Verrouillé côté serveur par `test_chat_conversation_id_trames.py`,
+côté client par `frontend/src/modules/chat/Component.conversation.test.tsx`
+(fuite, troncature au retour avant `done`, cohérence des stats). Non couvert :
+la même troncature en mode comparaison multi-modèles, et une course rare entre
+la relecture disque déclenchée par un `done` suspect et un nouveau message
+envoyé dans l'intervalle.
 
 **Ce que `LLMEngine.stream()` yielde** : du `str` pour le texte, et des **dicts
 sentinelles** pour le reste — `{"__stats__": True, …}` (tokens et durées) et
