@@ -772,6 +772,67 @@ class TraceEtCitationsTest(unittest.TestCase):
         trace = chat_router._construire_trace_finale(etapes_surdimensionnees, rapport, True)
         self.assertEqual(len(trace), TRACE_MAX_ETAPES)
 
+    def test_citations_invalides_survit_au_troncage_meme_avec_plus_de_20_etapes(self):
+        """Le correctif du suivi de cette tâche : `citations_invalides` a une
+        place RÉSERVÉE, elle ne doit JAMAIS se faire couper par
+        `TRACE_MAX_ETAPES` — même quand le classifieur heuristique ET le
+        tool-calling natif (core/llm.py::_stream_ollama, `outils_web=True`)
+        ont chacun rempli leur propre lot d'étapes de déroulement dans le même
+        tour, ce qui rend le dépassement courant plutôt qu'exceptionnel.
+
+        Avant ce correctif : `citations_invalides` était ajoutée EN DERNIER
+        puis la liste entière tronquée (`finale[:TRACE_MAX_ETAPES]`) —
+        exactement le scénario ci-dessous la faisait disparaître en silence,
+        alors que c'est un signal d'ANOMALIE (citation potentiellement
+        inventée), pas une étape de déroulement dont la perte est anodine.
+
+        Étapes RÉELLES (pas des placeholders `{"etape": "x"}`) : deux
+        recherches, chacune avec son propre `recherche_debut`/
+        `recherche_resultats` — la forme que produit vraiment
+        `_on_etape_recherche` (modules/chat/router.py) qu'une recherche vienne
+        du classifieur ou d'un appel d'outil.
+        """
+        from core.websearch import TRACE_MAX_ETAPES
+        etapes_reelles: list[dict] = []
+        for i in range(TRACE_MAX_ETAPES + 5):
+            etapes_reelles.append({
+                "etape": "recherche_debut", "requete": f"requête {i}", "moteur": "ddg-html",
+            })
+            etapes_reelles.append({
+                "etape": "recherche_resultats", "nombre": 1, "moteur": "ddg-html",
+                "ms": 50, "resultats": [{"rang": 1, "titre": "T", "url": "https://exemple.fr/"}],
+            })
+        self.assertGreater(len(etapes_reelles), TRACE_MAX_ETAPES)
+
+        rapport = chat_router._verifier_citations("D'après [99].", self.resultats, "", set())
+        self.assertTrue(rapport.a_des_anomalies())
+
+        trace = chat_router._construire_trace_finale(etapes_reelles, rapport, True)
+
+        self.assertEqual(len(trace), TRACE_MAX_ETAPES)
+        self.assertEqual(trace[-1]["etape"], "citations_invalides")
+        self.assertEqual(trace[-1]["rangs"], [99])
+        # Les étapes de déroulement, elles, ont bien été coupées à 19 pour
+        # laisser la place — c'est le compromis assumé, pas un oubli.
+        self.assertEqual(
+            [e["etape"] for e in trace[:-1]], [e["etape"] for e in etapes_reelles[:TRACE_MAX_ETAPES - 1]],
+        )
+
+    def test_citations_invalides_survit_dans_la_trace_persistee(self):
+        """Même garantie vue depuis `_finaliser_citations_et_trace`, le point
+        d'entrée RÉEL utilisé par `/ws/chat` — pas seulement la fonction
+        interne testée ci-dessus."""
+        from core.websearch import TRACE_MAX_ETAPES
+        etapes_reelles = [
+            {"etape": "recherche_debut", "requete": f"q{i}", "moteur": "ddg-html"}
+            for i in range(TRACE_MAX_ETAPES + 10)
+        ]
+        sources, trace = chat_router._finaliser_citations_et_trace(
+            "conv-1", "D'après [99].", self.resultats, "", set(), etapes_reelles,
+        )
+        self.assertEqual(len(trace), TRACE_MAX_ETAPES)
+        self.assertEqual(trace[-1]["etape"], "citations_invalides")
+
     def test_finaliser_sans_recherche_construit_quand_meme_la_trace(self):
         """LE correctif : une anomalie SANS @web ce tour doit désormais
         produire une trace persistée/affichable, pas seulement un log."""

@@ -265,16 +265,31 @@ def _construire_trace_finale(
     Bornée à `TRACE_MAX_ETAPES` ICI, au moment de la persistance : c'est le
     point où toutes les sources (recherche + citations) sont réunies, donc le
     seul endroit qui connaît le total réel.
+
+    **`citations_invalides` a une place RÉSERVÉE, elle n'est jamais tronquée.**
+    L'ancien ordre — l'ajouter puis tronquer `finale[:TRACE_MAX_ETAPES]` — la
+    perdait silencieusement dès que le reste dépassait 19 étapes : c'est
+    devenu plus probable depuis que le tool-calling natif
+    (`core/llm.py::_stream_ollama`, `outils_web=True`) peut déclencher une
+    recherche EN PLUS de celle du classifieur heuristique dans le même tour —
+    deux jeux d'étapes (`recherche_debut`/`recherche_resultats`/…) au lieu
+    d'un seul. Une étape de DÉROULEMENT tronquée est un détail perdu ; celle-ci
+    est un signal d'ANOMALIE (une citation hors sources, potentiellement
+    inventée) — la couper en silence est exactement le genre de défaut
+    trompeur que ce second verrou existe pour éliminer (cf. `core.citations`).
+    D'où : tronquer d'abord les étapes de déroulement à `TRACE_MAX_ETAPES - 1`,
+    PUIS ajouter `citations_invalides` en dernière position — elle survit
+    toujours quand elle existe.
     """
-    finale = list(etapes)
     if rapport is not None and rapport.a_des_anomalies():
-        finale.append({
+        citation_invalide = {
             "etape": "citations_invalides",
             "rangs": rapport.rangs_hors_plage[:TRACE_LISTE_MAX],
             "urls": [tronquer_champ(u) for u in rapport.urls_non_reconnues[:TRACE_LISTE_MAX]],
             "verifiees_contre": "recherche" if a_des_resultats_recherche else "aucune_source",
-        })
-    return finale[:TRACE_MAX_ETAPES]
+        }
+        return list(etapes)[:TRACE_MAX_ETAPES - 1] + [citation_invalide]
+    return list(etapes)[:TRACE_MAX_ETAPES]
 
 
 def _finaliser_citations_et_trace(
