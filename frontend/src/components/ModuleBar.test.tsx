@@ -1142,6 +1142,94 @@ describe('ModuleBar — faisabilité matérielle', () => {
     expect(appelsDemarrage).toBe(1)
   })
 
+  /**
+   * Fermeture de FLM — symétrique du test de démarrage ci-dessus, mais SANS
+   * sondage : `POST /models/flm/stop` est synchrone côté backend (`stop_flm`
+   * attend `terminate()`/`wait()` avant de répondre), donc une seule relecture
+   * de `/models/materiel` après la réponse suffit à retrouver un état cohérent
+   * — pas de boucle sur `DELAI_SONDE_FLM_MS` à rejouer ici.
+   */
+  it('« Fermer FLM » : ferme le serveur et fait retomber le NPU à indisponible', async () => {
+    let appelsFermeture = 0
+    let ferme = false
+    const impl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input)
+      if (url.includes('/models/flm/stop')) {
+        appelsFermeture += 1
+        ferme = true
+        return new Response(JSON.stringify({ ok: true, raison: 'FLM fermé.' }), { status: 200 })
+      }
+      if (url.includes('/models/materiel')) {
+        return new Response(JSON.stringify({
+          materiel: { ...MATERIEL_IGPU, npu: { disponible: !ferme } },
+          modeles: [],
+        }), { status: 200 })
+      }
+      const table: Record<string, Reponse> = { ...tableSaine(), '/models': { corps: MODELES_OK } }
+      const cle = Object.keys(table).filter(k => url.includes(k)).sort((a, b) => b.length - a.length)[0]
+      const { status = 200, corps } = cle ? table[cle] : { corps: ERREUR_500, status: 500 }
+      return new Response(JSON.stringify(corps), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', impl)
+
+    render(<ModuleBar module="docs" conversationId="" showFile showModel />)
+    await act(async () => { await Promise.resolve() })
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Fermer FLM')).toBeTruthy())
+    // Le libellé dit bien un arrêt de serveur, jamais un déchargement — le
+    // texte « FastFlowLM répond » reste affiché À CÔTÉ tant qu'on n'a pas
+    // cliqué : le bouton ne ment pas sur un état déjà passé.
+    expect(screen.getByText('FastFlowLM répond')).toBeTruthy()
+
+    await act(async () => { screen.getByText('Fermer FLM').click() })
+    expect(appelsFermeture).toBe(1)
+
+    await waitFor(() => expect(screen.getByText('Démarrer FLM')).toBeTruthy())
+    expect(screen.queryByText('Fermer FLM')).toBeNull()
+    expect(screen.queryByText('FastFlowLM répond')).toBeNull()
+  })
+
+  it('double-clic sur « Fermer FLM » ne déclenche qu’un seul appel réseau', async () => {
+    let appelsFermeture = 0
+    const impl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input)
+      if (url.includes('/models/flm/stop')) {
+        appelsFermeture += 1
+        // Ne répond jamais (promesse qui ne se résout pas dans la fenêtre du
+        // test) : le bouton doit rester verrouillé pendant les deux clics,
+        // pour isoler la seule question posée ici — le compteur d'appels.
+        return new Promise<Response>(() => {})
+      }
+      const table: Record<string, Reponse> = {
+        ...tableSaine(),
+        '/models': { corps: MODELES_OK },
+        '/models/materiel': { corps: { materiel: { ...MATERIEL_IGPU, npu: { disponible: true } }, modeles: [] } },
+      }
+      const cle = Object.keys(table).filter(k => url.includes(k)).sort((a, b) => b.length - a.length)[0]
+      const { status = 200, corps } = cle ? table[cle] : { corps: ERREUR_500, status: 500 }
+      return new Response(JSON.stringify(corps), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', impl)
+
+    render(<ModuleBar module="docs" conversationId="" showFile showModel />)
+    await act(async () => { await Promise.resolve() })
+    await ouvrir('Modèle')
+    await act(async () => { screen.getByText('Voir tous les modèles').click() })
+    await waitFor(() => expect(screen.getByText('Fermer FLM')).toBeTruthy())
+
+    const bouton = screen.getByText('Fermer FLM')
+    await act(async () => {
+      bouton.click()
+      bouton.click()
+    })
+    expect(appelsFermeture).toBe(1)
+  })
+
   it('GPU indétectable : « inconnu », et surtout pas « aucun »', async () => {
     // Troisième état. Ni « pas de GPU » (qui autoriserait à conclure) ni « GPU
     // illimité » (qui autoriserait à promettre).

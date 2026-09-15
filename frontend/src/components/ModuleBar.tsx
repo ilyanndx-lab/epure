@@ -627,6 +627,17 @@ export default function ModuleBar({
   const flmPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   useEffect(() => () => { if (flmPollRef.current) clearInterval(flmPollRef.current) }, [])
 
+  //: Fermeture de FLM en vol — même patron que `flmStarting` ci-dessus, pour
+  //: le même motif : `POST /models/flm/stop` ferme le SERVEUR entier (aucun
+  //: déchargement fin n'existe côté FLM, cf. `core.models.stop_flm`), donc le
+  //: bouton doit se lire « Fermer FLM » et non « Libérer FLM ».
+  const [flmStopping, setFlmStopping] = useState(false)
+  //: Dernier message (rien à fermer, ou échec de l'arrêt).
+  const [flmStopMsg, setFlmStopMsg] = useState<string | null>(null)
+  //: Même raison que `flmStartingRef` : un `useState` seul ne bloquerait pas
+  //: deux clics survenus dans le même tick.
+  const flmStoppingRef = useRef(false)
+
   // Preset state (for effort panel)
   const [presets, setPresets] = useState<Preset[]>([])
   const [saveModalOpen, setSaveModalOpen] = useState(false)
@@ -791,6 +802,43 @@ export default function ModuleBar({
         }, DELAI_SONDE_FLM_MS)
       })
       .catch(() => terminer('Backend injoignable.'))
+  }, [chargerMateriel, chargerModeles])
+
+  /**
+   * Ferme `flm serve` (`POST /models/flm/stop`) — le SERVEUR entier, pas un
+   * simple déchargement de modèle : `core.models.stop_flm()` n'a pas d'autre
+   * repli, FLM ne publiant aucun moyen de libérer sa mémoire sans arrêter le
+   * process (cf. son docstring). D'où le libellé « Fermer FLM », symétrique
+   * de « Démarrer FLM » mais honnête sur ce qui se passe réellement.
+   *
+   * Pas de sondage après coup, contrairement à `startFlm` : `stop_flm()` est
+   * SYNCHRONE côté backend (`terminate()`/`wait()`, `kill()` en secours) et ne
+   * répond qu'une fois le process réellement mort — une seule relecture de
+   * l'état suffit donc à retrouver un affichage cohérent.
+   *
+   * Même garde anti double-clic que `startFlm`, et pour la même raison
+   * (`flmStoppingRef`, vérifié en premier et à jour immédiatement).
+   */
+  const stopFlm = useCallback(() => {
+    if (flmStoppingRef.current) return
+    flmStoppingRef.current = true
+    setFlmStopping(true)
+    setFlmStopMsg(null)
+
+    apiFetch(`${API}/models/flm/stop`, { method: 'POST' })
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { ok?: unknown; raison?: unknown } | null) => {
+        if (!d || d.ok !== true) {
+          setFlmStopMsg(typeof d?.raison === 'string' && d.raison ? d.raison : 'Le backend a refusé la demande.')
+        }
+        chargerMateriel()
+        chargerModeles()
+      })
+      .catch(() => setFlmStopMsg('Backend injoignable.'))
+      .finally(() => {
+        flmStoppingRef.current = false
+        setFlmStopping(false)
+      })
   }, [chargerMateriel, chargerModeles])
 
   const allModels = useCallback((): ModelInfo[] => [
@@ -1903,7 +1951,23 @@ export default function ModuleBar({
               <div className="flex items-center justify-between gap-2">
                 <span>NPU</span>
                 {materiel.npu.disponible ? (
-                  <span className="text-accent">FastFlowLM répond</span>
+                  flmStopping ? (
+                    <span className="text-muted flex items-center gap-1.5">
+                      <Loader2 size={11} className="animate-spin" />
+                      Fermeture…
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-2">
+                      <span className="text-accent">FastFlowLM répond</span>
+                      <button
+                        onClick={() => stopFlm()}
+                        className="text-muted hover:underline underline-offset-2"
+                        title="Arrête le process flm serve — aucun déchargement fin n'existe côté FLM, c'est le serveur entier qui ferme"
+                      >
+                        Fermer FLM
+                      </button>
+                    </span>
+                  )
                 ) : flmStarting ? (
                   <span className="text-muted flex items-center gap-1.5">
                     <Loader2 size={11} className="animate-spin" />
@@ -1921,6 +1985,9 @@ export default function ModuleBar({
               </div>
               {flmStartMsg && (
                 <p className="text-warning text-right">{flmStartMsg}</p>
+              )}
+              {flmStopMsg && (
+                <p className="text-warning text-right">{flmStopMsg}</p>
               )}
               {/* D'où sort le dénominateur des verdicts. Sans cette ligne,
                   « ne tient pas » est un jugement sans motif — et le motif est

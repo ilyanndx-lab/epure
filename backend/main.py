@@ -61,7 +61,7 @@ from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
     get_ollama_installed, check_lmstudio, get_lmstudio_installed,
-    lmstudio_chargement_en_cours, start_flm,
+    lmstudio_chargement_en_cours, start_flm, stop_flm,
 )
 from core.quota_tracker import QuotaTracker
 from core.rag import RAGEngine
@@ -541,6 +541,19 @@ async def models_flm_start():
     """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, start_flm)
+
+
+@app.post("/models/flm/stop")
+async def models_flm_stop():
+    """Ferme le `flm serve` lancé par `POST /models/flm/start`, s'il existe.
+
+    `run_in_executor` pour la même raison que sa voisine : `Popen.terminate`/
+    `.wait`/`.kill` sont synchrones, et le cas nominal (arrêt propre en moins
+    de `core.models._FLM_STOP_TIMEOUT_S`) doit rendre la main sans bloquer la
+    boucle d'événements du backend.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, stop_flm)
 
 
 @app.get("/models/lmstudio/chargement")

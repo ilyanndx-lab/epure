@@ -490,6 +490,90 @@ def start_flm() -> dict:
         }
 
 
+#: Délai laissé à `terminate()` avant de passer à `kill()`. Court parce qu'il
+#: n'y a rien à drainer ici — contrairement à un serveur HTTP qui finirait une
+#: requête en vol, `flm serve` n'a pas de client à qui répondre proprement pour
+#: ce process : sa seule tâche à l'arrêt est de libérer le NPU. Pas mesuré
+#: précisément (contrairement aux autres délais de ce fichier) faute d'accès à
+#: un arrêt qui traîne réellement ; large par rapport à un arrêt de process
+#: normal, sans se rapprocher du délai perceptible par l'utilisateur qui clique.
+_FLM_STOP_TIMEOUT_S = 5
+
+
+def stop_flm() -> dict:
+    """Ferme le process `flm serve` lancé par `start_flm()`, s'il existe.
+
+    **Aucun déchargement fin n'existe côté FLM — mesuré, pas supposé** (FLM
+    v0.9.43, ce poste, 2026-09-15) : `POST /api/generate` avec `keep_alive: 0`
+    répond 200 sans rien décharger, y compris après une génération réelle —
+    le modèle reste dans `/api/ps` à chaque relecture sur plusieurs secondes.
+    `expires_at` n'y est pas un compte à rebours depuis le dernier accès : il
+    se recalcule à « maintenant + une fenêtre fixe » sur une simple LECTURE de
+    `/api/ps`, sans qu'aucune génération n'ait eu lieu entre deux relectures —
+    ce champ ne mesure donc rien qu'on puisse attendre. Aucun endpoint dédié
+    (`/api/stop`, `/unload`, `/api/delete`, `/api/eject`, `/api/kill`,
+    `/v1/unload`, `DELETE /api/generate`) n'existe : tous répondent 404, et ni
+    la documentation officielle (`fastflowlm.com/docs`, la référence d'API du
+    dépôt) ni son schéma OpenAPI ne mentionnent de mécanisme de ce genre. Un
+    fork communautaire (`ademasi/FastFlowLM`) ajoute un déchargement — ce qui
+    confirme, plutôt qu'infirme, que la version officielle installée ici ne
+    l'a pas. Seul repli possible : fermer le SERVEUR entier, pas seulement le
+    modèle — d'où le nom de cette fonction et, côté frontend, le libellé
+    « Fermer FLM » et non « Libérer FLM ».
+
+    **Ne cible que le process que CETTE application a lancé** (`_flm_process`,
+    la même mémoire que `start_flm`, sous le même verrou — une fermeture qui
+    croiserait un lancement concurrent sur le même `Popen` serait le même
+    risque que celui pour lequel ce verrou existe déjà) : jamais de kill par
+    nom d'image, qui fermerait aussi un `flm serve` lancé à la main par
+    l'utilisateur en dehors d'Épure — même principe que `start_flm`, qui ne
+    tue ni ne remplace rien sur le port.
+
+    Trois issues :
+
+    - `_flm_process` est `None`, ou son `poll()` rend un code (déjà mort) :
+      rien à fermer. Cas nominal, pas une erreur — c'est aussi ce qui arrive
+      après un rechargement à chaud d'uvicorn (`_flm_process` réimporté à
+      `None`, cf. le commentaire au-dessus de sa déclaration) alors que le
+      vrai `flm serve` tourne encore, détaché : cette fonction ne peut alors
+      rien y faire, et le dit plutôt que de tenter un kill dans le vide.
+    - `terminate()` suffit dans `_FLM_STOP_TIMEOUT_S` : arrêt propre.
+    - sinon `kill()` en secours, puis un dernier `wait()` sans borne — après un
+      `kill()`, le process ne peut plus refuser de mourir, seul l'OS décide du
+      délai de nettoyage restant.
+
+    Relit `check_flm()` après coup, pour le journal seulement : si le port
+    répond encore, ce n'est pas le nôtre (mort, `wait()` l'atteste) mais un
+    autre `flm serve`, lancé par ailleurs — situation que `start_flm()` est
+    déjà écrit pour ne jamais écraser.
+    """
+    global _flm_process
+    with _flm_launch_lock:
+        proc = _flm_process
+        _flm_process = None
+        if proc is None or proc.poll() is not None:
+            return {
+                "ok": False,
+                "raison": "Rien à fermer — aucun FLM lancé depuis cette application.",
+            }
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=_FLM_STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        except Exception as exc:
+            logger.exception("Arrêt FLM échoué")
+            return {"ok": False, "raison": f"Échec de l'arrêt : {exc}"}
+        if check_flm():
+            logger.warning(
+                "FLM répond encore après l'arrêt du process lancé par cette "
+                "application — un autre serveur occupe apparemment le port."
+            )
+        return {"ok": True, "raison": "FLM fermé."}
+
+
 def check_lmstudio() -> bool:
     """Return True if the LM Studio server responds on `_lmstudio_host`.
 
