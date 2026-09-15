@@ -265,16 +265,31 @@ def _construire_trace_finale(
     Bornée à `TRACE_MAX_ETAPES` ICI, au moment de la persistance : c'est le
     point où toutes les sources (recherche + citations) sont réunies, donc le
     seul endroit qui connaît le total réel.
+
+    **`citations_invalides` a une place RÉSERVÉE, elle n'est jamais tronquée.**
+    L'ancien ordre — l'ajouter puis tronquer `finale[:TRACE_MAX_ETAPES]` — la
+    perdait silencieusement dès que le reste dépassait 19 étapes : c'est
+    devenu plus probable depuis que le tool-calling natif
+    (`core/llm.py::_stream_ollama`, `outils_web=True`) peut déclencher une
+    recherche EN PLUS de celle du classifieur heuristique dans le même tour —
+    deux jeux d'étapes (`recherche_debut`/`recherche_resultats`/…) au lieu
+    d'un seul. Une étape de DÉROULEMENT tronquée est un détail perdu ; celle-ci
+    est un signal d'ANOMALIE (une citation hors sources, potentiellement
+    inventée) — la couper en silence est exactement le genre de défaut
+    trompeur que ce second verrou existe pour éliminer (cf. `core.citations`).
+    D'où : tronquer d'abord les étapes de déroulement à `TRACE_MAX_ETAPES - 1`,
+    PUIS ajouter `citations_invalides` en dernière position — elle survit
+    toujours quand elle existe.
     """
-    finale = list(etapes)
     if rapport is not None and rapport.a_des_anomalies():
-        finale.append({
+        citation_invalide = {
             "etape": "citations_invalides",
             "rangs": rapport.rangs_hors_plage[:TRACE_LISTE_MAX],
             "urls": [tronquer_champ(u) for u in rapport.urls_non_reconnues[:TRACE_LISTE_MAX]],
             "verifiees_contre": "recherche" if a_des_resultats_recherche else "aucune_source",
-        })
-    return finale[:TRACE_MAX_ETAPES]
+        }
+        return list(etapes)[:TRACE_MAX_ETAPES - 1] + [citation_invalide]
+    return list(etapes)[:TRACE_MAX_ETAPES]
 
 
 def _finaliser_citations_et_trace(
@@ -1142,28 +1157,38 @@ async def ws_chat(websocket: WebSocket):
             #: `_on_etape_recherche` ci-dessous, PENDANT l'exécution de
             #: `rechercher()` dans le thread de l'exécuteur.
             etapes_recherche: list[dict] = []
-            if web_search_override:
-                def _on_etape_recherche(etape: dict) -> None:
-                    """Appelé depuis le THREAD de l'exécuteur (`rechercher()` est
-                    synchrone). Pousse l'étape en direct sur le websocket — pour
-                    que le panneau se remplisse PENDANT la recherche, pas
-                    seulement à la fin (tâche §2) — via `run_coroutine_threadsafe`,
-                    comme `_annoncer_titre_depuis_thread` : toucher le websocket
-                    depuis un autre fil sans repasser par la boucle corromprait le
-                    protocole. Best-effort : le socket peut être fermé entre-temps.
-                    """
-                    etapes_recherche.append(etape)
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            websocket.send_text(json.dumps(
-                                {"type": "trace_recherche_etape", "etape": etape},
-                                ensure_ascii=False,
-                            )),
-                            loop,
-                        )
-                    except Exception:
-                        logger.debug("Étape de trace non poussée (socket fermé ?)")
 
+            def _on_etape_recherche(etape: dict) -> None:
+                """Appelé depuis un THREAD de fond — celui de l'exécuteur pour le
+                classifieur (`rechercher()` est synchrone), celui de `_stream`
+                (voir plus bas) pour le tool-calling natif. Pousse l'étape en
+                direct sur le websocket — pour que le panneau se remplisse
+                PENDANT la recherche, pas seulement à la fin (tâche §2) — via
+                `run_coroutine_threadsafe`, comme `_annoncer_titre_depuis_thread` :
+                toucher le websocket depuis un autre fil sans repasser par la
+                boucle corromprait le protocole. Best-effort : le socket peut
+                être fermé entre-temps.
+
+                Hissée hors du `if web_search_override:` (originellement définie
+                dedans) : le tool-calling natif (`LLMEngine._stream_ollama`,
+                `outils_web=True`) peut déclencher une recherche même quand le
+                classifieur n'a RIEN détecté ce tour — les deux mécanismes sont
+                indépendants (CLAUDE.md), donc cette trace doit exister pour
+                les deux, pas seulement quand `web_search_override` est vrai.
+                """
+                etapes_recherche.append(etape)
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        websocket.send_text(json.dumps(
+                            {"type": "trace_recherche_etape", "etape": etape},
+                            ensure_ascii=False,
+                        )),
+                        loop,
+                    )
+                except Exception:
+                    logger.debug("Étape de trace non poussée (socket fermé ?)")
+
+            if web_search_override:
                 if declenchement_auto is not None:
                     # Un déclenchement automatique ne doit JAMAIS être
                     # silencieux (cf. le diagnostic qui a lancé ce projet) :
@@ -1486,7 +1511,18 @@ async def ws_chat(websocket: WebSocket):
 
             def _stream(msgs, q, lp, model):
                 try:
-                    for token in llm.stream(msgs, model=model, raisonnement=raisonnement):
+                    for token in llm.stream(
+                        msgs, model=model, raisonnement=raisonnement,
+                        # Tool-calling natif (core/llm.py) — Ollama seul,
+                        # ignoré silencieusement pour les autres providers.
+                        # Indépendant du classifieur heuristique juste
+                        # au-dessus (`web_search_override`) : les deux
+                        # peuvent agir sur le même tour, d'où `rang_web_existant`
+                        # pour que leurs `ResultatWeb` ne partagent jamais un
+                        # même rang `[n]` (cf. `_executer_outil_web_search`).
+                        outils_web=True, on_etape_recherche=_on_etape_recherche,
+                        rang_web_existant=len(web_resultats),
+                    ):
                         asyncio.run_coroutine_threadsafe(q.put(token), lp)
                 except Exception as exc:
                     logger.exception("Erreur streaming chat")
@@ -1513,6 +1549,18 @@ async def ws_chat(websocket: WebSocket):
                         json.dumps({"type": "error", "content": item["error"]})
                     )
                     break
+                if isinstance(item, dict) and item.get("__tool_call__"):
+                    # Résultats STRUCTURÉS d'une recherche déclenchée par le
+                    # MODÈLE (tool-calling natif, core/llm.py::_stream_ollama)
+                    # — versés dans la MÊME liste `web_resultats` que le
+                    # classifieur heuristique, pour que
+                    # `_finaliser_citations_et_trace` (citations + Sources)
+                    # les voie sans distinction à la validation. La trace,
+                    # elle, distingue déjà les deux origines via l'étape
+                    # `tool_call_web_search` (poussée par `_on_etape_recherche`
+                    # depuis le thread de `_stream`, AVANT ce sentinel).
+                    web_resultats.extend(item.get("resultats") or [])
+                    continue
                 if isinstance(item, dict) and item.get("__reasoning__"):
                     # Raisonnement du modèle, canal distinct du contenu final.
                     # `{"type": "reasoning"}` suit la forme de `{"type": "token"}`

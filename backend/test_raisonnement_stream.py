@@ -258,7 +258,7 @@ class ProtocoleWebSocketTest(unittest.TestCase):
         routeur_chat.llm.stream = self._stream_original
 
     def _poser_flux(self, pieces):
-        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True):
+        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True, **kw):
             self.prompts.append([dict(m) for m in messages])
             return iter(list(pieces))
         # Remplace la méthode sur le singleton partagé de `core.runtime` — le
@@ -673,7 +673,7 @@ class ReglageDeSessionTest(unittest.TestCase):
         """Envoie un message par le WS et rend la valeur de `raisonnement` reçue."""
         recu = {}
 
-        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True):
+        def faux_stream(messages, model=None, max_tokens=None, raisonnement=True, **kw):
             recu["raisonnement"] = raisonnement
             return iter(["ok"])
 
