@@ -1036,10 +1036,31 @@ vide reste permissif (appliqué quand même), pour ne jamais faire disparaître
 en silence un événement dont le serveur ne peut identifier le fil avec
 certitude. Verrouillé côté serveur par `test_chat_conversation_id_trames.py`,
 côté client par `frontend/src/modules/chat/Component.conversation.test.tsx`
-(fuite, troncature au retour avant `done`, cohérence des stats). Non couvert :
-la même troncature en mode comparaison multi-modèles, et une course rare entre
-la relecture disque déclenchée par un `done` suspect et un nouveau message
-envoyé dans l'intervalle.
+(fuite, troncature au retour avant `done`, cohérence des stats).
+
+Non couvert — deux limites, **ni l'une ni l'autre ne réintroduit de fuite
+entre conversations** :
+
+- **Une comparaison multi-modèles abandonnée par navigation reste orpheline.**
+  `comparaisonUserMsgIdxRef` est remis à `-1` par `ouvrirConversation`/
+  `nouvelleConversation` à CHAQUE changement de fil — défaut **préexistant** à
+  ce correctif, pas introduit par lui. Conséquence : quitter un fil en pleine
+  comparaison puis y revenir ne laisse plus aucun index valide, donc le
+  panneau (jamais persisté sur disque) disparaît à la relecture, les
+  `compare_token` qui continuent d'arriver sont silencieusement ignorés (déjà
+  gardés par `if (!bloc...) return prev` avant ce correctif), et le bouton de
+  résolution (`compare_choix`) n'existe plus. Une comparaison orpheline et
+  perdue, PAS un texte tronqué affiché comme complet, et aucune fuite : le cas
+  `idxComparaison >= 0 ET etaitSuspecte` (dans le handler `done`) est
+  structurellement inatteignable, puisque toute bascule de fil remet l'index
+  à `-1` avant qu'aucun événement ne puisse être marqué suspect pour ce fil.
+- **Une course rare, celle-ci introduite par la relecture disque de ce
+  correctif** : une action prise (nouveau message, nouvelle comparaison) dans
+  la fenêtre étroite où une relecture déclenchée par un `done` suspect est
+  encore en vol peut voir son ajout optimiste écrasé par le résultat (périmé)
+  de cette relecture. Toujours la MÊME conversation ; le tour suivant (ses
+  propres événements) répare l'affichage, et le message est de toute façon
+  déjà persisté côté serveur — jamais perdu, juste retardé à l'écran.
 
 **Ce que `LLMEngine.stream()` yielde** : du `str` pour le texte, et des **dicts
 sentinelles** pour le reste — `{"__stats__": True, …}` (tokens et durées) et
