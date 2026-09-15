@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Callable, Generator, Optional
 
 import httpx
 import ollama
@@ -219,6 +219,163 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     return "\n\n".join(system_parts), contents
 
 
+# ── Tool-calling natif — web_search, Ollama SEUL ─────────────────────────────
+#
+# Mécanisme SÉPARÉ et INDÉPENDANT du classifieur heuristique
+# (core/websearch.py::detecter_intention_recherche, déclenché AVANT le tour de
+# chat, sans que le modèle en décide). Ici c'est le MODÈLE, en cours de
+# génération, qui décide d'appeler `web_search` — les deux coexistent
+# volontairement (CLAUDE.md §3.7 documente déjà cette distinction pour
+# d'autres tâches de fond ; ceci n'y déroge pas, une recherche déclenchée par
+# le modèle reste un choix fait POUR répondre au message en cours, jamais une
+# tâche de fond). Rien ici ne touche, ne désactive ni ne remplace le
+# classifieur.
+#
+# `tools=` n'est câblé QUE sur `_stream_ollama` : `_stream_openai` et
+# `_gemini_contents` normalisent les messages en `{role, content}` et
+# perdraient `tool_calls`/`role="tool"`, cf. `LLMEngine.stream`.
+
+#: Cap sur le nombre d'INVOCATIONS de l'outil par tour (pas de rounds
+#: `chat()` — un modèle peut demander plusieurs appels dans le même round).
+#: Une boucle non bornée sur un outil qui ne renvoie jamais « j'ai assez
+#: d'information » consommerait un `num_predict` par round indéfiniment.
+_MAX_APPELS_OUTIL_WEB = 2
+
+#: Schéma exposé au modèle. Ollama valide ses propres schémas de `tools` via
+#: pydantic (`ollama._types.Tool`) — un dict brut suffit, pas besoin de
+#: construire l'objet pydantic à la main.
+_OUTIL_WEB_SEARCH: dict = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Recherche sur le web (DuckDuckGo) une information récente, "
+            "factuelle, ou que tu ne connais pas avec certitude. Cite "
+            "ensuite les résultats par leur numéro entre crochets, ex. [1] — "
+            "jamais l'URL."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "requete": {
+                    "type": "string",
+                    "description": "Termes de recherche concis, en français.",
+                },
+            },
+            "required": ["requete"],
+        },
+    },
+}
+
+#: Borne du texte de résultat renvoyé au modèle (`role="tool"`), au même
+#: ordre de grandeur que le budget d'une recherche @web classique
+#: (`core/webcontent.py` : jusqu'à 5 pages × 800 caractères). Sans borne, un
+#: tour qui combine le contexte @web du classifieur ET un résultat d'outil
+#: peut dépasser `n_ctx: 4096` et faire tomber le système prompt du DÉBUT du
+#: contexte plutôt que de tronquer proprement ici.
+_BUDGET_CARACTERES_OUTIL_WEB = 4000
+
+#: Rafraîchi au plus toutes les `_CAPACITES_TTL_S` : `capacites_installees()`
+#: est une requête HTTP (`/api/tags`) par tour sinon, sur le chemin chaud du
+#: TTFT (cf. les mesures de `_stream_ollama`). `(horodatage, {id: set|None})`.
+_CAPACITES_TTL_S = 30.0
+_capacites_cache: tuple[float, dict] = (0.0, {})
+
+
+def _capacites_ollama_fraiches() -> dict:
+    """`{id du modèle: set des capacités déclarées}`, caché `_CAPACITES_TTL_S`.
+
+    Import PARESSEUX : `core.ollama_memoire` importe `core.llm` au niveau
+    module (host normalisé, cf. `hote_ollama()`) — un import en tête de
+    fichier ici créerait un cycle (`llm` → `ollama_memoire` → `llm`).
+
+    `{}` si Ollama ne répond pas (jamais `None` propagé) : l'appelant ne doit
+    jamais planter sur cette sonde, seulement se priver de l'outil — même
+    philosophie que le reste de `core/ollama_memoire.py`.
+    """
+    global _capacites_cache
+    horodatage, cache = _capacites_cache
+    if time.time() - horodatage < _CAPACITES_TTL_S:
+        return cache
+    from core.ollama_memoire import capacites_installees
+    capacites = capacites_installees() or {}
+    _capacites_cache = (time.time(), capacites)
+    return capacites
+
+
+def _outil_web_disponible(model: str) -> bool:
+    """Le modèle DÉCLARE-t-il la capacité `tools` ? Jamais supposé.
+
+    Même piège que `think=True` sur un modèle sans raisonnement (§3.6
+    CLAUDE.md, mesuré : 400 `"...` does not support thinking`"`) : passer
+    `tools=` à un modèle qui ne la déclare pas casserait le tour entier au
+    lieu d'être ignoré proprement. `None` (Ollama injoignable, ou champ
+    absent pour ce modèle) est traité comme « non disponible » — l'absence de
+    preuve n'autorise pas l'appel.
+    """
+    declarees = _capacites_ollama_fraiches().get(model)
+    return declarees is not None and "tools" in declarees
+
+
+def _executer_outil_web_search(
+    requete: str, on_etape: Optional[Callable[[dict], None]] = None,
+    rang_de_depart: int = 0,
+) -> tuple[str, list]:
+    """Exécute VRAIMENT `web_search` : réutilise `core.websearch.rechercher` +
+    `core.webcontent.recuperer_contenu`, sans dupliquer leur logique — mêmes
+    fonctions que `modules/chat/router.py:_rechercher_pour_prompt` (chemin du
+    classifieur), à une différence assumée près (cf. plus bas).
+
+    Import PARESSEUX : `core.websearch` importe `core.runtime`, qui importe
+    `core.llm` pour construire le moteur partagé — un import en tête de
+    fichier ici créerait un cycle (`llm` → `websearch` → `runtime` → `llm`).
+
+    **Pas de `reformuler_requete` ici**, à la différence de
+    `_rechercher_pour_prompt` : le modèle a DÉJÀ réduit sa question à des
+    mots-clés pour remplir l'argument `requete` de l'outil — c'est exactement
+    ce que la reformulation produirait pour le chemin classifieur. La rejouer
+    appellerait un second modèle (`modele_local_defaut()`, pas forcément
+    celui qui est en train de générer CE tour) PENDANT le tour en cours — un
+    chargement concurrent que rien ne justifie ici.
+
+    `rang_de_depart` renumérote les rangs `[n]` : sans lui, un DEUXIÈME appel
+    d'outil dans le même tour (plafond `_MAX_APPELS_OUTIL_WEB`), ou un tour où
+    le classifieur heuristique a AUSSI déclenché une recherche avant le tour
+    de chat, produirait plusieurs résultats de rang `[1]` —
+    `core.citations`/`_sources_citees` (modules/chat/router.py) résolvent une
+    citation `[n]` par rang, donc la collision ferait pointer `[1]` vers la
+    MAUVAISE recherche selon l'ordre d'apparition dans `web_resultats`.
+
+    La consigne de citation (« cite par [n], jamais l'URL ») est réécrite ICI
+    plutôt qu'héritée de `_construire_web_ctx` (modules/chat/router.py) : ce
+    texte part dans un message `role="tool"`, pas le system prompt du
+    classifieur — deux points d'injection différents, qui doivent chacun
+    porter leur propre consigne, la recherche pouvant être déclenchée par
+    l'outil SEUL, sans qu'`@web`/le classifieur n'ait rien injecté ce tour.
+    """
+    from core.websearch import RechercheWebErreur, formater_pour_llm, rechercher, tronquer_champ
+    from core.webcontent import recuperer_contenu
+
+    if not requete:
+        return "Requête vide — aucune recherche effectuée.", []
+    try:
+        resultats = rechercher(requete, on_etape=on_etape)
+    except RechercheWebErreur as exc:
+        return f"Recherche impossible : {exc}", []
+    resultats = recuperer_contenu(resultats, requete, on_etape=on_etape)
+    if not resultats:
+        return "Aucun résultat exploitable pour cette recherche.", []
+    if rang_de_depart:
+        for r in resultats:
+            r.rang += rang_de_depart
+    texte = (
+        "Résultats de recherche web (cite-les par leur numéro entre crochets, "
+        "ex. [1] — n'écris JAMAIS d'URL, ne cite JAMAIS un numéro absent de "
+        "cette liste) :\n" + formater_pour_llm(resultats)
+    )
+    return tronquer_champ(texte, _BUDGET_CARACTERES_OUTIL_WEB), resultats
+
+
 class LLMEngine:
     def __init__(self, config_path: str = "config.yaml"):
         with open(config_path) as f:
@@ -274,8 +431,17 @@ class LLMEngine:
     # ── Public API ───────────────────────────────────────────────────────────
 
     def stream(self, messages: list[dict], model: Optional[str] = None,
-               max_tokens: Optional[int] = None, raisonnement: bool = True) -> Generator:
+               max_tokens: Optional[int] = None, raisonnement: bool = True,
+               outils_web: bool = False,
+               on_etape_recherche: Optional[Callable[[dict], None]] = None,
+               rang_web_existant: int = 0) -> Generator:
         """Flux de génération. ``raisonnement=False`` coupe la réflexion du modèle.
+
+        ``outils_web``/``on_etape_recherche``/``rang_web_existant`` : tool-calling
+        natif de `web_search`, **Ollama seul** — ignorés silencieusement pour
+        gemini/openai-compatible, dont le format de message n'a pas
+        `tool_calls`/`role="tool"` (cf. `_stream_ollama`). Les onze autres
+        appelants de cette méthode n'ont rien à passer : défauts inertes.
 
         **Le défaut est ``True``, et c'est le comportement historique** : les
         modèles qui pensent pensent, ceux qui ne pensent pas ne changent pas.
@@ -308,7 +474,11 @@ class LLMEngine:
             yield from self._stream_openai(messages, model_id, client, provider, max_tokens,
                                           raisonnement=raisonnement)
         else:
-            yield from self._stream_ollama(messages, m, max_tokens, raisonnement=raisonnement)
+            yield from self._stream_ollama(
+                messages, m, max_tokens, raisonnement=raisonnement,
+                outils_web=outils_web, on_etape_recherche=on_etape_recherche,
+                rang_web_existant=rang_web_existant,
+            )
 
     def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
         m = model or self._model
@@ -486,7 +656,9 @@ class LLMEngine:
     # ── Ollama ───────────────────────────────────────────────────────────────
 
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None,
-                       raisonnement: bool = True) -> Generator:
+                       raisonnement: bool = True, outils_web: bool = False,
+                       on_etape_recherche: Optional[Callable[[dict], None]] = None,
+                       rang_web_existant: int = 0) -> Generator:
         """Flux Ollama : texte (``str``), raisonnement et stats (dicts sentinelles).
 
         **Le raisonnement arrive dans un champ SÉPARÉ, et il était jeté.** Mesuré
@@ -546,58 +718,163 @@ class LLMEngine:
         paramètre. ``think=False``, lui, est sûr partout : mesuré ignoré sur les
         deux modèles sans raisonnement, et il évite les ~570 tokens que le modèle
         produirait pour rien.
+
+        **Tool-calling natif — ``web_search``, ajouté SANS changer ce qui
+        précède.** ``outils_web=False`` (défaut de tous les appelants sauf le
+        chemin direct du chat) : la boucle ``while`` ci-dessous ne fait qu'un
+        seul tour, byte pour byte comme avant ce paramètre.
+
+        ``outils_web=True`` n'expose ``tools=`` que si le modèle DÉCLARE la
+        capacité (``_outil_web_disponible`` — jamais supposé, même piège que
+        ``think=True`` documenté ci-dessus). Un ``tool_calls`` reçu est
+        exécuté (``_executer_outil_web_search``) puis renvoyé en
+        ``role="tool"``, corrélé par ``tool_name`` — ``ollama._types.
+        Message.ToolCall`` n'a PAS de champ ``id`` (vérifié sur le schéma
+        installé), à la différence du SDK openai ; ne pas réintroduire un
+        ``tool_call_id``. Plafonné à ``_MAX_APPELS_OUTIL_WEB`` INVOCATIONS, pas
+        rounds ``chat()`` : un modèle qui demande deux appels dans le même
+        round les épuise d'un coup, et les tours suivants n'exposent plus
+        ``tools`` une fois le budget consommé — le modèle conclut avec ce
+        qu'il a.
+
+        Un seul ``__stats__`` par tour de ``stream()``, agrégé sur tous les
+        rounds plutôt qu'un par appel ``chat()`` : le contrat historique (une
+        sentinelle par tour) reste inchangé pour les onze autres appelants, et
+        ``usage_tracker.track`` (modules/chat/router.py) ne doit compter
+        qu'une fois par réponse. Conséquence acceptée : ``num_predict``
+        s'applique PAR round, donc un tour à 2 appels d'outil peut consommer
+        jusqu'à 3x le budget habituel.
+
+        Les messages ``role="assistant"``/``role="tool"`` construits pendant
+        la boucle ne vivent que dans la copie LOCALE ``msgs`` — jamais dans
+        ``messages``, l'objet de l'appelant : ils ne doivent jamais atteindre
+        ``accumulated`` ni l'historique persisté (modules/chat/router.py),
+        qui rejoue ``messages`` tel quel au tour suivant.
         """
-        appel: dict = {
-            "model": model, "messages": messages, "stream": True,
-            "options": {
-                "temperature": self._gen["temperature"],
-                "top_p": self._gen["top_p"],
-                "num_predict": self._budget(max_tokens, raisonnement),
-                "num_thread": 8,
-            },
-        }
-        if not raisonnement:
-            appel["think"] = False
-        for chunk in ollama_client.chat(**appel):
-            message = chunk["message"]
-            # `.get()` et non `message["thinking"]` : `Message` est un
-            # `SubscriptableBaseModel` d'Ollama, dont l'indexation d'une clé
-            # absente lève. Vérifié plutôt que supposé — `get()` existe bien et
-            # rend `None` sur un modèle qui ne pense pas.
-            reasoning = message.get("thinking")
-            if reasoning:
-                # Avant le contenu du même chunk : mesuré, aucun chunk ne porte
-                # les deux à la fois (3 formes de prompt sur qwen3:8b, séquence
-                # toujours `thinking×N → content×N`), mais l'ordre correct ne
-                # coûte rien et vaut mieux qu'une hypothèse.
-                yield {"__reasoning__": True, "content": reasoning}
-            content = message["content"]
-            if content:
-                yield content
-            try:
-                if chunk["done"]:
-                    # `done_reason == "length"` = le plafond `num_predict` a été
-                    # atteint, donc la génération est COUPÉE, pas terminée.
-                    #
-                    # Il était ignoré, et c'est ce qui rendait le bug muet : sur
-                    # un modèle qui pense, la réflexion peut consommer tout le
-                    # budget et la réponse n'être jamais produite. Le chat
-                    # affichait alors une bulle vide, indiscernable d'un modèle
-                    # qui n'aurait rien à dire.
-                    #
-                    # `.get()` sur un `SubscriptableBaseModel` : le champ existe
-                    # dans le schéma, mais un serveur plus ancien peut le laisser
-                    # à `None` — auquel cas on ne prétend pas savoir.
-                    yield {
-                        "__stats__": True,
-                        "prompt_tokens": chunk["prompt_eval_count"] or 0,
-                        "output_tokens": chunk["eval_count"] or 0,
-                        "eval_duration_ns": chunk["eval_duration"] or 0,
-                        "prompt_duration_ns": chunk["prompt_eval_duration"] or 0,
-                        "tronqué": chunk.get("done_reason") == "length",
-                    }
-            except Exception:
-                pass
+        outil_actif = outils_web and _outil_web_disponible(model)
+        msgs = list(messages)
+        appels_restants = _MAX_APPELS_OUTIL_WEB if outil_actif else 0
+        rang_suivant = rang_web_existant
+
+        total_prompt_tokens = 0
+        total_output_tokens = 0
+        total_eval_ns = 0
+        total_prompt_ns = 0
+        dernier_tronque = False
+        stats_vues = False
+
+        while True:
+            appel: dict = {
+                "model": model, "messages": msgs, "stream": True,
+                "options": {
+                    "temperature": self._gen["temperature"],
+                    "top_p": self._gen["top_p"],
+                    "num_predict": self._budget(max_tokens, raisonnement),
+                    "num_thread": 8,
+                },
+            }
+            if not raisonnement:
+                appel["think"] = False
+            if outil_actif and appels_restants > 0:
+                appel["tools"] = [_OUTIL_WEB_SEARCH]
+
+            contenu_du_round: list[str] = []
+            tool_calls_recus = None
+            for chunk in ollama_client.chat(**appel):
+                message = chunk["message"]
+                # `.get()` et non `message["thinking"]` : `Message` est un
+                # `SubscriptableBaseModel` d'Ollama, dont l'indexation d'une clé
+                # absente lève. Vérifié plutôt que supposé — `get()` existe bien et
+                # rend `None` sur un modèle qui ne pense pas.
+                reasoning = message.get("thinking")
+                if reasoning:
+                    # Avant le contenu du même chunk : mesuré, aucun chunk ne porte
+                    # les deux à la fois (3 formes de prompt sur qwen3:8b, séquence
+                    # toujours `thinking×N → content×N`), mais l'ordre correct ne
+                    # coûte rien et vaut mieux qu'une hypothèse.
+                    yield {"__reasoning__": True, "content": reasoning}
+                content = message["content"]
+                if content:
+                    contenu_du_round.append(content)
+                    yield content
+                # Mesuré (diagnostic préalable à cette tâche) : le `tool_calls`
+                # arrive en UN SEUL chunk, déjà en dict/objet Python parsé —
+                # rien à accumuler ni reparser en JSON.
+                tc = message.get("tool_calls")
+                if tc:
+                    tool_calls_recus = tc
+                try:
+                    if chunk["done"]:
+                        # `done_reason == "length"` = le plafond `num_predict` a été
+                        # atteint, donc la génération est COUPÉE, pas terminée.
+                        #
+                        # Il était ignoré, et c'est ce qui rendait le bug muet : sur
+                        # un modèle qui pense, la réflexion peut consommer tout le
+                        # budget et la réponse n'être jamais produite. Le chat
+                        # affichait alors une bulle vide, indiscernable d'un modèle
+                        # qui n'aurait rien à dire.
+                        #
+                        # `.get()` sur un `SubscriptableBaseModel` : le champ existe
+                        # dans le schéma, mais un serveur plus ancien peut le laisser
+                        # à `None` — auquel cas on ne prétend pas savoir.
+                        total_prompt_tokens += chunk["prompt_eval_count"] or 0
+                        total_output_tokens += chunk["eval_count"] or 0
+                        total_eval_ns += chunk["eval_duration"] or 0
+                        total_prompt_ns += chunk["prompt_eval_duration"] or 0
+                        dernier_tronque = chunk.get("done_reason") == "length"
+                        stats_vues = True
+                except Exception:
+                    pass
+
+            if not tool_calls_recus:
+                break
+
+            msgs.append({
+                "role": "assistant", "content": "".join(contenu_du_round),
+                "tool_calls": tool_calls_recus,
+            })
+            for tc in tool_calls_recus:
+                nom = tc["function"]["name"]
+                if nom != "web_search":
+                    # Un seul outil est déclaré (`_OUTIL_WEB_SEARCH`) : ce cas
+                    # ne devrait jamais se produire, mais un modèle qui
+                    # invente un nom ne doit pas casser le tour.
+                    msgs.append({"role": "tool", "tool_name": nom, "content": f"Outil inconnu : {nom}"})
+                    continue
+                if appels_restants <= 0:
+                    msgs.append({
+                        "role": "tool", "tool_name": nom,
+                        "content": "Budget d'appels d'outil épuisé pour ce tour — réponds avec ce que tu as déjà.",
+                    })
+                    continue
+                appels_restants -= 1
+                requete = str((tc["function"]["arguments"] or {}).get("requete") or "").strip()
+                if on_etape_recherche:
+                    on_etape_recherche({"etape": "tool_call_web_search", "requete": requete})
+                texte_outil, resultats = _executer_outil_web_search(
+                    requete, on_etape=on_etape_recherche, rang_de_depart=rang_suivant,
+                )
+                rang_suivant += len(resultats)
+                # Sentinelle distincte de `__reasoning__`/`__stats__` : porte
+                # les `ResultatWeb` STRUCTURÉS jusqu'au consommateur async
+                # (modules/chat/router.py), seul endroit qui connaît
+                # `web_resultats` — ce générateur tourne dans le thread de
+                # fond de `_stream`, il ne peut pas l'étendre lui-même.
+                yield {
+                    "__tool_call__": True, "outil": "web_search",
+                    "arguments": {"requete": requete}, "resultats": resultats,
+                }
+                msgs.append({"role": "tool", "tool_name": nom, "content": texte_outil})
+
+        if stats_vues:
+            yield {
+                "__stats__": True,
+                "prompt_tokens": total_prompt_tokens,
+                "output_tokens": total_output_tokens,
+                "eval_duration_ns": total_eval_ns,
+                "prompt_duration_ns": total_prompt_ns,
+                "tronqué": dernier_tronque,
+            }
 
     def _generate_ollama(self, messages: list[dict], model: str) -> str:
         response = ollama_client.chat(
