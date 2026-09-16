@@ -795,7 +795,8 @@ async def _analyser_images_du_tour(
         """Best-effort : le socket peut se fermer pendant une analyse de 26 s."""
         try:
             await websocket.send_text(json.dumps(
-                {"type": "vision_analyse", **charge}, ensure_ascii=False))
+                {"type": "vision_analyse", "conversation_id": conv_id, **charge},
+                ensure_ascii=False))
         except Exception:
             logger.debug("Événement vision_analyse non poussé (socket fermé ?)")
 
@@ -888,7 +889,7 @@ async def ws_chat(websocket: WebSocket):
             try:
                 asyncio.run_coroutine_threadsafe(
                     websocket.send_text(json.dumps(
-                        {"type": "titre", "id": conv_id, "titre": titre},
+                        {"type": "titre", "id": conv_id, "conversation_id": conv_id, "titre": titre},
                         ensure_ascii=False,
                     )),
                     loop,
@@ -966,9 +967,13 @@ async def ws_chat(websocket: WebSocket):
             or modele_choisi not in etat["accumulated"]
             or (conv_id_msg and conv_id_msg != etat["conv_id"])
         ):
+            # Aucune conversation connue avec certitude ici (l'état a pu déjà
+            # être vidé par un choix précédent) : on retombe sur celle
+            # annoncée par le client, jamais sur une valeur devinée.
             await websocket.send_text(json.dumps({
                 "type": "error",
                 "content": "Comparaison introuvable ou déjà résolue pour ce modèle.",
+                "conversation_id": (etat or {}).get("conv_id") or conv_id_msg,
             }, ensure_ascii=False))
             return
 
@@ -982,6 +987,7 @@ async def ws_chat(websocket: WebSocket):
         if not texte:
             await websocket.send_text(json.dumps({
                 "type": "error", "content": "Réponse vide, rien à conserver.",
+                "conversation_id": conv_id_cible,
             }, ensure_ascii=False))
             return
 
@@ -995,6 +1001,7 @@ async def ws_chat(websocket: WebSocket):
         )
         await websocket.send_text(json.dumps({
             "type": "done",
+            "conversation_id": conv_id_cible,
             "horodatage": _meta.get("horodatage", ""),
             "modèle": _meta.get("modèle", ""),
             "sources": _meta.get("sources", []),
@@ -1082,7 +1089,7 @@ async def ws_chat(websocket: WebSocket):
                 )
                 conv_id = neuve["id"]
                 await websocket.send_text(json.dumps({
-                    "type": "conversation", "id": conv_id,
+                    "type": "conversation", "id": conv_id, "conversation_id": conv_id,
                 }))
             _derniere_conv[0] = conv_id
 
@@ -1127,6 +1134,7 @@ async def ws_chat(websocket: WebSocket):
                 await websocket.send_text(json.dumps({
                     "type": "error",
                     "content": "Cette conversation n'existe plus. Ouvrez-en une nouvelle.",
+                    "conversation_id": conv_id,
                 }))
                 continue
 
@@ -1180,7 +1188,7 @@ async def ws_chat(websocket: WebSocket):
                 try:
                     asyncio.run_coroutine_threadsafe(
                         websocket.send_text(json.dumps(
-                            {"type": "trace_recherche_etape", "etape": etape},
+                            {"type": "trace_recherche_etape", "conversation_id": conv_id, "etape": etape},
                             ensure_ascii=False,
                         )),
                         loop,
@@ -1347,6 +1355,7 @@ async def ws_chat(websocket: WebSocket):
             _meta_user = (conv["messages"] or [{}])[-1]
             await websocket.send_text(json.dumps({
                 "type": "meta_message", "role": "user",
+                "conversation_id": conv_id,
                 "horodatage": _meta_user.get("horodatage", ""),
                 # Le modèle À QUI la question est posée. Utile surtout dans un
                 # fil où l'on change de modèle en cours de route : sans lui, on
@@ -1372,7 +1381,8 @@ async def ws_chat(websocket: WebSocket):
                     _compare_models = await _valider_compare_models(_compare_models_req)
                 except ValueError as exc:
                     await websocket.send_text(json.dumps(
-                        {"type": "error", "content": str(exc)}, ensure_ascii=False,
+                        {"type": "error", "content": str(exc), "conversation_id": conv_id},
+                        ensure_ascii=False,
                     ))
                     continue
 
@@ -1413,12 +1423,13 @@ async def ws_chat(websocket: WebSocket):
                     if _item is None:
                         _termines.add(_modele)
                         await websocket.send_text(json.dumps({
-                            "type": "compare_done", "model": _modele,
+                            "type": "compare_done", "model": _modele, "conversation_id": conv_id,
                         }))
                         continue
                     if isinstance(_item, dict) and "error" in _item:
                         await websocket.send_text(json.dumps({
                             "type": "compare_error", "model": _modele, "content": _item["error"],
+                            "conversation_id": conv_id,
                         }, ensure_ascii=False))
                         continue
                     if isinstance(_item, dict) and _item.get("__reasoning__"):
@@ -1427,11 +1438,13 @@ async def ws_chat(websocket: WebSocket):
                         # seulement.
                         await websocket.send_text(json.dumps({
                             "type": "compare_reasoning", "model": _modele, "content": _item["content"],
+                            "conversation_id": conv_id,
                         }, ensure_ascii=False))
                         continue
                     if isinstance(_item, dict) and "__stats__" in _item:
                         await websocket.send_text(json.dumps({
                             "type": "compare_stats", "model": _modele,
+                            "conversation_id": conv_id,
                             "prompt_tokens": _item.get("prompt_tokens", 0),
                             "output_tokens": _item.get("output_tokens", 0),
                             "eval_duration_ms": (_item.get("eval_duration_ns", 0) or 0) // 1_000_000,
@@ -1444,9 +1457,12 @@ async def ws_chat(websocket: WebSocket):
                     _accumulated_par_modele[_modele] += _item
                     await websocket.send_text(json.dumps({
                         "type": "compare_token", "model": _modele, "content": _item,
+                        "conversation_id": conv_id,
                     }, ensure_ascii=False))
 
-                await websocket.send_text(json.dumps({"type": "compare_all_done"}))
+                await websocket.send_text(json.dumps({
+                    "type": "compare_all_done", "conversation_id": conv_id,
+                }))
                 continue
 
             # ── Orchestrator ──────────────────────────────────────────────────
@@ -1477,6 +1493,7 @@ async def ws_chat(websocket: WebSocket):
                 if not _direct_mode and _pipeline:
                     await websocket.send_text(json.dumps({
                         "type": "pipeline_info",
+                        "conversation_id": conv_id,
                         "effort": _effort,
                         "steps": [{"role": s["role"], "label": s.get("label", s["role"]), "model": s["model"]} for s in _pipeline],
                     }))
@@ -1486,7 +1503,13 @@ async def ws_chat(websocket: WebSocket):
                             raisonnement=raisonnement):
                         if _event.get("type") == "pipeline_done":
                             _final = _event.get("final_output", "")
-                        await websocket.send_text(json.dumps(_event))
+                        # Passerelle générique (core.orchestrator.run_pipeline) : le
+                        # type varie (pipeline_info déjà envoyé ci-dessus est
+                        # séparé, ici step_start/token/step_end/step_error/
+                        # pipeline_done), mais chacun mute l'écran par
+                        # `pipelineUserMsgIdxRef` côté client — donc chacun a
+                        # besoin de la même étiquette que le reste du tour.
+                        await websocket.send_text(json.dumps({**_event, "conversation_id": conv_id}))
                     _sources, _trace = _finaliser_citations_et_trace(
                         conv_id, _final, web_resultats, user_text, urls_rag,
                         etapes_recherche,
@@ -1494,6 +1517,7 @@ async def ws_chat(websocket: WebSocket):
                     _meta = await _enregistrer_reponse(conv_id, _final, _sources, _trace) if _final else {}
                     await websocket.send_text(json.dumps({
                         "type": "done",
+                        "conversation_id": conv_id,
                         "horodatage": _meta.get("horodatage", ""),
                         "modèle": _meta.get("modèle", ""),
                         # Mêmes sources/trace qu'après un F5 (relecture de la
@@ -1546,7 +1570,7 @@ async def ws_chat(websocket: WebSocket):
                     break
                 if isinstance(item, dict) and "error" in item:
                     await websocket.send_text(
-                        json.dumps({"type": "error", "content": item["error"]})
+                        json.dumps({"type": "error", "content": item["error"], "conversation_id": conv_id})
                     )
                     break
                 if isinstance(item, dict) and item.get("__tool_call__"):
@@ -1576,6 +1600,7 @@ async def ws_chat(websocket: WebSocket):
                     # tour (584 générés pour 14 caractères de réponse, mesuré).
                     await websocket.send_text(json.dumps({
                         "type": "reasoning", "content": item["content"],
+                        "conversation_id": conv_id,
                     }, ensure_ascii=False))
                     continue
                 if isinstance(item, dict) and "__stats__" in item:
@@ -1587,6 +1612,7 @@ async def ws_chat(websocket: WebSocket):
                     )
                     await websocket.send_text(json.dumps({
                         "type": "stats",
+                        "conversation_id": conv_id,
                         "prompt_tokens": item.get("prompt_tokens", 0),
                         "output_tokens": item.get("output_tokens", 0),
                         "eval_duration_ms": (item.get("eval_duration_ns", 0) or 0) // 1_000_000,
@@ -1598,7 +1624,9 @@ async def ws_chat(websocket: WebSocket):
                     logger.info("TTFT total: %.3fs", time.time() - _req_start)
                     _first_token = False
                 accumulated += item
-                await websocket.send_text(json.dumps({"type": "token", "content": item}))
+                await websocket.send_text(json.dumps({
+                    "type": "token", "content": item, "conversation_id": conv_id,
+                }))
 
             # Coupé AVANT d'avoir écrit un seul caractère de réponse.
             #
@@ -1613,6 +1641,7 @@ async def ws_chat(websocket: WebSocket):
             if _tronque and not accumulated:
                 await websocket.send_text(json.dumps({
                     "type": "error",
+                    "conversation_id": conv_id,
                     "content": (
                         "Le modèle a épuisé son budget de génération en réfléchissant, "
                         "sans produire de réponse. Désactivez le raisonnement dans le "
@@ -1627,6 +1656,7 @@ async def ws_chat(websocket: WebSocket):
             _meta = await _enregistrer_reponse(conv_id, accumulated, _sources, _trace) if accumulated else {}
             await websocket.send_text(json.dumps({
                 "type": "done",
+                "conversation_id": conv_id,
                 "horodatage": _meta.get("horodatage", ""),
                 "modèle": _meta.get("modèle", ""),
                 # Mêmes sources/trace qu'après un F5 (relecture de la conversation

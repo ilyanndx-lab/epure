@@ -793,6 +793,110 @@ export default function Chat({
   // Dernier message envoyé (pour « relancer »).
   const lastSentRef = useRef<Record<string, unknown> | null>(null)
 
+  /**
+   * Miroir SYNCHRONE de `conversationId`, lu par `ws.onmessage` — LE bug de
+   * fuite entre conversations.
+   *
+   * `ws.onmessage` (ci-dessous) est créé UNE SEULE FOIS : son effet ne dépend
+   * que d'`onAssistantDone`, délibérément (une seule connexion WebSocket sert
+   * TOUTES les conversations, cf. CLAUDE.md — on ne la ferme/rouvre pas à
+   * chaque bascule de fil). Un `conversationId` lu directement depuis cette
+   * fermeture resterait donc figé à sa valeur du MONTAGE, jamais mis à jour
+   * par un changement d'état React ultérieur. Seule une ref, réassignée EN
+   * DEHORS du rendu (dans `definirConversationAffichee` ci-dessous, appelée
+   * partout où `conversationId` change), donne au handler une valeur
+   * réellement à jour de « quel fil est affiché EN CE MOMENT ».
+   */
+  const conversationIdRef = useRef(conversationId)
+  /**
+   * Conversations pour lesquelles au moins un événement de streaming a été
+   * REJETÉ par le filtre ci-dessous (cf. `ws.onmessage`) parce qu'un autre
+   * fil était affiché au moment de sa réception.
+   *
+   * Sert à distinguer, dans le handler `done`, deux cas au retour sur un fil
+   * qui a continué de générer pendant l'absence :
+   *  - retour APRÈS son `done` : la conversation a déjà été rechargée depuis
+   *    le disque par l'effet de bascule de fil (plus bas), qui lit toujours
+   *    la version COMPLÈTE — rien à faire de plus ;
+   *  - retour AVANT son `done` : les tokens reçus pendant l'absence ont été
+   *    jetés, donc le texte reconstruit à l'écran (uniquement la suite reçue
+   *    après le retour) est TRONQUÉ par rapport à ce que le serveur a
+   *    réellement écrit sur le disque. Le `done` correspondant déclenche
+   *    alors une relecture complète plutôt que de faire confiance à l'écran.
+   */
+  const conversationsSuspectesRef = useRef<Set<string>>(new Set())
+
+  /**
+   * Pose `conversationId` ET sa ref synchrone d'un seul geste — tout code qui
+   * change le fil affiché doit passer par ICI, jamais par `setConversationId`
+   * directement, sous peine de laisser `conversationIdRef` (donc le filtre
+   * anti-fuite de `ws.onmessage`) périmé.
+   */
+  const definirConversationAffichee = useCallback((id: string) => {
+    conversationIdRef.current = id
+    setConversationId(id)
+  }, [setConversationId])
+  // Filet de sécurité, pour tout changement de `conversationId` qui
+  // échapperait malgré tout à `definirConversationAffichee` (hydratation
+  // initiale de `usePersistentState` notamment, dont la ref ci-dessus ne peut
+  // pas connaître la valeur avant le premier rendu).
+  useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
+
+  /**
+   * Recharge UNE conversation depuis le disque et remplace `messages`.
+   *
+   * Extraite pour être appelée par DEUX chemins : l'effet de bascule de fil
+   * (plus bas), et le handler `done`, qui doit relire le disque au lieu de
+   * faire confiance à l'accumulation locale quand des tokens de CE tour ont
+   * été jetés pendant que ce fil n'était pas affiché (cf.
+   * `conversationsSuspectesRef`) — sans ça, le texte affiché resterait
+   * tronqué à la seule suite reçue après le retour sur le fil.
+   *
+   * Revérifie `conversationIdRef` APRÈS la réponse réseau, pas seulement
+   * avant l'appel : si l'utilisateur a de nouveau changé de fil pendant que
+   * cette requête était en vol, son résultat ne doit plus rien écraser.
+   */
+  const chargerConversationDepuisDisque = useCallback(async (id: string): Promise<boolean> => {
+    try {
+      const res = await apiFetch(`${API}/chat/conversations/${id}`)
+      if (id !== conversationIdRef.current) return false
+      if (res.status === 404) {
+        // Supprimée depuis un autre onglet : on repart à vide plutôt que
+        // d'afficher une conversation fantôme.
+        definirConversationAffichee('')
+        setMessages([])
+        comparaisonUserMsgIdxRef.current = -1
+        return false
+      }
+      if (!res.ok) return false
+      const d = await res.json() as Record<string, unknown>
+      if (id !== conversationIdRef.current) return false
+      setMessages(liste<Record<string, unknown>>(d.messages).map(m => {
+        const role = texte(m.role) === 'assistant' ? 'assistant' as const : 'user' as const
+        const horodatage = texte(m['horodatage'])
+        const modele = texte(m['modèle'])
+        const sources = sourcesDe(m['sources'])
+        const traceRecherche = etapesDe(m['trace_recherche'])
+        // Les champs ABSENTS restent absents : `texte()` rend `''`, qu'on ne
+        // recopie pas. Un `horodatage: ''` se distinguerait mal d'une vraie
+        // valeur vide, et l'interface doit pouvoir dire « non disponible ».
+        return {
+          role,
+          content: texte(m.content),
+          ...(horodatage ? { horodatage } : {}),
+          ...(modele ? { modele } : {}),
+          ...(sources.length ? { sources } : {}),
+          ...(traceRecherche.length ? { traceRecherche } : {}),
+        }
+      }))
+      return true
+    } catch {
+      // Backend qui démarre, ou requête interrompue : la liste reste ce
+      // qu'elle était, rien de plus à faire ici.
+      return false
+    }
+  }, [definirConversationAffichee])
+
   useEffect(() => {
     const connect = () => {
       const ws = new WebSocket(wsUrl('/ws/chat'))
@@ -804,6 +908,40 @@ export default function Chat({
         // Après un arrêt manuel : on ignore les tokens encore en vol, mais on
         // laisse passer done/error pour réinitialiser proprement l'état.
         if (cancelledRef.current && data.type !== 'done' && data.type !== 'error') return
+
+        /**
+         * Filtre anti-fuite — LE bug corrigé ici.
+         *
+         * Chaque événement de streaming porte désormais un `conversation_id`
+         * (backend/modules/chat/router.py) : tout ce qui ne correspond pas au
+         * fil AFFICHÉ ici est ignoré AVANT de toucher `messages`, `streaming`
+         * ou n'importe quel autre état visible. Sans ce filtre, basculer vers
+         * une conversation B pendant qu'une conversation A générait encore
+         * laissait les tokens de A continuer à s'accumuler dans l'écran de B.
+         *
+         * `conversationIdRef`, pas `conversationId` : cf. sa déclaration plus
+         * haut — ce handler est créé une seule fois, à la connexion.
+         *
+         * Un `conversation_id` ABSENT ou VIDE est PERMISSIF (on applique quand
+         * même) : c'est le cas d'une poignée d'événements où le serveur ne
+         * peut identifier la conversation avec certitude (ex. une comparaison
+         * déjà résolue avant ce choix) — les faire disparaître serait une
+         * nouvelle classe d'échec silencieux, pas une correction.
+         *
+         * `conversation` et `titre` ont leur propre traitement plus bas (l'un
+         * annonce un identifiant qui n'existait pas encore côté client, l'autre
+         * ne touche jamais `messages`) : ils ne passent pas par ce filtre.
+         */
+        const idEvt = typeof data.conversation_id === 'string' ? data.conversation_id : ''
+        const estPourLeFilAffiche = !idEvt || idEvt === conversationIdRef.current
+        if (data.type !== 'conversation' && data.type !== 'titre' && !estPourLeFilAffiche) {
+          // Le `done`/`error` de ce tour est peut-être encore à venir : sans
+          // cette marque, une relecture ultérieure du disque (cf. handler
+          // `done`) ne saurait pas qu'elle doit remplacer l'accumulation
+          // locale au lieu de lui faire confiance.
+          if (idEvt) conversationsSuspectesRef.current.add(idEvt)
+          return
+        }
 
         if (data.type === 'meta_message') {
           // Horodatage du message utilisateur, posé par le serveur (cf. le
@@ -832,7 +970,14 @@ export default function Chat({
           // (ou un identifiant devenu inconnu) fait naître la conversation, et
           // le serveur nous dit laquelle. Sans ce recalage, le message suivant
           // repartirait sans identifiant et le client écrirait dans le vide.
-          setConversationId(data.id)
+          //
+          // MAIS seulement si l'utilisateur n'a pas, entre-temps, basculé vers
+          // un AUTRE fil existant (`conversationIdRef` porterait alors un id
+          // non vide, différent de celui qu'on vient de créer) : sinon cette
+          // annonce, tardive, ramènerait de force l'écran sur la conversation
+          // qu'il vient de quitter. La liste, elle, doit montrer le nouveau fil
+          // dans tous les cas.
+          if (conversationIdRef.current === '') definirConversationAffichee(data.id)
           setRafraichirConvs(n => n + 1)
           return
         } else if (data.type === 'titre') {
@@ -1123,6 +1268,25 @@ export default function Chat({
           // mono-modèle (stats, sources, trace — tous visent « le dernier
           // message assistant », qui est désormais celui-ci).
           const idxComparaison = comparaisonUserMsgIdxRef.current
+          // Ce tour a-t-il perdu des événements en route (cf. le filtre
+          // anti-fuite plus haut) ? Si oui, le texte accumulé côté client
+          // (`lastAssistantRef`/`messages`) n'est que la SUITE reçue depuis le
+          // retour sur ce fil — tronqué par rapport à ce que le serveur a
+          // réellement écrit. `_enregistrer_reponse` (backend) persiste
+          // AVANT d'envoyer ce `done` : le disque, lui, est déjà complet.
+          //
+          // ⚠️ PAS de repli sur `conversationIdRef.current` ici, contrairement
+          // au filtre plus haut : un `done` sans `conversation_id` (défensif —
+          // le backend en pose toujours un, cf. router.py) ne doit jamais
+          // faire disparaître la marque « suspecte » du fil réellement
+          // affiché. Un tel `done` serait attribué au fil courant par
+          // erreur, effacerait sa marque SANS jamais relire le disque, et
+          // laisserait la troncature que ce correctif vise à éliminer se
+          // réinstaller en silence.
+          const idConvDone = typeof data.conversation_id === 'string' ? data.conversation_id : ''
+          const etaitSuspecte = idConvDone !== '' && conversationsSuspectesRef.current.has(idConvDone)
+          if (idConvDone) conversationsSuspectesRef.current.delete(idConvDone)
+
           if (idxComparaison >= 0) {
             const modeleChoisi = data['modèle'] as string | undefined
             const texteChoisi = (modeleChoisi && compareAccumRef.current[modeleChoisi]) || ''
@@ -1136,59 +1300,78 @@ export default function Chat({
             })
             comparaisonUserMsgIdxRef.current = -1
             compareAccumRef.current = {}
-          }
-
-          const pending = pendingOllamaStatsRef.current
-          let finalStats: MsgStats | null = null
-          if (pending && pending.outputTokens > 0 && pending.evalMs > 0) {
-            finalStats = {
-              tps: pending.outputTokens / (pending.evalMs / 1000),
-              outputTokens: pending.outputTokens,
-              promptTokens: pending.promptTokens,
-              durationMs: pending.evalMs,
-            }
+          } else if (etaitSuspecte) {
+            // Relit le disque plutôt que de construire quoi que ce soit à
+            // partir de l'accumulation locale — stats comprises : elles ne
+            // compteraient que les tokens reçus APRÈS le retour, pas ceux
+            // générés pendant l'absence. La relecture ne les fournit pas non
+            // plus (`GET /chat/conversations/{id}` ne porte pas de débit),
+            // et c'est très bien : pas de chiffre plutôt qu'un chiffre faux.
+            //
+            // Non couvert par ce chemin : une comparaison multi-modèles
+            // interrompue de la même façon (`idxComparaison >= 0` ci-dessus
+            // prime toujours). Rare — une comparaison se résout en restant
+            // sur l'écran — et laissé pour une prochaine occurrence plutôt
+            // que d'alourdir ce correctif.
+            void chargerConversationDepuisDisque(idConvDone)
           } else {
-            const count = tokenCountRef.current
-            const dur = streamStartRef.current !== null ? (Date.now() - streamStartRef.current) / 1000 : 0
-            if (count > 0 && dur > 0) {
-              finalStats = { tps: count / dur, outputTokens: count, promptTokens: 0, durationMs: Math.round(dur * 1000) }
-            }
-          }
-          if (finalStats) {
-            const s = finalStats
-            setMessages(prev => {
-              const last = prev[prev.length - 1]
-              if (last?.role === 'assistant' && !last.thinking) return [...prev.slice(0, -1), { ...last, stats: s }]
-              return prev
-            })
-          }
-          // Métadonnées de la réponse, telles que le serveur vient de les écrire.
-          // Évite de relire la conversation entière après chaque tour, et garde
-          // l'heure affichée identique à celle du disque.
-          //
-          // `sources`/`trace_recherche` suivent le même chemin, pour la même
-          // raison : sans ce merge, ils n'apparaîtraient qu'après un F5
-          // (relecture de `GET /chat/conversations/{id}`), pas pendant la
-          // génération — les deux doivent montrer la même chose, ils lisent
-          // la même métadonnée persistée (`core/history.py`).
-          const sourcesRecues = sourcesDe(data.sources)
-          const traceRecue = etapesDe(data.trace_recherche)
-          if (data.horodatage || data['modèle'] || sourcesRecues.length || traceRecue.length) {
-            const h = data.horodatage as string | undefined
-            const mo = data['modèle'] as string | undefined
-            setMessages(prev => {
-              const dernier = prev.length - 1
-              if (dernier < 0 || prev[dernier].role !== 'assistant') return prev
-              const copie = [...prev]
-              copie[dernier] = {
-                ...copie[dernier],
-                ...(h ? { horodatage: h } : {}),
-                ...(mo ? { modele: mo } : {}),
-                ...(sourcesRecues.length ? { sources: sourcesRecues } : {}),
-                ...(traceRecue.length ? { traceRecherche: traceRecue } : {}),
+            const pending = pendingOllamaStatsRef.current
+            let finalStats: MsgStats | null = null
+            if (pending && pending.outputTokens > 0 && pending.evalMs > 0) {
+              finalStats = {
+                tps: pending.outputTokens / (pending.evalMs / 1000),
+                outputTokens: pending.outputTokens,
+                promptTokens: pending.promptTokens,
+                durationMs: pending.evalMs,
               }
-              return copie
-            })
+            } else {
+              const count = tokenCountRef.current
+              const dur = streamStartRef.current !== null ? (Date.now() - streamStartRef.current) / 1000 : 0
+              if (count > 0 && dur > 0) {
+                finalStats = { tps: count / dur, outputTokens: count, promptTokens: 0, durationMs: Math.round(dur * 1000) }
+              }
+            }
+            if (finalStats) {
+              const s = finalStats
+              setMessages(prev => {
+                const last = prev[prev.length - 1]
+                if (last?.role === 'assistant' && !last.thinking) return [...prev.slice(0, -1), { ...last, stats: s }]
+                return prev
+              })
+            }
+            // Métadonnées de la réponse, telles que le serveur vient de les
+            // écrire. Évite de relire la conversation entière après chaque
+            // tour, et garde l'heure affichée identique à celle du disque.
+            //
+            // `sources`/`trace_recherche` suivent le même chemin, pour la même
+            // raison : sans ce merge, ils n'apparaîtraient qu'après un F5
+            // (relecture de `GET /chat/conversations/{id}`), pas pendant la
+            // génération — les deux doivent montrer la même chose, ils lisent
+            // la même métadonnée persistée (`core/history.py`).
+            //
+            // Sauté dans le cas SUSPECT ci-dessus : `chargerConversationDepuisDisque`
+            // remplace `messages` en entier avec ces mêmes métadonnées déjà
+            // dessus — fusionner ici porterait sur le tableau TRONQUÉ, pour un
+            // résultat de toute façon remplacé dès que la relecture répond.
+            const sourcesRecues = sourcesDe(data.sources)
+            const traceRecue = etapesDe(data.trace_recherche)
+            if (data.horodatage || data['modèle'] || sourcesRecues.length || traceRecue.length) {
+              const h = data.horodatage as string | undefined
+              const mo = data['modèle'] as string | undefined
+              setMessages(prev => {
+                const dernier = prev.length - 1
+                if (dernier < 0 || prev[dernier].role !== 'assistant') return prev
+                const copie = [...prev]
+                copie[dernier] = {
+                  ...copie[dernier],
+                  ...(h ? { horodatage: h } : {}),
+                  ...(mo ? { modele: mo } : {}),
+                  ...(sourcesRecues.length ? { sources: sourcesRecues } : {}),
+                  ...(traceRecue.length ? { traceRecherche: traceRecue } : {}),
+                }
+                return copie
+              })
+            }
           }
           // La trace TRANSITOIRE a fait son office (elle s'est affichée
           // pendant la recherche) ; la trace définitive vit désormais sur le
@@ -1205,7 +1388,10 @@ export default function Chat({
           setStreamStats(null)
           tokenCountRef.current = 0
           streamStartRef.current = null
-          onAssistantDone?.(lastAssistantRef.current)
+          // Pas de lecture à voix haute d'un texte TRONQUÉ : dans le cas
+          // suspect, `lastAssistantRef` ne porte que la suite reçue après le
+          // retour sur ce fil, jamais la réponse complète.
+          if (!etaitSuspecte) onAssistantDone?.(lastAssistantRef.current)
           lastAssistantRef.current = ''
           inPipelineRef.current = false
           cancelledRef.current = false
@@ -1277,21 +1463,20 @@ export default function Chat({
     repriseTenteeRef.current = true
     void (async () => {
       const id = await reprendreAncienChat()
-      if (id) setConversationId(id)
+      if (id) definirConversationAffichee(id)
     })()
-  }, [conversationId, setConversationId])
+  }, [conversationId, definirConversationAffichee])
 
   /**
-   * Charge les messages d'une conversation depuis le DISQUE.
+   * Charge les messages d'une conversation depuis le DISQUE, à chaque
+   * bascule de fil.
    *
-   * C'est ici que se joue la correction du bug silencieux : avant, l'écran
-   * repartait de `localStorage` et le backend d'une liste vide. Les deux lisent
-   * désormais le même fichier.
-   *
-   * Toutes les frontières `.json()` sont normalisées (`liste`, `texte`) — un 401
-   * avant appairage ou un 404 sur une conversation supprimée ailleurs rendent un
-   * corps qui n'a pas de champ `messages`, et un `as` le laisserait passer
-   * jusqu'au `.map()` du rendu.
+   * C'est ici que se joue la correction du bug silencieux d'origine : avant,
+   * l'écran repartait de `localStorage` et le backend d'une liste vide. Les
+   * deux lisent désormais le même fichier — via `chargerConversationDepuisDisque`,
+   * partagée avec le handler `done` (cf. sa déclaration plus haut), qui
+   * revérifie lui-même `conversationIdRef` avant d'écrire quoi que ce soit :
+   * plus besoin du drapeau `annule` d'une fermeture d'effet ici.
    */
   useEffect(() => {
     if (!conversationId) {
@@ -1299,52 +1484,33 @@ export default function Chat({
       comparaisonUserMsgIdxRef.current = -1
       return
     }
-    let annule = false
-    void (async () => {
-      try {
-        const res = await apiFetch(`${API}/chat/conversations/${conversationId}`)
-        if (annule) return
-        if (res.status === 404) {
-          // Supprimée depuis un autre onglet : on repart à vide plutôt que
-          // d'afficher une conversation fantôme.
-          setConversationId('')
-          setMessages([])
-          comparaisonUserMsgIdxRef.current = -1
-          return
-        }
-        if (!res.ok) return
-        const d = await res.json() as Record<string, unknown>
-        if (annule) return
-        setMessages(liste<Record<string, unknown>>(d.messages).map(m => {
-          const role = texte(m.role) === 'assistant' ? 'assistant' as const : 'user' as const
-          const horodatage = texte(m['horodatage'])
-          const modele = texte(m['modèle'])
-          const sources = sourcesDe(m['sources'])
-          const traceRecherche = etapesDe(m['trace_recherche'])
-          // Les champs ABSENTS restent absents : `texte()` rend `''`, qu'on ne
-          // recopie pas. Un `horodatage: ''` se distinguerait mal d'une vraie
-          // valeur vide, et l'interface doit pouvoir dire « non disponible ».
-          return {
-            role,
-            content: texte(m.content),
-            ...(horodatage ? { horodatage } : {}),
-            ...(modele ? { modele } : {}),
-            ...(sources.length ? { sources } : {}),
-            ...(traceRecherche.length ? { traceRecherche } : {}),
-          }
-        }))
-      } catch { /* backend qui démarre : la liste reste vide */ }
-    })()
-    return () => { annule = true }
-  }, [conversationId, setConversationId])
+    void chargerConversationDepuisDisque(conversationId)
+  }, [conversationId, chargerConversationDepuisDisque])
 
   const ouvrirConversation = useCallback((id: string) => {
     if (id === conversationId) return
-    setConversationId(id)
+    definirConversationAffichee(id)
     setMessages([])          // évite d'afficher l'ancien fil pendant le chargement
     setStreaming(false)
     comparaisonUserMsgIdxRef.current = -1
-  }, [conversationId, setConversationId])
+    // Tout état attaché au STREAMING du fil qu'on QUITTE doit être remis à
+    // zéro ici : un `done`/`error` qui arrive plus tard pour cet ancien fil
+    // sera de toute façon filtré (cf. `ws.onmessage`), mais sans ce nettoyage
+    // ces compteurs/indicateurs resteraient visuellement collés au nouveau
+    // fil qu'on vient d'ouvrir (pipeline « en cours » fantôme, stats d'un
+    // autre tour, image « en cours d'analyse » d'une conversation qu'on ne
+    // regarde plus).
+    tokenCountRef.current = 0
+    streamStartRef.current = null
+    pendingOllamaStatsRef.current = null
+    setStreamStats(null)
+    inPipelineRef.current = false
+    pipelineUserMsgIdxRef.current = -1
+    compareAccumRef.current = {}
+    setTraceEnCours([])
+    setTraceEnCoursOuverte(false)
+    setVisionAnalyse(null)
+  }, [conversationId, definirConversationAffichee])
 
   /**
    * Nouvelle conversation : on la crée EXPLICITEMENT côté serveur.
@@ -1356,12 +1522,23 @@ export default function Chat({
   const nouvelleConversation = useCallback(async () => {
     try {
       const id = await creerConversation()
-      setConversationId(id)
+      definirConversationAffichee(id)
       setMessages([])
       comparaisonUserMsgIdxRef.current = -1
       setRafraichirConvs(n => n + 1)
+      // Même nettoyage qu'`ouvrirConversation`, cf. son commentaire.
+      tokenCountRef.current = 0
+      streamStartRef.current = null
+      pendingOllamaStatsRef.current = null
+      setStreamStats(null)
+      inPipelineRef.current = false
+      pipelineUserMsgIdxRef.current = -1
+      compareAccumRef.current = {}
+      setTraceEnCours([])
+      setTraceEnCoursOuverte(false)
+      setVisionAnalyse(null)
     } catch { /* le backend répondra au premier message : rien de bloquant */ }
-  }, [setConversationId])
+  }, [definirConversationAffichee])
 
   /**
    * Suit la position de scroll EN CONTINU, pas seulement entre deux rendus

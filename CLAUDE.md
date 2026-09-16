@@ -169,6 +169,7 @@ python test_module_states.py      # deux états des modules + migration (§3.3)
 python test_arbre_modules_deterministe.py  # l'arbre de _test_env ne dépend pas du poste (§3.5)
 python test_web_search.py         # recherche web, HTTP mocké
 python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
+python test_chat_conversation_id_trames.py  # chaque trame /ws/chat porte conversation_id (§3.6)
 python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
 python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
 python test_voice_indisponible.py # voix absente proprement (paquet, pas modèle) — ARM64
@@ -1019,6 +1020,47 @@ par `startswith` de chaînes (contournable par un dossier frère `modules-autre/
 Référence correcte : `codeagent._safe_path`, couverte par `test_safe_path.py`.
 
 ### 3.6 SSE et WebSocket
+
+**IMPÉRATIF — chaque trame de `/ws/chat` porte `conversation_id`.** Une seule
+connexion WebSocket sert TOUTES les conversations d'un onglet (voulu — on ne
+la ferme/rouvre pas à chaque bascule de fil), donc rien dans le protocole
+n'identifiait, avant le 2026-09-15, à quel fil appartenait un `token` : basculer
+vers une conversation B pendant qu'une conversation A générait encore laissait
+le texte de A s'accumuler dans l'écran de B. Chaque
+`websocket.send_text(json.dumps({...}))` de `modules/chat/router.py` porte
+donc `conversation_id`, capturé au moment de l'émission (jamais relu depuis un
+état mutable) ; le frontend le compare à une ref synchrone du fil affiché
+(`conversationIdRef`, `Component.tsx`) et ignore tout événement qui ne
+correspond pas, AVANT toute mutation d'état — un `conversation_id` absent ou
+vide reste permissif (appliqué quand même), pour ne jamais faire disparaître
+en silence un événement dont le serveur ne peut identifier le fil avec
+certitude. Verrouillé côté serveur par `test_chat_conversation_id_trames.py`,
+côté client par `frontend/src/modules/chat/Component.conversation.test.tsx`
+(fuite, troncature au retour avant `done`, cohérence des stats).
+
+Non couvert — deux limites, **ni l'une ni l'autre ne réintroduit de fuite
+entre conversations** :
+
+- **Une comparaison multi-modèles abandonnée par navigation reste orpheline.**
+  `comparaisonUserMsgIdxRef` est remis à `-1` par `ouvrirConversation`/
+  `nouvelleConversation` à CHAQUE changement de fil — défaut **préexistant** à
+  ce correctif, pas introduit par lui. Conséquence : quitter un fil en pleine
+  comparaison puis y revenir ne laisse plus aucun index valide, donc le
+  panneau (jamais persisté sur disque) disparaît à la relecture, les
+  `compare_token` qui continuent d'arriver sont silencieusement ignorés (déjà
+  gardés par `if (!bloc...) return prev` avant ce correctif), et le bouton de
+  résolution (`compare_choix`) n'existe plus. Une comparaison orpheline et
+  perdue, PAS un texte tronqué affiché comme complet, et aucune fuite : le cas
+  `idxComparaison >= 0 ET etaitSuspecte` (dans le handler `done`) est
+  structurellement inatteignable, puisque toute bascule de fil remet l'index
+  à `-1` avant qu'aucun événement ne puisse être marqué suspect pour ce fil.
+- **Une course rare, celle-ci introduite par la relecture disque de ce
+  correctif** : une action prise (nouveau message, nouvelle comparaison) dans
+  la fenêtre étroite où une relecture déclenchée par un `done` suspect est
+  encore en vol peut voir son ajout optimiste écrasé par le résultat (périmé)
+  de cette relecture. Toujours la MÊME conversation ; le tour suivant (ses
+  propres événements) répare l'affichage, et le message est de toute façon
+  déjà persisté côté serveur — jamais perdu, juste retardé à l'écran.
 
 **Ce que `LLMEngine.stream()` yielde** : du `str` pour le texte, et des **dicts
 sentinelles** pour le reste — `{"__stats__": True, …}` (tokens et durées) et
