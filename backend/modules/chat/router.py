@@ -28,10 +28,12 @@ from core import vision_chat
 from core.runtime import (
     SSE_HEADERS,
     consolidation_engine,
+    construire_skills_personnalises,
     history_engine,
     llm,
     memory,
     models_registry,
+    normaliser_prefixes,
     normaliser_tool_calling,
     orchestrator,
     provider_of as _provider_of,
@@ -1039,6 +1041,13 @@ async def ws_chat(websocket: WebSocket):
             # n'a pas la clé, et son absence doit valoir « activé » — le
             # comportement d'avant ce réglage.
             raisonnement = bool(ctx.get("raisonnement", True))
+            # Réglage PERSISTANT (Réglages › Préfixes) : triggers des 5
+            # commandes intégrées (renommables/désactivables, comportement
+            # réel inchangé) + skills personnalisés — lu ici comme
+            # `tool_calling`, jamais reçu dans le message. Utilisé plus bas
+            # pour `@historique` (renommé) et pour la détection des préfixes
+            # personnalisés.
+            _prefixes = normaliser_prefixes(ctx.get("prefixes"))
             # Pilotage utilisateur du tool-calling natif (Réglages › Tool
             # calling) — réglage PERSISTANT (`core.memory._CLES_PERSISTANTES`),
             # donc lu ici comme `raisonnement`, jamais reçu dans le message.
@@ -1048,16 +1057,27 @@ async def ws_chat(websocket: WebSocket):
             # (`modules/settings/router.py`), sans coût notable sur ce chemin
             # chaud (fusion pure Python, aucun I/O ni appel LLM).
             _tool_calling = normaliser_tool_calling(ctx.get("tool_calling"))
+            # Skills personnalisés AGENTIQUES (Réglages › Préfixes) : même
+            # sous-registre dynamique quel que soit l'état de l'interrupteur
+            # général — c'est `outils_actifs` juste en dessous qui les
+            # neutralise TOUS d'un coup (avec les 3 natifs) quand
+            # `tool_calling.enabled` est faux, pas un second interrupteur ici.
+            _skills_perso = construire_skills_personnalises(
+                [p for p in _prefixes["personnalises"] if p["agentique"]]
+            )
             if _tool_calling["enabled"]:
                 outils_actifs = [
                     nom for nom, reglage in _tool_calling["skills"].items() if reglage["enabled"]
-                ]
+                ] + list(_skills_perso)
             else:
                 outils_actifs = None
             budgets_override = {
                 nom: reglage["budget"] for nom, reglage in _tool_calling["skills"].items()
                 if "budget" in reglage
             }
+            budgets_override.update(
+                {nom: entree["budget_max"] for nom, entree in _skills_perso.items()}
+            )
             _last_model[0] = model_override or llm._model
 
             _req_start = time.time()
@@ -1114,10 +1134,17 @@ async def ws_chat(websocket: WebSocket):
                 }))
             _derniere_conv[0] = conv_id
 
-            # @historique skill
+            # @historique skill — trigger CONFIGURABLE (Réglages › Préfixes,
+            # `_prefixes["integres"]["historique"]`), comportement réel
+            # strictement inchangé : seul le littéral testé/retiré change,
+            # jamais ce qui se passe une fois déclenché. `enabled=False` fait
+            # redevenir le déclencheur (ancien ou nouveau nom) du texte
+            # normal, sans aucune recherche.
             hist_ctx = ""
-            if "@historique" in user_text:
-                hist_query = user_text.replace("@historique", "").strip() or user_text
+            _trig_historique = _prefixes["integres"]["historique"]
+            _decl_historique = _trig_historique["trigger"] or ""
+            if _trig_historique["enabled"] and _decl_historique and _decl_historique in user_text:
+                hist_query = user_text.replace(_decl_historique, "").strip() or user_text
                 hist_results = await loop.run_in_executor(
                     None, history_engine.search_history, hist_query
                 )
@@ -1127,13 +1154,43 @@ async def ws_chat(websocket: WebSocket):
                         for r in hist_results
                     )
                     hist_ctx = f"Extraits de conversations précédentes pertinentes :\n{extraits}"
-                user_text = hist_query if hist_query != user_text else user_text.replace("@historique", "").strip()
+                user_text = hist_query if hist_query != user_text else user_text.replace(_decl_historique, "").strip()
                 user_text = user_text or msg["content"]
+
+            # ── Préfixes personnalisés (déclenchement manuel) ─────────────────
+            #
+            # Plusieurs peuvent se déclencher sur le même message — boucle,
+            # jamais un seul `if`/`elif` (même esprit que le `while` côté
+            # client pour les 4 flags structurés). AVANT l'écriture du
+            # message sur le disque (juste en dessous) : c'est le texte
+            # réellement soumis au modèle qui doit être persisté, pas celui
+            # que l'utilisateur a tapé avec le déclencheur encore dedans —
+            # même raison que pour `@historique` ci-dessus.
+            #
+            # Trigger dupliqué (entre deux personnalisés, ou avec
+            # `@historique` déjà traité au-dessus) : réglé PAR L'ORDRE DE
+            # TRAITEMENT, sans dédoublonnage explicite — le premier bloc qui
+            # trouve son trigger dans `user_text` le RETIRE du texte, donc un
+            # second objet portant le même trigger littéral ne le retrouve
+            # plus dans ce qui reste. Priorité au premier dans l'ordre
+            # (cf. `core.memory.normaliser_prefixes`, qui documente le même
+            # choix côté validation).
+            instructions_perso: list[tuple[str, str]] = []
+            for _obj in _prefixes["personnalises"]:
+                if not _obj["prefixe_actif"]:
+                    continue
+                _trig = _obj["trigger"] or ""
+                if not _trig or _trig not in user_text:
+                    continue
+                _nouveau = user_text.replace(_trig, "").strip()
+                user_text = _nouveau or user_text
+                instructions_perso.append((_obj["nom"], _obj["instruction"]))
 
             # Le message de l'utilisateur entre sur le DISQUE ici, et pas plus
             # tôt : son texte a pu être réécrit juste au-dessus (`@historique`
-            # retire sa balise), et c'est le texte réellement soumis au modèle qui
-            # doit être conservé — sinon le tour suivant relit une question que
+            # et les préfixes personnalisés retirent leur déclencheur), et
+            # c'est le texte réellement soumis au modèle qui doit être
+            # conservé — sinon le tour suivant relit une question que
             # personne n'a posée.
             #
             # Cet ajout rend la conversation à jour, donc l'historique du prompt
@@ -1355,6 +1412,11 @@ async def ws_chat(websocket: WebSocket):
                 sys_parts.append(f"[INSTRUCTION DE CETTE CONVERSATION]\n{instruction_conv}")
             if hist_ctx:
                 sys_parts.append(hist_ctx)
+            # Un bloc PAR préfixe personnalisé déclenché — traçable si
+            # plusieurs se cumulent sur le même message, plutôt qu'un texte
+            # fusionné où on ne distinguerait plus qui a injecté quoi.
+            for _nom_perso, _instruction_perso in instructions_perso:
+                sys_parts.append(f"[INSTRUCTION PERSONNALISÉE — {_nom_perso}]\n{_instruction_perso}")
             if web_ctx:
                 sys_parts.append(web_ctx)
             if chunks:
@@ -1585,6 +1647,13 @@ async def ws_chat(websocket: WebSocket):
                         # tool-calling.
                         outils=outils_actifs,
                         budgets_override=budgets_override,
+                        # Skills personnalisés AGENTIQUES (Réglages ›
+                        # Préfixes) — sous-registre calculé plus haut avec
+                        # `outils_actifs`/`budgets_override`, cf. leurs noms
+                        # dans `_skills_perso`. `outils_actifs=None` (interrupteur
+                        # général coupé) les neutralise déjà tous : pas besoin
+                        # d'un second `if` ici.
+                        skills_dynamiques=_skills_perso,
                         on_etape_recherche=_on_etape_recherche,
                         rang_web_existant=len(web_resultats),
                     ):

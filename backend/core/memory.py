@@ -76,6 +76,42 @@ _CONTEXT_DEFAULT = {
             "recherche_approfondie": {"enabled": True, "budget": 4},
         },
     },
+    # Chantier « préfixes/skills personnalisés », phase A (fondations backend
+    # seules — cf. le rapport de cette itération). PERSISTE au redémarrage
+    # (`_CLES_PERSISTANTES` plus bas), même famille que `tool_calling` : un
+    # utilisateur qui renomme/désactive un déclencheur ne s'attend pas à le
+    # retrouver au défaut après un redémarrage.
+    #
+    # `integres` couvre les 5 commandes historiquement en dur (4 flags
+    # structurés détectés côté client — `Component.tsx` — plus `@historique`,
+    # détecté ici) : elles deviennent RENOMMABLES et DÉSACTIVABLES, mais leur
+    # comportement réel ne change pas d'une ligne. `personnalises` est la
+    # liste, VIDE par défaut, des objets créés par l'utilisateur — un seul
+    # objet porte à la fois la possibilité d'un déclenchement MANUEL
+    # (`prefixe_actif` + `trigger`) et/ou AGENTIQUE (`agentique`, exposé au
+    # tool-calling natif, cf. `core.llm.construire_skills_personnalises`) ;
+    # les deux cases sont indépendantes, aucune, une seule ou les deux peuvent
+    # être cochées.
+    "prefixes": {
+        "integres": {
+            "cours":      {"trigger": "@cours",      "enabled": True},
+            "strict":     {"trigger": "@strict",     "enabled": True},
+            "web":        {"trigger": "@web",        "enabled": True},
+            "image":      {"trigger": "@image",      "enabled": True},
+            "historique": {"trigger": "@historique", "enabled": True},
+        },
+        "personnalises": [],
+        # Chaque élément de `personnalises`, une fois passé par
+        # `normaliser_prefixes` :
+        # {"id": str, "nom": str, "trigger": str | None, "description": str,
+        #  "instruction": str, "prefixe_actif": bool, "agentique": bool,
+        #  "budget": int}
+        # `trigger` peut être `None` si `prefixe_actif` est faux — pas besoin
+        # d'un trigger pour un skill purement agentique. `budget` ne compte
+        # que si `agentique` est vrai (mêmes bornes que `recherche_approfondie`
+        # ci-dessus, [1, 10] — un skill personnalisé agentique peut, comme les
+        # skills natifs, être rappelé plusieurs fois par tour).
+    },
 }
 
 #: Bornes du curseur de budget `recherche_approfondie` — un réglage hors de cet
@@ -104,7 +140,15 @@ _BUDGET_RECHERCHE_APPROFONDIE_MAX = 10
 #: doit lui être rendu, mais un interrupteur de sécurité/coût qui ne doit
 #: jamais se réinitialiser en silence (cf. le commentaire sur
 #: `_CONTEXT_DEFAULT["tool_calling"]`).
-_CLES_PERSISTANTES = ("instruction_générale", "tool_calling")
+_CLES_PERSISTANTES = ("instruction_générale", "tool_calling", "prefixes")
+
+#: Budget par défaut d'un skill personnalisé AGENTIQUE dont l'utilisateur n'a
+#: rien réglé — même valeur que `recherche_approfondie`, pas de raison
+#: particulière de diverger. Non lu par `core.llm` (aucun cycle à éviter ici,
+#: contrairement à `_MAX_APPELS_RECHERCHE_APPROFONDIE`) : ce défaut n'existe
+#: QUE côté persistance, `core.llm.construire_skills_personnalises` reçoit
+#: toujours un budget déjà résolu.
+_BUDGET_SKILL_PERSONNALISE_DEFAUT = 4
 
 
 def normaliser_tool_calling(valeur) -> dict:
@@ -161,6 +205,139 @@ def normaliser_tool_calling(valeur) -> dict:
 
     return {"enabled": bool(valeur.get("enabled", defaut["enabled"])), "skills": skills}
 
+
+def normaliser_prefixes(valeur) -> dict:
+    """Fusionne/valide `valeur` (un `prefixes` partiel venu du disque ou d'un
+    `PATCH /context/settings`) — même philosophie que `normaliser_tool_calling`,
+    jamais un remplacement wholesale, jamais une exception.
+
+    **`integres`** : fusion clé par clé sur le défaut, comme les `skills` de
+    `tool_calling`. Un `trigger` vide/absent/non-chaîne retombe sur le
+    littéral historique (`@cours`, `@web`, …) plutôt que de laisser un
+    déclencheur inatteignable — un intégré SANS trigger casserait
+    silencieusement la commande, à la différence d'un personnalisé purement
+    agentique, pour qui l'absence de trigger est un choix valide (cf.
+    ci-dessous). Une clé intégrée absente de `valeur` (poste neuf, ou fichier
+    écrit avant l'ajout d'une 6e commande un jour) réapparaît au défaut,
+    activée.
+
+    **`personnalises`** : liste d'objets bien formés, un élément mal formé
+    étant SILENCIEUSEMENT écarté — jamais de quoi faire planter la
+    restauration au démarrage ou un `PATCH`. « Bien formé » se juge sur les
+    CASES à cocher, pas sur la présence d'un `trigger` :
+
+    - `prefixe_actif` faux ET `agentique` faux → l'objet ne fait RIEN, écarté ;
+    - `prefixe_actif` vrai mais `trigger` vide → prétend être déclenchable à
+      la main sans moyen de l'être, écarté ;
+    - `instruction` vide → rien à injecter dans le prompt ni à révéler au
+      modèle, écarté dans tous les cas ;
+    - `agentique` vrai mais `description` vide → le schéma d'outil exposé au
+      modèle serait sans description, écarté (une `description` vide est en
+      revanche TOLÉRÉE pour un préfixe purement manuel : `description` ne sert
+      qu'à documenter le skill/l'afficher, jamais injectée dans le prompt) ;
+    - `id`/`nom` absents ou non-chaînes → écarté (nécessaires respectivement à
+      l'identification côté frontend et au libellé injecté `[INSTRUCTION
+      PERSONNALISÉE — {nom}]`, `modules/chat/router.py`).
+
+    `budget` est clampé comme celui de `recherche_approfondie` (mêmes bornes),
+    jamais rejeté ; ignoré en pratique si `agentique` est faux, mais toujours
+    stocké normalisé — un utilisateur qui coche `agentique` plus tard retrouve
+    la valeur qu'il avait réglée, pas un retour silencieux au défaut.
+
+    **Trigger dupliqué** (entre deux personnalisés, ou entre un personnalisé
+    et un intégré) : PAS de dédoublonnage explicite ici — cette fonction ne
+    fait que VALIDER la forme, elle ne connaît pas l'ordre de déclenchement.
+    La priorité au premier dans l'ordre de la liste est une conséquence
+    NATURELLE du traitement séquentiel côté `modules/chat/router.py` : le
+    premier bloc qui trouve son trigger dans `user_text` le RETIRE du texte,
+    donc un second objet portant le même trigger littéral ne le retrouve plus
+    dans ce qui reste (`@historique` est toujours traité avant la boucle des
+    personnalisés — cf. ce module). Documenté ici plutôt qu'implémenté deux
+    fois.
+
+    ⚠️ Ne JAMAIS rendre `_CONTEXT_DEFAULT["prefixes"]` ni un de ses sous-dicts
+    tel quel : `MemoryEngine.__init__` fait un `dict(_CONTEXT_DEFAULT)`
+    SHALLOW (un seul niveau) — `integres["cours"]` par exemple resterait le
+    MÊME objet partagé par tous les appelants si on ne reconstruisait pas
+    chaque entrée. Chaque sous-dict rendu ici est neuf.
+    """
+    defaut = _CONTEXT_DEFAULT["prefixes"]
+    if not isinstance(valeur, dict):
+        valeur = {}
+
+    integres_recus = valeur.get("integres")
+    if not isinstance(integres_recus, dict):
+        integres_recus = {}
+    integres: dict = {}
+    for nom, reglage_defaut in defaut["integres"].items():
+        recu = integres_recus.get(nom)
+        recu = recu if isinstance(recu, dict) else {}
+        trigger_recu = recu.get("trigger")
+        trigger = (
+            trigger_recu.strip()
+            if isinstance(trigger_recu, str) and trigger_recu.strip()
+            else reglage_defaut["trigger"]
+        )
+        integres[nom] = {
+            "trigger": trigger,
+            "enabled": bool(recu.get("enabled", reglage_defaut["enabled"])),
+        }
+
+    personnalises_recus = valeur.get("personnalises")
+    if not isinstance(personnalises_recus, list):
+        personnalises_recus = []
+    personnalises: list[dict] = []
+    for item in personnalises_recus:
+        if not isinstance(item, dict):
+            continue
+        id_ = item.get("id")
+        if not isinstance(id_, str) or not id_.strip():
+            continue
+        nom = item.get("nom")
+        if not isinstance(nom, str) or not nom.strip():
+            continue
+        instruction = item.get("instruction")
+        instruction = instruction.strip() if isinstance(instruction, str) else ""
+        if not instruction:
+            continue
+        prefixe_actif = bool(item.get("prefixe_actif"))
+        agentique = bool(item.get("agentique"))
+        if not prefixe_actif and not agentique:
+            continue
+        trigger_recu = item.get("trigger")
+        trigger = (
+            trigger_recu.strip()
+            if isinstance(trigger_recu, str) and trigger_recu.strip()
+            else None
+        )
+        if prefixe_actif and not trigger:
+            continue
+        description = item.get("description")
+        description = description.strip() if isinstance(description, str) else ""
+        if agentique and not description:
+            continue
+        try:
+            budget = int(item.get("budget", _BUDGET_SKILL_PERSONNALISE_DEFAUT))
+        except (TypeError, ValueError):
+            budget = _BUDGET_SKILL_PERSONNALISE_DEFAUT
+        budget = max(
+            _BUDGET_RECHERCHE_APPROFONDIE_MIN,
+            min(_BUDGET_RECHERCHE_APPROFONDIE_MAX, budget),
+        )
+        personnalises.append({
+            "id": id_.strip(),
+            "nom": nom.strip(),
+            "trigger": trigger,
+            "description": description,
+            "instruction": instruction,
+            "prefixe_actif": prefixe_actif,
+            "agentique": agentique,
+            "budget": budget,
+        })
+
+    return {"integres": integres, "personnalises": personnalises}
+
+
 # Le cache LRU des sections retenues (clé : `message[:100]`) a disparu avec
 # l'appel LLM qu'il servait à amortir : `retrieve_relevant_context` ne dépend plus
 # du message, il n'y a donc plus rien à mémoriser.
@@ -212,6 +389,11 @@ class MemoryEngine:
                 # `ancien` sans cette clé (poste neuf) : rend alors une copie
                 # fraîche du défaut, jamais l'objet `_CONTEXT_DEFAULT` partagé.
                 contexte[cle] = normaliser_tool_calling(valeur)
+            elif cle == "prefixes":
+                # Même raisonnement que `tool_calling` juste au-dessus : un
+                # dict, jamais une chaîne, donc le filtre `isinstance(str)`
+                # ci-dessous l'ignorerait en silence sans ce cas dédié.
+                contexte[cle] = normaliser_prefixes(valeur)
             elif isinstance(valeur, str) and valeur:
                 contexte[cle] = valeur
         self._write(self._context_path, contexte)

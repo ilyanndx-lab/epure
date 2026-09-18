@@ -42,6 +42,7 @@ from core.runtime import (
     llm,
     memory,
     models_registry,
+    normaliser_prefixes,
     normaliser_tool_calling,
     orchestrator,
     piper,
@@ -322,7 +323,7 @@ async def context_get():
 async def context_settings(request: Request):
     body = await request.json()
     allowed = {"modèle_actif", "strict_mode", "instruction_générale", "consolidation_cloud",
-               "orchestrateur_actif", "raisonnement", "tool_calling"}
+               "orchestrateur_actif", "raisonnement", "tool_calling", "prefixes"}
     filtered = {k: v for k, v in body.items() if k in allowed}
     if "tool_calling" in filtered:
         # Normalise/clamp AVANT d'écrire — même fonction que la restauration
@@ -333,6 +334,9 @@ async def context_settings(request: Request):
         # même par-dessus le défaut, donc un corps partiel ou mal formé ne
         # casse pas l'écriture — il retombe sur le défaut clé par clé.
         filtered["tool_calling"] = normaliser_tool_calling(filtered["tool_calling"])
+    if "prefixes" in filtered:
+        # Même garantie, même raison — cf. `core.memory.normaliser_prefixes`.
+        filtered["prefixes"] = normaliser_prefixes(filtered["prefixes"])
     memory.update_context(**filtered)
     return {"ok": True}
 

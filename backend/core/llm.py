@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable, Generator, Optional
@@ -553,6 +554,84 @@ def skill_citable(nom: str) -> bool:
     return bool(_SKILLS.get(nom, {}).get("citable"))
 
 
+def _assainir_nom_skill(nom: str) -> str:
+    """`nom` humain (celui que l'utilisateur tape dans Réglages › Préfixes) →
+    identifiant Ollama valide pour ``function.name`` : minuscules, underscores,
+    rien d'autre. Peut rendre une chaîne VIDE (un `nom` fait uniquement de
+    ponctuation/emojis) — à l'appelant de l'écarter, jamais d'exposer un nom
+    vide au modèle."""
+    return re.sub(r"[^a-z0-9]+", "_", nom.strip().lower()).strip("_")
+
+
+def construire_executor_skill_personnalise(instruction: str) -> Callable:
+    """Fabrique l'exécuteur d'un skill personnalisé AGENTIQUE — signature
+    uniforme du registre (``(arguments, on_etape=None, rang_de_depart=0) ->
+    tuple[str, list]``), mais qui IGNORE ses arguments : un skill personnalisé
+    n'a pas de paramètre métier (son schéma expose ``parameters: {}``, cf.
+    `construire_skills_personnalises`).
+
+    Il n'exécute rien — il RÉVÈLE au modèle, en réponse à son propre appel
+    d'outil, le texte d'instruction que l'utilisateur a écrit pour ce
+    déclenchement précis. C'est l'équivalent AGENTIQUE du déclenchement manuel
+    par préfixe (le modèle décide, lui, du moment) : ni recherche, ni accès
+    réseau, ni résultat structuré — `resultats` est toujours `[]`, donc ce
+    skill ne peut jamais alimenter `web_resultats` (cf. `skill_citable`, qui
+    rend `False` pour un nom absent de `_SKILLS` : un skill personnalisé n'y
+    est jamais, par construction)."""
+    def executor(arguments, on_etape=None, rang_de_depart=0):
+        return instruction, []
+    return executor
+
+
+def construire_skills_personnalises(objets: list[dict]) -> dict[str, dict]:
+    """Sous-registre DYNAMIQUE, au format de `_SKILLS`, pour les skills
+    personnalisés AGENTIQUES actifs de CE tour — à fusionner par-dessus
+    `_SKILLS` par l'appelant (`stream`/`_stream_ollama`), jamais à l'intérieur :
+    `_SKILLS` reste le registre STATIQUE des 3 skills natifs.
+
+    `objets` : des éléments déjà normalisés de
+    `core.memory.normaliser_prefixes(...)["personnalises"]`, filtrés sur
+    `agentique` par l'appelant (`modules/chat/router.py`) — cette fonction ne
+    connaît pas ce filtre et ne le réapplique pas.
+
+    Collisions de nom assaini, réglées PAR CONSTRUCTION, jamais par un
+    remplacement qui masquerait un skill existant :
+
+    - priorité ABSOLUE aux 3 skills NATIFS de `_SKILLS` — un nom personnalisé
+      qui s'assainirait en ``"web_search"`` ne doit jamais pouvoir se
+      substituer à la vraie recherche web ;
+    - entre deux personnalisés, priorité au premier dans l'ORDRE de `objets`
+      — même logique que la priorité de trigger documentée dans
+      `core.memory.normaliser_prefixes` ;
+    - un nom assaini VIDE (`nom` réduit à de la ponctuation/des emojis) est
+      écarté : un ``function.name`` vide serait un schéma malformé envoyé au
+      modèle.
+    """
+    registre: dict[str, dict] = {}
+    for obj in objets:
+        nom_technique = _assainir_nom_skill(obj.get("nom", ""))
+        if not nom_technique or nom_technique in registre or nom_technique in _SKILLS:
+            continue
+        registre[nom_technique] = {
+            "schema": {
+                "type": "function",
+                "function": {
+                    "name": nom_technique,
+                    "description": obj.get("description", ""),
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            "executor": construire_executor_skill_personnalise(obj.get("instruction", "")),
+            # `obj["budget"]` est déjà un entier clampé — `normaliser_prefixes`
+            # (core/memory.py) le garantit pour tout élément qui survit à la
+            # validation. Le défaut ci-dessous ne sert qu'à un appelant qui
+            # passerait un dict construit à la main (tests).
+            "budget_max": int(obj.get("budget", 4)),
+            "citable": False,
+        }
+    return registre
+
+
 #: Registre des skills exposables au tool-calling natif. Chaque entrée porte
 #: son schéma, son exécuteur (signature uniforme, cf. les fonctions
 #: ci-dessus), son plafond d'invocations propre — les budgets sont
@@ -639,6 +718,7 @@ class LLMEngine:
                max_tokens: Optional[int] = None, raisonnement: bool = True,
                outils: Optional[list[str]] = None,
                budgets_override: Optional[dict[str, int]] = None,
+               skills_dynamiques: Optional[dict[str, dict]] = None,
                on_etape_recherche: Optional[Callable[[dict], None]] = None,
                rang_web_existant: int = 0) -> Generator:
         """Flux de génération. ``raisonnement=False`` coupe la réflexion du modèle.
@@ -664,6 +744,14 @@ class LLMEngine:
         skill absent de `budgets_override` garde son plafond par défaut. C'est
         un override d'APPEL, pas une propriété statique du registre : `_SKILLS`
         lui-même n'en sait rien.
+
+        ``skills_dynamiques`` : sous-registre construit par l'appelant via
+        `construire_skills_personnalises` (skills personnalisés AGENTIQUES,
+        cf. `core.memory.normaliser_prefixes`) — même format que `_SKILLS`,
+        fusionné PAR-DESSUS pour cet appel seulement, `_SKILLS` restant
+        prioritaire en cas de collision de nom (cf. `_stream_ollama`).
+        ``None`` (le défaut, tous les appelants sauf le chemin direct du chat)
+        ne change rien : seuls les 3 skills natifs sont jamais exposés.
 
         **Le défaut est ``True``, et c'est le comportement historique** : les
         modèles qui pensent pensent, ceux qui ne pensent pas ne changent pas.
@@ -699,6 +787,7 @@ class LLMEngine:
             yield from self._stream_ollama(
                 messages, m, max_tokens, raisonnement=raisonnement,
                 outils=outils, budgets_override=budgets_override,
+                skills_dynamiques=skills_dynamiques,
                 on_etape_recherche=on_etape_recherche,
                 rang_web_existant=rang_web_existant,
             )
@@ -881,6 +970,7 @@ class LLMEngine:
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None,
                        raisonnement: bool = True, outils: Optional[list[str]] = None,
                        budgets_override: Optional[dict[str, int]] = None,
+                       skills_dynamiques: Optional[dict[str, dict]] = None,
                        on_etape_recherche: Optional[Callable[[dict], None]] = None,
                        rang_web_existant: int = 0) -> Generator:
         """Flux Ollama : texte (``str``), raisonnement et stats (dicts sentinelles).
@@ -949,7 +1039,18 @@ class LLMEngine:
         seul tour, byte pour byte comme avant ce paramètre — aucune sonde de
         capacité, aucun ``tools=`` posé.
 
-        ``outils=[...]`` filtre d'abord aux noms présents dans ``_SKILLS``
+        **``registre`` — fusion locale, jamais une mutation de ``_SKILLS``** :
+        ``registre = {**skills_dynamiques, **_SKILLS}`` avant tout le reste de
+        cette méthode, qui lit ensuite EXCLUSIVEMENT ``registre`` (plus jamais
+        ``_SKILLS`` directement). `_SKILLS` gagne toute collision de nom — un
+        skill personnalisé assaini en ``"web_search"`` ne doit jamais pouvoir
+        se substituer au vrai (déjà filtré en amont par
+        `construire_skills_personnalises`, mais la priorité est reposée ici,
+        au point de fusion, plutôt que fiée à un seul appelant). ``registre``
+        ne fuit jamais hors de cette méthode : `_SKILLS` reste le seul
+        registre STATIQUE, partagé entre tous les appels.
+
+        ``outils=[...]`` filtre d'abord aux noms présents dans ``registre``
         (un nom inconnu est ignoré silencieusement, jamais une erreur), PUIS
         sonde la capacité ``tools`` du modèle (``_capacite_tools_disponible``
         — jamais supposée, même piège que ``think=True`` documenté
@@ -967,7 +1068,7 @@ class LLMEngine:
         Un ``tool_calls`` reçu est dispatché par son ``nom`` : absent de
         ``budgets`` (skill non actif ce tour, ou inventé par le modèle) →
         message « outil inconnu » ; budget à 0 → message « budget épuisé » ;
-        sinon décrémenté et exécuté via ``_SKILLS[nom]["executor"]``, avec la
+        sinon décrémenté et exécuté via ``registre[nom]["executor"]``, avec la
         signature uniforme ``(arguments, on_etape, rang_de_depart)``. Le
         résultat est renvoyé en ``role="tool"``, corrélé par ``tool_name`` —
         ``ollama._types.Message.ToolCall`` n'a PAS de champ ``id`` (vérifié sur
@@ -990,7 +1091,9 @@ class LLMEngine:
         ``accumulated`` ni l'historique persisté (modules/chat/router.py),
         qui rejoue ``messages`` tel quel au tour suivant.
         """
-        actifs = [n for n in (outils or []) if n in _SKILLS]
+        # `_SKILLS` gagne toute collision — cf. docstring ci-dessus.
+        registre: dict[str, dict] = {**(skills_dynamiques or {}), **_SKILLS}
+        actifs = [n for n in (outils or []) if n in registre]
         # `and` court-circuite : `_capacite_tools_disponible` (une requête
         # HTTP potentielle, cf. `_capacites_ollama_fraiches`) n'est JAMAIS
         # appelée quand `actifs` est vide — comportement d'avant ce paramètre.
@@ -998,7 +1101,7 @@ class LLMEngine:
         msgs = list(messages)
         overrides = budgets_override or {}
         budgets: dict[str, int] = (
-            {n: overrides.get(n, _SKILLS[n]["budget_max"]) for n in actifs} if capacite_ok else {}
+            {n: overrides.get(n, registre[n]["budget_max"]) for n in actifs} if capacite_ok else {}
         )
         rang_suivant = rang_web_existant
 
@@ -1021,7 +1124,7 @@ class LLMEngine:
             }
             if not raisonnement:
                 appel["think"] = False
-            tools_actifs = [_SKILLS[n]["schema"] for n in budgets if budgets[n] > 0]
+            tools_actifs = [registre[n]["schema"] for n in budgets if budgets[n] > 0]
             if tools_actifs:
                 appel["tools"] = tools_actifs
 
@@ -1097,7 +1200,7 @@ class LLMEngine:
                     continue
                 budgets[nom] -= 1
                 arguments = tc["function"]["arguments"] or {}
-                texte_outil, resultats = _SKILLS[nom]["executor"](
+                texte_outil, resultats = registre[nom]["executor"](
                     arguments, on_etape=on_etape_recherche, rang_de_depart=rang_suivant,
                 )
                 # `len(resultats)` vaut 0 par construction pour un skill dont

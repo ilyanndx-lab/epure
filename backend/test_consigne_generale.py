@@ -119,8 +119,13 @@ class ReinitialisationTest(_DossierNeuf):
         `tool_calling` a rejoint `instruction_générale` (chantier réglages Tool
         Calling, cf. `test_tool_calling_reglages.py`) — pour la raison INVERSE :
         un interrupteur de sécurité/coût qui ne doit jamais se réinitialiser en
-        silence, et non un texte que l'utilisateur veut retrouver."""
-        self.assertEqual(_CLES_PERSISTANTES, ("instruction_générale", "tool_calling"))
+        silence, et non un texte que l'utilisateur veut retrouver. `prefixes`
+        (chantier préfixes/skills personnalisés, cf.
+        `test_prefixes_personnalises.py`) rejoint la liste pour la MÊME raison
+        que `tool_calling` : des déclencheurs renommés/désactivés et des skills
+        personnalisés créés par l'utilisateur ne doivent pas se réinitialiser
+        au silence après un redémarrage."""
+        self.assertEqual(_CLES_PERSISTANTES, ("instruction_générale", "tool_calling", "prefixes"))
 
 
 class DemarrageRobusteTest(_DossierNeuf):

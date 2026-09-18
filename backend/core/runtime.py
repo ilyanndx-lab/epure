@@ -75,9 +75,9 @@ from core.flashcards import FlashcardsEngine
 from core.hmer import HmerEngine
 from core.history import HistoryEngine
 from core.instance import est_modele_cloud, fiches_watch_paths, modele_local_defaut
-from core.llm import LLMEngine, skill_citable
+from core.llm import LLMEngine, construire_skills_personnalises, skill_citable
 from core.materiel import prechauffer as prechauffer_materiel
-from core.memory import MemoryEngine, normaliser_tool_calling
+from core.memory import MemoryEngine, normaliser_prefixes, normaliser_tool_calling
 from core.models import ModelsRegistry
 from core.orchestrator import OrchestratorEngine
 from core.quota_tracker import QuotaTracker
