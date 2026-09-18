@@ -92,14 +92,25 @@ class RegistreSkillsTest(unittest.TestCase):
     """Le registre `_SKILLS` (core/llm.py) porte les deux skills, avec un
     exécuteur et un plafond propres à chacun."""
 
-    def test_deux_entrees_avec_schema_executeur_et_budget(self):
-        self.assertEqual(set(module_llm._SKILLS), {"web_search", "history_search"})
+    def test_entrees_avec_schema_executeur_et_budget(self):
+        # `recherche_approfondie` a rejoint le registre (chantier réglages
+        # Tool Calling) — cf. `test_tool_calling_reglages.py` pour ses tests
+        # dédiés. Cette assertion reste générique plutôt que de nommer les
+        # trois skills, pour ne pas revenir ici au prochain ajout.
+        self.assertEqual(set(module_llm._SKILLS), {"web_search", "history_search", "recherche_approfondie"})
         for nom, skill in module_llm._SKILLS.items():
             self.assertEqual(skill["schema"]["function"]["name"], nom)
             self.assertTrue(callable(skill["executor"]))
             self.assertGreater(skill["budget_max"], 0)
+            self.assertIn("citable", skill)
         self.assertIs(module_llm._SKILLS["web_search"]["schema"], module_llm._OUTIL_WEB_SEARCH)
         self.assertIs(module_llm._SKILLS["history_search"]["schema"], module_llm._OUTIL_HISTORY_SEARCH)
+        self.assertIs(
+            module_llm._SKILLS["recherche_approfondie"]["schema"], module_llm._OUTIL_RECHERCHE_APPROFONDIE
+        )
+        self.assertIs(
+            module_llm._SKILLS["recherche_approfondie"]["executor"], module_llm._executer_outil_web_search,
+        )
 
 
 class HistorySearchSeulTest(unittest.TestCase):

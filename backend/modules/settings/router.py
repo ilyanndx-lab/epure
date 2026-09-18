@@ -42,6 +42,7 @@ from core.runtime import (
     llm,
     memory,
     models_registry,
+    normaliser_tool_calling,
     orchestrator,
     piper,
     rag,
@@ -321,8 +322,17 @@ async def context_get():
 async def context_settings(request: Request):
     body = await request.json()
     allowed = {"modèle_actif", "strict_mode", "instruction_générale", "consolidation_cloud",
-               "orchestrateur_actif", "raisonnement"}
+               "orchestrateur_actif", "raisonnement", "tool_calling"}
     filtered = {k: v for k, v in body.items() if k in allowed}
+    if "tool_calling" in filtered:
+        # Normalise/clamp AVANT d'écrire — même fonction que la restauration
+        # au démarrage (`core.memory.normaliser_tool_calling`), pour qu'une
+        # seule forme de cette valeur soit jamais acceptée. Le frontend
+        # renvoie l'objet `tool_calling` COMPLET (pas de fusion profonde côté
+        # `update_context`, cf. sa docstring) ; cette fonction fusionne quand
+        # même par-dessus le défaut, donc un corps partiel ou mal formé ne
+        # casse pas l'écriture — il retombe sur le défaut clé par clé.
+        filtered["tool_calling"] = normaliser_tool_calling(filtered["tool_calling"])
     memory.update_context(**filtered)
     return {"ok": True}
 

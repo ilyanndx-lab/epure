@@ -492,22 +492,91 @@ def _executer_outil_history_search(
     return f"Extraits de conversations précédentes pertinentes :\n{extraits}", []
 
 
+#: Repli si aucun réglage utilisateur n'existe pour `recherche_approfondie`
+#: (le budget RÉEL vient de `tool_calling.skills.recherche_approfondie.budget`,
+#: réglage persistant — cf. `core.memory._CONTEXT_DEFAULT` et
+#: `budgets_override` plus bas). En pratique jamais consulté : le défaut de
+#: `_CONTEXT_DEFAULT` porte déjà la même valeur — verrouillé par
+#: `test_tool_calling_reglages.py` pour que les deux ne divergent pas en
+#: silence.
+_MAX_APPELS_RECHERCHE_APPROFONDIE = 4
+
+#: Même schéma que `_OUTIL_WEB_SEARCH`, description différente : encourage
+#: explicitement l'ITÉRATION (plusieurs appels, requête affinée à partir des
+#: résultats précédents), pour que le modèle choisisse ce skill plutôt que
+#: `web_search` sur une question qui demande de croiser plusieurs sources.
+#: Réutilise `_executer_outil_web_search` tel quel (cf. `_SKILLS` plus bas) —
+#: seuls le schéma exposé et le budget diffèrent de `web_search`, la mécanique
+#: de recherche (DuckDuckGo + récupération de contenu) est identique.
+_OUTIL_RECHERCHE_APPROFONDIE: dict = {
+    "type": "function",
+    "function": {
+        "name": "recherche_approfondie",
+        "description": (
+            "Recherche web approfondie pour une question complexe qui "
+            "nécessite de croiser plusieurs sources ou d'affiner ta requête "
+            "selon les résultats précédents avant de conclure — "
+            "contrairement à web_search, tu es encouragé à appeler cet "
+            "outil plusieurs fois de suite en reformulant ta requête à "
+            "partir de ce que tu as déjà trouvé. Cite ensuite les résultats "
+            "par leur numéro entre crochets, ex. [1] — jamais l'URL."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "requete": {
+                    "type": "string",
+                    "description": "Termes de recherche concis, en français.",
+                },
+            },
+            "required": ["requete"],
+        },
+    },
+}
+
+
+def skill_citable(nom: str) -> bool:
+    """Les `resultats` de ce skill sont-ils des `ResultatWeb` NUMÉROTÉS, à
+    verser dans `web_resultats` (`modules/chat/router.py`) pour la résolution
+    des citations `[n]` ?
+
+    Expose la clé `citable` du registre `_SKILLS` — réexportée par
+    `core.runtime` — pour que le routeur n'ait jamais à comparer
+    `outil == "web_search"` en dur : `recherche_approfondie` réutilise le
+    même exécuteur que `web_search` et rend donc les mêmes `ResultatWeb`,
+    mais une comparaison figée sur un seul nom les aurait silencieusement
+    jetés — numérotés par `rang_suivant` ci-dessous, jamais transmis au
+    consommateur. `history_search`, lui, rend toujours `resultats=[]`
+    (cf. sa docstring) : `citable=False` documente ce fait plutôt que de
+    compter sur une liste vide pour ne jamais rien casser.
+    """
+    return bool(_SKILLS.get(nom, {}).get("citable"))
+
+
 #: Registre des skills exposables au tool-calling natif. Chaque entrée porte
-#: son schéma, son exécuteur (signature uniforme, cf. les deux fonctions
-#: ci-dessus) et son plafond d'invocations propre — les budgets sont
+#: son schéma, son exécuteur (signature uniforme, cf. les fonctions
+#: ci-dessus), son plafond d'invocations propre — les budgets sont
 #: INDÉPENDANTS entre skills (épuiser `web_search` n'empêche pas
 #: `history_search` de continuer à répondre, et réciproquement), cf.
-#: `_stream_ollama`.
+#: `_stream_ollama` — et `citable` (cf. `skill_citable`).
 _SKILLS: dict[str, dict] = {
     "web_search": {
         "schema": _OUTIL_WEB_SEARCH,
         "executor": _executer_outil_web_search,
         "budget_max": _MAX_APPELS_OUTIL_WEB,
+        "citable": True,
     },
     "history_search": {
         "schema": _OUTIL_HISTORY_SEARCH,
         "executor": _executer_outil_history_search,
         "budget_max": _MAX_APPELS_OUTIL_HISTORY,
+        "citable": False,
+    },
+    "recherche_approfondie": {
+        "schema": _OUTIL_RECHERCHE_APPROFONDIE,
+        "executor": _executer_outil_web_search,
+        "budget_max": _MAX_APPELS_RECHERCHE_APPROFONDIE,
+        "citable": True,
     },
 }
 
@@ -569,22 +638,32 @@ class LLMEngine:
     def stream(self, messages: list[dict], model: Optional[str] = None,
                max_tokens: Optional[int] = None, raisonnement: bool = True,
                outils: Optional[list[str]] = None,
+               budgets_override: Optional[dict[str, int]] = None,
                on_etape_recherche: Optional[Callable[[dict], None]] = None,
                rang_web_existant: int = 0) -> Generator:
         """Flux de génération. ``raisonnement=False`` coupe la réflexion du modèle.
 
         ``outils``/``on_etape_recherche``/``rang_web_existant`` : tool-calling
-        natif du registre ``_SKILLS`` (``web_search``, ``history_search``),
-        **Ollama seul** — ignorés silencieusement pour gemini/openai-compatible,
-        dont le format de message n'a pas `tool_calls`/`role="tool"` (cf.
-        `_stream_ollama`). Les onze autres appelants de cette méthode n'ont rien
-        à passer : ``outils=None`` (défaut) est le comportement historique, à
-        l'octet — aucune sonde de capacité, aucun `tools=` exposé, une seule
-        boucle. ``outils`` liste les NOMS de skills actifs pour CE tour (ex.
-        ``["web_search", "history_search"]``) ; un nom absent du registre est
-        ignoré silencieusement (cf. `_stream_ollama`) plutôt que de faire
-        échouer le tour — un futur appelant peut lister un skill pas encore
-        implémenté sans tout casser.
+        natif du registre ``_SKILLS`` (``web_search``, ``history_search``,
+        ``recherche_approfondie``), **Ollama seul** — ignorés silencieusement
+        pour gemini/openai-compatible, dont le format de message n'a pas
+        `tool_calls`/`role="tool"` (cf. `_stream_ollama`). Les appelants qui ne
+        passent rien n'ont rien à changer : ``outils=None`` (défaut) est le
+        comportement historique, à l'octet — aucune sonde de capacité, aucun
+        `tools=` exposé, une seule boucle. ``outils`` liste les NOMS de skills
+        actifs pour CE tour (ex. ``["web_search", "history_search"]``) ; un nom
+        absent du registre est ignoré silencieusement (cf. `_stream_ollama`)
+        plutôt que de faire échouer le tour — un futur appelant peut lister un
+        skill pas encore implémenté sans tout casser.
+
+        ``budgets_override`` : ``{nom du skill: plafond d'invocations}``, pour
+        les skills dont le plafond est un RÉGLAGE utilisateur plutôt qu'une
+        constante du registre (``recherche_approfondie``,
+        `core.memory._CONTEXT_DEFAULT["tool_calling"]`). Ne remplace le
+        `budget_max` de `_SKILLS` QUE pour les noms présents dans ce dict — un
+        skill absent de `budgets_override` garde son plafond par défaut. C'est
+        un override d'APPEL, pas une propriété statique du registre : `_SKILLS`
+        lui-même n'en sait rien.
 
         **Le défaut est ``True``, et c'est le comportement historique** : les
         modèles qui pensent pensent, ceux qui ne pensent pas ne changent pas.
@@ -619,7 +698,8 @@ class LLMEngine:
         else:
             yield from self._stream_ollama(
                 messages, m, max_tokens, raisonnement=raisonnement,
-                outils=outils, on_etape_recherche=on_etape_recherche,
+                outils=outils, budgets_override=budgets_override,
+                on_etape_recherche=on_etape_recherche,
                 rang_web_existant=rang_web_existant,
             )
 
@@ -800,6 +880,7 @@ class LLMEngine:
 
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None,
                        raisonnement: bool = True, outils: Optional[list[str]] = None,
+                       budgets_override: Optional[dict[str, int]] = None,
                        on_etape_recherche: Optional[Callable[[dict], None]] = None,
                        rang_web_existant: int = 0) -> Generator:
         """Flux Ollama : texte (``str``), raisonnement et stats (dicts sentinelles).
@@ -915,8 +996,9 @@ class LLMEngine:
         # appelée quand `actifs` est vide — comportement d'avant ce paramètre.
         capacite_ok = bool(actifs) and _capacite_tools_disponible(model)
         msgs = list(messages)
+        overrides = budgets_override or {}
         budgets: dict[str, int] = (
-            {n: _SKILLS[n]["budget_max"] for n in actifs} if capacite_ok else {}
+            {n: overrides.get(n, _SKILLS[n]["budget_max"]) for n in actifs} if capacite_ok else {}
         )
         rang_suivant = rang_web_existant
 

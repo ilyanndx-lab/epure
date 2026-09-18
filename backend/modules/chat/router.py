@@ -32,9 +32,11 @@ from core.runtime import (
     llm,
     memory,
     models_registry,
+    normaliser_tool_calling,
     orchestrator,
     provider_of as _provider_of,
     rag,
+    skill_citable,
     usage_tracker,
 )
 from core.citations import (
@@ -1037,6 +1039,25 @@ async def ws_chat(websocket: WebSocket):
             # n'a pas la clé, et son absence doit valoir « activé » — le
             # comportement d'avant ce réglage.
             raisonnement = bool(ctx.get("raisonnement", True))
+            # Pilotage utilisateur du tool-calling natif (Réglages › Tool
+            # calling) — réglage PERSISTANT (`core.memory._CLES_PERSISTANTES`),
+            # donc lu ici comme `raisonnement`, jamais reçu dans le message.
+            # `normaliser_tool_calling` re-fusionne au cas où le fichier sur
+            # disque aurait été écrit par une version antérieure ou édité à la
+            # main — même garantie de forme qu'à l'écriture
+            # (`modules/settings/router.py`), sans coût notable sur ce chemin
+            # chaud (fusion pure Python, aucun I/O ni appel LLM).
+            _tool_calling = normaliser_tool_calling(ctx.get("tool_calling"))
+            if _tool_calling["enabled"]:
+                outils_actifs = [
+                    nom for nom, reglage in _tool_calling["skills"].items() if reglage["enabled"]
+                ]
+            else:
+                outils_actifs = None
+            budgets_override = {
+                nom: reglage["budget"] for nom, reglage in _tool_calling["skills"].items()
+                if "budget" in reglage
+            }
             _last_model[0] = model_override or llm._model
 
             _req_start = time.time()
@@ -1546,18 +1567,24 @@ async def ws_chat(websocket: WebSocket):
                         msgs, model=model, raisonnement=raisonnement,
                         # Tool-calling natif (core/llm.py, registre `_SKILLS`)
                         # — Ollama seul, ignoré silencieusement pour les
-                        # autres providers. `web_search` reste indépendant du
-                        # classifieur heuristique juste au-dessus
-                        # (`web_search_override`) : les deux peuvent agir sur
-                        # le même tour, d'où `rang_web_existant` pour que
-                        # leurs `ResultatWeb` ne partagent jamais un même rang
-                        # `[n]` (cf. `_executer_outil_web_search`).
-                        # `history_search` est exposé à CHAQUE tour direct,
-                        # comme `web_search` — pas seulement sur un message
-                        # `@historique` (qui reste, LUI, eager et manuel,
-                        # cf. plus haut) : même philosophie d'indépendance
-                        # entre le déclenchement manuel et le tool-calling.
-                        outils=["web_search", "history_search"],
+                        # autres providers. `web_search`/`recherche_approfondie`
+                        # restent indépendants du classifieur heuristique juste
+                        # au-dessus (`web_search_override`) : les deux peuvent
+                        # agir sur le même tour, d'où `rang_web_existant` pour
+                        # que leurs `ResultatWeb` ne partagent jamais un même
+                        # rang `[n]` (cf. `_executer_outil_web_search`).
+                        # `outils_actifs`/`budgets_override` : pilotage
+                        # utilisateur (Réglages › Tool calling), calculés
+                        # plus haut à partir de `ctx["tool_calling"]` —
+                        # `outils_actifs=None` coupe tout, quel que soit l'état
+                        # par skill (interrupteur général). Un skill actif ici
+                        # est exposé à CHAQUE tour direct, pas seulement sur un
+                        # message `@historique`/`@web` (qui restent, EUX,
+                        # eager et manuels, cf. plus haut) : même philosophie
+                        # d'indépendance entre déclenchement manuel et
+                        # tool-calling.
+                        outils=outils_actifs,
+                        budgets_override=budgets_override,
                         on_etape_recherche=_on_etape_recherche,
                         rang_web_existant=len(web_resultats),
                     ):
@@ -1590,21 +1617,25 @@ async def ws_chat(websocket: WebSocket):
                 if isinstance(item, dict) and item.get("__tool_call__"):
                     # Résultats STRUCTURÉS d'un outil déclenché par le MODÈLE
                     # (tool-calling natif, core/llm.py::_stream_ollama,
-                    # registre `_SKILLS`). Seul `web_search` verse dans
-                    # `web_resultats` : c'est la liste que
-                    # `_finaliser_citations_et_trace` (citations + Sources)
-                    # résout par RANG `[n]`, et un skill dont les résultats ne
-                    # sont pas des `ResultatWeb` numérotés (`history_search`,
-                    # qui rend toujours `resultats=[]`) casserait cette
-                    # numérotation en silence s'il s'y mélangeait. Garde
-                    # explicite plutôt qu'implicite (`resultats=[]` suffirait
-                    # aujourd'hui) : un futur skill non citable ajouté au
-                    # registre sans toucher cette ligne ne doit pas pouvoir
-                    # s'y retrouver par accident. La trace, elle, distingue
-                    # déjà les origines via l'étape `tool_call_<nom>` (poussée
-                    # par `_on_etape_recherche` depuis le thread de `_stream`,
+                    # registre `_SKILLS`). Seuls les skills marqués
+                    # `citable=True` dans `_SKILLS` (`web_search`,
+                    # `recherche_approfondie` — même exécuteur, mêmes
+                    # `ResultatWeb`) versent dans `web_resultats` : c'est la
+                    # liste que `_finaliser_citations_et_trace` (citations +
+                    # Sources) résout par RANG `[n]`, et un skill dont les
+                    # résultats ne sont pas des `ResultatWeb` numérotés
+                    # (`history_search`, qui rend toujours `resultats=[]`)
+                    # casserait cette numérotation en silence s'il s'y
+                    # mélangeait. `skill_citable` (core.llm, réexporté par
+                    # core.runtime) plutôt qu'une comparaison de nom en dur :
+                    # un `==  "web_search"` figé aurait silencieusement jeté
+                    # les résultats de `recherche_approfondie`, alors même que
+                    # `rang_suivant` (core/llm.py) continue de leur réserver
+                    # des rangs. La trace, elle, distingue déjà les origines
+                    # via l'étape `tool_call_<nom>` (poussée par
+                    # `_on_etape_recherche` depuis le thread de `_stream`,
                     # AVANT ce sentinel).
-                    if item.get("outil") == "web_search":
+                    if skill_citable(item.get("outil") or ""):
                         web_resultats.extend(item.get("resultats") or [])
                     continue
                 if isinstance(item, dict) and item.get("__reasoning__"):

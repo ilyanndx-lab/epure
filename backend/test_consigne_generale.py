@@ -115,8 +115,12 @@ class ReinitialisationTest(_DossierNeuf):
 
     def test_la_liste_des_persistantes_est_courte_et_explicite(self):
         """Garde-fou de conception : si cette liste enfle, c'est que le fichier
-        n'est plus un contexte de SESSION et qu'il faut le dire autrement."""
-        self.assertEqual(_CLES_PERSISTANTES, ("instruction_générale",))
+        n'est plus un contexte de SESSION et qu'il faut le dire autrement.
+        `tool_calling` a rejoint `instruction_générale` (chantier réglages Tool
+        Calling, cf. `test_tool_calling_reglages.py`) — pour la raison INVERSE :
+        un interrupteur de sécurité/coût qui ne doit jamais se réinitialiser en
+        silence, et non un texte que l'utilisateur veut retrouver."""
+        self.assertEqual(_CLES_PERSISTANTES, ("instruction_générale", "tool_calling"))
 
 
 class DemarrageRobusteTest(_DossierNeuf):

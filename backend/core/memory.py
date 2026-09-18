@@ -54,7 +54,36 @@ _CONTEXT_DEFAULT = {
     # disque n'a pas cette cle, et `get_context` rend le fichier tel quel sans
     # fusionner ce defaut.
     "raisonnement": True,
+    # Pilotage du tool-calling natif (registre `core.llm._SKILLS`). PERSISTE
+    # au redémarrage (cf. `_CLES_PERSISTANTES` juste en dessous) — à la
+    # différence de `raisonnement`/`strict_mode`/`modèle_actif` ci-dessus, qui
+    # sont des réglages de SÉANCE et redeviennent volontairement leur défaut à
+    # chaque lancement. `tool_calling` est un interrupteur de
+    # sécurité/coût : l'utilisateur qui désactive `recherche_approfondie` (ou
+    # tout le registre) parce qu'elle consomme des tokens/appels réseau ne
+    # s'attend pas à la retrouver réactivée au silence après un redémarrage du
+    # backend — ce serait précisément le genre de piège que ce fichier existe
+    # pour éviter ailleurs (cf. `instruction_générale`). `budget` de
+    # `recherche_approfondie` : repli si l'utilisateur n'a rien réglé, même
+    # valeur que `core.llm._MAX_APPELS_RECHERCHE_APPROFONDIE` (non importé ici
+    # pour éviter un cycle `memory` → `llm` → `memory` via `core.runtime` ;
+    # l'accord entre les deux est verrouillé par `test_tool_calling_reglages.py`).
+    "tool_calling": {
+        "enabled": True,
+        "skills": {
+            "web_search": {"enabled": True},
+            "history_search": {"enabled": True},
+            "recherche_approfondie": {"enabled": True, "budget": 4},
+        },
+    },
 }
+
+#: Bornes du curseur de budget `recherche_approfondie` — un réglage hors de cet
+#: intervalle est CLAMPÉ, jamais rejeté (cf. `normaliser_tool_calling`), même
+#: philosophie que le reste de ce fichier : ne jamais faire planter un tour
+#: pour une valeur mal formée.
+_BUDGET_RECHERCHE_APPROFONDIE_MIN = 1
+_BUDGET_RECHERCHE_APPROFONDIE_MAX = 10
 
 #: Clés de `context_session.json` qui SURVIVENT au redémarrage.
 #:
@@ -69,7 +98,68 @@ _CONTEXT_DEFAULT = {
 #: `PATCH /context/settings`, le panneau Compétences). La déplacer élargirait le
 #: changement bien au-delà de sa durabilité. Le prix à en payer est ce
 #: commentaire, et le test qui le verrouille.
-_CLES_PERSISTANTES = ("instruction_générale",)
+#:
+#: `tool_calling` a rejoint cette liste pour la raison INVERSE d'
+#: `instruction_générale` — pas un texte que l'utilisateur a écrit et qui
+#: doit lui être rendu, mais un interrupteur de sécurité/coût qui ne doit
+#: jamais se réinitialiser en silence (cf. le commentaire sur
+#: `_CONTEXT_DEFAULT["tool_calling"]`).
+_CLES_PERSISTANTES = ("instruction_générale", "tool_calling")
+
+
+def normaliser_tool_calling(valeur) -> dict:
+    """Fusionne `valeur` (un `tool_calling` partiel venu du disque ou d'un
+    `PATCH /context/settings`) PAR-DESSUS le défaut, clé par clé — jamais un
+    remplacement wholesale.
+
+    La distinction compte : `update_context` (plus bas) fait un `data.update`
+    au niveau RACINE de `context_session.json`, shallow par conception — c'est
+    au bon endroit pour `instruction_générale` (une chaîne) mais figerait
+    `tool_calling` à sa première écriture si on l'y laissait tel quel. Un
+    remplacement wholesale ferait qu'un quatrième skill ajouté un jour à
+    `_CONTEXT_DEFAULT["tool_calling"]["skills"]` n'apparaîtrait plus jamais
+    pour un utilisateur qui a déjà un `tool_calling` sur disque — en silence,
+    puisque rien ne compare les deux structures. Ici, un skill absent de
+    `valeur` retombe sur le défaut (activé) ; un skill présent dans `valeur`
+    mais absent de `_CONTEXT_DEFAULT` est ignoré plutôt que reproduit tel
+    quel — un vieux frontend ou un fichier corrompu ne doit pas pouvoir
+    injecter une clé arbitraire dans l'état persistant.
+
+    Le budget de `recherche_approfondie` est CLAMPÉ à
+    `[_BUDGET_RECHERCHE_APPROFONDIE_MIN, _BUDGET_RECHERCHE_APPROFONDIE_MAX]`,
+    jamais rejeté — une valeur invalide (hors bornes, absente, non numérique)
+    retombe sur le clamp le plus proche ou le défaut, sans jamais faire
+    échouer l'appelant.
+
+    Utilisée aux DEUX points d'entrée de cette valeur — la restauration au
+    démarrage (`MemoryEngine.__init__`) et `PATCH /context/settings`
+    (`modules/settings/router.py`) — pour qu'une seule fonction décide de la
+    forme acceptée, jamais deux validations qui pourraient diverger.
+    """
+    defaut = _CONTEXT_DEFAULT["tool_calling"]
+    if not isinstance(valeur, dict):
+        valeur = {}
+    skills_recues = valeur.get("skills")
+    if not isinstance(skills_recues, dict):
+        skills_recues = {}
+
+    skills: dict = {}
+    for nom, reglage_defaut in defaut["skills"].items():
+        recu = skills_recues.get(nom)
+        recu = recu if isinstance(recu, dict) else {}
+        entree = {"enabled": bool(recu.get("enabled", reglage_defaut["enabled"]))}
+        if "budget" in reglage_defaut:
+            try:
+                budget = int(recu.get("budget", reglage_defaut["budget"]))
+            except (TypeError, ValueError):
+                budget = reglage_defaut["budget"]
+            entree["budget"] = max(
+                _BUDGET_RECHERCHE_APPROFONDIE_MIN,
+                min(_BUDGET_RECHERCHE_APPROFONDIE_MAX, budget),
+            )
+        skills[nom] = entree
+
+    return {"enabled": bool(valeur.get("enabled", defaut["enabled"])), "skills": skills}
 
 # Le cache LRU des sections retenues (clé : `message[:100]`) a disparu avec
 # l'appel LLM qu'il servait à amortir : `retrieve_relevant_context` ne dépend plus
@@ -114,7 +204,15 @@ class MemoryEngine:
         contexte = dict(_CONTEXT_DEFAULT)
         for cle in _CLES_PERSISTANTES:
             valeur = ancien.get(cle)
-            if isinstance(valeur, str) and valeur:
+            if cle == "tool_calling":
+                # Dict, pas une chaîne : le filtre `isinstance(str)` ci-dessous
+                # l'aurait ignoré EN SILENCE — c'est exactement le piège que
+                # `normaliser_tool_calling` (qui fusionne plutôt que remplace,
+                # cf. sa docstring) a été écrit pour fermer. Appelée même sur un
+                # `ancien` sans cette clé (poste neuf) : rend alors une copie
+                # fraîche du défaut, jamais l'objet `_CONTEXT_DEFAULT` partagé.
+                contexte[cle] = normaliser_tool_calling(valeur)
+            elif isinstance(valeur, str) and valeur:
                 contexte[cle] = valeur
         self._write(self._context_path, contexte)
 
