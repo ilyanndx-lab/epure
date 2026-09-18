@@ -3,9 +3,9 @@ import { usePersistentState } from '../../usePersistentState'
 import {
   Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Download, Eye, EyeOff,
   FolderTree, Gauge, GripVertical, Hammer, KeyRound, Package, Palette, Plus, RefreshCw,
-  RotateCcw, Trash2, User, X,
+  RotateCcw, Search, Trash2, User, Wrench, X,
 } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Select, Toggle } from '../../components/ui'
+import { Badge, Button, Card, Input, ProgressBar, Select, Tabs, Toggle } from '../../components/ui'
 import { useTheme } from '../../theme'
 import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon, fetchModules } from '../../modules'
@@ -76,6 +76,54 @@ interface DeepSeekBalance {
 const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Google Gemini', groq: 'Groq', cerebras: 'Cerebras',
   nvidia: 'NVIDIA NIM', mistral: 'Mistral', deepseek: 'DeepSeek',
+}
+
+// ── Tool calling ─────────────────────────────────────────────────────────────
+//
+// Pilotage utilisateur du registre de tool-calling natif (backend/core/llm.py
+// `_SKILLS`). Forme alignée sur `core.memory._CONTEXT_DEFAULT["tool_calling"]` —
+// mais dupliquée ici plutôt que dérivée d'un schéma partagé, comme le reste des
+// interfaces de ce fichier (Profile, Session, CatalogueEntry…).
+
+interface ToolCallingSkillSetting { enabled: boolean; budget?: number }
+interface ToolCallingSettings { enabled: boolean; skills: Record<string, ToolCallingSkillSetting> }
+
+const TOOL_CALLING_DEFAULT: ToolCallingSettings = {
+  enabled: true,
+  skills: {
+    web_search: { enabled: true },
+    history_search: { enabled: true },
+    recherche_approfondie: { enabled: true, budget: 4 },
+  },
+}
+
+//: Métadonnées d'AFFICHAGE seulement (le schéma envoyé au modèle vit dans
+//: `core/llm.py`, pas ici) — l'ordre de ce tableau est celui d'affichage par
+//: défaut, avant tri des skills désactivés en fin de liste.
+const TOOL_CALLING_SKILLS: { id: string; label: string; description: string }[] = [
+  { id: 'web_search', label: 'Recherche web', description: 'Recherche sur le web une information récente ou factuelle pendant la conversation.' },
+  { id: 'history_search', label: 'Recherche dans l’historique', description: 'Retrouve un sujet déjà discuté dans vos conversations passées.' },
+  { id: 'recherche_approfondie', label: 'Recherche approfondie', description: 'Recherche web itérative pour une question complexe qui croise plusieurs sources.' },
+]
+
+//: Normalise une réponse `GET /context` (ou son absence) à la frontière
+//: `.json()` — cf. CLAUDE.md §8 : un champ manquant ou mal formé ne doit
+//: jamais se retrouver `undefined` dans l'état, seulement retomber sur le
+//: défaut, skill par skill.
+function normaliserToolCalling(raw: unknown): ToolCallingSettings {
+  const r = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const skillsRaw = r.skills && typeof r.skills === 'object' ? r.skills as Record<string, unknown> : {}
+  const skills: Record<string, ToolCallingSkillSetting> = {}
+  for (const [id, defaut] of Object.entries(TOOL_CALLING_DEFAULT.skills)) {
+    const s = skillsRaw[id] && typeof skillsRaw[id] === 'object' ? skillsRaw[id] as Record<string, unknown> : {}
+    skills[id] = {
+      enabled: typeof s.enabled === 'boolean' ? s.enabled : defaut.enabled,
+      ...(defaut.budget !== undefined
+        ? { budget: typeof s.budget === 'number' ? s.budget : defaut.budget }
+        : {}),
+    }
+  }
+  return { enabled: typeof r.enabled === 'boolean' ? r.enabled : TOOL_CALLING_DEFAULT.enabled, skills }
 }
 
 function quotaBarColor(pct: number): 'gradient' | 'warning' | 'error' {
@@ -187,11 +235,22 @@ export default function Settings() {
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [selectedDates, setSelectedDates] = useState<string[]>([])
 
+  // Onglet actif — persisté comme epure.activeModule/epure.sidebarCollapsed
+  // (App.tsx) : survit à une navigation/rafraîchissement.
+  const [activeTab, setActiveTab] = usePersistentState<string>('epure.settings.activeTab', 'apparence')
+
   // Consolidation state
   const [consolidCloud, setConsolidCloud] = usePersistentState<boolean>('epure.settings.consolidCloud', false)
   const [consolidating, setConsolidating] = useState(false)
   const [consolidResult, setConsolidResult] = useState<string | null>(null)
   const [consolidLog, setConsolidLog] = useState<Record<string, unknown>[]>([])
+
+  // Tool calling state — null tant que GET /context n'a pas répondu
+  // (distinct de `TOOL_CALLING_DEFAULT` : évite un flash « tout activé » avant
+  // que la vraie valeur, potentiellement désactivée par l'utilisateur, arrive).
+  const [toolCalling, setToolCalling] = useState<ToolCallingSettings | null>(null)
+  const [toolCallingMsg, setToolCallingMsg] = useState<string | null>(null)
+  const [skillSearch, setSkillSearch] = useState('')
 
   // Quota usage state
   const [quotas, setQuotas] = useState<Record<string, QuotaEntry>>({})
@@ -237,7 +296,10 @@ export default function Settings() {
 
     apiFetch(`${API}/context`)
       .then(r => r.json())
-      .then((d: Record<string, unknown>) => setConsolidCloud(Boolean(d['consolidation_cloud'])))
+      .then((d: Record<string, unknown>) => {
+        setConsolidCloud(Boolean(d['consolidation_cloud']))
+        setToolCalling(normaliserToolCalling(d['tool_calling']))
+      })
       .catch(() => {})
 
     apiFetch(`${API}/memory/consolidation-log`)
@@ -447,6 +509,32 @@ export default function Settings() {
     }).catch(() => {})
   }, [consolidCloud])
 
+  // Écrit l'objet `tool_calling` COMPLET (pas de fusion profonde côté
+  // `update_context`, cf. `core/memory.py`) — l'appelant passe toujours l'état
+  // entier déjà muté localement. `apiFetch` NE LÈVE JAMAIS sur un 4xx/5xx
+  // (CLAUDE.md §8) : `res.ok` est donc vérifié avant de considérer l'écriture
+  // acquise, et un refus recharge l'état RÉEL du backend plutôt que de laisser
+  // l'UI afficher un réglage qui n'a jamais été enregistré.
+  const saveToolCalling = useCallback(async (next: ToolCallingSettings) => {
+    setToolCalling(next)
+    setToolCallingMsg(null)
+    try {
+      const res = await apiFetch(`${API}/context/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool_calling: next }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.error('PATCH /context/settings (tool_calling):', err)
+      setToolCallingMsg('Échec de l’enregistrement — réessayez.')
+      apiFetch(`${API}/context`)
+        .then(r => r.json())
+        .then((d: Record<string, unknown>) => setToolCalling(normaliserToolCalling(d['tool_calling'])))
+        .catch(() => {})
+    }
+  }, [])
+
   const consolidateNow = useCallback(async () => {
     setConsolidating(true)
     setConsolidResult(null)
@@ -521,7 +609,7 @@ export default function Settings() {
     const seen = new Map<string, ModeleDisponible>()
     for (const m of models) if (!seen.has(m.id)) seen.set(m.id, m)
     const actif = config.providers.actif
-    if (actif && !seen.has(actif)) seen.set(actif, { id: actif, nom: actif, disponible: true })
+    if (actif && !seen.has(actif)) seen.set(actif, { id: actif, nom: actif, disponible: true, provider: '' })
     return [...seen.values()]
   })()
 
@@ -545,7 +633,7 @@ export default function Settings() {
     const seen = new Map<string, ModeleDisponible>()
     for (const m of modelOptions) if (!estCloud(m.id)) seen.set(m.id, m)
     const local = config.providers.local
-    if (local && !seen.has(local)) seen.set(local, { id: local, nom: local, disponible: true })
+    if (local && !seen.has(local)) seen.set(local, { id: local, nom: local, disponible: true, provider: '' })
     return [...seen.values()]
   })()
 
@@ -557,10 +645,33 @@ export default function Settings() {
     )
   }
 
+  // Onglets en pilule — l'Atelier n'apparaît que si ATELIER_PRESENT (§5 de
+  // CLAUDE.md : la section entière doit disparaître, onglet compris, dans un
+  // paquet distribué). Les 4 sections que le mockup de référence ne montrait
+  // pas (Consolidation mémoire, Quotas & Usage, Clés API, Sessions de
+  // révision) sont regroupées dans un 6e onglet « Avancé » plutôt que perdues.
+  const TABS = [
+    { id: 'apparence', label: 'Apparence' },
+    { id: 'instance', label: 'Instance' },
+    { id: 'catalogue', label: 'Catalogue' },
+    ...(ATELIER_PRESENT ? [{ id: 'atelier', label: 'Atelier — moteurs' }] : []),
+    { id: 'profil', label: 'Profil' },
+    { id: 'avance', label: 'Avancé' },
+    { id: 'tool_calling', label: 'Tool calling' },
+  ]
+  // Un onglet « atelier » mémorisé (localStorage) d'avant que ATELIER_PRESENT
+  // ne passe à faux (build sans l'Atelier) ne doit pas pointer vers un onglet
+  // absent de la barre.
+  const currentTab = activeTab === 'atelier' && !ATELIER_PRESENT ? 'apparence' : activeTab
+
   return (
     <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8 space-y-6">
 
+      <h1 className="text-lg font-display font-semibold text-primary">Réglages</h1>
+      <Tabs tabs={TABS} active={currentTab} onChange={setActiveTab} />
+
       {/* ── Apparence ── */}
+      {currentTab === 'apparence' && (
       <Card className="max-w-lg space-y-4">
         <SectionTitle icon={<Palette size={15} />}>Apparence</SectionTitle>
         <div className="flex items-center justify-between">
@@ -577,8 +688,10 @@ export default function Settings() {
           </div>
         </div>
       </Card>
+      )}
 
       {/* ── Instance ── */}
+      {currentTab === 'instance' && (
       <Card className="max-w-lg space-y-5">
         <SectionTitle icon={<Boxes size={15} />}>Instance</SectionTitle>
 
@@ -795,8 +908,10 @@ export default function Settings() {
           </p>
         </div>
       </Card>
+      )}
 
       {/* ── Catalogue de modules installables ── */}
+      {currentTab === 'catalogue' && (
       <Card className="max-w-lg space-y-4">
         <div className="flex items-center justify-between">
           <SectionTitle icon={<Package size={15} />}>Catalogue</SectionTitle>
@@ -857,9 +972,10 @@ export default function Settings() {
           frontend déjà construit (Docker), il faut reconstruire l'interface.
         </p>
       </Card>
+      )}
 
       {/* ── Atelier (moteurs Claude Code) — absent d'un paquet distribué ── */}
-      {ATELIER_PRESENT && (
+      {currentTab === 'atelier' && ATELIER_PRESENT && (
       <Card className="max-w-lg space-y-4">
         <div className="flex items-center justify-between">
           <SectionTitle icon={<Hammer size={15} />}>Atelier — moteurs</SectionTitle>
@@ -1004,6 +1120,7 @@ export default function Settings() {
       )}
 
       {/* ── Profile ── */}
+      {currentTab === 'profil' && (
       <Card className="max-w-lg space-y-5">
         <SectionTitle icon={<User size={15} />}>Profil</SectionTitle>
 
@@ -1105,6 +1222,13 @@ export default function Settings() {
           )}
         </div>
       </Card>
+      )}
+
+      {/* ── Avancé : Consolidation mémoire, Quotas & Usage, Clés API,
+          Sessions de révision — 4 sections que le mockup de référence ne
+          montrait pas, regroupées ici plutôt que perdues (cf. commentaire
+          TABS ci-dessus). Chacune garde son propre <Card>. */}
+      {currentTab === 'avance' && (<>
 
       {/* ── Consolidation ── */}
       <Card className="max-w-lg space-y-4">
@@ -1391,6 +1515,113 @@ export default function Settings() {
           </div>
         )}
       </Card>
+      </>)}
+
+      {/* ── Tool calling ── */}
+      {currentTab === 'tool_calling' && toolCalling && (() => {
+        const filtre = skillSearch.trim().toLowerCase()
+        const skillsFiltres = TOOL_CALLING_SKILLS.filter(s =>
+          !filtre || s.label.toLowerCase().includes(filtre) || s.description.toLowerCase().includes(filtre)
+        )
+        // Un skill désactivé passe en fin de liste — tri STABLE (Array.prototype.sort
+        // l'est depuis ES2019), donc l'ordre `TOOL_CALLING_SKILLS` est conservé
+        // au sein de chaque groupe.
+        const skillsTries = [...skillsFiltres].sort((a, b) =>
+          Number(toolCalling.skills[b.id]?.enabled ?? true) - Number(toolCalling.skills[a.id]?.enabled ?? true)
+        )
+        const majSkill = (id: string, patch: Partial<ToolCallingSkillSetting>) => {
+          void saveToolCalling({
+            ...toolCalling,
+            skills: { ...toolCalling.skills, [id]: { ...toolCalling.skills[id], ...patch } },
+          })
+        }
+        return (
+        <Card className="max-w-lg space-y-4">
+          <SectionTitle icon={<Wrench size={15} />}>Tool calling</SectionTitle>
+          <p className="text-xs text-muted/70">
+            Le modèle peut appeler ces outils lui-même en cours de génération
+            (recherche web, historique…), indépendamment des raccourcis manuels
+            comme @web ou @historique.
+          </p>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-secondary">Activer les appels d'outils automatiques</p>
+              <p className="text-xs text-muted mt-0.5">
+                {toolCalling.enabled ? 'Le modèle peut décider d’appeler un outil.' : 'Aucun outil n’est proposé au modèle.'}
+              </p>
+            </div>
+            <Toggle
+              checked={toolCalling.enabled}
+              onChange={enabled => void saveToolCalling({ ...toolCalling, enabled })}
+              label="Tool calling"
+            />
+          </div>
+
+          <div className={`space-y-3 transition-opacity duration-150 ${toolCalling.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <Input
+                value={skillSearch}
+                onChange={e => setSkillSearch(e.target.value)}
+                placeholder="Rechercher un outil…"
+                className="w-full text-xs py-1.5 pl-8"
+              />
+            </div>
+
+            {skillsTries.length === 0 ? (
+              <p className="text-xs text-muted">Aucun outil ne correspond à « {skillSearch} ».</p>
+            ) : (
+              <div className="space-y-1.5">
+                {skillsTries.map(s => {
+                  const reglage = toolCalling.skills[s.id]
+                  const active = reglage?.enabled ?? true
+                  return (
+                    <div
+                      key={s.id}
+                      className={`py-2 border-b border-line/40 last:border-0 ${active ? '' : 'opacity-60'}`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm text-primary">{s.label}</span>
+                          <p className="text-xs text-muted/80">
+                            {active ? s.description : 'Désactivé — cliquer pour réactiver.'}
+                          </p>
+                        </div>
+                        <Toggle
+                          checked={active}
+                          onChange={enabled => majSkill(s.id, { enabled })}
+                          label={s.label}
+                        />
+                      </div>
+                      {s.id === 'recherche_approfondie' && active && (
+                        <div className="flex items-center gap-2 mt-2">
+                          <input
+                            type="range"
+                            min={1}
+                            max={10}
+                            step={1}
+                            value={reglage?.budget ?? 4}
+                            onChange={e => majSkill(s.id, { budget: Number(e.target.value) })}
+                            className="flex-1 accent-[--accent-primary]"
+                            aria-label="Budget d'appels — recherche approfondie"
+                          />
+                          <span className="text-xs font-mono text-muted w-16 text-right shrink-0">
+                            {reglage?.budget ?? 4} appel{(reglage?.budget ?? 4) > 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {toolCallingMsg && <p className="text-xs text-error">{toolCallingMsg}</p>}
+        </Card>
+        )
+      })()}
     </main>
   )
 }
