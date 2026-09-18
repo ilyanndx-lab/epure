@@ -219,21 +219,33 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
     return "\n\n".join(system_parts), contents
 
 
-# ── Tool-calling natif — web_search, Ollama SEUL ─────────────────────────────
+# ── Tool-calling natif — registre de skills, Ollama SEUL ─────────────────────
 #
-# Mécanisme SÉPARÉ et INDÉPENDANT du classifieur heuristique
-# (core/websearch.py::detecter_intention_recherche, déclenché AVANT le tour de
-# chat, sans que le modèle en décide). Ici c'est le MODÈLE, en cours de
-# génération, qui décide d'appeler `web_search` — les deux coexistent
-# volontairement (CLAUDE.md §3.7 documente déjà cette distinction pour
-# d'autres tâches de fond ; ceci n'y déroge pas, une recherche déclenchée par
-# le modèle reste un choix fait POUR répondre au message en cours, jamais une
-# tâche de fond). Rien ici ne touche, ne désactive ni ne remplace le
-# classifieur.
+# Mécanisme SÉPARÉ et INDÉPENDANT des déclenchements heuristiques/manuels
+# (core/websearch.py::detecter_intention_recherche pour @web, l'injection
+# eager de `@historique` dans modules/chat/router.py — déclenchés AVANT ou
+# INDÉPENDAMMENT du tour de chat, sans que le modèle en décide). Ici c'est le
+# MODÈLE, en cours de génération, qui décide d'appeler un outil — les deux
+# mécanismes coexistent volontairement pour chaque skill (CLAUDE.md §3.7
+# documente déjà cette distinction pour d'autres tâches de fond ; ceci n'y
+# déroge pas, un appel déclenché par le modèle reste un choix fait POUR
+# répondre au message en cours, jamais une tâche de fond). Rien ici ne touche,
+# ne désactive ni ne remplace les chemins manuels/heuristiques existants.
 #
 # `tools=` n'est câblé QUE sur `_stream_ollama` : `_stream_openai` et
 # `_gemini_contents` normalisent les messages en `{role, content}` et
 # perdraient `tool_calls`/`role="tool"`, cf. `LLMEngine.stream`.
+#
+# `_SKILLS` est le registre : chaque entrée porte son schéma exposé au modèle,
+# son exécuteur (signature uniforme `(arguments: dict, on_etape=None,
+# rang_de_depart=0) -> tuple[str, list]`, pour que la boucle de dispatch
+# n'ait jamais besoin de connaître le nom de l'argument métier d'un skill) et
+# son plafond d'invocations. Ajouter un skill = ajouter une entrée ; rien
+# d'autre dans ce fichier ne nomme "web_search" ou "history_search" en dur
+# après ce chantier, hormis la traduction historique
+# `tool_call_web_search`/`tool_call_history_search` (émise DANS chaque
+# exécuteur, cf. leurs docstrings) — c'est ce nom qui alimente le panneau de
+# trace de recherche, pas un canal générique.
 
 #: Cap sur le nombre d'INVOCATIONS de l'outil par tour (pas de rounds
 #: `chat()` — un modèle peut demander plusieurs appels dans le même round).
@@ -303,8 +315,15 @@ def _capacites_ollama_fraiches() -> dict:
     return capacites
 
 
-def _outil_web_disponible(model: str) -> bool:
+def _capacite_tools_disponible(model: str) -> bool:
     """Le modèle DÉCLARE-t-il la capacité `tools` ? Jamais supposé.
+
+    Nom générique et non `_outil_web_disponible` (son nom avant le registre
+    de skills) : Ollama ne déclare qu'UNE capacité `tools` par modèle, pas une
+    par outil — cette sonde gate donc le registre `_SKILLS` entier, jamais un
+    skill en particulier. Un modèle qui la déclare peut recevoir n'importe
+    quel schéma du registre ; un modèle qui ne la déclare pas n'en reçoit
+    aucun.
 
     Même piège que `think=True` sur un modèle sans raisonnement (§3.6
     CLAUDE.md, mesuré : 400 `"...` does not support thinking`"`) : passer
@@ -318,13 +337,27 @@ def _outil_web_disponible(model: str) -> bool:
 
 
 def _executer_outil_web_search(
-    requete: str, on_etape: Optional[Callable[[dict], None]] = None,
+    arguments: dict, on_etape: Optional[Callable[[dict], None]] = None,
     rang_de_depart: int = 0,
 ) -> tuple[str, list]:
     """Exécute VRAIMENT `web_search` : réutilise `core.websearch.rechercher` +
     `core.webcontent.recuperer_contenu`, sans dupliquer leur logique — mêmes
     fonctions que `modules/chat/router.py:_rechercher_pour_prompt` (chemin du
     classifieur), à une différence assumée près (cf. plus bas).
+
+    Signature `(arguments: dict, ...)` et non `(requete: str, ...)` : c'est le
+    format uniforme du registre `_SKILLS`, qui permet à la boucle de dispatch
+    (`_stream_ollama`) d'appeler n'importe quel exécuteur sans connaître le nom
+    de son paramètre métier. `requete` est donc extraite ICI, à partir de
+    `tc["function"]["arguments"]` transmis tel quel — ce que faisait la boucle
+    de dispatch avant ce chantier, déplacé sans changer de comportement.
+
+    L'étape `tool_call_web_search` est émise ICI, avant même de vérifier que
+    `requete` est non vide : c'est ce que faisait la boucle de dispatch avant
+    ce chantier (elle appelait `on_etape_recherche` puis cet exécuteur), donc
+    la migrer dans l'exécuteur ne change ni son contenu ni son ordre relatif
+    aux étapes `recherche_debut`/`recherche_resultats` plus bas (même callable
+    `on_etape`, transmis tel quel à `rechercher()`).
 
     Import PARESSEUX : `core.websearch` importe `core.runtime`, qui importe
     `core.llm` pour construire le moteur partagé — un import en tête de
@@ -356,6 +389,9 @@ def _executer_outil_web_search(
     from core.websearch import RechercheWebErreur, formater_pour_llm, rechercher, tronquer_champ
     from core.webcontent import recuperer_contenu
 
+    requete = str((arguments or {}).get("requete") or "").strip()
+    if on_etape:
+        on_etape({"etape": "tool_call_web_search", "requete": requete})
     if not requete:
         return "Requête vide — aucune recherche effectuée.", []
     try:
@@ -374,6 +410,106 @@ def _executer_outil_web_search(
         "cette liste) :\n" + formater_pour_llm(resultats)
     )
     return tronquer_champ(texte, _BUDGET_CARACTERES_OUTIL_WEB), resultats
+
+
+#: Même raisonnement que `_MAX_APPELS_OUTIL_WEB` : borne un `while True` qui
+#: n'est pas garanti de converger tout seul. Valeur par défaut identique, faute
+#: de raison mesurée de faire autrement.
+_MAX_APPELS_OUTIL_HISTORY = 2
+
+#: Schéma exposé au modèle — même forme que `_OUTIL_WEB_SEARCH`.
+_OUTIL_HISTORY_SEARCH: dict = {
+    "type": "function",
+    "function": {
+        "name": "history_search",
+        "description": (
+            "Recherche dans les conversations passées de l'utilisateur un "
+            "sujet déjà discuté, quand la question actuelle s'y réfère "
+            "implicitement ou que tu as besoin de retrouver ce qui a été dit "
+            "précédemment."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "requete": {
+                    "type": "string",
+                    "description": "Termes de recherche concis, en français.",
+                },
+            },
+            "required": ["requete"],
+        },
+    },
+}
+
+
+def _executer_outil_history_search(
+    arguments: dict, on_etape: Optional[Callable[[dict], None]] = None,
+    rang_de_depart: int = 0,
+) -> tuple[str, list]:
+    """Exécute `history_search` : délègue à `HistoryEngine.search_history`,
+    le même moteur que le chemin manuel `@historique`
+    (`modules/chat/router.py`), sans dupliquer son formatage.
+
+    Import PARESSEUX de `core.runtime.history_engine`, même raison que
+    `_executer_outil_web_search` : `core.runtime` importe `core.llm` pour
+    construire `LLMEngine()`, un import en tête de fichier créerait un cycle
+    (`llm` → `runtime` → `llm`).
+
+    **Rend TOUJOURS `resultats=[]`, et c'est le point le plus important de
+    cette fonction.** Les extraits d'historique ne sont pas des `ResultatWeb`
+    citables par `[n]` — ils n'ont ni rang ni URL — et ne doivent JAMAIS
+    entrer dans `web_resultats` (modules/chat/router.py) : ce pipeline
+    alimente le bloc Sources et la résolution des citations `[n]`, qui
+    résout par RANG. Y verser un résultat d'historique casserait cette
+    numérotation en silence, pour n'importe quel autre appel de `web_search`
+    dans le même tour. `rang_de_depart` est accepté pour la signature uniforme
+    du registre mais n'a aucun effet ici — il n'y a rien à renuméroter.
+
+    `on_etape`, s'il est fourni, reçoit `{"etape": "tool_call_history_search",
+    "requete": requete}` avant l'appel — même pattern que
+    `tool_call_web_search` côté `_executer_outil_web_search`, pour que le
+    panneau de trace de recherche affiche aussi ce déclenchement (il ne
+    distingue pas encore les deux origines par un rendu dédié — cf. rapport).
+
+    Pas de borne de troncature dédiée (`_BUDGET_CARACTERES_OUTIL_WEB` n'a pas
+    d'équivalent ici) : `search_history` est déjà bornée en amont
+    (`n_results=3` × extrait de 300 caractères), un ordre de grandeur bien en
+    deçà de ce qui justifierait une troncature supplémentaire.
+    """
+    from core.runtime import history_engine
+
+    requete = str((arguments or {}).get("requete") or "").strip()
+    if on_etape:
+        on_etape({"etape": "tool_call_history_search", "requete": requete})
+    if not requete:
+        return "Requête vide — aucune recherche effectuée.", []
+    resultats = history_engine.search_history(requete)
+    if not resultats:
+        return "Aucun résultat trouvé dans l'historique.", []
+    extraits = "\n\n".join(
+        f"— {r['titre']} ({r['date']}) :\n{r['extrait']}" for r in resultats
+    )
+    return f"Extraits de conversations précédentes pertinentes :\n{extraits}", []
+
+
+#: Registre des skills exposables au tool-calling natif. Chaque entrée porte
+#: son schéma, son exécuteur (signature uniforme, cf. les deux fonctions
+#: ci-dessus) et son plafond d'invocations propre — les budgets sont
+#: INDÉPENDANTS entre skills (épuiser `web_search` n'empêche pas
+#: `history_search` de continuer à répondre, et réciproquement), cf.
+#: `_stream_ollama`.
+_SKILLS: dict[str, dict] = {
+    "web_search": {
+        "schema": _OUTIL_WEB_SEARCH,
+        "executor": _executer_outil_web_search,
+        "budget_max": _MAX_APPELS_OUTIL_WEB,
+    },
+    "history_search": {
+        "schema": _OUTIL_HISTORY_SEARCH,
+        "executor": _executer_outil_history_search,
+        "budget_max": _MAX_APPELS_OUTIL_HISTORY,
+    },
+}
 
 
 class LLMEngine:
@@ -432,16 +568,23 @@ class LLMEngine:
 
     def stream(self, messages: list[dict], model: Optional[str] = None,
                max_tokens: Optional[int] = None, raisonnement: bool = True,
-               outils_web: bool = False,
+               outils: Optional[list[str]] = None,
                on_etape_recherche: Optional[Callable[[dict], None]] = None,
                rang_web_existant: int = 0) -> Generator:
         """Flux de génération. ``raisonnement=False`` coupe la réflexion du modèle.
 
-        ``outils_web``/``on_etape_recherche``/``rang_web_existant`` : tool-calling
-        natif de `web_search`, **Ollama seul** — ignorés silencieusement pour
-        gemini/openai-compatible, dont le format de message n'a pas
-        `tool_calls`/`role="tool"` (cf. `_stream_ollama`). Les onze autres
-        appelants de cette méthode n'ont rien à passer : défauts inertes.
+        ``outils``/``on_etape_recherche``/``rang_web_existant`` : tool-calling
+        natif du registre ``_SKILLS`` (``web_search``, ``history_search``),
+        **Ollama seul** — ignorés silencieusement pour gemini/openai-compatible,
+        dont le format de message n'a pas `tool_calls`/`role="tool"` (cf.
+        `_stream_ollama`). Les onze autres appelants de cette méthode n'ont rien
+        à passer : ``outils=None`` (défaut) est le comportement historique, à
+        l'octet — aucune sonde de capacité, aucun `tools=` exposé, une seule
+        boucle. ``outils`` liste les NOMS de skills actifs pour CE tour (ex.
+        ``["web_search", "history_search"]``) ; un nom absent du registre est
+        ignoré silencieusement (cf. `_stream_ollama`) plutôt que de faire
+        échouer le tour — un futur appelant peut lister un skill pas encore
+        implémenté sans tout casser.
 
         **Le défaut est ``True``, et c'est le comportement historique** : les
         modèles qui pensent pensent, ceux qui ne pensent pas ne changent pas.
@@ -476,7 +619,7 @@ class LLMEngine:
         else:
             yield from self._stream_ollama(
                 messages, m, max_tokens, raisonnement=raisonnement,
-                outils_web=outils_web, on_etape_recherche=on_etape_recherche,
+                outils=outils, on_etape_recherche=on_etape_recherche,
                 rang_web_existant=rang_web_existant,
             )
 
@@ -656,7 +799,7 @@ class LLMEngine:
     # ── Ollama ───────────────────────────────────────────────────────────────
 
     def _stream_ollama(self, messages: list[dict], model: str, max_tokens: Optional[int] = None,
-                       raisonnement: bool = True, outils_web: bool = False,
+                       raisonnement: bool = True, outils: Optional[list[str]] = None,
                        on_etape_recherche: Optional[Callable[[dict], None]] = None,
                        rang_web_existant: int = 0) -> Generator:
         """Flux Ollama : texte (``str``), raisonnement et stats (dicts sentinelles).
@@ -719,31 +862,46 @@ class LLMEngine:
         deux modèles sans raisonnement, et il évite les ~570 tokens que le modèle
         produirait pour rien.
 
-        **Tool-calling natif — ``web_search``, ajouté SANS changer ce qui
-        précède.** ``outils_web=False`` (défaut de tous les appelants sauf le
+        **Tool-calling natif — registre ``_SKILLS``, ajouté SANS changer ce qui
+        précède.** ``outils=None`` (défaut de tous les appelants sauf le
         chemin direct du chat) : la boucle ``while`` ci-dessous ne fait qu'un
-        seul tour, byte pour byte comme avant ce paramètre.
+        seul tour, byte pour byte comme avant ce paramètre — aucune sonde de
+        capacité, aucun ``tools=`` posé.
 
-        ``outils_web=True`` n'expose ``tools=`` que si le modèle DÉCLARE la
-        capacité (``_outil_web_disponible`` — jamais supposé, même piège que
-        ``think=True`` documenté ci-dessus). Un ``tool_calls`` reçu est
-        exécuté (``_executer_outil_web_search``) puis renvoyé en
-        ``role="tool"``, corrélé par ``tool_name`` — ``ollama._types.
-        Message.ToolCall`` n'a PAS de champ ``id`` (vérifié sur le schéma
-        installé), à la différence du SDK openai ; ne pas réintroduire un
-        ``tool_call_id``. Plafonné à ``_MAX_APPELS_OUTIL_WEB`` INVOCATIONS, pas
-        rounds ``chat()`` : un modèle qui demande deux appels dans le même
-        round les épuise d'un coup, et les tours suivants n'exposent plus
-        ``tools`` une fois le budget consommé — le modèle conclut avec ce
-        qu'il a.
+        ``outils=[...]`` filtre d'abord aux noms présents dans ``_SKILLS``
+        (un nom inconnu est ignoré silencieusement, jamais une erreur), PUIS
+        sonde la capacité ``tools`` du modèle (``_capacite_tools_disponible``
+        — jamais supposée, même piège que ``think=True`` documenté
+        ci-dessus) — dans cet ordre, pour ne JAMAIS interroger ``/api/tags``
+        quand la liste filtrée est vide, comme avant ce paramètre.
+        Chaque skill actif a son propre budget d'invocations
+        (``budgets: dict[nom, int]``, initialisé à ``budget_max`` du
+        registre) : épuiser celui de ``web_search`` n'empêche pas
+        ``history_search`` de continuer à répondre ce même tour, et
+        réciproquement. À chaque round, seuls les schémas des skills dont le
+        budget est encore positif sont exposés dans ``tools=`` — budgets tous
+        épuisés (ou liste filtrée vide) → pas de clé ``tools`` du tout, le
+        modèle conclut avec ce qu'il a.
+
+        Un ``tool_calls`` reçu est dispatché par son ``nom`` : absent de
+        ``budgets`` (skill non actif ce tour, ou inventé par le modèle) →
+        message « outil inconnu » ; budget à 0 → message « budget épuisé » ;
+        sinon décrémenté et exécuté via ``_SKILLS[nom]["executor"]``, avec la
+        signature uniforme ``(arguments, on_etape, rang_de_depart)``. Le
+        résultat est renvoyé en ``role="tool"``, corrélé par ``tool_name`` —
+        ``ollama._types.Message.ToolCall`` n'a PAS de champ ``id`` (vérifié sur
+        le schéma installé), à la différence du SDK openai ; ne pas
+        réintroduire un ``tool_call_id``. Chaque budget plafonne des
+        INVOCATIONS, pas des rounds ``chat()`` : un modèle qui demande deux
+        appels du même skill dans le même round les épuise d'un coup.
 
         Un seul ``__stats__`` par tour de ``stream()``, agrégé sur tous les
         rounds plutôt qu'un par appel ``chat()`` : le contrat historique (une
         sentinelle par tour) reste inchangé pour les onze autres appelants, et
         ``usage_tracker.track`` (modules/chat/router.py) ne doit compter
         qu'une fois par réponse. Conséquence acceptée : ``num_predict``
-        s'applique PAR round, donc un tour à 2 appels d'outil peut consommer
-        jusqu'à 3x le budget habituel.
+        s'applique PAR round, donc un tour à plusieurs appels d'outil peut
+        consommer plusieurs fois le budget habituel.
 
         Les messages ``role="assistant"``/``role="tool"`` construits pendant
         la boucle ne vivent que dans la copie LOCALE ``msgs`` — jamais dans
@@ -751,9 +909,15 @@ class LLMEngine:
         ``accumulated`` ni l'historique persisté (modules/chat/router.py),
         qui rejoue ``messages`` tel quel au tour suivant.
         """
-        outil_actif = outils_web and _outil_web_disponible(model)
+        actifs = [n for n in (outils or []) if n in _SKILLS]
+        # `and` court-circuite : `_capacite_tools_disponible` (une requête
+        # HTTP potentielle, cf. `_capacites_ollama_fraiches`) n'est JAMAIS
+        # appelée quand `actifs` est vide — comportement d'avant ce paramètre.
+        capacite_ok = bool(actifs) and _capacite_tools_disponible(model)
         msgs = list(messages)
-        appels_restants = _MAX_APPELS_OUTIL_WEB if outil_actif else 0
+        budgets: dict[str, int] = (
+            {n: _SKILLS[n]["budget_max"] for n in actifs} if capacite_ok else {}
+        )
         rang_suivant = rang_web_existant
 
         total_prompt_tokens = 0
@@ -775,8 +939,9 @@ class LLMEngine:
             }
             if not raisonnement:
                 appel["think"] = False
-            if outil_actif and appels_restants > 0:
-                appel["tools"] = [_OUTIL_WEB_SEARCH]
+            tools_actifs = [_SKILLS[n]["schema"] for n in budgets if budgets[n] > 0]
+            if tools_actifs:
+                appel["tools"] = tools_actifs
 
             contenu_du_round: list[str] = []
             tool_calls_recus = None
@@ -835,34 +1000,42 @@ class LLMEngine:
             })
             for tc in tool_calls_recus:
                 nom = tc["function"]["name"]
-                if nom != "web_search":
-                    # Un seul outil est déclaré (`_OUTIL_WEB_SEARCH`) : ce cas
-                    # ne devrait jamais se produire, mais un modèle qui
-                    # invente un nom ne doit pas casser le tour.
+                if nom not in budgets:
+                    # Absent de `_SKILLS`, OU présent mais pas dans `actifs`
+                    # pour CE tour (le caller ne l'a pas demandé) : les deux
+                    # cas se traitent pareil, un modèle ne peut pas invoquer un
+                    # outil qui ne lui a pas été offert ce round.
                     msgs.append({"role": "tool", "tool_name": nom, "content": f"Outil inconnu : {nom}"})
                     continue
-                if appels_restants <= 0:
+                if budgets[nom] <= 0:
                     msgs.append({
                         "role": "tool", "tool_name": nom,
                         "content": "Budget d'appels d'outil épuisé pour ce tour — réponds avec ce que tu as déjà.",
                     })
                     continue
-                appels_restants -= 1
-                requete = str((tc["function"]["arguments"] or {}).get("requete") or "").strip()
-                if on_etape_recherche:
-                    on_etape_recherche({"etape": "tool_call_web_search", "requete": requete})
-                texte_outil, resultats = _executer_outil_web_search(
-                    requete, on_etape=on_etape_recherche, rang_de_depart=rang_suivant,
+                budgets[nom] -= 1
+                arguments = tc["function"]["arguments"] or {}
+                texte_outil, resultats = _SKILLS[nom]["executor"](
+                    arguments, on_etape=on_etape_recherche, rang_de_depart=rang_suivant,
                 )
+                # `len(resultats)` vaut 0 par construction pour un skill dont
+                # les résultats ne sont pas des `ResultatWeb` numérotés
+                # (`history_search` en rend toujours `[]`) : la renumérotation
+                # ne s'applique donc, de fait, qu'à `web_search` — sans qu'une
+                # branche explicite ait besoin de le savoir.
                 rang_suivant += len(resultats)
                 # Sentinelle distincte de `__reasoning__`/`__stats__` : porte
-                # les `ResultatWeb` STRUCTURÉS jusqu'au consommateur async
+                # les résultats STRUCTURÉS jusqu'au consommateur async
                 # (modules/chat/router.py), seul endroit qui connaît
                 # `web_resultats` — ce générateur tourne dans le thread de
-                # fond de `_stream`, il ne peut pas l'étendre lui-même.
+                # fond de `_stream`, il ne peut pas l'étendre lui-même. Le
+                # champ `outil` permet à l'appelant de n'étendre `web_resultats`
+                # qu'avec les résultats de `web_search` (cf. §3 du chantier
+                # skills — `history_search` rend `[]` mais un futur skill non
+                # citable ne doit pas pouvoir s'y mélanger).
                 yield {
-                    "__tool_call__": True, "outil": "web_search",
-                    "arguments": {"requete": requete}, "resultats": resultats,
+                    "__tool_call__": True, "outil": nom,
+                    "arguments": arguments, "resultats": resultats,
                 }
                 msgs.append({"role": "tool", "tool_name": nom, "content": texte_outil})
 

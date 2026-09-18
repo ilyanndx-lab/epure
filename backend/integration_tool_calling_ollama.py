@@ -74,7 +74,7 @@ def _executer(model: str):
     appels_outil: list[dict] = []
     stats = None
     for item in moteur.stream([{"role": "user", "content": _QUESTION}],
-                              model=model, outils_web=True):
+                              model=model, outils=["web_search"]):
         if isinstance(item, str):
             texte.append(item)
         elif isinstance(item, dict) and item.get("__tool_call__"):

@@ -270,7 +270,7 @@ def _construire_trace_finale(
     L'ancien ordre — l'ajouter puis tronquer `finale[:TRACE_MAX_ETAPES]` — la
     perdait silencieusement dès que le reste dépassait 19 étapes : c'est
     devenu plus probable depuis que le tool-calling natif
-    (`core/llm.py::_stream_ollama`, `outils_web=True`) peut déclencher une
+    (`core/llm.py::_stream_ollama`, registre `_SKILLS`) peut déclencher une
     recherche EN PLUS de celle du classifieur heuristique dans le même tour —
     deux jeux d'étapes (`recherche_debut`/`recherche_resultats`/…) au lieu
     d'un seul. Une étape de DÉROULEMENT tronquée est un détail perdu ; celle-ci
@@ -1179,10 +1179,17 @@ async def ws_chat(websocket: WebSocket):
 
                 Hissée hors du `if web_search_override:` (originellement définie
                 dedans) : le tool-calling natif (`LLMEngine._stream_ollama`,
-                `outils_web=True`) peut déclencher une recherche même quand le
+                `outils=[...]`) peut déclencher une recherche même quand le
                 classifieur n'a RIEN détecté ce tour — les deux mécanismes sont
                 indépendants (CLAUDE.md), donc cette trace doit exister pour
                 les deux, pas seulement quand `web_search_override` est vrai.
+
+                Reçoit aussi, depuis l'ajout de `history_search` au registre
+                `_SKILLS`, l'étape `tool_call_history_search` — poussée telle
+                quelle sur le même canal `trace_recherche_etape` que
+                `tool_call_web_search`. Aucun rendu dédié n'a été ajouté côté
+                frontend pour ce nom d'étape : à vérifier avant de compter sur
+                un affichage visible dans le panneau de trace pour ce skill.
                 """
                 etapes_recherche.append(etape)
                 try:
@@ -1537,14 +1544,21 @@ async def ws_chat(websocket: WebSocket):
                 try:
                     for token in llm.stream(
                         msgs, model=model, raisonnement=raisonnement,
-                        # Tool-calling natif (core/llm.py) — Ollama seul,
-                        # ignoré silencieusement pour les autres providers.
-                        # Indépendant du classifieur heuristique juste
-                        # au-dessus (`web_search_override`) : les deux
-                        # peuvent agir sur le même tour, d'où `rang_web_existant`
-                        # pour que leurs `ResultatWeb` ne partagent jamais un
-                        # même rang `[n]` (cf. `_executer_outil_web_search`).
-                        outils_web=True, on_etape_recherche=_on_etape_recherche,
+                        # Tool-calling natif (core/llm.py, registre `_SKILLS`)
+                        # — Ollama seul, ignoré silencieusement pour les
+                        # autres providers. `web_search` reste indépendant du
+                        # classifieur heuristique juste au-dessus
+                        # (`web_search_override`) : les deux peuvent agir sur
+                        # le même tour, d'où `rang_web_existant` pour que
+                        # leurs `ResultatWeb` ne partagent jamais un même rang
+                        # `[n]` (cf. `_executer_outil_web_search`).
+                        # `history_search` est exposé à CHAQUE tour direct,
+                        # comme `web_search` — pas seulement sur un message
+                        # `@historique` (qui reste, LUI, eager et manuel,
+                        # cf. plus haut) : même philosophie d'indépendance
+                        # entre le déclenchement manuel et le tool-calling.
+                        outils=["web_search", "history_search"],
+                        on_etape_recherche=_on_etape_recherche,
                         rang_web_existant=len(web_resultats),
                     ):
                         asyncio.run_coroutine_threadsafe(q.put(token), lp)
@@ -1574,16 +1588,24 @@ async def ws_chat(websocket: WebSocket):
                     )
                     break
                 if isinstance(item, dict) and item.get("__tool_call__"):
-                    # Résultats STRUCTURÉS d'une recherche déclenchée par le
-                    # MODÈLE (tool-calling natif, core/llm.py::_stream_ollama)
-                    # — versés dans la MÊME liste `web_resultats` que le
-                    # classifieur heuristique, pour que
+                    # Résultats STRUCTURÉS d'un outil déclenché par le MODÈLE
+                    # (tool-calling natif, core/llm.py::_stream_ollama,
+                    # registre `_SKILLS`). Seul `web_search` verse dans
+                    # `web_resultats` : c'est la liste que
                     # `_finaliser_citations_et_trace` (citations + Sources)
-                    # les voie sans distinction à la validation. La trace,
-                    # elle, distingue déjà les deux origines via l'étape
-                    # `tool_call_web_search` (poussée par `_on_etape_recherche`
-                    # depuis le thread de `_stream`, AVANT ce sentinel).
-                    web_resultats.extend(item.get("resultats") or [])
+                    # résout par RANG `[n]`, et un skill dont les résultats ne
+                    # sont pas des `ResultatWeb` numérotés (`history_search`,
+                    # qui rend toujours `resultats=[]`) casserait cette
+                    # numérotation en silence s'il s'y mélangeait. Garde
+                    # explicite plutôt qu'implicite (`resultats=[]` suffirait
+                    # aujourd'hui) : un futur skill non citable ajouté au
+                    # registre sans toucher cette ligne ne doit pas pouvoir
+                    # s'y retrouver par accident. La trace, elle, distingue
+                    # déjà les origines via l'étape `tool_call_<nom>` (poussée
+                    # par `_on_etape_recherche` depuis le thread de `_stream`,
+                    # AVANT ce sentinel).
+                    if item.get("outil") == "web_search":
+                        web_resultats.extend(item.get("resultats") or [])
                     continue
                 if isinstance(item, dict) and item.get("__reasoning__"):
                     # Raisonnement du modèle, canal distinct du contenu final.

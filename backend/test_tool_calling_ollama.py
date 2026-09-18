@@ -21,11 +21,18 @@ Ce qui est mesuré et figé ici, pas supposé :
 * le cap `_MAX_APPELS_OUTIL_WEB` compte des INVOCATIONS de l'outil, pas des
   rounds `chat()` — un modèle qui demande deux appels dans le même round les
   épuise d'un coup ;
-* `outils_web=False` (le défaut des onze autres appelants de `stream()`) ne
+* `outils=None` (le défaut des onze autres appelants de `stream()`) ne
   change RIEN à l'appel ni à la sortie — la boucle interne ne fait qu'un tour,
   comme avant ce paramètre (cf. `test_raisonnement_stream.py`, que ce fichier
   ne duplique pas) ;
 * un seul `__stats__` sort par tour de `stream()`, agrégé sur tous les rounds.
+
+Depuis le passage au registre `_SKILLS` (plusieurs skills, budgets
+indépendants), ce fichier ne couvre QUE `web_search` — c'est sa portée
+d'origine et sa non-régression. Les tests dédiés à `history_search` et à la
+cohabitation des deux skills dans un même tour sont dans
+`test_skills_history.py`, calqué sur les classes ci-dessous plutôt que de les
+dupliquer ici.
 
 Usage :
     python test_tool_calling_ollama.py
@@ -183,7 +190,7 @@ class CapaciteGateeTest(unittest.TestCase):
             rounds=[[_chunk(content="ok", done=True, output_tokens=1)]],
             capacites={"qwen2.5:7b": {"completion", "tools"}},
         ) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertIn("tools", r.appels[0])
         self.assertEqual(r.appels[0]["tools"], [module_llm._OUTIL_WEB_SEARCH])
 
@@ -193,7 +200,7 @@ class CapaciteGateeTest(unittest.TestCase):
             rounds=[[_chunk(content="ok", done=True, output_tokens=1)]],
             capacites={"qwen2.5:7b": {"completion"}},
         ) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertNotIn("tools", r.appels[0])
         self.assertEqual(_textes(sortie), ["ok"])
 
@@ -203,23 +210,23 @@ class CapaciteGateeTest(unittest.TestCase):
             rounds=[[_chunk(content="ok", done=True, output_tokens=1)]],
             capacites={},  # qwen2.5:7b absent du dict → .get() rend None
         ) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertNotIn("tools", r.appels[0])
 
-    def test_outils_web_false_ne_sonde_meme_pas_les_capacites(self):
+    def test_outils_absent_ne_sonde_meme_pas_les_capacites(self):
         """Défaut de `stream()` : comportement d'avant, à l'octet — aucune
         sonde `/api/tags`, aucun `tools=`."""
         with _Rejoueur(
             rounds=[[_chunk(content="ok", done=True, output_tokens=1)]],
         ) as r:
-            sortie, _ = _stream(r)  # outils_web=False implicite
+            sortie, _ = _stream(r)  # outils=None implicite
         self.assertNotIn("tools", r.appels[0])
         self.assertEqual(_textes(sortie), ["ok"])
         self.assertEqual(len(_stats(sortie)), 1)
 
 
 class NonRegressionTest(unittest.TestCase):
-    """`outils_web=False` (le défaut) : identique à `_stream_ollama` d'avant
+    """`outils=None` (le défaut) : identique à `_stream_ollama` d'avant
     ce chantier, pour les onze autres appelants de `stream()`."""
 
     def test_une_seule_boucle_un_seul_stats(self):
@@ -238,7 +245,7 @@ class NonRegressionTest(unittest.TestCase):
 
     def test_appelants_qui_ne_passent_rien_ne_voient_aucun_nouveau_parametre(self):
         """`appel` (le dict envoyé à `ollama_client.chat`) n'a NI `tools` NI
-        aucune nouvelle clé quand `outils_web` n'est pas passé du tout."""
+        aucune nouvelle clé quand `outils` n'est pas passé du tout."""
         with _Rejoueur(rounds=[[_chunk(done=True)]]) as r:
             _stream(r)
         self.assertEqual(set(r.appels[0]) - {"model", "messages", "stream", "options"}, set())
@@ -254,7 +261,7 @@ class RoundTripBasiqueTest(unittest.TestCase):
             [_chunk(content="Il pleut"), _chunk(content=" [1].", done=True,
                     prompt_tokens=40, output_tokens=8)],
         ]) as r:
-            sortie, msgs_appelant = _stream(r, outils_web=True)
+            sortie, msgs_appelant = _stream(r, outils=["web_search"])
 
         self.assertEqual(len(r.appels), 2, "deux rounds ollama_client.chat")
         self.assertEqual(r.appels_recherche, ["météo Paris"])
@@ -305,7 +312,7 @@ class RoundTripBasiqueTest(unittest.TestCase):
             [_chunk(content="Je cherche…", tool_calls=[_tool_call(requete="x")], done=True)],
             [_chunk(content="Fini.", done=True)],
         ]) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertEqual(_textes(sortie), ["Je cherche…", "Fini."])
         message_assistant = r.appels[1]["messages"][-2]
         self.assertEqual(message_assistant["content"], "Je cherche…")
@@ -320,7 +327,7 @@ class PlafondAppelsTest(unittest.TestCase):
             [_chunk(tool_calls=[_tool_call(requete="deux")], done=True)],
             [_chunk(content="Conclusion.", done=True)],
         ]) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertEqual(len(r.appels), 3)
         self.assertIn("tools", r.appels[0])
         self.assertIn("tools", r.appels[1])
@@ -335,7 +342,7 @@ class PlafondAppelsTest(unittest.TestCase):
             ], done=True)],
             [_chunk(content="Conclusion.", done=True)],
         ]) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertEqual(r.appels_recherche, ["un", "deux"], "le 3e ne doit pas chercher")
         self.assertEqual(len(_appels_outil(sortie)), 2)
         messages_round2 = r.appels[1]["messages"]
@@ -357,7 +364,7 @@ class RenumerotationRangTest(unittest.TestCase):
             ],
             resultats_par_recherche=[[_resultat(1), _resultat(2)], [_resultat(1)]],
         ) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         appels_outil = _appels_outil(sortie)
         self.assertEqual([x.rang for x in appels_outil[0]["resultats"]], [1, 2])
         # Décalé de 2 (len du premier lot) : le rang 1 d'origine devient 3.
@@ -371,7 +378,7 @@ class RenumerotationRangTest(unittest.TestCase):
                     [_chunk(content="Fini.", done=True)]],
             resultats_par_recherche=[[_resultat(1), _resultat(2)]],
         ) as r:
-            sortie, _ = _stream(r, outils_web=True, rang_web_existant=5)
+            sortie, _ = _stream(r, outils=["web_search"], rang_web_existant=5)
         appels_outil = _appels_outil(sortie)
         self.assertEqual([x.rang for x in appels_outil[0]["resultats"]], [6, 7])
 
@@ -383,7 +390,7 @@ class TraceEtRechercheEchoueeTest(unittest.TestCase):
             [_chunk(tool_calls=[_tool_call(requete="q")], done=True)],
             [_chunk(content="Fini.", done=True)],
         ]) as r:
-            _stream(r, outils_web=True, on_etape_recherche=etapes.append)
+            _stream(r, outils=["web_search"], on_etape_recherche=etapes.append)
         types = [e["etape"] for e in etapes]
         self.assertEqual(types[0], "tool_call_web_search")
         self.assertEqual(etapes[0]["requete"], "q")
@@ -398,7 +405,7 @@ class TraceEtRechercheEchoueeTest(unittest.TestCase):
             ],
             leve_recherche=websearch_mod.RechercheWebErreur("DNS injoignable"),
         ) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         appels_outil = _appels_outil(sortie)
         self.assertEqual(appels_outil[0]["resultats"], [])
         message_outil = r.appels[1]["messages"][-1]
@@ -414,7 +421,7 @@ class OutilInconnuTest(unittest.TestCase):
             [_chunk(tool_calls=[_tool_call(nom="autre_chose")], done=True)],
             [_chunk(content="ok", done=True)],
         ]) as r:
-            sortie, _ = _stream(r, outils_web=True)
+            sortie, _ = _stream(r, outils=["web_search"])
         self.assertEqual(r.appels_recherche, [])
         self.assertEqual(_appels_outil(sortie), [])
         message_outil = r.appels[1]["messages"][-1]
