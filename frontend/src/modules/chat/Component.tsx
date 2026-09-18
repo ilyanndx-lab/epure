@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { usePersistentState } from '../../usePersistentState'
-import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, RotateCcw, Columns3 } from 'lucide-react'
-import { Card, Textarea, Toggle } from '../../components/ui'
+import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, Columns3, Settings } from 'lucide-react'
+import { Button, Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
+import { EFFORT_LABELS } from '../../effort'
+import { capacitesRaisonnement } from '../../raisonnement'
 import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
 import { AT_COMMANDS, allSlashCommands, moduleCommands } from './commands'
@@ -224,6 +226,15 @@ function MenuMeta({ meta, onFermer }: { meta: MetaAffichable; onFermer: () => vo
 const SEUIL_GLISSER = 4
 
 /**
+ * Longueur maximale de la consigne d'un fil — miroir de `MAX_INSTRUCTION` côté
+ * backend, qui REFUSE au-delà plutôt que de tronquer. Affichée en compteur et
+ * utilisée pour désactiver le bouton : sans elle, le refus n'arriverait
+ * qu'après l'envoi, sur une consigne déjà écrite. Migré depuis `ModuleBar.tsx`
+ * avec le reste du panneau de paramètres (§ défaut 3, itération 2).
+ */
+const MAX_INSTRUCTION_FIL = 4000
+
+/**
  * Ce clic est-il en fait une SÉLECTION de texte ?
  *
  * Le bug corrigé : la bulle entière ouvre le menu au clic, or c'est aussi la
@@ -291,10 +302,10 @@ function RaisonnementView({ texte, enCours, collapsed, onToggle }: {
   onToggle: () => void
 }) {
   return (
-    <Card accent="secondary" padded={false} className="mb-2 overflow-hidden">
+    <Card accent="secondary" padded={false} className="mb-2 overflow-hidden !bg-accent2/5 !border-accent2/25">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-elevated transition-colors duration-150"
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-accent2/10 transition-colors duration-150"
       >
         <span className="text-xs text-secondary flex items-center gap-2">
           <Brain size={14} className={`text-accent2 shrink-0 ${enCours ? 'animate-pulse' : ''}`} />
@@ -307,7 +318,7 @@ function RaisonnementView({ texte, enCours, collapsed, onToggle }: {
       </button>
 
       {!collapsed && (
-        <div className="border-t border-line px-3 py-2">
+        <div className="border-t border-accent2/25 px-3 py-2">
           <p className="text-xs text-muted leading-relaxed whitespace-pre-wrap break-words m-0 max-h-52 overflow-y-auto">
             {texte}
             {enCours && <span className="animate-pulse text-accent2">▍</span>}
@@ -333,10 +344,10 @@ function ThinkingBlockView({ thinking, collapsed, onToggle }: {
     : 'Réflexion...'
 
   return (
-    <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden">
+    <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden !bg-accent2/5 !border-accent2/25">
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-elevated transition-colors duration-150"
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-accent2/10 transition-colors duration-150"
       >
         <span className="text-xs text-secondary flex items-center gap-2">
           <Brain size={14} className={`text-accent2 shrink-0 ${thinking.done ? '' : 'animate-pulse'}`} />
@@ -349,7 +360,7 @@ function ThinkingBlockView({ thinking, collapsed, onToggle }: {
       </button>
 
       {!collapsed && (
-        <div className="border-t border-line divide-y divide-line">
+        <div className="border-t border-accent2/25 divide-y divide-line">
           {thinking.steps.map((step, i) => (
             <div key={i} className="px-3 py-2">
               <div className="flex items-center gap-2 mb-1">
@@ -712,7 +723,16 @@ export default function Chat({
   // 'always' = reste actif jusqu'à désactivation explicite.
   const [webSearch, setWebSearch] = usePersistentState<boolean>('epure.chat.webSearch', false)
   const [webSearchMode, setWebSearchMode] = usePersistentState<'once' | 'always'>('epure.chat.webSearchMode', 'once')
-  const [webMenuOpen, setWebMenuOpen] = useState(false)
+  /**
+   * Un seul panneau du header ouvert à la fois — modèle, recherche web,
+   * comparaison, ou le popover « Paramètres de la conversation ». Une valeur
+   * UNIQUE plutôt que quatre booléens indépendants : ouvrir l'un ferme l'autre
+   * par construction, sans code de coordination séparé. Ne couvre QUE les
+   * panneaux propriété de ce composant — pas ceux de `ModuleBar` (`activePanel`,
+   * privé à ce composant ; il ne lui reste plus que le panel fichiers et le
+   * panel modèle, cf. rapport final).
+   */
+  const [headerMenuOuvert, setHeaderMenuOuvert] = useState<'model' | 'web' | 'compare' | 'params' | null>(null)
 
   /**
    * Comparaison multi-modèles — sélection courante (2 à 3 id, non persistée :
@@ -723,8 +743,57 @@ export default function Chat({
    * validation serveur, cf. `router.py:_valider_compare_models`).
    */
   const [compareModeles, setCompareModeles] = useState<string[]>([])
-  const [compareMenuOpen, setCompareMenuOpen] = useState(false)
   const [modelesDisponiblesListe, setModelesDisponiblesListe] = useState<ModeleDisponible[]>([])
+  /**
+   * Modèle actif, reporté par `ModuleBar` (`onModelChange`) plutôt que relu
+   * indépendamment ici : `selectedModel` est un état PRIVÉ de `ModuleBar`,
+   * synchronisé avec le serveur (chargement initial + sélection). Une
+   * seconde lecture ici diverger­ait dès que l'utilisateur change de modèle
+   * depuis le panneau de `ModuleBar`, sans qu'aucun événement ne l'annonce.
+   */
+  const [modeleActifId, setModeleActifId] = useState('')
+  /** Cible du portail du panneau modèle complet de `ModuleBar` (cf. le chip
+   * du header) — un `useState`, pas un simple `useRef`, parce que `ModuleBar`
+   * doit être RE-RENDU une fois le nœud DOM de l'ancre disponible pour que
+   * son portail ait une cible. */
+  const [modelPanelAncre, setModelPanelAncre] = useState<HTMLDivElement | null>(null)
+  /**
+   * Portails du bouton "Fichiers"/son panneau et du bouton micro — même
+   * principe que `modelPanelAncre` : le bouton "Fichiers" va à gauche des
+   * pilules d'effort, le micro à droite, dans l'îlot du composer. Ce sont les
+   * VRAIS boutons de `ModuleBar` (avec leur état — badge de fichiers
+   * attachés, icône micro selon `recording`/`transcribing`), pas une copie :
+   * une fois ces trois ancres montées, la barre de `ModuleBar` n'a plus rien
+   * à montrer pour Chat et ne se rend plus du tout (`hasAnyContent` côté
+   * `ModuleBar.tsx`).
+   */
+  const [fileButtonAncre, setFileButtonAncre] = useState<HTMLDivElement | null>(null)
+  const [filePanelAncre, setFilePanelAncre] = useState<HTMLDivElement | null>(null)
+  const [micButtonAncre, setMicButtonAncre] = useState<HTMLDivElement | null>(null)
+  /** Ouverture du panneau fichiers, désormais pilotée depuis le composer. */
+  const [filesPanelOuvert, setFilesPanelOuvert] = useState(false)
+  /** Titre de la conversation affichée, reporté par `ConversationList` — seule
+   * source de l'index des conversations (cf. sa prop `onTitreActif`). */
+  const [titreConversationActive, setTitreConversationActive] = useState('Nouvelle conversation')
+
+  /**
+   * Paramètres de conversation — migrés depuis `ModuleBar.tsx` (son panneau
+   * « Paramètres de session »), supprimé de ce fichier une fois la migration
+   * faite : `showSkills` n'avait que Chat comme consommateur, donc le garder
+   * vivant à deux endroits aurait été du code mort côté `ModuleBar`, pas du
+   * partage. Rendus désormais dans le popover du header (§ défaut 3).
+   */
+  const [strictMode, setStrictMode] = useState(false)
+  // Défaut `true` = comportement historique : si `/context` ne répond pas, on
+  // n'éteint pas une capacité qu'on n'a pas pu lire.
+  const [raisonnement, setRaisonnement] = useState(true)
+  const [sessionInstruction, setSessionInstruction] = useState('')
+  const [instructionDraft, setInstructionDraft] = useState('')
+  /** Consigne libre DE CETTE CONVERSATION, distincte de la consigne de session
+   * juste au-dessus — même distinction de portée que dans `ModuleBar.tsx`
+   * avant sa migration ici. */
+  const [instructionFil, setInstructionFil] = useState('')
+  const [instructionFilDraft, setInstructionFilDraft] = useState('')
   /** Repli du raisonnement PAR PANNEAU de comparaison, clé `${msgIdx}-${model}` —
    * même sémantique que `collapsedRaisonnement`, dupliquée plutôt que partagée
    * parce que les clés ne vivent pas dans le même espace (un index de message
@@ -734,8 +803,13 @@ export default function Chat({
   /** Position du bouton enfoncé, pour distinguer un clic d'un glisser. */
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
   const webMenuRef = useRef<HTMLDivElement>(null)
   const compareMenuRef = useRef<HTMLDivElement>(null)
+  const paramsMenuRef = useRef<HTMLDivElement>(null)
+  /** Conteneur du bouton "Fichiers" + son panneau, dans le composer — clic
+   * extérieur = fermeture, même patron que les panneaux du header. */
+  const filesMenuRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   /** Le conteneur défilant lui-même — nécessaire pour lire sa position de
    * scroll (cf. l'effet de suivi automatique plus bas). */
@@ -790,7 +864,7 @@ export default function Chat({
   const resolutionEnCoursRef = useRef(false)
   // Arrêt : ignore les events de streaming entrants après un stop manuel.
   const cancelledRef = useRef(false)
-  // Dernier message envoyé (pour « relancer »).
+  // Dernier message envoyé.
   const lastSentRef = useRef<Record<string, unknown> | null>(null)
 
   /**
@@ -1595,30 +1669,37 @@ export default function Chat({
     setProcheDuBas(true)
   }, [])
 
-  // Ferme le menu de recherche web au clic extérieur.
+  // Ferme le panneau du header ouvert (modèle, recherche web, comparaison,
+  // paramètres de la conversation) au clic extérieur à SON conteneur.
   useEffect(() => {
-    if (!webMenuOpen) return
+    if (!headerMenuOuvert) return
+    const ref = headerMenuOuvert === 'model' ? modelMenuRef
+      : headerMenuOuvert === 'web' ? webMenuRef
+      : headerMenuOuvert === 'compare' ? compareMenuRef
+      : paramsMenuRef
     const onDown = (e: MouseEvent) => {
-      if (webMenuRef.current && !webMenuRef.current.contains(e.target as Node)) {
-        setWebMenuOpen(false)
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setHeaderMenuOuvert(null)
       }
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [webMenuOpen])
+  }, [headerMenuOuvert])
 
-  // Ferme le menu de comparaison au clic extérieur — même patron que le menu
-  // de recherche web juste au-dessus.
+  // Ferme le panneau fichiers du composer au clic extérieur — même patron
+  // que les panneaux du header, dans son propre conteneur (l'îlot n'est pas
+  // le header : un état séparé plutôt qu'une valeur de plus dans
+  // `headerMenuOuvert`, qui ne couvre que les panneaux du header).
   useEffect(() => {
-    if (!compareMenuOpen) return
+    if (!filesPanelOuvert) return
     const onDown = (e: MouseEvent) => {
-      if (compareMenuRef.current && !compareMenuRef.current.contains(e.target as Node)) {
-        setCompareMenuOpen(false)
+      if (filesMenuRef.current && !filesMenuRef.current.contains(e.target as Node)) {
+        setFilesPanelOuvert(false)
       }
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
-  }, [compareMenuOpen])
+  }, [filesPanelOuvert])
 
   /**
    * Modèles disponibles pour la comparaison — même route que le panneau
@@ -1640,6 +1721,100 @@ export default function Chat({
     return () => { annule = true }
   }, [])
 
+  /**
+   * Réglages de session — migrés depuis `ModuleBar.tsx`. Requête séparée de
+   * celle que `ModuleBar` fait encore sur `/context` (pour son propre
+   * `selectedModel`) : même endpoint lu deux fois par deux composants
+   * frères, comme `/models` l'était déjà avant cette itération — accepté
+   * plutôt que de faire remonter un état de plus par callback.
+   */
+  useEffect(() => {
+    apiFetch(`${API}/context`)
+      .then(r => r.json())
+      .then((d: Record<string, unknown>) => {
+        setStrictMode((d['strict_mode'] as boolean) ?? false)
+        // `?? true` et non `?? false` : la clé est absente des
+        // `context_session.json` écrits avant ce réglage, et son absence doit
+        // valoir « activé », pas « désactivé ».
+        setRaisonnement((d['raisonnement'] as boolean) ?? true)
+        const instr = (d['instruction_générale'] as string) ?? ''
+        setSessionInstruction(instr)
+        setInstructionDraft(instr)
+      })
+      .catch(() => {})
+  }, [])
+
+  /** Consigne DE CETTE CONVERSATION — relue à chaque changement de fil, comme
+   * le faisait `chargerAttachements` dans `ModuleBar.tsx` avant la migration.
+   * Le `useCallback` (plutôt qu'un `setState` en tête de l'effet lui-même)
+   * suit le même patron que `chargerAttachements` : un `setState` posé
+   * directement dans le corps d'un effet est signalé par
+   * `react-hooks/set-state-in-effect`, pas quand il est atteint via une
+   * fonction appelée depuis l'effet. */
+  const chargerInstructionFil = useCallback(async () => {
+    if (!conversationId) {
+      setInstructionFil(''); setInstructionFilDraft('')
+      return
+    }
+    try {
+      const res = await apiFetch(`${API}/chat/conversations/${conversationId}`)
+      if (!res.ok) return
+      const d = await res.json() as Record<string, unknown>
+      // Absente sur les conversations d'avant ce champ : `texte()` rend `''`,
+      // ce qui est exactement le bon défaut — pas d'invention.
+      const consigne = texte(d.instruction)
+      setInstructionFil(consigne)
+      setInstructionFilDraft(consigne)
+    } catch { /* backend qui démarre : panneau vide, sans gravité */ }
+  }, [conversationId])
+
+  useEffect(() => { void chargerInstructionFil() }, [chargerInstructionFil])
+
+  const pushContextSettings = useCallback((patch: Record<string, unknown>) => {
+    apiFetch(`${API}/context/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).catch(() => {})
+  }, [])
+
+  const handleStrictToggle = useCallback(() => {
+    const next = !strictMode
+    setStrictMode(next)
+    pushContextSettings({ strict_mode: next })
+  }, [strictMode, pushContextSettings])
+
+  const handleRaisonnementToggle = useCallback(() => {
+    const next = !raisonnement
+    setRaisonnement(next)
+    pushContextSettings({ raisonnement: next })
+  }, [raisonnement, pushContextSettings])
+
+  const handleInstructionSave = useCallback(() => {
+    setSessionInstruction(instructionDraft)
+    pushContextSettings({ 'instruction_générale': instructionDraft })
+  }, [instructionDraft, pushContextSettings])
+
+  const enregistrerInstructionFil = useCallback(async () => {
+    if (!conversationId) return
+    try {
+      const res = await apiFetch(`${API}/chat/conversations/${conversationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: instructionFilDraft }),
+      })
+      // 400 = consigne trop longue (le backend refuse plutôt que de tronquer).
+      // On ne touche pas à l'état : le brouillon reste tel quel, donc le bouton
+      // reste actif et l'utilisateur peut raccourcir sans avoir rien perdu.
+      if (!res.ok) return
+      setInstructionFil(instructionFilDraft)
+    } catch { /* le brouillon reste : l'utilisateur peut réessayer */ }
+  }, [conversationId, instructionFilDraft])
+
+  const providerActif = modelesDisponiblesListe.find(m => m.id === modeleActifId)?.provider
+  const { nonSupporte: raisonnementNonSupporte, budgetSeul: raisonnementBudgetSeul } =
+    capacitesRaisonnement(providerActif)
+
   // ── Autocomplete ──────────────────────────────────────────────────────────
 
   const suggestions = useMemo(() => {
@@ -1655,7 +1830,7 @@ export default function Chat({
 
   const applySuggestion = useCallback((trigger: string) => {
     setInput(trigger + ' ')
-  }, [])
+  }, [setInput])
 
   // ── Skill handlers ────────────────────────────────────────────────────────
 
@@ -1819,8 +1994,7 @@ export default function Chat({
 
   // ── Send ──────────────────────────────────────────────────────────────────
 
-  // Envoi d'un message « normal » (hors commandes /…) — factorisé pour être
-  // réutilisé par « relancer ».
+  // Envoi d'un message « normal » (hors commandes /…).
   const sendUserText = useCallback((rawText: string) => {
     if (!connected || comparaisonEnCours) return
     cancelledRef.current = false
@@ -1966,7 +2140,7 @@ export default function Chat({
       return
     }
 
-    // Message normal : délégué à sendUserText (réutilisé par « relancer »).
+    // Message normal : délégué à sendUserText.
     sendUserText(rawText)
   }, [
     input, connected, streaming, comparaisonEnCours, sendUserText, modules,
@@ -2028,7 +2202,7 @@ export default function Chat({
     }
   }, [attenteToken])
 
-  // ── Stop & relancer ─────────────────────────────────────────────────────────
+  // ── Stop ──────────────────────────────────────────────────────────────────
 
   const stop = useCallback(() => {
     if (!streaming) return
@@ -2040,14 +2214,6 @@ export default function Chat({
     setStreamStats(null)
     inPipelineRef.current = false
   }, [streaming])
-
-  const relancer = useCallback(() => {
-    if (streaming || !connected || comparaisonEnCours) return
-    const lastUser = [...messages].reverse().find(m => m.role === 'user')
-    if (lastUser) sendUserText(lastUser.content)
-  }, [streaming, connected, comparaisonEnCours, messages, sendUserText])
-
-  const canResume = !streaming && !comparaisonEnCours && messages.some(m => m.role === 'user')
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
 
@@ -2079,8 +2245,384 @@ export default function Chat({
         rafraichir={rafraichirConvs}
         replie={panneauReplie}
         onBasculerRepli={() => setPanneauReplie(v => !v)}
+        onTitreActif={setTitreConversationActive}
       />
     <main className="flex flex-col flex-1 overflow-hidden relative">
+      {/* ── Header de conversation ──
+          Trois zones flex (gauche / centre / droite) et non un flux linéaire :
+          le chip modèle doit rester au centre VISUEL de la barre quelle que
+          soit la longueur du titre à gauche, pas seulement « après le titre ».
+          Les deux zones latérales partagent `flex-1` à parts égales, ce qui
+          centre la zone du milieu par construction — pas de calcul de largeur. */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-line shrink-0">
+        <div className="flex-1 min-w-0 flex items-center">
+          <span className="truncate text-sm font-medium text-primary">
+            {titreConversationActive}
+          </span>
+        </div>
+
+        {/* ── Chip modèle : vrai bouton + chevron, ouvre la liste des modèles ── */}
+        <div className="relative shrink-0" ref={modelMenuRef}>
+          <button
+            type="button"
+            onClick={() => setHeaderMenuOuvert(v => (v === 'model' ? null : 'model'))}
+            aria-haspopup="menu"
+            aria-expanded={headerMenuOuvert === 'model'}
+            title="Changer de modèle"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md border transition-colors duration-150 max-w-48 ${
+              headerMenuOuvert === 'model'
+                ? 'border-accent/40 bg-accent/10 text-accent'
+                : 'border-line bg-elevated text-muted hover:text-secondary'
+            }`}
+          >
+            <span className="truncate text-xs font-mono">
+              {(() => {
+                if (!modeleActifId) return 'Modèle'
+                const info = modelesDisponiblesListe.find(m => m.id === modeleActifId)
+                return info?.nom?.split(' ')[0] ?? modeleActifId.split(':').pop() ?? modeleActifId
+              })()}
+            </span>
+            <ChevronDown
+              size={12}
+              className={`shrink-0 transition-transform duration-150 ${headerMenuOuvert === 'model' ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          {/*
+            Le CONTENU de ce menu (recommandations, verdicts matériel,
+            contrôles FLM, mémoire Ollama...) n'est pas rendu ici : cette `div`
+            n'est qu'une ANCRE, ciblée par un portail React que `ModuleBar`
+            ouvre dans son propre panneau modèle (`modelPanelPortalTarget`
+            ci-dessous). C'est le menu déroulant COMPLET qu'on avait avant,
+            pas une liste simplifiée — son état et son JSX restent définis à
+            un seul endroit (`ModuleBar.tsx`), pour tous les modules qui
+            l'utilisent, et le portail ne fait que déplacer où il s'affiche.
+          */}
+          {headerMenuOuvert === 'model' && (
+            <div
+              ref={setModelPanelAncre}
+              className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20"
+            />
+          )}
+        </div>
+
+        <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
+        {/* ── Recherche web : icône cliquable + menu déroulable (déplacée du composer) ── */}
+        <div className="relative shrink-0" ref={webMenuRef}>
+          <div
+            className={`flex items-stretch rounded-md border transition-colors duration-150 ${
+              webSearch ? 'border-accent/40 bg-accent/10' : 'border-line bg-elevated'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => setWebSearch(v => !v)}
+              aria-pressed={webSearch}
+              title={webSearch
+                ? 'Recherche web activée — forcée avant la réponse'
+                : 'Forcer une recherche web avant la réponse'}
+              className={`relative p-2.5 rounded-l-md transition-colors duration-150 ${
+                webSearch ? 'text-accent' : 'text-muted hover:text-secondary'
+              }`}
+            >
+              <Globe size={16} className={webSearch && streaming ? 'animate-pulse' : ''} />
+              {webSearch && (
+                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
+                  {webSearchMode === 'once' ? '1×' : '∞'}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setHeaderMenuOuvert(v => (v === 'web' ? null : 'web'))}
+              aria-haspopup="menu"
+              aria-expanded={headerMenuOuvert === 'web'}
+              title="Options de recherche web"
+              className={`px-1 rounded-r-md border-l transition-colors duration-150 ${
+                webSearch
+                  ? 'border-accent/30 text-accent hover:bg-accent/10'
+                  : 'border-line text-muted hover:text-secondary hover:bg-elevated'
+              }`}
+            >
+              <ChevronDown
+                size={13}
+                className={`transition-transform duration-150 ${headerMenuOuvert === 'web' ? 'rotate-180' : ''}`}
+              />
+            </button>
+          </div>
+
+          {headerMenuOuvert === 'web' && (
+            <div className="absolute top-full right-0 mt-2 w-64 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
+              <div className="flex items-center justify-between px-3 py-2.5 border-b border-line">
+                <span className="text-xs font-medium text-primary flex items-center gap-2">
+                  <Globe size={13} className={webSearch ? 'text-accent' : 'text-muted'} />
+                  Recherche web
+                </span>
+                <Toggle checked={webSearch} onChange={setWebSearch} label="Activer la recherche web" />
+              </div>
+
+              <div className="p-1.5 space-y-0.5">
+                <p className="px-2 py-1 text-xs text-muted uppercase tracking-wide">Mode</p>
+                {([
+                  { id: 'once', label: 'Activer une fois', desc: 'Réinitialisé après chaque message' },
+                  { id: 'always', label: 'Toujours activé', desc: "Reste actif jusqu'à désactivation" },
+                ] as const).map(opt => {
+                  const selected = webSearchMode === opt.id
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => { setWebSearchMode(opt.id); setWebSearch(true) }}
+                      className={`w-full text-left px-2.5 py-1.5 rounded-sm transition-colors duration-150 flex items-start gap-2 ${
+                        selected ? 'bg-accent/10' : 'hover:bg-surface'
+                      }`}
+                    >
+                      <span className="shrink-0 w-4 inline-flex justify-center pt-0.5">
+                        {selected
+                          ? <Check size={13} className="text-accent" />
+                          : <span className="w-1.5 h-1.5 rounded-full bg-line inline-block mt-1" />}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className={`block text-xs ${selected ? 'text-accent font-medium' : 'text-secondary'}`}>
+                          {opt.label}
+                        </span>
+                        <span className="block text-[11px] text-muted">{opt.desc}</span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="px-3 py-2.5 border-t border-line space-y-1.5">
+                <p className="text-xs text-muted uppercase tracking-wide">Sources utilisées</p>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-accent2 shrink-0" />
+                  <span className="text-xs text-secondary">DuckDuckGo</span>
+                  <span className="text-[11px] font-mono text-muted ml-auto">Instant + HTML</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Comparaison multi-modèles : icône + menu à cocher (déplacée du composer) ── */}
+        <div className="relative shrink-0" ref={compareMenuRef}>
+          <button
+            type="button"
+            onClick={() => setHeaderMenuOuvert(v => (v === 'compare' ? null : 'compare'))}
+            aria-haspopup="menu"
+            aria-expanded={headerMenuOuvert === 'compare'}
+            aria-pressed={compareModeles.length >= 2}
+            title={compareModeles.length >= 2
+              ? `Comparaison active — ${compareModeles.length} modèles`
+              : 'Comparer plusieurs modèles côte à côte'}
+            className={`relative p-2.5 rounded-md border transition-colors duration-150 ${
+              compareModeles.length >= 2
+                ? 'border-accent/40 bg-accent/10 text-accent'
+                : 'border-line bg-elevated text-muted hover:text-secondary'
+            }`}
+          >
+            <Columns3 size={16} />
+            {compareModeles.length > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
+                {compareModeles.length}
+              </span>
+            )}
+          </button>
+
+          {headerMenuOuvert === 'compare' && (
+            <div className="absolute top-full right-0 mt-2 w-64 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
+              <div className="px-3 py-2.5 border-b border-line">
+                <span className="text-xs font-medium text-primary flex items-center gap-2">
+                  <Columns3 size={13} className={compareModeles.length >= 2 ? 'text-accent' : 'text-muted'} />
+                  Comparer des modèles
+                </span>
+                <p className="text-[11px] text-muted mt-1">2 à 3 modèles, réponses côte à côte.</p>
+              </div>
+              <div className="p-1.5 space-y-0.5 max-h-64 overflow-y-auto">
+                {modelesDisponiblesListe.length === 0 ? (
+                  <p className="px-2.5 py-2 text-xs text-muted">Aucun modèle disponible.</p>
+                ) : modelesDisponiblesListe.map(m => {
+                  const checked = compareModeles.includes(m.id)
+                  const disabled = !checked && compareModeles.length >= 3
+                  return (
+                    <label
+                      key={m.id}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-sm ${
+                        disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-surface'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={() => toggleCompareModel(m.id)}
+                        className="shrink-0"
+                      />
+                      <span className="text-xs text-secondary truncate">{m.nom}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Paramètres de la conversation : effort + rappel des commandes ── */}
+        <div className="relative shrink-0" ref={paramsMenuRef}>
+          <button
+            type="button"
+            onClick={() => setHeaderMenuOuvert(v => (v === 'params' ? null : 'params'))}
+            aria-haspopup="menu"
+            aria-expanded={headerMenuOuvert === 'params'}
+            title="Paramètres de la conversation"
+            className={`p-2.5 rounded-md border transition-colors duration-150 ${
+              headerMenuOuvert === 'params'
+                ? 'border-accent/40 bg-accent/10 text-accent'
+                : 'border-line bg-elevated text-muted hover:text-secondary'
+            }`}
+          >
+            <Settings size={16} />
+          </button>
+
+          {headerMenuOuvert === 'params' && (
+            <div className="absolute top-full right-0 mt-2 w-80 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20 max-h-[70vh] overflow-y-auto">
+              {/* ── Trois toggles — migrés depuis le panel « skills » de
+                  ModuleBar, fusionnés ici pour ne plus exister à deux endroits. ── */}
+              <div className="p-3 border-b border-line space-y-3">
+                <div className="flex items-center gap-5 flex-wrap">
+                  {onTtsToggle && (
+                    <div className="flex items-center gap-2">
+                      <Toggle checked={!!ttsEnabled} onChange={onTtsToggle} label="Lecture auto" />
+                      {/* Trois états distincts, et l'ordre compte : la synthèse précède
+                          toujours la lecture. Annoncer « lecture... » pendant une synthèse
+                          de 49 s (mesuré sur un message long) donnait une interface qui
+                          prétend jouer un son qu'on n'entend pas. */}
+                      <span className="text-xs text-secondary">
+                        {synthesizingText ? 'synthèse...' : speakingText ? 'lecture...' : 'lecture auto'}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Toggle checked={strictMode} onChange={handleStrictToggle} label="Mode strict" />
+                    <span className="text-xs text-secondary">mode strict</span>
+                  </div>
+                </div>
+
+                {/* Trois variantes selon `providerActif` : gemini n'a pas de toggle
+                    du tout (aucun effet à annoncer), les cinq fournisseurs cloud
+                    OpenAI-compatibles gardent un toggle qui agit réellement (le
+                    budget de tokens) mais un libellé et un texte qui ne prétendent
+                    plus à une réflexion visible qu'ils ne produisent jamais, et
+                    ollama/flm gardent le texte d'origine, inchangé. */}
+                <div className="space-y-1.5">
+                  {raisonnementNonSupporte ? (
+                    <p className="text-xs text-muted leading-relaxed">
+                      Réflexion du modèle — non disponible sur Gemini : ce réglage
+                      n'a aucun effet sur ce fournisseur, il n'apparaît donc pas ici.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <Toggle checked={raisonnement} onChange={handleRaisonnementToggle}
+                                label={raisonnementBudgetSeul ? 'Budget de réflexion (tokens)' : 'Réflexion du modèle'} />
+                        <span className="text-xs text-secondary">
+                          {raisonnementBudgetSeul ? 'budget de réflexion (tokens)' : 'réflexion du modèle'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted leading-relaxed">
+                        {raisonnementBudgetSeul
+                          ? (raisonnement
+                              ? "Ce fournisseur n'affiche pas sa réflexion : ce réglage relève "
+                                + 'seulement le plafond de tokens de la réponse, au cas où le '
+                                + 'modèle réfléchit en interne sans le montrer.'
+                              : 'Plafond de tokens standard. Aucun fournisseur cloud (hors NPU '
+                                + 'local) ne montre sa réflexion ici de toute façon.')
+                          : (raisonnement
+                              ? 'Le modèle réfléchit avant de répondre : les réponses sont plus '
+                                + 'sûres sur les questions difficiles, mais arrivent beaucoup plus '
+                                + "tard. Sa réflexion s'affiche pendant l'attente."
+                              : 'Le modèle répond directement, sans réfléchir à voix haute : '
+                                + 'beaucoup plus rapide, mais moins fiable sur un calcul ou un '
+                                + 'raisonnement en plusieurs étapes.')}
+                      </p>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-3 border-b border-line space-y-1">
+                <p className="text-xs text-muted uppercase tracking-wide mb-1">Préfixes @</p>
+                {AT_COMMANDS.map(c => (
+                  <div key={c.trigger} className="flex items-baseline gap-2">
+                    <span className="text-xs font-mono text-accent2 shrink-0">{c.trigger}</span>
+                    <span className="text-xs text-muted truncate">{c.desc}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="p-3 border-b border-line space-y-1">
+                <p className="text-xs text-muted uppercase tracking-wide mb-1">Commandes /</p>
+                {allSlashCommands(modules).map(c => (
+                  <div key={c.trigger} className="flex items-baseline gap-2">
+                    <span className="text-xs font-mono text-accent2 shrink-0">{c.trigger}</span>
+                    <span className="text-xs text-muted truncate">{c.desc}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* ── Consignes — migrées depuis le panel « skills » de ModuleBar. ── */}
+              <div className="p-3 border-b border-line space-y-2">
+                <p className="text-xs text-muted uppercase tracking-wide">Consigne générale</p>
+                <Textarea
+                  value={instructionDraft}
+                  onChange={e => setInstructionDraft(e.target.value)}
+                  placeholder="Ex : répondre en LaTeX, ne pas utiliser de métaphores..."
+                  rows={2}
+                  className="w-full text-xs"
+                />
+                <p className="text-xs text-muted">S'applique à toutes les conversations, et se garde.</p>
+                <Button variant="secondary" size="sm" onClick={handleInstructionSave} disabled={instructionDraft === sessionInstruction}>
+                  Sauvegarder
+                </Button>
+              </div>
+
+              {/* Consigne du fil — juste sous l'instruction de session, exprès : leur
+                  différence est une différence de PORTÉE, et elle ne se voit que si
+                  les deux sont côte à côte au moment de choisir laquelle remplir. */}
+              <div className="p-3 space-y-2">
+                <p className="text-xs text-muted uppercase tracking-wide">Consigne de cette conversation</p>
+                {conversationId ? (
+                  <>
+                    <Textarea
+                      value={instructionFilDraft}
+                      onChange={e => setInstructionFilDraft(e.target.value)}
+                      placeholder="Ex : dans ce fil, réponds en anglais et cite tes sources..."
+                      rows={3}
+                      className="w-full text-xs"
+                    />
+                    <p className="text-xs text-muted">
+                      Ne s'applique qu'à ce fil, et le suit tant qu'il existe.
+                      {' '}{instructionFilDraft.length}/{MAX_INSTRUCTION_FIL}
+                    </p>
+                    <Button variant="secondary" size="sm"
+                            onClick={() => void enregistrerInstructionFil()}
+                            disabled={instructionFilDraft === instructionFil
+                                      || instructionFilDraft.length > MAX_INSTRUCTION_FIL}>
+                      Sauvegarder
+                    </Button>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted">
+                    Aucune conversation ouverte : écrivez un message pour en commencer une.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        </div>
+      </div>
+
       <div ref={containerRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center gap-2 h-full text-muted select-none">
@@ -2093,7 +2635,7 @@ export default function Chat({
             <div
               className={`relative max-w-[78%] cursor-pointer ${
                 msg.role === 'user'
-                  ? 'px-4 py-3 rounded-lg bg-elevated border border-line text-sm leading-relaxed text-primary'
+                  ? 'px-4 py-3 rounded-tl-lg rounded-tr-lg rounded-bl-lg rounded-br-[4px] bg-elevated border border-line text-sm leading-relaxed text-primary'
                   : 'text-sm leading-relaxed text-secondary'
               }`}
               role="button"
@@ -2316,19 +2858,38 @@ export default function Chat({
         </button>
       )}
 
+      {/*
+        Chat ne demande plus rien à la barre VISIBLE de `ModuleBar` : le
+        bouton "Fichiers" et le micro sont portés dans l'îlot du composer
+        (`fileButtonAncre`/`filePanelAncre`/`micButtonAncre`, à gauche des
+        pilules d'effort et à droite d'elles), le modèle se pilote depuis le
+        chip du header (`modelPanelAncre`), les pilules d'effort vivent dans
+        l'îlot, et `showSkills` a migré vers le popover fusionné. `ModuleBar`
+        garde `showFile`/`showMic`/`showModel`/`showEffort` à `true` — c'est ce
+        qui fait tourner ses effets de chargement (fichiers, modèles, matériel,
+        pipeline) — mais ne rend plus RIEN en place pour Chat une fois ces
+        portails montés (`hasAnyContent` côté `ModuleBar.tsx`) : `<ModuleBar>`
+        n'apparaît donc plus du tout comme une barre séparée.
+      */}
       <ModuleBar
         module="chat"
         conversationId={conversationId}
         showFile
+        fileButtonPortalTarget={fileButtonAncre}
+        filePanelOpen={filesPanelOuvert}
+        onFilePanelOpenChange={setFilesPanelOuvert}
+        filePanelPortalTarget={filePanelAncre}
         showMic
-        showSkills
+        micButtonPortalTarget={micButtonAncre}
         showModel
+        hideModelButton
+        modelPanelOpen={headerMenuOuvert === 'model'}
+        onModelPanelOpenChange={ouvert => setHeaderMenuOuvert(ouvert ? 'model' : null)}
+        modelPanelPortalTarget={modelPanelAncre}
         showEffort
+        hideEffortPills
+        onModelChange={setModeleActifId}
         onTranscribed={(t) => setInput(prev => prev + t)}
-        ttsEnabled={ttsEnabled}
-        onTtsToggle={onTtsToggle}
-        synthesizingText={synthesizingText}
-        speakingText={speakingText}
         effort={effort}
         onEffortChange={setEffort}
         pipelineSteps={pipelineSteps}
@@ -2353,168 +2914,15 @@ export default function Chat({
           </div>
         )}
 
-        <div className="flex gap-3 items-end">
-          {/* ── Recherche web : icône cliquable + menu déroulable ── */}
-          <div className="relative shrink-0" ref={webMenuRef}>
-            <div
-              className={`flex items-stretch rounded-md border transition-colors duration-150 ${
-                webSearch ? 'border-accent/40 bg-accent/10' : 'border-line bg-elevated'
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => setWebSearch(v => !v)}
-                aria-pressed={webSearch}
-                title={webSearch
-                  ? 'Recherche web activée — forcée avant la réponse'
-                  : 'Forcer une recherche web avant la réponse'}
-                className={`relative p-2.5 rounded-l-md transition-colors duration-150 ${
-                  webSearch ? 'text-accent' : 'text-muted hover:text-secondary'
-                }`}
-              >
-                <Globe size={16} className={webSearch && streaming ? 'animate-pulse' : ''} />
-                {webSearch && (
-                  <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
-                    {webSearchMode === 'once' ? '1×' : '∞'}
-                  </span>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => setWebMenuOpen(v => !v)}
-                aria-haspopup="menu"
-                aria-expanded={webMenuOpen}
-                title="Options de recherche web"
-                className={`px-1 rounded-r-md border-l transition-colors duration-150 ${
-                  webSearch
-                    ? 'border-accent/30 text-accent hover:bg-accent/10'
-                    : 'border-line text-muted hover:text-secondary hover:bg-elevated'
-                }`}
-              >
-                <ChevronDown
-                  size={13}
-                  className={`transition-transform duration-150 ${webMenuOpen ? 'rotate-180' : ''}`}
-                />
-              </button>
-            </div>
-
-            {webMenuOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-64 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
-                <div className="flex items-center justify-between px-3 py-2.5 border-b border-line">
-                  <span className="text-xs font-medium text-primary flex items-center gap-2">
-                    <Globe size={13} className={webSearch ? 'text-accent' : 'text-muted'} />
-                    Recherche web
-                  </span>
-                  <Toggle checked={webSearch} onChange={setWebSearch} label="Activer la recherche web" />
-                </div>
-
-                <div className="p-1.5 space-y-0.5">
-                  <p className="px-2 py-1 text-xs text-muted uppercase tracking-wide">Mode</p>
-                  {([
-                    { id: 'once', label: 'Activer une fois', desc: 'Réinitialisé après chaque message' },
-                    { id: 'always', label: 'Toujours activé', desc: "Reste actif jusqu'à désactivation" },
-                  ] as const).map(opt => {
-                    const selected = webSearchMode === opt.id
-                    return (
-                      <button
-                        key={opt.id}
-                        onClick={() => { setWebSearchMode(opt.id); setWebSearch(true) }}
-                        className={`w-full text-left px-2.5 py-1.5 rounded-sm transition-colors duration-150 flex items-start gap-2 ${
-                          selected ? 'bg-accent/10' : 'hover:bg-surface'
-                        }`}
-                      >
-                        <span className="shrink-0 w-4 inline-flex justify-center pt-0.5">
-                          {selected
-                            ? <Check size={13} className="text-accent" />
-                            : <span className="w-1.5 h-1.5 rounded-full bg-line inline-block mt-1" />}
-                        </span>
-                        <span className="flex-1 min-w-0">
-                          <span className={`block text-xs ${selected ? 'text-accent font-medium' : 'text-secondary'}`}>
-                            {opt.label}
-                          </span>
-                          <span className="block text-[11px] text-muted">{opt.desc}</span>
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-
-                <div className="px-3 py-2.5 border-t border-line space-y-1.5">
-                  <p className="text-xs text-muted uppercase tracking-wide">Sources utilisées</p>
-                  <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent2 shrink-0" />
-                    <span className="text-xs text-secondary">DuckDuckGo</span>
-                    <span className="text-[11px] font-mono text-muted ml-auto">Instant + HTML</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* ── Comparaison multi-modèles : icône + menu à cocher ── */}
-          <div className="relative shrink-0" ref={compareMenuRef}>
-            <button
-              type="button"
-              onClick={() => setCompareMenuOpen(v => !v)}
-              aria-haspopup="menu"
-              aria-expanded={compareMenuOpen}
-              aria-pressed={compareModeles.length >= 2}
-              title={compareModeles.length >= 2
-                ? `Comparaison active — ${compareModeles.length} modèles`
-                : 'Comparer plusieurs modèles côte à côte'}
-              className={`relative p-2.5 rounded-md border transition-colors duration-150 ${
-                compareModeles.length >= 2
-                  ? 'border-accent/40 bg-accent/10 text-accent'
-                  : 'border-line bg-elevated text-muted hover:text-secondary'
-              }`}
-            >
-              <Columns3 size={16} />
-              {compareModeles.length > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
-                  {compareModeles.length}
-                </span>
-              )}
-            </button>
-
-            {compareMenuOpen && (
-              <div className="absolute bottom-full left-0 mb-2 w-64 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20">
-                <div className="px-3 py-2.5 border-b border-line">
-                  <span className="text-xs font-medium text-primary flex items-center gap-2">
-                    <Columns3 size={13} className={compareModeles.length >= 2 ? 'text-accent' : 'text-muted'} />
-                    Comparer des modèles
-                  </span>
-                  <p className="text-[11px] text-muted mt-1">2 à 3 modèles, réponses côte à côte.</p>
-                </div>
-                <div className="p-1.5 space-y-0.5 max-h-64 overflow-y-auto">
-                  {modelesDisponiblesListe.length === 0 ? (
-                    <p className="px-2.5 py-2 text-xs text-muted">Aucun modèle disponible.</p>
-                  ) : modelesDisponiblesListe.map(m => {
-                    const checked = compareModeles.includes(m.id)
-                    const disabled = !checked && compareModeles.length >= 3
-                    return (
-                      <label
-                        key={m.id}
-                        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-sm ${
-                          disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-surface'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabled}
-                          onChange={() => toggleCompareModel(m.id)}
-                          className="shrink-0"
-                        />
-                        <span className="text-xs text-secondary truncate">{m.nom}</span>
-                      </label>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
+        {/*
+          L'« îlot » : un seul conteneur arrondi pour le texte ET la rangée de
+          contrôles, au lieu d'un `<Textarea>` bordé posé à côté d'un bouton
+          d'envoi séparé. `bare` retire le cadre propre du `Textarea` — sinon
+          son cadre et celui de l'îlot se cumuleraient en un double cadre.
+        */}
+        <div className="rounded-2xl border border-line bg-elevated/60 focus-within:border-accent/40 transition-colors duration-150 px-4 pt-3 pb-2">
           <Textarea
+            bare
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -2522,10 +2930,10 @@ export default function Chat({
             placeholder={
               !connected ? 'Connexion au serveur...'
               : comparaisonEnCours ? 'Choisissez une réponse pour continuer...'
-              : 'Message...'
+              : 'Écrivez à Épure... (@web pour forcer une recherche)'
             }
             rows={1}
-            className="flex-1"
+            className="w-full bg-transparent px-0"
             style={{ minHeight: '40px', maxHeight: '160px' }}
             onInput={e => {
               const el = e.currentTarget
@@ -2533,43 +2941,77 @@ export default function Chat({
               el.style.height = `${Math.min(el.scrollHeight, 160)}px`
             }}
           />
-          {streaming ? (
-            <button
-              onClick={stop}
-              title="Arrêter la génération"
-              className="p-2.5 rounded-md bg-error/90 text-on-accent shadow-sm hover:opacity-90 transition-all duration-150 shrink-0"
-            >
-              <Square size={16} fill="currentColor" />
-            </button>
-          ) : comparaisonEnCours ? (
-            <button
-              disabled
-              title="Choisissez une réponse pour continuer"
-              className="p-2.5 rounded-md border border-line text-muted opacity-40 cursor-not-allowed shrink-0"
-            >
-              <Send size={16} />
-            </button>
-          ) : (
-            <>
-              {canResume && !input.trim() && (
-                <button
-                  onClick={relancer}
-                  title="Relancer le dernier message"
-                  className="p-2.5 rounded-md border border-line text-muted hover:text-secondary hover:bg-elevated transition-all duration-150 shrink-0"
-                >
-                  <RotateCcw size={16} />
-                </button>
+
+          <div className="flex items-center gap-1.5 mt-2">
+            {/*
+              Bouton "Fichiers" — le VRAI bouton de `ModuleBar` (badge du
+              nombre de fichiers attachés compris), porté ici par portail
+              (`fileButtonAncre`), pas recréé. Le panneau s'ouvre au-dessus
+              (`bottom-full`), comme les menus du composer avant qu'ils ne
+              migrent dans le header (§ itération 2) — l'îlot est en bas de
+              l'écran, donc ses panneaux s'ouvrent vers le haut.
+            */}
+            <div className="relative shrink-0" ref={filesMenuRef}>
+              <div ref={setFileButtonAncre} />
+              {filesPanelOuvert && (
+                <div
+                  ref={setFilePanelAncre}
+                  className="absolute bottom-full left-0 mb-2 w-80 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20 max-h-72 overflow-y-auto"
+                />
               )}
+            </div>
+
+            {/* Niveaux d'effort — déplacés depuis le popover « Paramètres de
+                la conversation » (itération 3) : ils vivent maintenant ici,
+                dans l'îlot du composer, pas dans les deux endroits à la fois. */}
+            {(['direct', 'low', 'medium', 'high', 'adaptive'] as EffortLevel[]).map(e => (
+              <button
+                key={e}
+                onClick={() => setEffort(e)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors duration-150 ${
+                  effort === e
+                    ? 'bg-gradient-primary text-on-accent'
+                    : 'text-muted hover:text-secondary hover:bg-elevated'
+                }`}
+              >
+                {EFFORT_LABELS[e]}
+              </button>
+            ))}
+
+            {/* Micro — même principe que le bouton "Fichiers" ci-dessus :
+                le vrai bouton de `ModuleBar` (icône selon `recording`/
+                `transcribing`), porté par portail (`micButtonAncre`). */}
+            <div ref={setMicButtonAncre} className="shrink-0" />
+
+            <div className="flex-1" />
+
+            {streaming ? (
+              <button
+                onClick={stop}
+                title="Arrêter la génération"
+                className="p-2.5 rounded-md bg-error/90 text-on-accent shadow-sm hover:opacity-90 transition-all duration-150 shrink-0"
+              >
+                <Square size={16} fill="currentColor" />
+              </button>
+            ) : comparaisonEnCours ? (
+              <button
+                disabled
+                title="Choisissez une réponse pour continuer"
+                className="p-2.5 rounded-md border border-line text-muted opacity-40 cursor-not-allowed shrink-0"
+              >
+                <Send size={16} />
+              </button>
+            ) : (
               <button
                 onClick={() => { send() }}
                 disabled={!input.trim()}
                 title="Envoyer"
-                className="p-2.5 rounded-md bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
+                className="p-2.5 rounded-full bg-gradient-primary text-on-accent shadow-sm hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 shrink-0"
               >
                 <Send size={16} />
               </button>
-            </>
-          )}
+            )}
+          </div>
         </div>
         {!connected && (
           <div className="mt-2 text-xs font-mono text-error">ws déconnecté — reconnexion...</div>

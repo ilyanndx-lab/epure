@@ -25,8 +25,8 @@ describe('modelesDisponibles', () => {
       },
     })
     expect(r).toEqual([
-      { id: 'a', nom: 'A', disponible: true },
-      { id: 'b', nom: 'B', disponible: true },
+      { id: 'a', nom: 'A', disponible: true, provider: '' },
+      { id: 'b', nom: 'B', disponible: true, provider: '' },
     ])
   })
 
@@ -50,7 +50,7 @@ describe('modelesDisponibles', () => {
     const r = modelesDisponibles({
       local: [{ nom: 'Sans id', disponible: true }, { id: 'x', disponible: true }],
     })
-    expect(r).toEqual([{ id: 'x', nom: 'x', disponible: true }])
+    expect(r).toEqual([{ id: 'x', nom: 'x', disponible: true, provider: '' }])
   })
 })
 

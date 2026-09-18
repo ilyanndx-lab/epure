@@ -78,7 +78,7 @@ async function rendreEtConnecter() {
 }
 
 async function envoyerTexte(texte: string) {
-  const zone = screen.getByPlaceholderText('Message...')
+  const zone = screen.getByPlaceholderText('Écrivez à Épure... (@web pour forcer une recherche)')
   await act(async () => { fireEvent.change(zone, { target: { value: texte } }) })
   await act(async () => { fireEvent.keyDown(zone, { key: 'Enter' }) })
 }

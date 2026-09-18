@@ -166,7 +166,7 @@ describe('Chat — défilement automatique', () => {
 
     scrollIntoView.mockClear()
 
-    const zone = screen.getByPlaceholderText('Message...')
+    const zone = screen.getByPlaceholderText('Écrivez à Épure... (@web pour forcer une recherche)')
     fireEvent.change(zone, { target: { value: 'Une nouvelle question' } })
     const bouton = screen.getByTitle('Envoyer')
     await act(async () => { fireEvent.click(bouton) })
@@ -204,7 +204,7 @@ describe('Chat — chargement LM Studio', () => {
    * de rôle `user`, donc on est exactement dans la fenêtre d'attente du
    * premier token — celle où l'indicateur a un sens. */
   async function envoyerMessage() {
-    const zone = screen.getByPlaceholderText('Message...')
+    const zone = screen.getByPlaceholderText('Écrivez à Épure... (@web pour forcer une recherche)')
     fireEvent.change(zone, { target: { value: 'Une question' } })
     await act(async () => { fireEvent.click(screen.getByTitle('Envoyer')) })
   }
@@ -260,7 +260,7 @@ describe('Chat — chargement LM Studio', () => {
     await rendreAvec(null)
     await laisserSonder()
     expect(screen.queryByText(LIBELLE)).toBeNull()
-    expect(screen.getByPlaceholderText('Message...')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Écrivez à Épure... (@web pour forcer une recherche)')).toBeTruthy()
   })
 
   it('champ `chargement` ABSENT d’un corps 200 → aucun libellé', async () => {

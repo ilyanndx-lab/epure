@@ -15,13 +15,17 @@ export default {
         base:     token('bg-base'),
         surface:  token('bg-surface'),
         elevated: token('bg-elevated'),
-        line:     token('border'),
+        line: {
+          DEFAULT: token('border'),
+          strong:  token('border-strong'),
+        },
         primary:   token('text-primary'),
         secondary: token('text-secondary'),
         muted:     token('text-muted'),
         accent: {
           DEFAULT: token('accent-primary'),
           hover:   token('accent-primary-hover'),
+          soft:    token('accent-primary-soft'),
         },
         accent2: {
           DEFAULT: token('accent-secondary'),
@@ -35,6 +39,7 @@ export default {
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        display: ['Sora', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['JetBrains Mono', 'Cascadia Code', 'Consolas', 'monospace'],
       },
       fontSize: {

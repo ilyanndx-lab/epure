@@ -1,18 +1,18 @@
-import { useRef, useState, useCallback, useEffect, useMemo } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import {
-  Paperclip, Mic, Zap, Bot, X, ChevronLeft, ChevronRight, Check,
+  Paperclip, Mic, Bot, X, ChevronLeft, ChevronRight, Check,
   AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
   FileSpreadsheet, File as FileIcon, Save, Trash2, ExternalLink,
   Wrench, Eye, Brain,
 } from 'lucide-react'
-import { Button, Input, Textarea, Select, Toggle, Tooltip } from './ui'
+import { Button, Input, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
+import { EFFORT_LABELS } from '../effort'
 import { API, apiFetch } from '../api'
-import { useModules } from '../modules'
 import { dico, liste, texte } from '../normaliser'
 import { chargerRecherche, relancerRecherche, useRecherche } from '../recherche'
 import { useVoix } from '../voix'
-import { AT_COMMANDS, allSlashCommands } from '../modules/chat/commands'
 
 // Curated model recommendations per module (IDs morts retirés —
 // la disponibilité live /models grise automatiquement le reste)
@@ -47,7 +47,7 @@ const MODULE_RECOMMENDATIONS: Record<string, { id: string; label: string }[]> = 
   ],
 }
 
-type Panel = 'files' | 'skills' | 'model' | null
+type Panel = 'files' | 'model' | null
 
 /**
  * Capacites d'un modele, en TROIS etats et non deux.
@@ -334,14 +334,6 @@ const EFFORT_DEFINITIONS: Record<Exclude<EffortLevel, 'direct' | 'adaptive'>, St
   ],
 }
 
-const EFFORT_LABELS: Record<EffortLevel, string> = {
-  direct: 'Direct',
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  adaptive: 'Adaptatif',
-}
-
 // Pastilles provider : local→success, NPU→violet, cloud→turquoise
 const PROVIDER_DOT: Record<string, string> = {
   ollama: 'bg-success', flm: 'bg-accent', lmstudio: 'bg-success',
@@ -440,15 +432,6 @@ function detail(v: unknown): DetailFichier {
   }
 }
 
-/**
- * Longueur maximale de la consigne d'un fil — miroir de `MAX_INSTRUCTION` côté
- * backend, qui REFUSE au-delà plutôt que de tronquer.
- *
- * Affichée en compteur et utilisée pour désactiver le bouton : sans elle, le
- * refus n'arriverait qu'après l'envoi, sur une consigne déjà écrite.
- */
-const MAX_INSTRUCTION_FIL = 4000
-
 export interface ModuleBarProps {
   module: string
   /**
@@ -463,10 +446,48 @@ export interface ModuleBarProps {
   conversationId?: string
   showFile?: boolean
   showMic?: boolean
-  showSkills?: boolean
   showModel?: boolean
   showEffort?: boolean
+  /**
+   * Portails du bouton "Fichiers" et de son panneau — pour Chat, qui reloge le
+   * déclencheur dans l'îlot du composer (à gauche des pilules d'effort) au
+   * lieu de sa barre. Contrairement au chip modèle, Chat ne recrée PAS son
+   * propre bouton : c'est le VRAI bouton de `ModuleBar` (badge du nombre de
+   * fichiers attachés compris) qui est porté tel quel, pour ne pas dupliquer
+   * ce compteur. `undefined` = rendu en place dans cette barre (défaut).
+   */
+  fileButtonPortalTarget?: HTMLElement | null
+  filePanelOpen?: boolean
+  onFilePanelOpenChange?: (open: boolean) => void
+  filePanelPortalTarget?: HTMLElement | null
+  /**
+   * Portail du bouton micro — même raison que `fileButtonPortalTarget`. Pas de
+   * panneau ni d'ouverture à piloter : juste un bouton dont l'icône change
+   * avec `recording`/`transcribing`, donc rien d'autre à exposer.
+   */
+  micButtonPortalTarget?: HTMLElement | null
+  /**
+   * Le chat a déplacé les pilules de choix d'effort dans son propre popover
+   * d'en-tête (§ header de conversation) : le panneau de configuration du
+   * pipeline (presets, modèle par étape), lui, reste ici — c'est lui qui sait
+   * construire `stepDefs`/`allModels()`. `showEffort` continue donc de piloter
+   * ce panneau ; ce booléen ne masque que la rangée de pilules, pour ne pas
+   * les dupliquer entre la barre et le popover.
+   */
+  hideEffortPills?: boolean
   onTranscribed?: (text: string) => void
+  /**
+   * Ces quatre props ne sont plus LUES ici : le panel « skills » qui les
+   * rendait (Lecture auto) a migré vers le popover du header de Chat (seul
+   * consommateur de `showSkills`, disparu avec lui). Elles restent déclarées
+   * — jamais destructurées dans la signature ci-dessous, donc réellement
+   * inertes — parce que `modules-catalogue/kholle/Component.tsx` les passe
+   * encore à `ModuleBar` SANS jamais passer `showSkills` : elles y étaient
+   * déjà silencieusement ignorées avant cette migration (aucun panel ne les
+   * rendait), et les retirer du type casserait sa compilation pour un
+   * comportement qui n'a pas changé pour lui. Un futur ménage de kholle peut
+   * les retirer des deux côtés ensemble.
+   */
   ttsEnabled?: boolean
   onTtsToggle?: () => void
   synthesizingText?: string | null
@@ -475,6 +496,35 @@ export interface ModuleBarProps {
   onEffortChange?: (e: EffortLevel) => void
   pipelineSteps?: StepConfig[]
   onPipelineStepsChange?: (steps: StepConfig[]) => void
+  /** Modèle actif, à chaque lecture initiale et à chaque sélection — pour un chip d'affichage externe. */
+  onModelChange?: (id: string) => void
+  /**
+   * Masque le bouton "Modèle" (icône Bot) et le chip mono de la barre
+   * principale — pour Chat, qui a son propre chip cliquable dans le header
+   * (§ itération 3). Le panneau modèle lui-même n'est PAS masqué : quand
+   * `modelPanelOpen`/`modelPanelPortalTarget` sont fournis, c'est lui qui le
+   * pilote de l'extérieur (cf. ces deux props).
+   */
+  hideModelButton?: boolean
+  /**
+   * Ouverture CONTRÔLÉE du panneau modèle, depuis l'extérieur (le chip du
+   * header de Chat) plutôt que le bouton "Modèle" de cette barre (masqué par
+   * `hideModelButton` dans ce cas). `undefined` = comportement d'origine,
+   * piloté par `activePanel` en interne — c'est ce que gardent tous les
+   * autres consommateurs (`code`, `docs`, `kholle`).
+   */
+  modelPanelOpen?: boolean
+  onModelPanelOpenChange?: (open: boolean) => void
+  /**
+   * Cible d'un portail React pour le contenu du panneau modèle — le SEUL
+   * moyen de rendre « le menu déroulant complet » (recommandations, verdicts
+   * matériel, contrôles FLM, mémoire Ollama...) ancré au chip du header de
+   * Chat sans dupliquer ni son état ni son JSX : ce panneau reste défini et
+   * alimenté ICI, dans ce fichier, à l'identique pour tous les modules — le
+   * portail ne fait que déplacer où il apparaît à l'écran. `undefined` =
+   * rendu en place, dans cette barre (comportement d'origine).
+   */
+  modelPanelPortalTarget?: HTMLElement | null
 }
 
 export default function ModuleBar({
@@ -482,21 +532,25 @@ export default function ModuleBar({
   conversationId = '',
   showFile,
   showMic,
-  showSkills,
   showModel,
   showEffort,
+  hideEffortPills,
   onTranscribed,
-  ttsEnabled,
-  onTtsToggle,
-  synthesizingText,
-  speakingText,
   effort = 'direct',
   onEffortChange,
   pipelineSteps = [],
   onPipelineStepsChange,
+  onModelChange,
+  hideModelButton,
+  modelPanelOpen,
+  onModelPanelOpenChange,
+  modelPanelPortalTarget,
+  fileButtonPortalTarget,
+  filePanelOpen,
+  onFilePanelOpenChange,
+  filePanelPortalTarget,
+  micButtonPortalTarget,
 }: ModuleBarProps) {
-  // Modules installés : source des commandes `/` du panneau Compétences.
-  const modules = useModules()
   // Le micro se décide ICI et pas chez les appelants. `showMic` dit « ce module
   // veut un micro » ; la capacité dit « cette machine en a un ». Le filtre est
   // dans le composant partagé pour qu'un module ajouté plus tard — un module
@@ -513,6 +567,16 @@ export default function ModuleBar({
   const recherche = useRecherche()
   const [activePanel, setActivePanel] = useState<Panel>(null)
   const [showFullModelList, setShowFullModelList] = useState(false)
+  /** `modelPanelOpen` fourni = ouverture pilotée par l'appelant (le chip du
+   * header de Chat) ; sinon, comportement d'origine via `activePanel`. Pas de
+   * reset de `showFullModelList` à la fermeture externe (contrairement à
+   * `togglePanel('model')`, cf. plus bas) : rouvrir le panneau et le retrouver
+   * là où on l'a laissé n'est pas un bug, et l'éviter recréerait le
+   * `useEffect` qu'un `setState` synchrone dans son corps fait signaler par
+   * `react-hooks/set-state-in-effect`. */
+  const modelPanelVisible = modelPanelOpen ?? (activePanel === 'model')
+  /** Même patron que `modelPanelVisible`, pour le panneau fichiers. */
+  const filePanelVisible = filePanelOpen ?? (activePanel === 'files')
 
   // Files state
   const [availableFiles, setAvailableFiles] = useState<string[]>([])
@@ -544,28 +608,6 @@ export default function ModuleBar({
   const [visionDegrades, setVisionDegrades] = useState<Set<string>>(new Set())
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
-  // Skills state
-  const [strictMode, setStrictMode] = useState(false)
-  // Raisonnement du modèle. Défaut `true` = comportement historique, et défaut
-  // optimiste assumé : si `/context` ne répond pas, on n'éteint pas une capacité
-  // qu'on n'a pas pu lire.
-  const [raisonnement, setRaisonnement] = useState(true)
-  const [sessionInstruction, setSessionInstruction] = useState('')
-  const [instructionDraft, setInstructionDraft] = useState('')
-  /**
-   * Consigne libre de LA CONVERSATION courante, distincte de l'instruction de
-   * session juste au-dessus.
-   *
-   * Trois portées coexistent dans le prompt, et les confondre est l'erreur à
-   * éviter : le profil (permanent, toute l'instance), l'instruction de session
-   * (l'instance, jusqu'au prochain démarrage), et celle-ci (ce fil, tant qu'il
-   * existe). Elles sont volontairement côte à côte dans ce panneau : les séparer
-   * rendrait leur différence invisible au moment où l'on choisit laquelle
-   * remplir.
-   */
-  const [instructionFil, setInstructionFil] = useState('')
-  const [instructionFilDraft, setInstructionFilDraft] = useState('')
 
   // Model state
   const [localModels, setLocalModels] = useState<ModelInfo[]>([])
@@ -850,32 +892,6 @@ export default function ModuleBar({
     ...cloudCategories.long_contexte,
   ], [localModels, localNpuModels, localLmstudioModels, cloudCategories])
 
-  /**
-   * Provider du modèle actif — pour que le toggle de réflexion (plus bas) ne
-   * mente pas sur ce qu'il fait vraiment. `raisonnement` n'a pas le même effet
-   * partout (`core/llm.py::stream`) : `gemini` l'ignore intégralement (aucune
-   * bascule n'existe côté SDK, cf. son commentaire « Pas de bascule ici »),
-   * les cinq autres fournisseurs OpenAI-compatibles cloud (groq, cerebras,
-   * mistral, nvidia, deepseek) — et depuis LM Studio, `lmstudio` — ne
-   * l'utilisent que pour relever le plafond de tokens (`_budget`), sans
-   * jamais faire remonter de réflexion visible — seuls `ollama` et `flm` en
-   * affichent une. `lmstudio` n'est PAS un cloud (serveur local, cf. `core/
-   * instance.py:_FOURNISSEURS_CLOUD`), mais rejoint quand même ce groupe côté
-   * bascule : LM Studio n'expose aucun paramètre API stable pour couper sa
-   * réflexion (deux mécanismes concurrents selon le modèle, l'un rapporté
-   * ignoré par son propre suivi de bugs sur Qwen3.5) — voir le docstring de
-   * `LLMEngine._stream_openai` pour le détail. `undefined` tant que `/models`
-   * n'a pas encore répondu : le toggle garde alors son comportement actuel,
-   * plutôt que d'afficher un verdict qu'on n'a pas encore les moyens de tenir.
-   */
-  const providerActif = useMemo(
-    () => allModels().find(m => m.id === selectedModel)?.provider,
-    [allModels, selectedModel],
-  )
-  const raisonnementNonSupporte = providerActif === 'gemini'
-  const raisonnementBudgetSeul =
-    !!providerActif && providerActif !== 'gemini' && providerActif !== 'ollama' && providerActif !== 'flm'
-
   const defaultModelForRole = useCallback((recommended: string | null): string => {
     if (!recommended) return selectedModel
     const found = allModels().find(m => m.id === recommended && m.disponible)
@@ -1003,7 +1019,6 @@ export default function ModuleBar({
   const chargerAttachements = useCallback(async () => {
     if (!conversationId) {
       setActiveFiles([]); setSelectedFiles([])
-      setInstructionFil(''); setInstructionFilDraft('')
       return
     }
     try {
@@ -1015,11 +1030,6 @@ export default function ModuleBar({
         .filter(Boolean)
       setActiveFiles(chemins)
       setSelectedFiles(chemins)
-      // Absente sur les conversations d'avant ce champ : `texte()` rend `''`,
-      // ce qui est exactement le bon défaut — pas d'invention.
-      const consigne = texte(d.instruction)
-      setInstructionFil(consigne)
-      setInstructionFilDraft(consigne)
     } catch { /* backend qui démarre : panneau vide, sans gravité */ }
   }, [conversationId])
 
@@ -1029,15 +1039,9 @@ export default function ModuleBar({
     apiFetch(`${API}/context`)
       .then(r => r.json())
       .then((d: Record<string, unknown>) => {
-        setStrictMode((d['strict_mode'] as boolean) ?? false)
-        // `?? true` et non `?? false` : la clé est absente des
-        // `context_session.json` écrits avant ce réglage, et son absence doit
-        // valoir « activé », pas « désactivé ».
-        setRaisonnement((d['raisonnement'] as boolean) ?? true)
-        const instr = (d['instruction_générale'] as string) ?? ''
-        setSessionInstruction(instr)
-        setInstructionDraft(instr)
-        setSelectedModel((d['modèle_actif'] as string) ?? 'qwen2.5:7b')
+        const modele = (d['modèle_actif'] as string) ?? 'qwen2.5:7b'
+        setSelectedModel(modele)
+        onModelChange?.(modele)
       })
       .catch(() => {})
 
@@ -1072,7 +1076,7 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel, chargerModeles])
+  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel, chargerModeles, onModelChange])
 
   /**
    * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.
@@ -1097,44 +1101,13 @@ export default function ModuleBar({
     }).catch(() => {})
   }, [])
 
-  const handleStrictToggle = useCallback(() => {
-    const next = !strictMode
-    setStrictMode(next)
-    pushSettings({ strict_mode: next })
-  }, [strictMode, pushSettings])
-
-  const handleRaisonnementToggle = useCallback(() => {
-    const next = !raisonnement
-    setRaisonnement(next)
-    pushSettings({ raisonnement: next })
-  }, [raisonnement, pushSettings])
-
-  const handleInstructionSave = useCallback(() => {
-    setSessionInstruction(instructionDraft)
-    pushSettings({ 'instruction_générale': instructionDraft })
-  }, [instructionDraft, pushSettings])
-
-  const enregistrerInstructionFil = useCallback(async () => {
-    if (!conversationId) return
-    try {
-      const res = await apiFetch(`${API}/chat/conversations/${conversationId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction: instructionFilDraft }),
-      })
-      // 400 = consigne trop longue (le backend refuse plutôt que de tronquer).
-      // On ne touche pas à l'état : le brouillon reste tel quel, donc le bouton
-      // reste actif et l'utilisateur peut raccourcir sans avoir rien perdu.
-      if (!res.ok) return
-      setInstructionFil(instructionFilDraft)
-    } catch { /* le brouillon reste : l'utilisateur peut réessayer */ }
-  }, [conversationId, instructionFilDraft])
-
   const handleModelSelect = useCallback((model: string) => {
     setSelectedModel(model)
+    onModelChange?.(model)
     pushSettings({ 'modèle_actif': model })
-    setActivePanel(null)
-  }, [pushSettings])
+    if (onModelPanelOpenChange) onModelPanelOpenChange(false)
+    else setActivePanel(null)
+  }, [pushSettings, onModelChange, onModelPanelOpenChange])
 
   // ── Pipeline ──────────────────────────────────────────────────────────────
 
@@ -1326,10 +1299,39 @@ export default function ModuleBar({
     : []
   const relevantPresets = presets.filter(p => p.effort === effort)
 
+  /**
+   * `hasMainBarContent` décide seulement la PADDING de la rangée d'icônes
+   * (0 si rien à y montrer), jamais si le composant s'exécute : un bouton
+   * porté par portail (`fileButtonPortalTarget`, etc.) ne produit AUCUN
+   * DOM ici (React le place à sa cible), donc le compter comme « pas de
+   * contenu ici » est correct pour la rangée elle-même — mais s'il fallait
+   * un `return null` plus haut sur ce même calcul, le portail ne
+   * s'exécuterait JAMAIS : un composant qui rend `null` n'exécute aucune
+   * des expressions de son JSX, portails compris. C'est le bug qu'un
+   * premier essai a introduit ici, avant `test_module... `. `hasVisibleWrapper`
+   * ci-dessous ne pilote donc que la BORDURE du conteneur, jamais un retour
+   * anticipé.
+   */
+  const hasMainBarContent = (showFile && !fileButtonPortalTarget)
+    || (micDisponible && !micButtonPortalTarget)
+    || (showModel && !hideModelButton)
+    || (showEffort && !hideEffortPills)
+  const hasFilesPanelInline = showFile && filePanelVisible && !filePanelPortalTarget
+  const hasModelPanelInline = showModel && modelPanelVisible && !modelPanelPortalTarget
+  const hasPipelinePanel = showEffort && !hideEffortPills
+    && effort !== 'direct' && effort !== 'adaptive' && stepDefs.length > 0
+  /** Pilote uniquement la bordure/le fond du conteneur — pour Chat, une fois
+   * fichier/micro/modèle/effort tous portés ou masqués ailleurs, ce
+   * conteneur n'a plus rien à montrer EN PLACE et n'a donc plus besoin de sa
+   * bordure (« la barre » que rien ne remplit plus). Le composant continue
+   * de se rendre dans tous les cas — jamais de `return null` ici, cf. la note
+   * juste au-dessus : ça couperait aussi les portails. */
+  const hasVisibleWrapper = hasMainBarContent || hasFilesPanelInline || hasModelPanelInline || hasPipelinePanel
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="relative border-t border-line bg-surface shrink-0">
+    <div className={hasVisibleWrapper ? 'relative border-t border-line bg-surface shrink-0' : 'relative'}>
 
       {/* ── Pipeline config panel (effort) ── */}
       {showEffort && effort !== 'direct' && effort !== 'adaptive' && stepDefs.length > 0 && (
@@ -1404,7 +1406,8 @@ export default function ModuleBar({
       )}
 
       {/* ── Files panel ── */}
-      {showFile && activePanel === 'files' && (
+      {showFile && filePanelVisible && (() => {
+        const content = (
         <div className="border-t border-line bg-surface px-4 py-4 max-h-72 overflow-y-auto space-y-4">
           {/* Préparation du moteur documentaire — un ÉTAT, pas une erreur.
               Avant, ce cas produisait un 500 côté serveur et un panneau vide
@@ -1580,155 +1583,13 @@ export default function ModuleBar({
             </div>
           )}
         </div>
-      )}
+        )
+        return filePanelPortalTarget ? createPortal(content, filePanelPortalTarget) : content
+      })()}
 
-      {/* ── Skills panel ── */}
-      {showSkills && activePanel === 'skills' && (
-        <div className="border-t border-line bg-surface px-4 py-4 space-y-4 max-h-96 overflow-y-auto">
-          <div className="flex items-center gap-5 flex-wrap">
-            {onTtsToggle && (
-              <div className="flex items-center gap-2">
-                <Toggle checked={!!ttsEnabled} onChange={onTtsToggle} label="Lecture auto" />
-                {/* Trois états distincts, et l'ordre compte : la synthèse précède
-                    toujours la lecture. Annoncer « lecture... » pendant une synthèse
-                    de 49 s (mesuré sur un message long) donnait une interface qui
-                    prétend jouer un son qu'on n'entend pas. */}
-                <span className="text-xs text-secondary">
-                  {synthesizingText ? 'synthèse...' : speakingText ? 'lecture...' : 'lecture auto'}
-                </span>
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              <Toggle checked={strictMode} onChange={handleStrictToggle} label="Mode strict" />
-              <span className="text-xs text-secondary">mode strict</span>
-            </div>
-          </div>
-
-          {/* Le raisonnement a sa propre ligne, avec une phrase — pas un
-              interrupteur de plus dans la rangée ci-dessus. Deux raisons : c'est
-              le seul réglage d'ici qui change le TEMPS DE RÉPONSE (mesuré : 78 s
-              contre 4 s sur la même question), et « raisonnement » ne veut rien
-              dire pour quelqu'un qui n'a jamais lu ce qu'un modèle produit avant
-              de répondre. Un libellé nu se cocherait au hasard.
-
-              Trois variantes selon `providerActif` (cf. sa définition plus haut) :
-              gemini n'a pas de toggle du tout (aucun effet à annoncer), les cinq
-              fournisseurs cloud OpenAI-compatibles gardent un toggle qui agit
-              réellement (le budget de tokens), mais un libellé et un texte qui ne
-              prétendent plus à une réflexion visible qu'ils ne produisent jamais,
-              et ollama/flm gardent le texte d'origine, inchangé. */}
-          <div className="space-y-1.5">
-            {raisonnementNonSupporte ? (
-              <p className="text-xs text-muted leading-relaxed">
-                Réflexion du modèle — non disponible sur Gemini : ce réglage
-                n'a aucun effet sur ce fournisseur, il n'apparaît donc pas ici.
-              </p>
-            ) : (
-              <>
-                <div className="flex items-center gap-2">
-                  <Toggle checked={raisonnement} onChange={handleRaisonnementToggle}
-                          label={raisonnementBudgetSeul ? 'Budget de réflexion (tokens)' : 'Réflexion du modèle'} />
-                  <span className="text-xs text-secondary">
-                    {raisonnementBudgetSeul ? 'budget de réflexion (tokens)' : 'réflexion du modèle'}
-                  </span>
-                </div>
-                <p className="text-xs text-muted leading-relaxed">
-                  {raisonnementBudgetSeul
-                    ? (raisonnement
-                        ? "Ce fournisseur n'affiche pas sa réflexion : ce réglage relève "
-                          + 'seulement le plafond de tokens de la réponse, au cas où le '
-                          + 'modèle réfléchit en interne sans le montrer.'
-                        : 'Plafond de tokens standard. Aucun fournisseur cloud (hors NPU '
-                          + 'local) ne montre sa réflexion ici de toute façon.')
-                    : (raisonnement
-                        ? 'Le modèle réfléchit avant de répondre : les réponses sont plus '
-                          + 'sûres sur les questions difficiles, mais arrivent beaucoup plus '
-                          + "tard. Sa réflexion s'affiche pendant l'attente."
-                        : 'Le modèle répond directement, sans réfléchir à voix haute : '
-                          + 'beaucoup plus rapide, mais moins fiable sur un calcul ou un '
-                          + 'raisonnement en plusieurs étapes.')}
-                </p>
-              </>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <p className="text-xs text-muted uppercase tracking-wide">Préfixes @</p>
-            {/* AT_COMMANDS et non une copie : cette liste était dupliquée du
-                fichier de commandes du chat, et avait déjà divergé — il y
-                manquait `@web`. */}
-            {AT_COMMANDS.map(c => (
-              <div key={c.trigger} className="flex gap-2 items-baseline">
-                <span className="text-xs font-mono text-accent2 shrink-0 w-24">{c.trigger}</span>
-                <span className="text-xs text-muted">{c.desc}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="space-y-1.5">
-            <p className="text-xs text-muted uppercase tracking-wide">Commandes /</p>
-            {/* Dérivées des modules installés, comme dans le chat : ce panneau
-                annonçait `/kholle` et `/flashcards` à tout le monde, y compris
-                là où ces modules n'existent pas. */}
-            {allSlashCommands(modules).map(c => (
-              <div key={c.trigger} className="flex gap-2 items-baseline">
-                <span className="text-xs font-mono text-accent shrink-0 w-24">{c.trigger}</span>
-                <span className="text-xs text-muted">{c.desc}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="space-y-2">
-            <p className="text-xs text-muted uppercase tracking-wide">Consigne générale</p>
-            <Textarea
-              value={instructionDraft}
-              onChange={e => setInstructionDraft(e.target.value)}
-              placeholder="Ex : répondre en LaTeX, ne pas utiliser de métaphores..."
-              rows={2}
-              className="w-full text-xs"
-            />
-            <p className="text-xs text-muted">S'applique à toutes les conversations, et se garde.</p>
-            <Button variant="secondary" size="sm" onClick={handleInstructionSave} disabled={instructionDraft === sessionInstruction}>
-              Sauvegarder
-            </Button>
-          </div>
-
-          {/* Consigne du fil — juste sous l'instruction de session, exprès : leur
-              différence est une différence de PORTÉE, et elle ne se voit que si
-              les deux sont côte à côte au moment de choisir laquelle remplir. */}
-          <div className="space-y-2">
-            <p className="text-xs text-muted uppercase tracking-wide">Consigne de cette conversation</p>
-            {conversationId ? (
-              <>
-                <Textarea
-                  value={instructionFilDraft}
-                  onChange={e => setInstructionFilDraft(e.target.value)}
-                  placeholder="Ex : dans ce fil, réponds en anglais et cite tes sources..."
-                  rows={3}
-                  className="w-full text-xs"
-                />
-                <p className="text-xs text-muted">
-                  Ne s'applique qu'à ce fil, et le suit tant qu'il existe.
-                  {' '}{instructionFilDraft.length}/{MAX_INSTRUCTION_FIL}
-                </p>
-                <Button variant="secondary" size="sm"
-                        onClick={() => void enregistrerInstructionFil()}
-                        disabled={instructionFilDraft === instructionFil
-                                  || instructionFilDraft.length > MAX_INSTRUCTION_FIL}>
-                  Sauvegarder
-                </Button>
-              </>
-            ) : (
-              <p className="text-xs text-muted">
-                Aucune conversation ouverte : écrivez un message pour en commencer une.
-              </p>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* ── Model panel ── */}
-      {showModel && activePanel === 'model' && (() => {
+      {showModel && modelPanelVisible && (() => {
         const allCloud = [...cloudCategories.rapide, ...cloudCategories.puissant, ...cloudCategories.long_contexte]
         const hasModels = localModels.length > 0 || localNpuModels.length > 0
           || localLmstudioModels.length > 0 || allCloud.length > 0
@@ -2008,8 +1869,7 @@ export default function ModuleBar({
           )
         }
 
-        if (!showFullModelList) {
-          return (
+        const content = !showFullModelList ? (
             <div className="border-t border-line bg-surface px-4 py-3">
               {curatedRecs.length > 0 && (
                 <>
@@ -2064,10 +1924,7 @@ export default function ModuleBar({
                 <ChevronRight size={13} />
               </button>
             </div>
-          )
-        }
-
-        return (
+        ) : (
           <div className="border-t border-line bg-surface px-4 py-3 max-h-[60vh] overflow-y-auto">
             <button
               onClick={() => setShowFullModelList(false)}
@@ -2136,68 +1993,65 @@ export default function ModuleBar({
             )}
           </div>
         )
+
+        return modelPanelPortalTarget ? createPortal(content, modelPanelPortalTarget) : content
       })()}
 
       {/* ── Main bar ── */}
-      <div className="flex items-center gap-1 px-4 py-2">
-        {showFile && (
-          <button onClick={() => togglePanel('files')} title="Fichiers"
-            className={`relative p-2 rounded-sm transition-colors duration-150 ${
-              activePanel === 'files'
-                ? 'bg-accent/10 text-accent'
-                : 'text-muted hover:text-secondary hover:bg-elevated'
-            }`}>
-            <Paperclip size={15} />
-            {activeFiles.length > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-0.5 bg-accent2 rounded-full text-xs font-mono text-on-accent flex items-center justify-center leading-none">
-                {activeFiles.length}
-              </span>
-            )}
-          </button>
-        )}
+      {/* Jamais de `{hasMainBarContent && (...)}` ici : les boutons
+          fichier/micro portés par portail sont dans cette rangée et
+          doivent s'exécuter même quand `hasMainBarContent` est faux (ils
+          ne produisent alors aucun DOM ICI, tout part à leur cible). Seule
+          la PADDING dépend de `hasMainBarContent`, pour ne pas laisser une
+          rangée vide occuper de la hauteur. */}
+      <div className={hasMainBarContent ? 'flex items-center gap-1 px-4 py-2' : 'flex items-center gap-1'}>
+        {showFile && (() => {
+          const bouton = (
+            <button
+              onClick={() => (onFilePanelOpenChange ? onFilePanelOpenChange(!filePanelVisible) : togglePanel('files'))}
+              title="Fichiers"
+              className={`relative p-2 rounded-sm transition-colors duration-150 ${
+                filePanelVisible
+                  ? 'bg-accent/10 text-accent'
+                  : 'text-muted hover:text-secondary hover:bg-elevated'
+              }`}>
+              <Paperclip size={15} />
+              {activeFiles.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-0.5 bg-accent2 rounded-full text-xs font-mono text-on-accent flex items-center justify-center leading-none">
+                  {activeFiles.length}
+                </span>
+              )}
+            </button>
+          )
+          return fileButtonPortalTarget ? createPortal(bouton, fileButtonPortalTarget) : bouton
+        })()}
 
-        {micDisponible && (
-          <button
-            onPointerDown={handleMicDown}
-            onPointerUp={handleMicUp}
-            onPointerLeave={handleMicUp}
-            disabled={transcribing}
-            title="Micro (maintenir)"
-            className={`p-2 rounded-sm transition-colors duration-150 select-none touch-none ${
-              recording
-                ? 'bg-error/15 text-error'
-                : transcribing
-                ? 'text-muted cursor-wait'
-                : 'text-muted hover:text-secondary hover:bg-elevated'
-            }`}>
-            {transcribing
-              ? <Loader2 size={15} className="animate-spin" />
-              : recording
-              ? <Mic size={15} className="animate-pulse" />
-              : <Mic size={15} />}
-          </button>
-        )}
+        {micDisponible && (() => {
+          const bouton = (
+            <button
+              onPointerDown={handleMicDown}
+              onPointerUp={handleMicUp}
+              onPointerLeave={handleMicUp}
+              disabled={transcribing}
+              title="Micro (maintenir)"
+              className={`p-2 rounded-sm transition-colors duration-150 select-none touch-none ${
+                recording
+                  ? 'bg-error/15 text-error'
+                  : transcribing
+                  ? 'text-muted cursor-wait'
+                  : 'text-muted hover:text-secondary hover:bg-elevated'
+              }`}>
+              {transcribing
+                ? <Loader2 size={15} className="animate-spin" />
+                : recording
+                ? <Mic size={15} className="animate-pulse" />
+                : <Mic size={15} />}
+            </button>
+          )
+          return micButtonPortalTarget ? createPortal(bouton, micButtonPortalTarget) : bouton
+        })()}
 
-        {showSkills && (
-          <button onClick={() => togglePanel('skills')} title="Paramètres de session"
-            className={`p-2 rounded-sm transition-colors duration-150 ${
-              activePanel === 'skills'
-                ? 'bg-accent/10 text-accent'
-                /* `!raisonnement` et non `raisonnement` : la pastille signale un
-                   réglage HORS DÉFAUT, et le défaut est « activé ». Sans ça,
-                   quelqu'un qui a coupé la réflexion trois jours plus tôt n'a
-                   aucun moyen de se rappeler pourquoi ses réponses ne réfléchissent
-                   plus — c'est le réglage le plus visible à l'usage et le plus
-                   facile à oublier d'avoir posé. */
-                : strictMode || ttsEnabled || sessionInstruction || !raisonnement
-                ? 'text-accent2 hover:bg-elevated'
-                : 'text-muted hover:text-secondary hover:bg-elevated'
-            }`}>
-            <Zap size={15} />
-          </button>
-        )}
-
-        {showModel && (
+        {showModel && !hideModelButton && (
           <button onClick={() => togglePanel('model')} title="Modèle"
             className={`p-2 rounded-sm transition-colors duration-150 ${
               activePanel === 'model'
@@ -2208,7 +2062,7 @@ export default function ModuleBar({
           </button>
         )}
 
-        {showEffort && (
+        {showEffort && !hideEffortPills && (
           <>
             <div className="w-px h-4 bg-line mx-1" />
             {(['direct', 'low', 'medium', 'high', 'adaptive'] as EffortLevel[]).map(e => (
@@ -2224,7 +2078,7 @@ export default function ModuleBar({
           </>
         )}
 
-        {showModel && (
+        {showModel && !hideModelButton && (
           <span className="ml-auto text-xs font-mono text-muted truncate max-w-28">
             {(() => {
               const info = allModels().find(m => m.id === selectedModel)

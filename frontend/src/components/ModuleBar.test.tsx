@@ -203,19 +203,6 @@ async function rendre(conversationId = '') {
   return rendu
 }
 
-/**
- * Rend la barre telle que le module Chat l'utilise (seul consommateur de
- * `showSkills` en production, `Component.tsx:1985-1991`), et ouvre directement
- * le panneau « Paramètres de session » où vit le toggle de réflexion.
- */
-async function rendreCompetences(table: Record<string, Reponse>) {
-  poserFetch(table)
-  const rendu = render(<ModuleBar module="chat" conversationId="" showFile showModel showSkills />)
-  await act(async () => { await Promise.resolve() })
-  await ouvrir('Paramètres de session')
-  return rendu
-}
-
 /** Ouvre un panneau par le bouton de la barre (le `title` est son seul repère). */
 async function ouvrir(titre: string) {
   const bouton = screen.getByTitle(titre)
@@ -514,94 +501,15 @@ describe('ModuleBar — panneau modèles', () => {
 })
 
 /**
- * Toggle de réflexion (panneau « Paramètres de session ») — honnête sur ce
- * qu'il fait vraiment selon le PROVIDER du modèle actif, pas seulement sur
- * son propre état coché/décoché.
- *
- * `core/llm.py::stream` traite trois cas très différents derrière le même
- * bool `raisonnement` : `gemini` l'ignore intégralement (aucune bascule
- * n'existe côté SDK), les cinq fournisseurs OpenAI-compatibles cloud
- * (groq/cerebras/mistral/nvidia/deepseek) ne l'utilisent que pour relever un
- * plafond de tokens sans jamais faire remonter de réflexion visible, et seuls
- * `ollama`/`flm` en affichent une véritable. Avant cette correction, le même
- * texte (« Sa réflexion s'affiche pendant l'attente ») s'affichait dans les
- * trois cas — faux pour cinq fournisseurs sur sept, et pour gemini le toggle
- * acceptait une valeur qui ne produit STRICTEMENT aucun effet.
+ * Le toggle de réflexion (honnête selon le PROVIDER du modèle actif) a
+ * migré avec tout le panel « Paramètres de session » vers le popover
+ * « Paramètres de la conversation » de `modules/chat/Component.tsx`
+ * (itération 2, défaut 3) : `showSkills` n'avait que Chat comme
+ * consommateur, et son code est supprimé d'ici plutôt que laissé mort.
+ * Les quatre cas ci-dessous (gemini masqué, groq/LM Studio relabellisés en
+ * « budget de réflexion », ollama inchangé) sont portés tels quels dans
+ * `modules/chat/Component.parametres.test.tsx`.
  */
-const MODELES_GEMINI = {
-  local: [], local_npu: [], local_lmstudio: [],
-  cloud: {
-    rapide: [{ id: 'gemini:gemini-2.5-flash', nom: 'Gemini 2.5 Flash', provider: 'gemini', disponible: true }],
-    puissant: [], long_contexte: [],
-  },
-  fournisseurs: {}, recommandations: {},
-}
-const MODELES_GROQ = {
-  local: [], local_npu: [], local_lmstudio: [],
-  cloud: {
-    rapide: [{ id: 'groq:openai/gpt-oss-20b', nom: 'GPT OSS 20B', provider: 'groq', disponible: true }],
-    puissant: [], long_contexte: [],
-  },
-  fournisseurs: {}, recommandations: {},
-}
-// LM Studio n'est pas un fournisseur CLOUD (serveur local, cf.
-// core/instance.py:_FOURNISSEURS_CLOUD) mais rejoint quand même la branche
-// « budget de réflexion seul » du toggle : LM Studio n'expose aucun paramètre
-// stable pour couper sa réflexion (core/llm.py::_stream_openai). D'où
-// `local_lmstudio`, pas `cloud`, pour porter le modèle actif de ce test.
-const MODELES_LMSTUDIO = {
-  local: [], local_npu: [],
-  local_lmstudio: [{
-    id: 'lmstudio:llama-3.1-8b-instruct', nom: 'llama-3.1-8b-instruct',
-    provider: 'lmstudio', disponible: true,
-  }],
-  cloud: { rapide: [], puissant: [], long_contexte: [] },
-  fournisseurs: {}, recommandations: {},
-}
-
-describe('ModuleBar — toggle de réflexion, honnête selon le provider', () => {
-  it("masque le toggle et remplace par un texte explicite quand gemini est actif — aucun effet à annoncer", async () => {
-    await rendreCompetences({
-      ...tableSaine(),
-      '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'gemini:gemini-2.5-flash' } },
-      '/models': { corps: MODELES_GEMINI },
-    })
-    await waitFor(() => expect(screen.getByText(/non disponible sur Gemini/)).toBeTruthy())
-    // Aucun contrôle qui accepterait une valeur sans effet, sous aucun libellé.
-    expect(screen.queryByRole('switch', { name: 'Réflexion du modèle' })).toBeNull()
-    expect(screen.queryByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeNull()
-  })
-
-  it("relabellise en « budget de réflexion » sur un fournisseur cloud qui ne montre jamais sa pensée (groq)", async () => {
-    await rendreCompetences({
-      ...tableSaine(),
-      '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'groq:openai/gpt-oss-20b' } },
-      '/models': { corps: MODELES_GROQ },
-    })
-    // Le toggle reste un vrai contrôle (il agit sur le plafond de tokens) mais
-    // ne prétend plus à une réflexion visible que groq ne produit jamais.
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
-    expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
-    expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
-  })
-
-  it('garde le libellé et le texte actuels sur ollama — non-régression', async () => {
-    await rendreCompetences(tableSaine())
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Réflexion du modèle' })).toBeTruthy())
-    expect(screen.getByText(/Sa réflexion s'affiche pendant l'attente/)).toBeTruthy()
-  })
-
-  it("relabellise en « budget de réflexion » sur LM Studio — aucun paramètre stable côté serveur", async () => {
-    await rendreCompetences({
-      ...tableSaine(),
-      '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'lmstudio:llama-3.1-8b-instruct' } },
-      '/models': { corps: MODELES_LMSTUDIO },
-    })
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
-    expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
-    expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
-  })
-})
 
 /**
  * Modèles Ollama résidents en mémoire (`GET /models/loaded`).

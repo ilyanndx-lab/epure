@@ -28,6 +28,9 @@ export default function App() {
     ensureToken().then(r => setPairing(r === 'forbidden' ? 'forbidden' : 'ok'))
   }, [])
   const [activeModule, setActiveModule] = usePersistentState<string>('epure.activeModule', 'chat')
+  // Rail repliée à 68px (icônes seules) : même pattern que `activeModule`
+  // ci-dessus, l'état de layout persisté vit dans App.tsx, pas dans Sidebar.
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistentState<boolean>('epure.sidebarCollapsed', false)
   // Modules déjà visités : on les garde MONTÉS (cachés) pour que leurs tâches
   // (streaming chat, génération…) continuent en arrière-plan quand on change de
   // module. On n'ajoute jamais, on ne retire pas → pas d'interruption.
@@ -285,7 +288,12 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-full bg-base text-primary overflow-hidden">
-      <Sidebar activeModule={activeModule} onModuleChange={setActiveModule} />
+      <Sidebar
+        activeModule={activeModule}
+        onModuleChange={setActiveModule}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed(v => !v)}
+      />
       <div className="relative flex flex-col flex-1 overflow-hidden">
         {/* Tous les modules visités restent montés ; seul l'actif est affiché.
             Leurs tâches (WebSocket, streaming) ne sont donc pas interrompues. */}

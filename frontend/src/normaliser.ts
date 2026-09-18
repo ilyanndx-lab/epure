@@ -48,18 +48,24 @@ export interface ModeleDisponible {
   id: string
   nom: string
   disponible: boolean
+  provider: string
 }
 
 /**
- * Aplati la réponse de `GET /models` (`local`, `local_npu`,
+ * Aplati la réponse de `GET /models` (`local`, `local_npu`, `local_lmstudio`,
  * `cloud.{rapide,puissant,long_contexte}`) en une liste unique, dédupliquée
  * par id — un même modèle peut apparaître dans plusieurs catégories (ex.
  * recommandé pour un rôle ET présent dans la liste complète).
  *
- * `ModuleBar.tsx` garde sa propre variante de cet aplatissement (dette non
- * traitée ici) ; `settings/Component.tsx` et le module chat (sélection des
- * modèles à comparer) passent tous les deux par celle-ci plutôt que d'en
- * réécrire une copie chacun.
+ * `local_lmstudio` manquait ici avant l'itération 2 du header de conversation
+ * du chat (§ chip modèle) : la dette que ce fichier signalait sans la payer.
+ * Elle devenait visible dès qu'on s'est mis à en dépendre pour plus qu'un
+ * picker de comparaison — le chip modèle et le toggle de réflexion (honnête
+ * selon le PROVIDER) se seraient trompés sur un modèle LM Studio actif, absent
+ * de cette liste. `ModuleBar.tsx` garde sa propre variante de cet
+ * aplatissement (dette qui, elle, reste non traitée) ; `settings/Component.tsx`
+ * et le module chat (comparaison ET header) passent tous les deux par
+ * celle-ci plutôt que d'en réécrire une copie chacun.
  */
 export function modelesDisponibles(v: unknown): ModeleDisponible[] {
   const o = (v ?? {}) as Record<string, unknown>
@@ -67,6 +73,7 @@ export function modelesDisponibles(v: unknown): ModeleDisponible[] {
   const brut = [
     ...liste<Record<string, unknown>>(o.local),
     ...liste<Record<string, unknown>>(o.local_npu),
+    ...liste<Record<string, unknown>>(o.local_lmstudio),
     ...liste<Record<string, unknown>>(cloud.rapide),
     ...liste<Record<string, unknown>>(cloud.puissant),
     ...liste<Record<string, unknown>>(cloud.long_contexte),
@@ -75,7 +82,7 @@ export function modelesDisponibles(v: unknown): ModeleDisponible[] {
   for (const m of brut) {
     const id = texte(m.id)
     if (!id || parId.has(id)) continue
-    parId.set(id, { id, nom: texte(m.nom) || id, disponible: Boolean(m.disponible) })
+    parId.set(id, { id, nom: texte(m.nom) || id, disponible: Boolean(m.disponible), provider: texte(m.provider) })
   }
   return [...parId.values()]
 }

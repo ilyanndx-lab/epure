@@ -36,6 +36,14 @@ interface Props {
   /** Replié : le panneau se réduit à un rail, la largeur est rendue au chat. */
   replie: boolean
   onBasculerRepli: () => void
+  /**
+   * Reporte le libellé de la conversation ACTIVE (`courante`) — c'est ce
+   * composant qui tient l'index (`conversations`), et donc la seule source du
+   * titre. Le header de conversation de `Component.tsx` s'en sert plutôt que
+   * de relire l'index de son côté, ce qui l'aurait fait diverger de la même
+   * liste au moindre titrage automatique.
+   */
+  onTitreActif?: (titre: string) => void
 }
 
 /** Libellé d'une conversation sans titre : le titrage arrive après le 1er tour. */
@@ -46,7 +54,7 @@ function libelle(c: ConvEntry): string {
 }
 
 export default function ConversationList({
-  courante, onOuvrir, onNouvelle, rafraichir, replie, onBasculerRepli,
+  courante, onOuvrir, onNouvelle, rafraichir, replie, onBasculerRepli, onTitreActif,
 }: Props) {
   const [conversations, setConversations] = useState<ConvEntry[]>([])
   const [enEdition, setEnEdition] = useState<string>('')
@@ -57,6 +65,11 @@ export default function ConversationList({
   }, [])
 
   useEffect(() => { void recharger() }, [recharger, rafraichir])
+
+  useEffect(() => {
+    const active = conversations.find(c => c.id === courante)
+    onTitreActif?.(active ? libelle(active) : 'Nouvelle conversation')
+  }, [conversations, courante, onTitreActif])
 
   const renommer = useCallback(async (id: string) => {
     const titre = brouillon.trim()
@@ -127,9 +140,18 @@ export default function ConversationList({
             Aucune conversation. Écrivez un message pour en commencer une.
           </p>
         )}
-        {conversations.map(c => (
-          <div key={c.id}
-               className={`group flex items-center gap-1 px-2 py-1.5 text-sm cursor-pointer border-l-2 ${
+        {conversations.map((c, i) => (
+          <div key={c.id}>
+            {/* Intercalaire entre deux conversations — un simple repère visuel,
+                pas une séparation fonctionnelle : delibérément discret (1px,
+                turquoise à faible opacité) pour ne pas rivaliser avec le
+                surlignage de la conversation active ci-dessous. */}
+            {i > 0 && (
+              <div className="flex justify-center py-0.5" aria-hidden="true">
+                <span className="block w-8 h-px rounded-full bg-accent2/25" />
+              </div>
+            )}
+            <div className={`group flex items-center gap-1 mx-1 my-0.5 px-2 py-1.5 text-sm cursor-pointer rounded-md border-l-2 ${
                  c.id === courante
                    ? 'border-accent bg-accent/10 text-primary'
                    : 'border-transparent text-secondary hover:bg-elevated'
@@ -165,6 +187,7 @@ export default function ConversationList({
               onClick={() => void supprimer(c.id)}>
               <Trash2 size={12} />
             </button>
+            </div>
           </div>
         ))}
       </div>
