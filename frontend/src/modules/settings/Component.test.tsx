@@ -301,6 +301,166 @@ describe('Réglages — Tool calling', () => {
     const corps = JSON.parse((appel![1] as RequestInit).body as string)
     expect(corps.tool_calling.skills.recherche_approfondie.budget).toBe(7)
   })
+
+  // ── Skills personnalisés agentiques (Phase C) ─────────────────────────────
+  //
+  // Un objet `prefixes.personnalises[].agentique === true` est invocable par
+  // le modèle : il doit apparaître ici, pas seulement dans « Préfixes &
+  // commandes » (qui ne montre que les `prefixe_actif` vrais, cf. la Phase B
+  // et son commentaire dans Component.tsx).
+
+  function personnaliseAgentique(overrides: Partial<{
+    id: string; nom: string; description: string; prefixe_actif: boolean; agentique: boolean; budget: number
+  }> = {}) {
+    return {
+      id: 'skill-1',
+      nom: 'Correcteur',
+      trigger: null,
+      description: 'Corrige les fautes de grammaire du message.',
+      instruction: 'Corrige la grammaire.',
+      prefixe_actif: false,
+      agentique: true,
+      budget: 4,
+      ...overrides,
+    }
+  }
+
+  it("un skill personnalisé agentique apparaît dans la grille, un NON agentique n'y apparaît pas", async () => {
+    poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        personnaliseAgentique({ id: 'a', nom: 'Correcteur', agentique: true }),
+        personnaliseAgentique({ id: 'b', nom: 'Reformule', agentique: false, prefixe_actif: true }),
+      ] } } },
+    })
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    expect(screen.getByText('Correcteur')).toBeTruthy()
+    expect(screen.queryByText('Reformule')).toBeNull()
+  })
+
+  it("l'état vide affiche un message plutôt qu'une grille amputée", async () => {
+    poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    expect(screen.getByText(/Aucun skill personnalisé invocable par le modèle/)).toBeTruthy()
+  })
+
+  it('la recherche filtre aussi les skills personnalisés agentiques, par nom et description', async () => {
+    poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        personnaliseAgentique({ id: 'a', nom: 'Correcteur' }),
+      ] } } },
+    })
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    fireEvent.change(screen.getByPlaceholderText('Rechercher un outil…'), { target: { value: 'correcteur' } })
+    expect(screen.getByText('Correcteur')).toBeTruthy()
+    expect(screen.queryByText('Recherche web')).toBeNull()
+
+    fireEvent.change(screen.getByPlaceholderText('Rechercher un outil…'), { target: { value: 'historique' } })
+    expect(screen.queryByText('Correcteur')).toBeNull()
+  })
+
+  it('couper le toggle « Invocable par le modèle » envoie agentique=false sans toucher aux autres champs', async () => {
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        personnaliseAgentique({ id: 'a', nom: 'Correcteur', prefixe_actif: true, agentique: true }),
+      ] } } },
+    })
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    await act(async () => {
+      screen.getByRole('switch', { name: 'Invocable par le modèle — Correcteur' }).click()
+    })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.personnalises[0]).toMatchObject({
+      id: 'a', nom: 'Correcteur', agentique: false, prefixe_actif: true,
+    })
+  })
+
+  it("changer le curseur de budget d'un skill personnalisé envoie le bon PATCH", async () => {
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        personnaliseAgentique({ id: 'a', nom: 'Correcteur', budget: 4 }),
+      ] } } },
+    })
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    await act(async () => {
+      fireEvent.change(screen.getByRole('slider', { name: "Budget d'appels — Correcteur" }), { target: { value: '8' } })
+    })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.personnalises[0]).toMatchObject({ id: 'a', budget: 8 })
+  })
+
+  it("désactiver un skill PUREMENT agentique (sans préfixe) propose de le supprimer, plutôt que d'écrire un objet mort", async () => {
+    // Même piège que celui déjà verrouillé côté « Préfixes & commandes », côté
+    // symétrique : `prefixe_actif: false` + toggle « agentique » à faux
+    // produirait un objet sans aucun moyen d'être déclenché.
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        personnaliseAgentique({ id: 'a', nom: 'Correcteur', prefixe_actif: false, agentique: true }),
+      ] } } },
+    })
+    const confirmMock = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmMock)
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    await act(async () => {
+      screen.getByRole('switch', { name: 'Invocable par le modèle — Correcteur' }).click()
+    })
+
+    expect(confirmMock).toHaveBeenCalled()
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.personnalises).toEqual([])
+  })
+
+  it("refuser la confirmation laisse le skill PUREMENT agentique inchangé", async () => {
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        personnaliseAgentique({ id: 'a', nom: 'Correcteur', prefixe_actif: false, agentique: true }),
+      ] } } },
+    })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    await act(async () => {
+      screen.getByRole('switch', { name: 'Invocable par le modèle — Correcteur' }).click()
+    })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeUndefined()
+    expect(screen.getByText('Correcteur')).toBeTruthy()
+  })
 })
 
 describe('Réglages — Catalogue (grille de cartes)', () => {

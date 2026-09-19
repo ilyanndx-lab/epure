@@ -99,11 +99,13 @@ const TOOL_CALLING_DEFAULT: ToolCallingSettings = {
 
 //: Métadonnées d'AFFICHAGE seulement (le schéma envoyé au modèle vit dans
 //: `core/llm.py`, pas ici) — l'ordre de ce tableau est celui d'affichage par
-//: défaut, avant tri des skills désactivés en fin de liste.
-const TOOL_CALLING_SKILLS: { id: string; label: string; description: string }[] = [
-  { id: 'web_search', label: 'Recherche web', description: 'Recherche sur le web une information récente ou factuelle pendant la conversation.' },
-  { id: 'history_search', label: 'Recherche dans l’historique', description: 'Retrouve un sujet déjà discuté dans vos conversations passées.' },
-  { id: 'recherche_approfondie', label: 'Recherche approfondie', description: 'Recherche web itérative pour une question complexe qui croise plusieurs sources.' },
+//: défaut, avant tri des skills désactivés en fin de liste. `badge` est écrit
+//: à la main (les 3 labels commencent tous par « Recherche » — un `.slice(0,2)`
+//: à l'affichage donnerait « Re » aux trois, cf. `EntityCard`/Catalogue).
+const TOOL_CALLING_SKILLS: { id: string; label: string; description: string; badge: string }[] = [
+  { id: 'web_search', label: 'Recherche web', description: 'Recherche sur le web une information récente ou factuelle pendant la conversation.', badge: 'We' },
+  { id: 'history_search', label: 'Recherche dans l’historique', description: 'Retrouve un sujet déjà discuté dans vos conversations passées.', badge: 'Hi' },
+  { id: 'recherche_approfondie', label: 'Recherche approfondie', description: 'Recherche web itérative pour une question complexe qui croise plusieurs sources.', badge: 'Ra' },
 ]
 
 //: Normalise une réponse `GET /context` (ou son absence) à la frontière
@@ -669,6 +671,33 @@ export default function Settings() {
         .catch(() => {})
     }
   }, [])
+
+  // Bascule `prefixe_actif` OU `agentique` d'un personnalisé — partagée entre
+  // l'onglet Préfixes & commandes et l'onglet Tool calling (Phase C), qui
+  // pilotent chacun UNE façade du même objet. Même garde-fou des deux côtés :
+  // si le résultat n'a plus aucune façade active, `normaliser_prefixes`
+  // (backend/core/memory.py) écarterait l'objet SILENCIEUSEMENT au prochain
+  // PATCH — CLAUDE.md §8, un refus affiché comme un succès. On propose la
+  // suppression, seul geste qui a un effet réel dans ce cas — jamais deux
+  // implémentations de cette même question (cf. CLAUDE.md, ne pas réinventer
+  // un comportement différent pour le même problème).
+  const toggleObjetPersonnalise = useCallback((id: string, patch: Partial<PrefixePersonnalise>) => {
+    if (!prefixes) return
+    const cible = prefixes.personnalises.find(o => o.id === id)
+    if (!cible) return
+    const suivant = { ...cible, ...patch }
+    if (!suivant.prefixe_actif && !suivant.agentique) {
+      if (window.confirm(
+        `Désactiver « ${cible.nom} » le laisserait sans aucun moyen d'être déclenché `
+        + `(ni préfixe, ni appel par le modèle) — le réglage ne serait pas conservé. `
+        + `Le supprimer à la place ?`
+      )) {
+        void savePrefixes({ ...prefixes, personnalises: prefixes.personnalises.filter(o => o.id !== id) })
+      }
+      return
+    }
+    void savePrefixes({ ...prefixes, personnalises: prefixes.personnalises.map(o => o.id === id ? suivant : o) })
+  }, [prefixes, savePrefixes])
 
   const consolidateNow = useCallback(async () => {
     setConsolidating(true)
@@ -1705,31 +1734,9 @@ export default function Settings() {
         }
 
         // Le Toggle de la carte ne pilote que `prefixe_actif` (`agentique` n'est
-        // réglable que dans le formulaire). Le désactiver sur un préfixe qui
-        // n'est PAS agentique produirait un objet ni déclenchable ni invocable
-        // — `normaliser_prefixes` (backend/core/memory.py) l'écarte alors
-        // SILENCIEUSEMENT au prochain PATCH, un 200 qui ne garde rien
-        // (CLAUDE.md §8 : un refus affiché comme un succès). On propose la
-        // suppression, seul geste qui a un effet réel dans ce cas.
-        const togglePersonnalise = (id: string, patch: Partial<PrefixePersonnalise>) => {
-          const cible = prefixes.personnalises.find(o => o.id === id)
-          if (!cible) return
-          const suivant = { ...cible, ...patch }
-          if (!suivant.prefixe_actif && !suivant.agentique) {
-            if (window.confirm(
-              `Désactiver « ${cible.nom} » le laisserait sans aucun moyen d'être déclenché `
-              + `(ni préfixe, ni appel par le modèle) — le réglage ne serait pas conservé. `
-              + `Le supprimer à la place ?`
-            )) {
-              retirerPersonnalise(id)
-            }
-            return
-          }
-          void savePrefixes({
-            ...prefixes,
-            personnalises: prefixes.personnalises.map(o => o.id === id ? suivant : o),
-          })
-        }
+        // réglable que dans le formulaire, et depuis l'onglet Tool calling).
+        // Garde-fou de désactivation partagé avec cet onglet : `toggleObjetPersonnalise`.
+        const togglePersonnalise = toggleObjetPersonnalise
 
         const ouvrirCreation = () => {
           setPrefixeEdit({
@@ -2011,7 +2018,7 @@ export default function Settings() {
         )
       })()}
 
-      {currentTab === 'tool_calling' && toolCalling && (() => {
+      {currentTab === 'tool_calling' && toolCalling && prefixes && (() => {
         const filtre = skillSearch.trim().toLowerCase()
         const skillsFiltres = TOOL_CALLING_SKILLS.filter(s =>
           !filtre || s.label.toLowerCase().includes(filtre) || s.description.toLowerCase().includes(filtre)
@@ -2028,8 +2035,27 @@ export default function Settings() {
             skills: { ...toolCalling.skills, [id]: { ...toolCalling.skills[id], ...patch } },
           })
         }
+
+        // Skills personnalisés INVOCABLES PAR LE MODÈLE — la façade pilotée ici
+        // est `agentique` (jamais `prefixe_actif`, qui reste dans l'onglet
+        // Préfixes & commandes ; un objet avec les deux peut apparaître dans
+        // les deux onglets). Comme pour `personnalisesTries` de cet autre
+        // onglet, l'appartenance au groupe EST le champ piloté : un objet
+        // désactivé ici (`agentique: false`) sort du groupe au lieu d'y rester
+        // grisé — un tri « désactivé en fin » serait donc un no-op, pas ajouté.
+        const personnalisesAgentiques = prefixes.personnalises.filter(o => o.agentique)
+        const personnalisesFiltres = personnalisesAgentiques.filter(o =>
+          !filtre || o.nom.toLowerCase().includes(filtre) || o.description.toLowerCase().includes(filtre)
+        )
+        const majBudgetPersonnalise = (id: string, budget: number) => {
+          void savePrefixes({
+            ...prefixes,
+            personnalises: prefixes.personnalises.map(o => o.id === id ? { ...o, budget } : o),
+          })
+        }
+
         return (
-        <Card className="max-w-lg space-y-4">
+        <Card className="max-w-2xl space-y-4">
           <SectionTitle icon={<Wrench size={15} />}>Tool calling</SectionTitle>
           <p className="text-xs text-muted/70">
             Le modèle peut appeler ces outils lui-même en cours de génération
@@ -2051,7 +2077,7 @@ export default function Settings() {
             />
           </div>
 
-          <div className={`space-y-3 transition-opacity duration-150 ${toolCalling.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
+          <div className={`space-y-4 transition-opacity duration-150 ${toolCalling.enabled ? '' : 'opacity-50 pointer-events-none'}`}>
             <div className="relative">
               <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
               <Input
@@ -2065,53 +2091,100 @@ export default function Settings() {
             {skillsTries.length === 0 ? (
               <p className="text-xs text-muted">Aucun outil ne correspond à « {skillSearch} ».</p>
             ) : (
-              <div className="space-y-1.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {skillsTries.map(s => {
                   const reglage = toolCalling.skills[s.id]
                   const active = reglage?.enabled ?? true
                   return (
-                    <div
+                    <EntityCard
                       key={s.id}
-                      className={`py-2 border-b border-line/40 last:border-0 ${active ? '' : 'opacity-60'}`}
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1 min-w-0">
-                          <span className="text-sm text-primary">{s.label}</span>
-                          <p className="text-xs text-muted/80">
-                            {active ? s.description : 'Désactivé — cliquer pour réactiver.'}
-                          </p>
+                      badgeLabel={s.badge}
+                      title={s.label}
+                      description={active ? s.description : 'Désactivé — cliquer pour réactiver.'}
+                      muted={!active}
+                      footer={
+                        <div className="flex flex-col gap-2">
+                          <div className="flex justify-end">
+                            <Toggle checked={active} onChange={enabled => majSkill(s.id, { enabled })} label={s.label} />
+                          </div>
+                          {s.id === 'recherche_approfondie' && active && (
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="range"
+                                min={1}
+                                max={10}
+                                step={1}
+                                value={reglage?.budget ?? 4}
+                                onChange={e => majSkill(s.id, { budget: Number(e.target.value) })}
+                                className="flex-1 accent-[--accent-primary]"
+                                aria-label="Budget d'appels — recherche approfondie"
+                              />
+                              <span className="text-xs font-mono text-muted w-16 text-right shrink-0">
+                                {reglage?.budget ?? 4} appel{(reglage?.budget ?? 4) > 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          )}
                         </div>
-                        <Toggle
-                          checked={active}
-                          onChange={enabled => majSkill(s.id, { enabled })}
-                          label={s.label}
-                        />
-                      </div>
-                      {s.id === 'recherche_approfondie' && active && (
-                        <div className="flex items-center gap-2 mt-2">
-                          <input
-                            type="range"
-                            min={1}
-                            max={10}
-                            step={1}
-                            value={reglage?.budget ?? 4}
-                            onChange={e => majSkill(s.id, { budget: Number(e.target.value) })}
-                            className="flex-1 accent-[--accent-primary]"
-                            aria-label="Budget d'appels — recherche approfondie"
-                          />
-                          <span className="text-xs font-mono text-muted w-16 text-right shrink-0">
-                            {reglage?.budget ?? 4} appel{(reglage?.budget ?? 4) > 1 ? 's' : ''}
-                          </span>
-                        </div>
-                      )}
-                    </div>
+                      }
+                    />
                   )
                 })}
               </div>
             )}
+
+            <div className="pt-1 border-t border-line space-y-3">
+              <p className="text-xs text-muted uppercase tracking-wide pt-2">Skills personnalisés</p>
+
+              {personnalisesAgentiques.length === 0 ? (
+                <p className="text-xs text-muted">
+                  Aucun skill personnalisé invocable par le modèle. Créez-en un depuis l’onglet Préfixes & commandes.
+                </p>
+              ) : personnalisesFiltres.length === 0 ? (
+                <p className="text-xs text-muted">Aucun skill personnalisé ne correspond à « {skillSearch} ».</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {personnalisesFiltres.map(o => (
+                    <EntityCard
+                      key={o.id}
+                      badgeLabel={(o.trigger ?? o.nom).slice(0, 2)}
+                      badgeColorClass="bg-accent2/15 text-accent2"
+                      title={o.nom}
+                      description={o.description || o.instruction}
+                      footer={
+                        <div className="flex flex-col gap-2">
+                          <div className="flex justify-end">
+                            <Toggle
+                              checked={o.agentique}
+                              onChange={agentique => toggleObjetPersonnalise(o.id, { agentique })}
+                              label={`Invocable par le modèle — ${o.nom}`}
+                            />
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="range"
+                              min={BUDGET_PERSONNALISE_MIN}
+                              max={BUDGET_PERSONNALISE_MAX}
+                              step={1}
+                              value={o.budget}
+                              onChange={e => majBudgetPersonnalise(o.id, Number(e.target.value))}
+                              className="flex-1 accent-[--accent-primary]"
+                              aria-label={`Budget d'appels — ${o.nom}`}
+                            />
+                            <span className="text-xs font-mono text-muted w-16 text-right shrink-0">
+                              {o.budget} appel{o.budget > 1 ? 's' : ''}
+                            </span>
+                          </div>
+                        </div>
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {toolCallingMsg && <p className="text-xs text-error">{toolCallingMsg}</p>}
+          {prefixesMsg && <p className="text-xs text-error">{prefixesMsg}</p>}
         </Card>
         )
       })()}
