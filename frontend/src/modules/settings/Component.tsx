@@ -5,7 +5,7 @@ import {
   FolderTree, Gauge, GripVertical, Hammer, KeyRound, Package, Palette, Plus, RefreshCw,
   RotateCcw, Search, Trash2, User, Wrench, X,
 } from 'lucide-react'
-import { Badge, Button, Card, Input, ProgressBar, Select, Tabs, Toggle } from '../../components/ui'
+import { Badge, Button, Card, EntityCard, Input, ProgressBar, Select, Tabs, Toggle } from '../../components/ui'
 import { useTheme } from '../../theme'
 import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon, fetchModules } from '../../modules'
@@ -930,34 +930,36 @@ export default function Settings() {
         ) : catalogue.length === 0 ? (
           <p className="text-xs text-muted">Aucun module au catalogue.</p>
         ) : (
-          <div className="space-y-1.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {catalogue.map(m => (
-              <div key={m.id} className="flex items-start gap-2 py-1.5 border-b border-line/40 last:border-0">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-primary">{m.nom}</span>
-                    {m.installé && <Badge variant="success">installé</Badge>}
-                  </div>
-                  <p className="text-xs text-muted/80 line-clamp-2">{m.description}</p>
-                </div>
-                {m.installé ? (
-                  <Button
-                    variant="ghost" size="sm" icon={<Trash2 size={13} />}
-                    disabled={catalogueBusy === m.id}
-                    onClick={() => void supprimerModule(m.id, m.nom)}
-                  >
-                    Supprimer
-                  </Button>
-                ) : (
-                  <Button
-                    variant="secondary" size="sm" icon={<Download size={13} />}
-                    disabled={catalogueBusy === m.id}
-                    onClick={() => void installerModule(m.id)}
-                  >
-                    {catalogueBusy === m.id ? 'Installation…' : 'Installer'}
-                  </Button>
-                )}
-              </div>
+              <EntityCard
+                key={m.id}
+                badgeLabel={m.nom.slice(0, 2)}
+                badgeColorClass={m.installé ? 'bg-success/15 text-success' : 'bg-accent/15 text-accent'}
+                title={m.nom}
+                description={m.description}
+                footer={
+                  m.installé ? (
+                    <Button
+                      variant="ghost" size="sm" icon={<Trash2 size={13} />}
+                      disabled={catalogueBusy === m.id}
+                      onClick={() => void supprimerModule(m.id, m.nom)}
+                      className="w-full justify-center"
+                    >
+                      Supprimer
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="primary" size="sm" icon={<Download size={13} />}
+                      disabled={catalogueBusy === m.id}
+                      onClick={() => void installerModule(m.id)}
+                      className="w-full justify-center"
+                    >
+                      {catalogueBusy === m.id ? 'Installation…' : 'Installer'}
+                    </Button>
+                  )
+                }
+              />
             ))}
           </div>
         )}

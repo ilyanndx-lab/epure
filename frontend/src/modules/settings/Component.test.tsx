@@ -302,3 +302,33 @@ describe('Réglages — Tool calling', () => {
     expect(corps.tool_calling.skills.recherche_approfondie.budget).toBe(7)
   })
 })
+
+describe('Réglages — Catalogue (grille de cartes)', () => {
+  it('installer et supprimer un module du catalogue fonctionnent toujours après le passage en cartes', async () => {
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/settings/catalogue': { corps: { modules: [
+        { id: 'kholle', nom: 'Kholle', description: 'Prépare des kholles.', icon: 'Box', installé: false },
+        { id: 'docs', nom: 'Docs', description: 'Analyse de documents.', icon: 'Box', installé: true },
+      ] } },
+      '/settings/catalogue/kholle/install': { corps: {} },
+      '/settings/modules/docs': { corps: {} },
+    })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Catalogue' }).click() })
+
+    expect(screen.getByText('Kholle')).toBeTruthy()
+    expect(screen.getByText('Docs')).toBeTruthy()
+
+    await act(async () => { screen.getByRole('button', { name: /^Installer/ }).click() })
+    const appelInstall = fetchMock.mock.calls.find(([input]) => String(input).includes('/settings/catalogue/kholle/install'))
+    expect(appelInstall).toBeTruthy()
+
+    await act(async () => { screen.getByRole('button', { name: /Supprimer/ }).click() })
+    const appelSupprime = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/settings/modules/docs') && (init as RequestInit | undefined)?.method === 'DELETE'
+    )
+    expect(appelSupprime).toBeTruthy()
+  })
+})
