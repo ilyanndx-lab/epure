@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
 import Settings from './Component'
 import { refreshInstance } from '../../instance'
@@ -330,5 +330,218 @@ describe('Réglages — Catalogue (grille de cartes)', () => {
       String(input).includes('/settings/modules/docs') && (init as RequestInit | undefined)?.method === 'DELETE'
     )
     expect(appelSupprime).toBeTruthy()
+  })
+})
+
+describe('Réglages — Préfixes & commandes', () => {
+  it('affiche les 5 commandes intégrées avec leur trigger actuel', async () => {
+    poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    for (const trigger of ['@cours', '@strict', '@web', '@image', '@historique']) {
+      expect(screen.getByText(trigger)).toBeTruthy()
+    }
+  })
+
+  it('renommer une commande intégrée envoie le bon PATCH, et laisse les personnalisés intacts', async () => {
+    // Un personnalisé déjà présent sur `/context` : le PATCH de renommage
+    // (objet `prefixes` complet, pas de fusion profonde côté backend) doit le
+    // reporter TEL QUEL, sans quoi renommer une commande intégrée effacerait
+    // silencieusement les préfixes personnalisés de l'utilisateur.
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        { id: 'abc', nom: 'Reformule', trigger: '@reformule', description: 'Reformule le texte.', instruction: 'Reformule.', prefixe_actif: true, agentique: false, budget: 4 },
+      ] } } },
+    })
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    const carteWeb = screen.getByText('@web').closest('div')!.parentElement!.parentElement!
+    await act(async () => {
+      fireEvent.click(within(carteWeb).getByRole('button', { name: 'Renommer' }))
+    })
+    const champ = screen.getByPlaceholderText('@nouveautrigger')
+    fireEvent.change(champ, { target: { value: '@internet' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' })) })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.integres.web.trigger).toBe('@internet')
+    expect(corps.prefixes.personnalises).toEqual([
+      { id: 'abc', nom: 'Reformule', trigger: '@reformule', description: 'Reformule le texte.', instruction: 'Reformule.', prefixe_actif: true, agentique: false, budget: 4 },
+    ])
+  })
+
+  it("désactiver un préfixe personnalisé NON agentique propose de le supprimer, plutôt que d'écrire un objet mort", async () => {
+    // `agentique: false` + toggle « prefixe_actif » à faux produirait un objet
+    // sans AUCUN moyen d'être déclenché — `normaliser_prefixes` (backend)
+    // l'écarterait silencieusement au prochain PATCH (CLAUDE.md §8 : un refus
+    // qui s'affiche comme un succès). Le composant doit demander confirmation
+    // et supprimer plutôt que d'envoyer cet état.
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        { id: 'abc', nom: 'Reformule', trigger: '@reformule', description: 'Reformule le texte.', instruction: 'Reformule.', prefixe_actif: true, agentique: false, budget: 4 },
+      ] } } },
+    })
+    const confirmMock = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmMock)
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    await act(async () => { screen.getByRole('switch', { name: 'Activer Reformule' }).click() })
+
+    expect(confirmMock).toHaveBeenCalled()
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    // Supprimé, pas désactivé avec les deux cases à faux.
+    expect(corps.prefixes.personnalises).toEqual([])
+  })
+
+  it("refuser la confirmation laisse le préfixe personnalisé NON agentique inchangé", async () => {
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        { id: 'abc', nom: 'Reformule', trigger: '@reformule', description: 'Reformule le texte.', instruction: 'Reformule.', prefixe_actif: true, agentique: false, budget: 4 },
+      ] } } },
+    })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    await act(async () => { screen.getByRole('switch', { name: 'Activer Reformule' }).click() })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeUndefined()
+    expect(screen.getByText('Reformule')).toBeTruthy()
+  })
+
+  it('désactiver une commande intégrée envoie enabled=false', async () => {
+    const fetchMock = poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    await act(async () => { screen.getByRole('switch', { name: 'Activer Strict' }).click() })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.integres.strict.enabled).toBe(false)
+    // Les 4 autres intégrées voyagent inchangées dans le même PATCH (objet
+    // complet, pas de fusion profonde côté backend).
+    expect(corps.prefixes.integres.cours.enabled).toBe(true)
+  })
+
+  it('créer un préfixe personnalisé sans aucune case cochée affiche un avertissement et n’enregistre rien', async () => {
+    const fetchMock = poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    await act(async () => { screen.getByRole('button', { name: 'Créer un préfixe' }).click() })
+    fireEvent.change(screen.getByPlaceholderText('Synthèse de cours'), { target: { value: 'Test' } })
+    fireEvent.change(screen.getByPlaceholderText('Texte injecté dans le prompt au déclenchement…'), { target: { value: 'Instruction.' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' })) })
+
+    expect(screen.getByText(/Cochez au moins/)).toBeTruthy()
+    const appelPatch = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appelPatch).toBeUndefined()
+  })
+
+  it('créer un préfixe personnalisé déclenchable par un préfixe (une seule case) envoie l’objet complet', async () => {
+    const fetchMock = poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    await act(async () => { screen.getByRole('button', { name: 'Créer un préfixe' }).click() })
+    fireEvent.change(screen.getByPlaceholderText('Synthèse de cours'), { target: { value: 'Synthèse' } })
+    fireEvent.change(screen.getByPlaceholderText('Texte injecté dans le prompt au déclenchement…'), { target: { value: 'Fais une synthèse.' } })
+    await act(async () => {
+      fireEvent.click(screen.getByText('Déclenchable par un préfixe'))
+    })
+    fireEvent.change(screen.getByPlaceholderText('@synthese'), { target: { value: '@synthese' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' })) })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.personnalises).toHaveLength(1)
+    expect(corps.prefixes.personnalises[0]).toMatchObject({
+      nom: 'Synthèse',
+      trigger: '@synthese',
+      instruction: 'Fais une synthèse.',
+      prefixe_actif: true,
+      agentique: false,
+    })
+  })
+
+  it('créer un préfixe personnalisé agentique (une seule case) exige une description et affiche le curseur de budget', async () => {
+    const fetchMock = poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    await act(async () => { screen.getByRole('button', { name: 'Créer un préfixe' }).click() })
+    fireEvent.change(screen.getByPlaceholderText('Synthèse de cours'), { target: { value: 'Correcteur' } })
+    fireEvent.change(screen.getByPlaceholderText('Texte injecté dans le prompt au déclenchement…'), { target: { value: 'Corrige la grammaire.' } })
+    await act(async () => {
+      fireEvent.click(screen.getByText('Invocable par le modèle'))
+    })
+
+    // Sans description : refusé.
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' })) })
+    expect(screen.getByText(/description est requise/)).toBeTruthy()
+
+    fireEvent.change(
+      screen.getByPlaceholderText('Ce que ce préfixe fait — visible par le modèle s’il est invocable'),
+      { target: { value: 'Corrige les fautes de grammaire du message.' } }
+    )
+    const curseur = screen.getByRole('slider') as HTMLInputElement
+    expect(curseur.min).toBe('1')
+    expect(curseur.max).toBe('10')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' })) })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.personnalises[0]).toMatchObject({ agentique: true, prefixe_actif: false })
+  })
+
+  it('supprimer un préfixe personnalisé le retire de la liste envoyée', async () => {
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      '/context': { corps: { prefixes: { integres: {}, personnalises: [
+        { id: 'abc', nom: 'Reformule', trigger: '@reformule', description: 'Reformule le texte.', instruction: 'Reformule.', prefixe_actif: true, agentique: false, budget: 4 },
+      ] } } },
+    })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Préfixes & commandes' }).click() })
+
+    expect(screen.getByText('Reformule')).toBeTruthy()
+    await act(async () => { screen.getByRole('button', { name: 'Supprimer' }).click() })
+
+    const appel = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    )
+    expect(appel).toBeTruthy()
+    const corps = JSON.parse((appel![1] as RequestInit).body as string)
+    expect(corps.prefixes.personnalises).toEqual([])
   })
 })

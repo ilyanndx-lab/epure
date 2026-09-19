@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { usePersistentState } from '../../usePersistentState'
 import {
-  Archive, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Download, Eye, EyeOff,
-  FolderTree, Gauge, GripVertical, Hammer, KeyRound, Package, Palette, Plus, RefreshCw,
+  Archive, AtSign, Boxes, Brain, Check, ChevronDown, ChevronUp, Cpu, Download, Eye, EyeOff,
+  FolderTree, Gauge, GripVertical, Hammer, KeyRound, Package, Palette, Pencil, Plus, RefreshCw,
   RotateCcw, Search, Trash2, User, Wrench, X,
 } from 'lucide-react'
-import { Badge, Button, Card, EntityCard, Input, ProgressBar, Select, Tabs, Toggle } from '../../components/ui'
+import { Badge, Button, Card, EntityCard, Input, Modal, ProgressBar, Select, Tabs, Textarea, Toggle } from '../../components/ui'
 import { useTheme } from '../../theme'
 import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon, fetchModules } from '../../modules'
@@ -124,6 +124,104 @@ function normaliserToolCalling(raw: unknown): ToolCallingSettings {
     }
   }
   return { enabled: typeof r.enabled === 'boolean' ? r.enabled : TOOL_CALLING_DEFAULT.enabled, skills }
+}
+
+// ── Préfixes & commandes ─────────────────────────────────────────────────────
+//
+// Pilotage utilisateur du réglage `prefixes` (backend/core/memory.py
+// `_CONTEXT_DEFAULT["prefixes"]`, Phase A — commit 3dbb126). Forme alignée sur
+// `normaliser_prefixes`, dupliquée ici comme le reste des interfaces de ce
+// fichier (cf. le commentaire au-dessus de `ToolCallingSettings`).
+//
+// Ne remplace PAS `commands.ts` : `AT_COMMANDS` (module chat) reste la liste
+// EN DUR consommée par l'autocomplete — la brancher sur ce réglage est un
+// chantier séparé (Phase C / au-delà), volontairement hors de portée ici.
+
+interface PrefixeIntegre { trigger: string; enabled: boolean }
+interface PrefixeIntegres {
+  cours: PrefixeIntegre
+  strict: PrefixeIntegre
+  web: PrefixeIntegre
+  image: PrefixeIntegre
+  historique: PrefixeIntegre
+}
+interface PrefixePersonnalise {
+  id: string
+  nom: string
+  trigger: string | null
+  description: string
+  instruction: string
+  prefixe_actif: boolean
+  agentique: boolean
+  budget: number
+}
+interface PrefixesSettings {
+  integres: PrefixeIntegres
+  personnalises: PrefixePersonnalise[]
+}
+
+const PREFIXES_INTEGRES_DEFAUT: PrefixeIntegres = {
+  cours:      { trigger: '@cours',      enabled: true },
+  strict:     { trigger: '@strict',     enabled: true },
+  web:        { trigger: '@web',        enabled: true },
+  image:      { trigger: '@image',      enabled: true },
+  historique: { trigger: '@historique', enabled: true },
+}
+
+//: Métadonnées d'AFFICHAGE seulement — description fixe du comportement réel
+//: de chaque commande intégrée (le comportement lui-même vit dans
+//: `modules/chat/router.py` et `Component.tsx` du module chat, inchangé).
+const PREFIXES_INTEGRES_META: Record<keyof PrefixeIntegres, { label: string; description: string }> = {
+  cours:      { label: 'Cours',      description: 'Force la recherche documentaire sur tous les fichiers indexés, pas seulement les fichiers attachés à cette conversation.' },
+  strict:     { label: 'Strict',     description: 'Réponse concise, sans reformulation ni introduction.' },
+  web:        { label: 'Web',        description: 'Effectue une recherche web complémentaire avant de répondre.' },
+  image:      { label: 'Image',      description: 'Relit les images attachées pour répondre précisément à cette question.' },
+  historique: { label: 'Historique', description: 'Recherche un sujet déjà discuté dans les conversations passées.' },
+}
+
+
+//: Bornes du curseur de budget d'un skill personnalisé agentique — mêmes
+//: bornes que `recherche_approfondie` (cf. `TOOL_CALLING_SKILLS` ci-dessus et
+//: `backend/core/memory.py:_BUDGET_RECHERCHE_APPROFONDIE_*`).
+const BUDGET_PERSONNALISE_MIN = 1
+const BUDGET_PERSONNALISE_MAX = 10
+const BUDGET_PERSONNALISE_DEFAUT = 4
+
+//: Normalise une réponse `GET /context` (ou son absence) à la frontière
+//: `.json()` — même philosophie que `normaliserToolCalling` : un champ
+//: manquant ou mal formé retombe sur le défaut plutôt que de propager un
+//: `undefined` dans l'état (CLAUDE.md §8).
+function normaliserPrefixes(raw: unknown): PrefixesSettings {
+  const r = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const integresRaw = r.integres && typeof r.integres === 'object' ? r.integres as Record<string, unknown> : {}
+  const integres = {} as PrefixeIntegres
+  for (const cle of Object.keys(PREFIXES_INTEGRES_DEFAUT) as (keyof PrefixeIntegres)[]) {
+    const defaut = PREFIXES_INTEGRES_DEFAUT[cle]
+    const v = integresRaw[cle] && typeof integresRaw[cle] === 'object' ? integresRaw[cle] as Record<string, unknown> : {}
+    const trigger = typeof v.trigger === 'string' && v.trigger.trim() ? v.trigger : defaut.trigger
+    const enabled = typeof v.enabled === 'boolean' ? v.enabled : defaut.enabled
+    integres[cle] = { trigger, enabled }
+  }
+  const personnalisesRaw = Array.isArray(r.personnalises) ? r.personnalises : []
+  const personnalises: PrefixePersonnalise[] = []
+  for (const item of personnalisesRaw) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    if (typeof o.id !== 'string' || !o.id) continue
+    if (typeof o.nom !== 'string' || !o.nom) continue
+    const budgetBrut = typeof o.budget === 'number' ? o.budget : BUDGET_PERSONNALISE_DEFAUT
+    personnalises.push({
+      id: o.id,
+      nom: o.nom,
+      trigger: typeof o.trigger === 'string' && o.trigger.trim() ? o.trigger : null,
+      description: typeof o.description === 'string' ? o.description : '',
+      instruction: typeof o.instruction === 'string' ? o.instruction : '',
+      prefixe_actif: typeof o.prefixe_actif === 'boolean' ? o.prefixe_actif : false,
+      agentique: typeof o.agentique === 'boolean' ? o.agentique : false,
+      budget: Math.min(BUDGET_PERSONNALISE_MAX, Math.max(BUDGET_PERSONNALISE_MIN, budgetBrut)),
+    })
+  }
+  return { integres, personnalises }
 }
 
 function quotaBarColor(pct: number): 'gradient' | 'warning' | 'error' {
@@ -252,6 +350,18 @@ export default function Settings() {
   const [toolCallingMsg, setToolCallingMsg] = useState<string | null>(null)
   const [skillSearch, setSkillSearch] = useState('')
 
+  // Préfixes & commandes state — null tant que GET /context n'a pas répondu
+  // (même raison que `toolCalling` ci-dessus : éviter un flash des 5 valeurs
+  // par défaut avant que l'état réellement configuré n'arrive).
+  const [prefixes, setPrefixes] = useState<PrefixesSettings | null>(null)
+  const [prefixesMsg, setPrefixesMsg] = useState<string | null>(null)
+  const [prefixeSearch, setPrefixeSearch] = useState('')
+  const [renameIntegre, setRenameIntegre] = useState<keyof PrefixeIntegres | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const [prefixeEdit, setPrefixeEdit] = useState<PrefixePersonnalise | null>(null)
+  const [prefixeFormOpen, setPrefixeFormOpen] = useState(false)
+  const [prefixeFormMsg, setPrefixeFormMsg] = useState<string | null>(null)
+
   // Quota usage state
   const [quotas, setQuotas] = useState<Record<string, QuotaEntry>>({})
   const [quotasLoading, setQuotasLoading] = useState(false)
@@ -299,6 +409,7 @@ export default function Settings() {
       .then((d: Record<string, unknown>) => {
         setConsolidCloud(Boolean(d['consolidation_cloud']))
         setToolCalling(normaliserToolCalling(d['tool_calling']))
+        setPrefixes(normaliserPrefixes(d['prefixes']))
       })
       .catch(() => {})
 
@@ -535,6 +646,30 @@ export default function Settings() {
     }
   }, [])
 
+  // Écrit l'objet `prefixes` COMPLET, même contrainte que `saveToolCalling`
+  // ci-dessus (pas de fusion profonde côté `PATCH /context/settings`) et même
+  // gestion d'échec : `res.ok` avant de considérer l'écriture acquise, repli
+  // sur l'état réel du backend sinon (CLAUDE.md §8).
+  const savePrefixes = useCallback(async (next: PrefixesSettings) => {
+    setPrefixes(next)
+    setPrefixesMsg(null)
+    try {
+      const res = await apiFetch(`${API}/context/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefixes: next }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.error('PATCH /context/settings (prefixes):', err)
+      setPrefixesMsg('Échec de l’enregistrement — réessayez.')
+      apiFetch(`${API}/context`)
+        .then(r => r.json())
+        .then((d: Record<string, unknown>) => setPrefixes(normaliserPrefixes(d['prefixes'])))
+        .catch(() => {})
+    }
+  }, [])
+
   const consolidateNow = useCallback(async () => {
     setConsolidating(true)
     setConsolidResult(null)
@@ -657,6 +792,7 @@ export default function Settings() {
     ...(ATELIER_PRESENT ? [{ id: 'atelier', label: 'Atelier — moteurs' }] : []),
     { id: 'profil', label: 'Profil' },
     { id: 'avance', label: 'Avancé' },
+    { id: 'prefixes', label: 'Préfixes & commandes' },
     { id: 'tool_calling', label: 'Tool calling' },
   ]
   // Un onglet « atelier » mémorisé (localStorage) d'avant que ATELIER_PRESENT
@@ -1520,6 +1656,361 @@ export default function Settings() {
       </>)}
 
       {/* ── Tool calling ── */}
+      {currentTab === 'prefixes' && prefixes && (() => {
+        const filtre = prefixeSearch.trim().toLowerCase()
+        const clesIntegres = Object.keys(PREFIXES_INTEGRES_META) as (keyof PrefixeIntegres)[]
+        const integresFiltres = clesIntegres.filter(cle => {
+          if (!filtre) return true
+          const meta = PREFIXES_INTEGRES_META[cle]
+          return meta.label.toLowerCase().includes(filtre)
+            || prefixes.integres[cle].trigger.toLowerCase().includes(filtre)
+        })
+        const integresTries = [...integresFiltres].sort((a, b) =>
+          Number(prefixes.integres[b].enabled) - Number(prefixes.integres[a].enabled)
+        )
+        // Pas de tri « désactivé en fin de liste » ici, à la différence des
+        // intégrées ci-dessus : `personnalisesAffiches` ne garde déjà que les
+        // `prefixe_actif` vrais (les purement agentiques vivront dans l'onglet
+        // Tool calling, Phase C), donc un tri sur ce même champ serait un no-op.
+        const personnalisesTries = prefixes.personnalises.filter(o =>
+          o.prefixe_actif
+          && (!filtre || o.nom.toLowerCase().includes(filtre) || o.description.toLowerCase().includes(filtre))
+        )
+
+        const majIntegre = (cle: keyof PrefixeIntegres, patch: Partial<PrefixeIntegre>) => {
+          void savePrefixes({
+            ...prefixes,
+            integres: { ...prefixes.integres, [cle]: { ...prefixes.integres[cle], ...patch } },
+          })
+        }
+
+        const confirmerRenommage = () => {
+          if (!renameIntegre) return
+          const v = renameDraft.trim()
+          if (v) majIntegre(renameIntegre, { trigger: v })
+          setRenameIntegre(null)
+          setRenameDraft('')
+        }
+
+        const retirerPersonnalise = (id: string) => {
+          void savePrefixes({
+            ...prefixes,
+            personnalises: prefixes.personnalises.filter(o => o.id !== id),
+          })
+        }
+
+        const supprimerPersonnalise = (id: string, nom: string) => {
+          if (!window.confirm(`Supprimer le préfixe personnalisé « ${nom} » ?`)) return
+          retirerPersonnalise(id)
+        }
+
+        // Le Toggle de la carte ne pilote que `prefixe_actif` (`agentique` n'est
+        // réglable que dans le formulaire). Le désactiver sur un préfixe qui
+        // n'est PAS agentique produirait un objet ni déclenchable ni invocable
+        // — `normaliser_prefixes` (backend/core/memory.py) l'écarte alors
+        // SILENCIEUSEMENT au prochain PATCH, un 200 qui ne garde rien
+        // (CLAUDE.md §8 : un refus affiché comme un succès). On propose la
+        // suppression, seul geste qui a un effet réel dans ce cas.
+        const togglePersonnalise = (id: string, patch: Partial<PrefixePersonnalise>) => {
+          const cible = prefixes.personnalises.find(o => o.id === id)
+          if (!cible) return
+          const suivant = { ...cible, ...patch }
+          if (!suivant.prefixe_actif && !suivant.agentique) {
+            if (window.confirm(
+              `Désactiver « ${cible.nom} » le laisserait sans aucun moyen d'être déclenché `
+              + `(ni préfixe, ni appel par le modèle) — le réglage ne serait pas conservé. `
+              + `Le supprimer à la place ?`
+            )) {
+              retirerPersonnalise(id)
+            }
+            return
+          }
+          void savePrefixes({
+            ...prefixes,
+            personnalises: prefixes.personnalises.map(o => o.id === id ? suivant : o),
+          })
+        }
+
+        const ouvrirCreation = () => {
+          setPrefixeEdit({
+            id: crypto.randomUUID(),
+            nom: '',
+            trigger: null,
+            description: '',
+            instruction: '',
+            prefixe_actif: false,
+            agentique: false,
+            budget: BUDGET_PERSONNALISE_DEFAUT,
+          })
+          setPrefixeFormMsg(null)
+          setPrefixeFormOpen(true)
+        }
+
+        const ouvrirEdition = (o: PrefixePersonnalise) => {
+          setPrefixeEdit({ ...o })
+          setPrefixeFormMsg(null)
+          setPrefixeFormOpen(true)
+        }
+
+        const enregistrerFormulaire = () => {
+          if (!prefixeEdit) return
+          if (!prefixeEdit.nom.trim()) {
+            setPrefixeFormMsg('Le nom est requis.')
+            return
+          }
+          if (!prefixeEdit.prefixe_actif && !prefixeEdit.agentique) {
+            setPrefixeFormMsg(
+              'Cochez au moins « Déclenchable par un préfixe » ou « Invocable par le modèle » — '
+              + 'sans ça, ce préfixe ne ferait jamais rien.'
+            )
+            return
+          }
+          if (prefixeEdit.prefixe_actif && !prefixeEdit.trigger?.trim()) {
+            setPrefixeFormMsg('Un trigger est requis pour un préfixe déclenchable manuellement.')
+            return
+          }
+          if (prefixeEdit.agentique && !prefixeEdit.description.trim()) {
+            setPrefixeFormMsg('Une description est requise pour un préfixe invocable par le modèle.')
+            return
+          }
+          if (!prefixeEdit.instruction.trim()) {
+            setPrefixeFormMsg('L’instruction est requise — c’est le texte injecté au déclenchement.')
+            return
+          }
+          const dejaPresent = prefixes.personnalises.some(o => o.id === prefixeEdit.id)
+          const suivants = dejaPresent
+            ? prefixes.personnalises.map(o => o.id === prefixeEdit.id ? prefixeEdit : o)
+            : [...prefixes.personnalises, prefixeEdit]
+          void savePrefixes({ ...prefixes, personnalises: suivants })
+          setPrefixeFormOpen(false)
+          setPrefixeEdit(null)
+        }
+
+        return (
+        <Card className="max-w-2xl space-y-4">
+          <SectionTitle icon={<AtSign size={15} />}>Préfixes & commandes</SectionTitle>
+          <p className="text-xs text-muted/70">
+            Renommez ou désactivez les commandes intégrées, et créez vos propres
+            préfixes — déclenchables à la main dans le chat, invocables par le
+            modèle lui-même, ou les deux.
+          </p>
+
+          <div className="relative">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+            <Input
+              value={prefixeSearch}
+              onChange={e => setPrefixeSearch(e.target.value)}
+              placeholder="Rechercher un préfixe…"
+              className="w-full text-xs py-1.5 pl-8"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {integresTries.map(cle => {
+              const p = prefixes.integres[cle]
+              const meta = PREFIXES_INTEGRES_META[cle]
+              return (
+                <EntityCard
+                  key={cle}
+                  badgeLabel={p.trigger.slice(0, 2)}
+                  title={p.trigger}
+                  description={meta.label + ' — ' + meta.description}
+                  muted={!p.enabled}
+                  footer={
+                    <div className="flex items-center justify-between gap-2">
+                      <Button
+                        variant="ghost" size="sm" icon={<Pencil size={12} />}
+                        onClick={() => { setRenameIntegre(cle); setRenameDraft(p.trigger) }}
+                      >
+                        Renommer
+                      </Button>
+                      <Toggle
+                        checked={p.enabled}
+                        onChange={enabled => majIntegre(cle, { enabled })}
+                        label={`Activer ${meta.label}`}
+                      />
+                    </div>
+                  }
+                />
+              )
+            })}
+
+            {personnalisesTries.map(o => (
+              <EntityCard
+                key={o.id}
+                badgeLabel={(o.trigger ?? o.nom).slice(0, 2)}
+                badgeColorClass="bg-accent2/15 text-accent2"
+                title={o.nom}
+                description={o.description || o.instruction}
+                muted={!o.prefixe_actif}
+                footer={
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1">
+                      <Button variant="ghost" size="sm" icon={<Pencil size={12} />} onClick={() => ouvrirEdition(o)}>
+                        Modifier
+                      </Button>
+                      <Button
+                        variant="ghost" size="sm" icon={<Trash2 size={12} />}
+                        onClick={() => supprimerPersonnalise(o.id, o.nom)}
+                        aria-label="Supprimer"
+                      />
+                    </div>
+                    <Toggle
+                      checked={o.prefixe_actif}
+                      onChange={prefixe_actif => togglePersonnalise(o.id, { prefixe_actif })}
+                      label={`Activer ${o.nom}`}
+                    />
+                  </div>
+                }
+              />
+            ))}
+
+            <button
+              type="button"
+              onClick={ouvrirCreation}
+              className="flex flex-col items-center justify-center gap-1.5 p-4 min-h-[112px] border border-dashed border-line rounded-md text-muted hover:text-accent hover:border-accent/50 transition-colors duration-150"
+            >
+              <Plus size={18} />
+              <span className="text-xs font-medium">Créer un préfixe</span>
+            </button>
+          </div>
+
+          {prefixesMsg && <p className="text-xs text-error">{prefixesMsg}</p>}
+
+          {/* Renommage d'une commande intégrée — édition inline via une petite Modal,
+              un seul champ, cohérent avec la légèreté de l'action (CLAUDE.md :
+              pas de composant curseur dédié à extraire pour un cas aussi simple). */}
+          <Modal
+            open={renameIntegre !== null}
+            onClose={() => { setRenameIntegre(null); setRenameDraft('') }}
+            title={renameIntegre ? `Renommer ${PREFIXES_INTEGRES_META[renameIntegre].label}` : ''}
+          >
+            <div className="space-y-3">
+              <Input
+                value={renameDraft}
+                onChange={e => setRenameDraft(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && confirmerRenommage()}
+                placeholder="@nouveautrigger"
+                className="w-full text-sm"
+                autoFocus
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={() => { setRenameIntegre(null); setRenameDraft('') }}>
+                  Annuler
+                </Button>
+                <Button variant="secondary" size="sm" onClick={confirmerRenommage}>
+                  Enregistrer
+                </Button>
+              </div>
+            </div>
+          </Modal>
+
+          {/* Création/édition d'un préfixe personnalisé. */}
+          <Modal
+            open={prefixeFormOpen && prefixeEdit !== null}
+            onClose={() => { setPrefixeFormOpen(false); setPrefixeEdit(null) }}
+            title={prefixeEdit && prefixes.personnalises.some(o => o.id === prefixeEdit.id) ? 'Modifier le préfixe' : 'Créer un préfixe'}
+            width="max-w-lg"
+          >
+            {prefixeEdit && (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs text-muted">Nom</label>
+                  <Input
+                    value={prefixeEdit.nom}
+                    onChange={e => setPrefixeEdit({ ...prefixeEdit, nom: e.target.value })}
+                    placeholder="Synthèse de cours"
+                    className="w-full text-sm mt-1"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-muted">Description</label>
+                  <Input
+                    value={prefixeEdit.description}
+                    onChange={e => setPrefixeEdit({ ...prefixeEdit, description: e.target.value })}
+                    placeholder="Ce que ce préfixe fait — visible par le modèle s’il est invocable"
+                    className="w-full text-sm mt-1"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-muted">Instruction</label>
+                  <Textarea
+                    value={prefixeEdit.instruction}
+                    onChange={e => setPrefixeEdit({ ...prefixeEdit, instruction: e.target.value })}
+                    placeholder="Texte injecté dans le prompt au déclenchement…"
+                    className="w-full text-sm mt-1"
+                    rows={4}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <label className="text-sm text-secondary flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={prefixeEdit.prefixe_actif}
+                      onChange={e => setPrefixeEdit({ ...prefixeEdit, prefixe_actif: e.target.checked })}
+                      className="accent-[--accent-primary]"
+                    />
+                    Déclenchable par un préfixe
+                  </label>
+                </div>
+                {prefixeEdit.prefixe_actif && (
+                  <Input
+                    value={prefixeEdit.trigger ?? ''}
+                    onChange={e => setPrefixeEdit({ ...prefixeEdit, trigger: e.target.value })}
+                    placeholder="@synthese"
+                    className="w-full text-sm"
+                  />
+                )}
+
+                <div className="flex items-center justify-between">
+                  <label className="text-sm text-secondary flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={prefixeEdit.agentique}
+                      onChange={e => setPrefixeEdit({ ...prefixeEdit, agentique: e.target.checked })}
+                      className="accent-[--accent-primary]"
+                    />
+                    Invocable par le modèle
+                  </label>
+                </div>
+                {prefixeEdit.agentique && (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={BUDGET_PERSONNALISE_MIN}
+                      max={BUDGET_PERSONNALISE_MAX}
+                      step={1}
+                      value={prefixeEdit.budget}
+                      onChange={e => setPrefixeEdit({ ...prefixeEdit, budget: Number(e.target.value) })}
+                      className="flex-1 accent-[--accent-primary]"
+                      aria-label="Budget d'appels"
+                    />
+                    <span className="text-xs font-mono text-muted w-16 text-right shrink-0">
+                      {prefixeEdit.budget} appel{prefixeEdit.budget > 1 ? 's' : ''}
+                    </span>
+                  </div>
+                )}
+
+                {prefixeFormMsg && <p className="text-xs text-error">{prefixeFormMsg}</p>}
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="ghost" size="sm" onClick={() => { setPrefixeFormOpen(false); setPrefixeEdit(null) }}>
+                    Annuler
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={enregistrerFormulaire}>
+                    Enregistrer
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Modal>
+        </Card>
+        )
+      })()}
+
       {currentTab === 'tool_calling' && toolCalling && (() => {
         const filtre = skillSearch.trim().toLowerCase()
         const skillsFiltres = TOOL_CALLING_SKILLS.filter(s =>
