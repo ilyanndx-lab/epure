@@ -4,6 +4,10 @@ Contexte et invariants du dépôt, à lire avant toute modification.
 Ce fichier est normatif : ce qui est marqué **IMPÉRATIF** ne se discute pas sans
 que l'utilisateur (Ilyann) l'ait validé explicitement dans la conversation.
 
+Noyau volontairement court : invariants + carte du dépôt, pas leur
+justification complète (détail, mesures, incidents datés → `docs/claude/`,
+table juste après §1 ; design → `docs/`).
+
 ---
 
 ## 1. Ce qu'est le projet
@@ -14,13 +18,9 @@ modules (backend + frontend) et les monte dans l'application.
 
 **IMPÉRATIF — le cœur est générique.** Il ne présume aucune filière, aucune
 matière, aucun métier. Ce qui spécialise une instance, ce sont ses *modules*
-(`modules-catalogue/`) et sa configuration. Le contraire s'était installé sans
-que rien ne le signale : profil élève né en « PTSI2 », `watch_folders` sur
-`Maths / Physique-Chimie / SI`, tri de PDF n'acceptant que ces trois matières,
-et trois prompts de `core/` parlant d'un « étudiant en prépa ». Quiconque
-installait Épure héritait de la filière de son auteur.
-`backend/test_coeur_generique.py` tient la frontière — il liste ses tolérances,
-qui sont des explications historiques, jamais du comportement.
+(`modules-catalogue/`) et sa configuration — jamais `core/`. Le contraire
+s'était installé sans que rien ne le signale ; `backend/test_coeur_generique.py`
+tient désormais la frontière. Détail : `docs/claude/contexte-historique.md` §1.
 
 - **Backend** : FastAPI, `backend/` — port 8000
 - **Frontend** : React 19 + Vite + TypeScript + Tailwind, `frontend/` — port 5173
@@ -38,6 +38,28 @@ qui sont des explications historiques, jamais du comportement.
 | **L'Atelier est le cœur du projet**, pas un outil de dev | Tout ce qui touche à la génération/validation/montage de modules est du code de production, à traiter avec le même soin que `core/`. |
 | **Auteur seul, en prépa** | Interruptions de plusieurs semaines. Le code doit être relisible à froid : docstrings en français expliquant *pourquoi*, pas *quoi*. C'est déjà la convention du dépôt — la respecter. |
 
+### Annexes (`docs/claude/`) — chargées à la demande, pas à chaque session
+
+Le noyau donne la règle et le test qui la verrouille ; l'annexe donne
+l'incident et les mesures. Chaque `§` d'origine garde sa section dans ce
+noyau (même numérotation), avec le renvoi vers l'annexe qui porte le détail —
+un commentaire de code citant `CLAUDE.md §N` (`core/runtime.py`,
+`test_taches_locales.py`, `tools/dev-epure.ps1`, `tools/faire_paquet.py`)
+reste donc résoluble.
+
+| Tu touches… | Charge |
+|---|---|
+| Lancement, venv dédié, `verif-ci.ps1`, la suite de tests, l'écart CI/local | `docs/claude/dev-workflow.md` |
+| Ingestion d'un document ou d'une image (RAG, module Docs, vision import/chat) | `docs/claude/ingestion-documents.md` |
+| Un appel LLM hors du tour de chat (résumé, classification, tâche de fond) | `docs/claude/cloud-local.md` |
+| Le module `encre` / la transcription manuscrite (`core/hmer.py`) | `docs/claude/hmer-transcription.md` |
+| Le stockage JSON, le store vectoriel, la pile d'embedding | `docs/claude/persistance-embedding.md` |
+| Un nouveau chemin de fichier/dossier, ou `_test_env.py` | `docs/claude/chemins.md` |
+| `/ws/chat`, SSE, le streaming du LLM, le raisonnement | `docs/claude/sse-websocket.md` |
+| L'Atelier : exigences par moteur, effet des interrupteurs de paquet | `docs/claude/atelier-detail.md` |
+| N'importe quoi — avant de conclure qu'un bug est nouveau | `docs/claude/pieges-connus.md` |
+| Le pourquoi historique derrière une règle de ce noyau | `docs/claude/contexte-historique.md` |
+
 ---
 
 ## 2. Lancer et tester
@@ -46,13 +68,13 @@ qui sont des explications historiques, jamais du comportement.
 # Relance de DEV après un git pull : node résiduels, pull, npm ci (avec
 # réparation EPERM), build, libération du port 8000, uvicorn au premier plan.
 # Un raccourci de bureau y mène (-PoserRaccourci pour le (re)créer).
-.	ools\dev-epure.ps1
-.	ools\dev-epure.ps1 -Diagnostic   # tout sauf uvicorn, pour vérifier l'état
+.\tools\dev-epure.ps1
+.\tools\dev-epure.ps1 -Diagnostic   # tout sauf uvicorn, pour vérifier l'état
 
 # Tout-en-un (Ollama + backend + frontend + tray) — usage normal
 python epure_tray.py
 
-# Backend seul (activer le venv dédié d'abord, cf. section suivante)
+# Backend seul (activer le venv dédié d'abord)
 .\.venv\Scripts\Activate.ps1
 cd backend
 python -m uvicorn main:app --reload
@@ -62,230 +84,22 @@ cd frontend
 npm run dev
 ```
 
-### Interpréteur Python — venv dédié, géré par `dev-epure.ps1`
+**IMPÉRATIF — le backend tourne dans le venv dédié `.venv/`**, jamais le
+Python partagé. Créé/synchronisé par `tools\dev-epure.ps1` et
+`epure_tray.py` seuls — ne jamais installer les dépendances backend ailleurs.
+Échappatoire, cas particuliers (tray, `core/codeagent.py`) :
+`docs/claude/dev-workflow.md`.
 
-Le backend tourne dans un **venv privé à Épure**, `.venv/` à la racine du dépôt
-(déjà dans `.gitignore`, et hors de portée de `tools/faire_paquet.py` — ce
-script ne copie que `backend/` et `frontend/dist`, jamais la racine du dépôt).
-Avant, `backend/` tournait sur le Python **partagé** de la machine, celui
-qu'utilisent aussi les autres projets d'Ilyann : chaque nouveau lot de
-dépendances ML d'Épure (`torch`/`transformers`/`optimum-onnx` pour
-`core/hmer.py` notamment) forçait une enquête de dépendances inverses sur les
-paquets **des autres projets** avant de savoir si une rétrogradation les
-casserait. Un venv dédié supprime ce risque structurellement.
+**IMPÉRATIF — avant de pousser, lancer `tools\verif-ci.ps1`** (venv activé
+pour `-Backend`) : `npm run lint`/la suite backend lancés à la main ne
+mesurent PAS le périmètre de la CI. Le script lit `ci.yml` au lieu de le
+paraphraser. Détail, deux incidents vécus : `docs/claude/dev-workflow.md`.
 
-`tools\dev-epure.ps1` **crée et synchronise ce venv tout seul** : absent, il le
-crée (n'importe quel Python du poste sait faire `-m venv`, il n'est plus
-nécessaire ensuite) ; présent, il relit `requirements.txt` à chaque lancement
-(`pip install -r`, silencieux quand tout est déjà à jour) puis vérifie
-réellement que `fastapi`/`uvicorn` s'importent avant de continuer. Objectif :
-ne plus jamais se demander quel Python est actif ici.
-
-`$env:EPURE_PYTHON` reste l'échappatoire pour pointer sur un **autre**
-interpréteur (débogage, comparaison de versions) : quand elle est posée, la
-gestion du venv est court-circuitée et l'interpréteur nommé est utilisé tel
-quel — mais toujours vérifié, un mauvais chemin doit échouer nommé.
-
-**`epure_tray.py` (l'usage normal, lancé par le raccourci de bureau) lance
-désormais aussi le backend dans ce venv dédié.** Ce n'était pas le cas avant le
-2026-09-08 : le tray passait `sys.executable` — l'interpréteur qui le lance
-lui-même, le Python **partagé**, sauf raccourci repointé — tel quel à uvicorn,
-laissant le risque de rétrogradation de dépendances ouvert sur le seul chemin
-d'usage réel (`dev-epure.ps1` sert au développement, pas à l'usage quotidien).
-`lanceur.py` (le module partagé entre le tray et sa logique testable, cf.
-« Quatre lanceurs, quatre publics » plus bas) porte `assurer_venv_backend()` :
-au premier lancement sur
-un poste neuf, il **crée** `.venv/` et y installe `requirements.txt`, comme
-`dev-epure.ps1` ; ensuite il se contente de le **réutiliser**, sans
-resynchroniser à chaque démarrage — volontairement asymétrique avec
-`dev-epure.ps1`, qui est le workflow « après un `git pull` », pas le tray.
-`$env:EPURE_PYTHON` reste la même échappatoire des deux côtés, rendue telle
-quelle sans création ni vérification côté résolution — seulement vérifiée après
-coup (`fastapi`/`uvicorn` importables), comme dans le script PowerShell.
-**Aucun repli sur `sys.executable` si la résolution échoue** : ce serait
-réintroduire, en silence, le risque que ce venv existe pour supprimer — le
-backend ne démarre pas et l'incident est journalisé (`epure_tray.log`,
-infobulle de l'icône).
-
-Ce que ce changement ne couvre PAS : le **process du tray lui-même**
-(`epure_tray.py`, celui qui importe `pystray`/`PIL`) reste sur l'interpréteur
-qui le lance — le Python partagé, sauf si le raccourci de bureau est repointé
-sur `.venv\Scripts\pythonw.exe`, ce qui n'a pas été fait. `pystray` et `Pillow`
-doivent donc rester installés sur le Python partagé, sans quoi le tray lui-même
-ne démarre plus — seul son enfant uvicorn a changé d'interpréteur.
-
-De même, `core/codeagent.py` (module Code) exécute les scripts de l'utilisateur
-et installe leurs paquets opt-in (`POST /code/install`) sur `sys.executable` du
-process qui tourne — donc sur le venv dédié quand le backend y tourne, que ce
-soit via `dev-epure.ps1` ou désormais via `epure_tray.py`, et sur le Python
-partagé seulement si `$env:EPURE_PYTHON`/`EPURE_PYTHON` pointe ailleurs. Un
-paquet installé par ce biais pour un script (`matplotlib`, par exemple —
-support dédié dans `core/_plot_support/`, dépendance **volontairement** absente
-de `requirements.txt`, cf. `test_codeagent_plots.py`) ne traverse pas d'un
-interpréteur à l'autre : il se réinstalle depuis le panneau du module Code si
-besoin.
-
-### Avant de pousser — `tools\verif-ci.ps1`
-
-```powershell
-.\tools\verif-ci.ps1              # frontend + backend, périmètre de la CI
-.\tools\verif-ci.ps1 -Frontend    # ou -Backend
-```
-
-**`verif-ci.ps1` n'est PAS conscient du venv** : sa commande de tests backend
-vient de `ci.yml` (`python -m unittest discover …`), donc `python` y est résolu
-sur le PATH de la session PowerShell **courante**, pas via `$env:EPURE_PYTHON`
-ni via `.venv/`. L'activer d'abord (`.\.venv\Scripts\Activate.ps1`) avant de
-lancer `-Backend` — sinon la mesure porte sur le Python partagé, un « vert »
-qui ne dit rien du venv réellement utilisé par le backend (cf. l'avertissement
-juste en dessous sur ce que ce script mesure et ne mesure pas).
-
-**IMPÉRATIF — `npm run lint` et la suite backend lancés à la main ne mesurent
-PAS ce que mesure la CI.** Deux fois le 2026-09-05, un « vert en local » est
-parti rouge en CI, sur deux axes indépendants : la CI installe **tout le
-catalogue** dans `frontend/src/modules/generated/` avant de linter (51
-avertissements ici, 62 là-bas, pour un cliquet à 61), et son clone n'a que les
-modules **versionnés** dans `backend/modules/` (un module de catalogue installé
-sur le poste faisait échouer `test_catalogue` ici et passer là-bas). Le seul
-contrôle qui vaut avant de pousser est ce script : il **lit `ci.yml`** au lieu de
-le paraphraser — cliquet eslint et commande de tests en sont extraits, et une
-lecture qui échoue **arrête** au lieu de retomber sur un défaut — et il travaille
-dans un arbre **temporaire**, jamais dans `generated/` (la CI y fait un `rm -rf`
-qui, ici, emporterait les modules réellement installés).
-
-### Tests
-
-Les tests sont des scripts `unittest` **autonomes à la racine de `backend/`**
-(pas de dossier `tests/`, pas de pytest). Chacun fait son propre
-`sys.path.insert(0, dirname(__file__))`.
-
-```powershell
-cd backend
-python -m unittest discover -s . -p "test_*.py"   # la commande de la CI
-python test_module_validate.py    # gate AST des routers générés
-python test_safe_path.py          # confinement de chemin du codeagent
-python test_jsonstore.py          # lecture/écriture JSON (BOM)
-python test_module_states.py      # deux états des modules + migration (§3.3)
-python test_arbre_modules_deterministe.py  # l'arbre de _test_env ne dépend pas du poste (§3.5)
-python test_web_search.py         # recherche web, HTTP mocké
-python test_web_statique.py       # interface servie par FastAPI + EPURE_ATELIER=0
-python test_chat_conversation_id_trames.py  # chaque trame /ws/chat porte conversation_id (§3.6)
-python test_logs_secrets.py       # le token ne sort pas dans les logs (§6)
-python test_memory_sans_llm.py    # aucun appel LLM sur le chemin d'un message (§8)
-python test_voice_indisponible.py # voix absente proprement (paquet, pas modèle) — ARM64
-python test_paquet.py             # tools/faire_paquet.py — ce qui ne doit PAS sortir
-python test_installeur.py         # installeur du paquet : mise à jour sans perte de données
-python test_websocket_dependance.py  # uvicorn sans lib WebSocket → tout /ws/* mort (§8)
-python test_models_cloud_sans_cle.py # un fournisseur sans clé ne rend aucun modèle
-python test_embedding_install.py  # mise à disposition du modèle d'embedding (§3.4)
-python test_wordpiece.py          # parité du tokeniseur Python pur (§3.4)
-python test_dependances_declarees.py  # onnxruntime déclaré en DIRECT, jamais transitif (§8)
-python test_encodage_scripts.py   # les .ps1 versionnés restent en ASCII pur (§8)
-python test_dev_epure.py          # stderr non fatal dans tools/dev-epure.ps1 (§8)
-python test_mise_a_jour.py        # l'archive s'applique sans s'imbriquer (§8)
-python test_raisonnement_stream.py   # le raisonnement d'Ollama n'est plus jeté (§8)
-python test_ingestion_documents.py   # formats lus par le RAG : pptx/xlsx/docx réels
-python test_vision_images.py      # indexation d'une image : décrite par un modèle vision, pas un placeholder (§3.3 bis)
-python test_chat_vision_ciblee.py # analyse vision CIBLÉE dans le chat, cache par fichier, @image (§3.3 ter)
-python test_hmer.py               # transcription manuscrite : rendu, recadrage, poids (§3.8)
-python test_taches_locales.py     # aucune tâche de fond ne part en cloud (§3.7)
-python test_module_isolation.py   # worker isolé — CHANTIER, cf. §7
-python integration_modules_mount.py  # LOURD : core.runtime + le vrai store vectoriel
-python integration_vector_store.py   # LOURD : parité core/vector_store.py ↔ chromadb
-```
-
-`integration_vector_store.py` exige un `pip install chromadb`, qui n'est plus une
-dépendance du projet : il compare le store actuel à celui qu'il a remplacé. C'est
-sa raison d'être et non un oubli — il ne peut pas se passer des deux côtés de la
-comparaison. Même chose pour `parite_vectorielle.py` et `migrer_vectoriel.py`,
-qui lisent l'ancien index (§3.4).
-
-**Un nouveau `backend/test_*.py` est pris en compte sans toucher au workflow** :
-la CI tourne en `unittest discover` depuis le commit `7e3bf8c`. Ce n'est plus une
-liste de `run:` nommés — cette liste avait laissé 4 fichiers sur 6 ne jamais
-tourner. Nommer un fichier `integration_*.py` au lieu de `test_*.py` est ce qui
-l'exclut de la découverte (cas de `integration_modules_mount.py`, qui charge
-le vrai store vectoriel et tourne dans le job `integration`, manuel).
-
-**Quatre lanceurs, quatre publics** — ne pas les confondre :
-`tools/dev-epure.ps1` (ce poste, après un pull, logs visibles),
-`epure_tray.py` (usage normal : icône, Ollama, Vite, console masquée — le
-backend qu'il lance tourne dans le même venv dédié que `dev-epure.ps1`,
-cf. section 2, créé tout seul au premier lancement),
-`tools/Installer-Epure.cmd` + `installer-epure.ps1` (**le destinataire d'un
-paquet**, à ne pas toucher pour un besoin de dev),
-`tools/Mettre-A-Jour-Epure.cmd` + `mettre-a-jour-epure.ps1` (**le destinataire
-qui a le DÉPÔT** et refait le cycle complet chez lui : code à jour, `npm.cmd
-install`, `faire_paquet.py`, arrêt de l'instance, installation — cinq étapes, un
-double-clic, arrêt net à la première qui échoue). Ce dernier existe parce que sur
-la machine cible `git` est inutilisable — Smart App Control y bloque
-`git-remote-https.exe` et `libcurl-4.dll` — donc la mise à jour du code passe par
-l'archive `main.zip`, avec le piège d'imbrication que
-`backend/test_mise_a_jour.py` verrouille. Le premier n'implémente PAS la
-décision « ce port est-il à moi ? » : il appelle `lanceur.py`, qui la porte avec
-ses 37 tests — deux implémentations divergeraient, et celle qui se tromperait
-tuerait le processus de quelqu'un d'autre.
-
-### Tests frontend — `npm test` depuis `frontend/`
-
-**vitest + jsdom + @testing-library/react**, arrivés le 2026-08-23. Bloquants en
-CI, `frontend/vitest.config.ts`, fichiers `src/**/*.test.tsx`.
-
-Ils existent pour une classe de bug que ni `tsc -b` ni eslint ne peuvent voir :
-**un `as` posé sur un `r.json()` est une affirmation, pas une vérification.**
-Le compilateur croit l'annotation ; le serveur, lui, répond parfois un corps
-d'erreur (`{"detail": …, "type": …}` du gestionnaire d'exceptions, un 401 avant
-appairage, un 404 sur une instance qui n'a pas la route). Le champ annoncé est
-alors `undefined`, le `.catch()` ne voit rien puisque `r.json()` a réussi, et la
-faute n'apparaît qu'au rendu suivant — sur un `.length`, dans un chunk minifié
-où la trace ne nomme même pas la ligne. C'est exactement ce qui s'est produit
-dans le panneau fichiers du module Docs (§8).
-
-**Écrire les nouveaux tests de composant en éprouvant la FORME des réponses**,
-pas seulement le cas nominal : `ModuleBar.test.tsx` rejoue le corps de réponse
-réel d'un backend qui refuse, et son idiome (`liste()`, `categories()`, `dico()`
-dans `ModuleBar.tsx`) est ce qu'il faut reprendre à chaque frontière `.json()`.
-
-```powershell
-cd frontend
-npm test              # vitest run
-npx vitest             # mode watch, pendant le développement
-```
-
-### Écart de version Python — piège actif
-
-Le venv dédié (section 2) tourne en **Python 3.14** — la même version que
-portait déjà le Python partagé avant lui, choisie pour ne pas ajouter une
-variable à un écart qui existe déjà : la CI tourne en **3.12** (`ci.yml`). Du
-code qui marche en local peut casser en CI. Si tu utilises une syntaxe
-récente, vérifie sa disponibilité en 3.12. Le venv dédié isole Épure des
-*autres projets* du poste ; il ne rapproche pas la version locale de celle de
-la CI, et ce n'est pas son rôle.
-
-### Écart de DÉPENDANCES local/CI — le même piège, moins connu
-
-Le job `backend` de la CI n'installe pas `requirements.txt` mais un **jeu
-minimal** (l'en-tête de `ci.yml` le justifie ligne par ligne) : ni
-**`faster-whisper`, ni `piper-tts`**. Sur le poste d'Ilyann tout est installé.
-(`onnxruntime` y EST depuis le 2026-08-26 : il ne pèse plus 198 Mo de wheels mais
-14 Mo, et il est embarqué dans le paquet — l'en garder dehors ferait tourner la CI
-dans une configuration qui n'existe nulle part. Ce qui reste hors du job, c'est le
-*modèle* : 90 Mo de poids que `_test_env` empêche de télécharger.) Un test qui touche un moteur vocal ou vectoriel peut
-donc passer en local et échouer en CI **sans une ligne de syntaxe récente** — et
-c'est arrivé : un garde-fou « refuser si `piper-tts` est absent » a fait tomber
-sept tests de `test_models_dir.py`, qui neutralisaient `_load` mais pas la
-présence du paquet. Cause suivante enchaînée : une assertion d'ÉGALITÉ sur la
-liste des paquets manquants, vraie avec un seul absent, fausse avec deux.
-
-Deux réflexes :
-
-- une assertion sur ce qui est *installé* se formule en **inclusion**, pas en
-  égalité, ou se garde par un `if _module_present(...)` ;
-- avant de pousser un changement qui touche ces moteurs, rejouer la suite avec
-  les paquets bloqués — un `sys.meta_path` qui lève `ImportError` sur
-  `piper` / `faster_whisper` / `ctranslate2` / `onnxruntime` reproduit
-  la condition en une vingtaine de lignes, et c'est ce qui a attrapé le second
-  échec avant la CI plutôt qu'après.
+Tests : `cd backend && python -m unittest discover -s . -p "test_*.py"` ;
+`cd frontend && npm test` (vitest — éprouver la FORME des réponses d'un
+backend qui refuse, pas seulement le cas nominal). Liste annotée des ~30
+fichiers de test, écarts de version/dépendances CI-local :
+`docs/claude/dev-workflow.md`.
 
 ---
 
@@ -315,24 +129,17 @@ module.**
 from core.runtime import llm, rag, memory, SSE_HEADERS
 ```
 
-Points de conception à respecter :
-
 - **Import à effets de bord assumés** : charge `config.yaml`, instancie les
-  moteurs, reset le contexte de session, lance un thread de préchauffage.
-  Importer `core.runtime` n'est jamais gratuit — ne pas le faire depuis un script
-  qui doit rester léger (c'est pourquoi `smoke_runner.py` et `module_worker.py`
-  n'importent **aucun** `core.*`).
-- **`_LazyEngine`** : `rag`, `docanalysis`, `history_engine`, `whisper`, `piper`
-  sont des proxies. Le moteur réel n'est construit qu'au premier accès à un
-  attribut. Raison historique : `RAGEngine` importait torch +
-  sentence-transformers (~30 s à chaud, 2 min à froid) et bloquait uvicorn au
-  point que `/health` ne répondait pas. La pile légère (§3.4) a ramené ce coût à
-  moins d'une seconde, mais la paresse reste **nécessaire** : construire ce moteur
-  peut déclencher le téléchargement de 90 Mo, qu'on ne veut pas au démarrage. **Ne pas « simplifier » en instanciant directement.**
+  moteurs. Ne jamais l'importer depuis un script qui doit rester léger
+  (`smoke_runner.py`, `module_worker.py` n'importent **aucun** `core.*`).
+- **IMPÉRATIF — `_LazyEngine`** : `rag`, `docanalysis`, `history_engine`,
+  `whisper`, `piper` sont des proxies construits au premier accès seulement —
+  construire `rag` peut déclencher un téléchargement de 90 Mo qu'on ne veut
+  pas au démarrage. **Ne pas « simplifier » en instanciant directement.**
+  Détail : `docs/claude/contexte-historique.md` §3.2.
 - **`_hf_offline_if_cached()`** doit rester **avant** le premier import de
-  `huggingface_hub` : `HF_HUB_OFFLINE` est figée à l'import. Déplacer cette
-  fonction ou les imports en dessous réintroduit un démarrage bloqué plusieurs
-  minutes quand le réseau est mauvais.
+  `huggingface_hub` (`HF_HUB_OFFLINE` est figée à l'import) — sinon démarrage
+  bloqué plusieurs minutes quand le réseau est mauvais.
 
 ### 3.3 Anatomie d'un module
 
@@ -345,781 +152,122 @@ frontend/src/modules/generated/<id>/Component.tsx   (généré ou installé)
    ou frontend/src/modules/<id>/Component.tsx        (cœur)
 ```
 
-Troisième emplacement depuis l'étape C : **`modules-catalogue/<id>/`**, qui
-réunit les trois fichiers côte à côte (`manifest.json`, `router.py`,
-`Component.tsx`). C'est la **source** des modules installables, pas une
-instance : rien n'y est monté. Installer = copier vers `backend/modules/<id>/`
-et `frontend/src/modules/generated/<id>/`. Les six qui y sont
-(`code`, `docs`, `flashcards`, `kholle`, `reviseur`, `rangement`) portent
-`core_module: false`, `origin: "catalogue"`, `removable: true` — `origin`
-distinct de `"workshop"` pour que l'Atelier ne les propose pas à la ré-édition
-comme du code jetable.
-
-`manifest.json` : `id`, `version`, `nom`, `icon` (nom lucide-react), `description`,
+`manifest.json` : `id`, `version`, `nom`, `icon` (lucide-react), `description`,
 `frontend.component`, `backend.prefix`, `core_module`, `origin`, `status`,
-`removable`.
+`removable`. `modules-catalogue/<id>/` est la **source** des modules
+installables (`docs/catalogue-modules.md`) — rien n'y est monté. Installer =
+copier vers `backend/modules/<id>/` et `frontend/src/modules/generated/<id>/`,
+puis `app.include_router(router, prefix=manifest.backend.prefix)`
+(`core/module_registry.py:74`).
 
-Montage (`core/module_registry.py:74`) : pour chaque manifeste `status="active"`
-possédant un `router.py`, `importlib.import_module(f"modules.{mid}.router")` puis
-`app.include_router(router, prefix=manifest.backend.prefix)`.
-
-**IMPÉRATIF — le prefix de montage est `""` pour les modules générés.** Donc
-chaque route doit être écrite préfixée à la main : `@router.get("/<id>/ping")`.
-Sans ça, collision silencieuse avec une route core (`/models`, `/analyze`).
+**IMPÉRATIF — le prefix de montage est `""` pour les modules générés.** Chaque
+route doit être écrite préfixée à la main : `@router.get("/<id>/ping")`. Sans
+ça, collision silencieuse avec une route core (`/models`, `/analyze`).
 
 #### Deux états, une seule source de vérité
 
 | État | Source de vérité | Effet | Stockage |
 |---|---|---|---|
 | **Installé** | `backend/modules/<id>/manifest.json` existe | le module existe pour cette instance | aucun — dérivé du disque |
-| **Actif** | `id` ∈ `instance_config.modules_activés` (liste **ordonnée**) | routeur monté **et** visible dans la barre, à la position donnée par la liste | `memory/instance_config.json` |
+| **Actif** | `id` ∈ `instance_config.modules_activés` (liste **ordonnée**) | routeur monté **et** visible dans la barre | `memory/instance_config.json` |
 
 Il n'y a **pas** d'état « monté mais invisible ». Actif = les deux à la fois.
 
-**IMPÉRATIF : `backend/memory/modules_state.json` a été supprimé et ne doit pas
-être recréé.** Il portait un second `status` par module, en doublon de
-`modules_activés`. Deux fichiers pour une notion divergent mécaniquement — c'est
-ce qui a été mesuré avant migration : 9 des 11 entrées de `modules_state.json`
-pointaient des modules effacés, 4 des 12 entrées de `modules_activés` aussi, et
-`reviseur` était installé et monté tout en étant absent de la barre. Si tu crois
-avoir besoin d'un état supplémentaire, c'est probablement `installé` que tu
-cherches, et il se lit sur le disque.
-
-Règles à respecter :
-
-- `core/module_registry.py:active_ids()` est la **seule** lecture d'état. Liste
-  vide → tous les modules installés (défaut d'installation neuve, ordre
-  `discover_manifests`, donc alphabétique et déterministe).
-- `set_status(id, "active"|"disabled")` ajoute/retire dans la liste. Signature et
-  endpoint `PUT /modules/{id}/status` conservés.
-- Le champ `status` de `GET /modules` reste `"active"|"disabled"` : il est
-  **dérivé** de l'appartenance à la liste. Le frontend en dépend
-  (`src/modules.ts`, `ModuleManifest.status`) — ne pas le renommer.
-- `settings` ne peut pas être désactivé : refusé par `set_status`, et réinjecté à
-  l'écriture (`core/instance.py:_garder_settings`) comme à la lecture. La liste
-  pilote le montage : la lui faire perdre débranche l'écran qui sert à la
-  réparer.
-- **Toute écriture de `instance_config.json` passe par
-  `core/jsonstore.transaction()`** (`InstanceConfig._mutate`). Cette liste
-  conditionne le démarrage ; un read-modify-write non verrouillé y perd des
-  écritures.
-
-### 3.3 bis Ingestion des documents — **deux chemins, pas un**
-
-C'est la confusion la plus facile à faire, et elle mène à croire un format
-supporté là où il ne l'est pas :
-
-| chemin | code | formats | ce qu'il produit |
-|---|---|---|---|
-| **RAG / fiches** | `RAGEngine._extract_text_from_path` | les 12 de `SUPPORTED_EXTENSIONS` | des chunks de texte pour la recherche |
-| **module Docs** | `docanalysis.load_document_streaming` | **PDF seulement** | un document paginé (`n_pages`, aperçu, résumé) |
-
-Le second appelle `pypdf.PdfReader` sans condition **parce qu'il compte des
-pages** : l'étendre n'est pas ajouter une branche, c'est décider ce que « page »
-veut dire pour un classeur. Son `accept` côté frontend annonçait dix types pour
-n'en accepter qu'un ; ramené à `.pdf` le 2026-08-24.
-
-**IMPÉRATIF — une seule liste d'extensions.** `SUPPORTED_EXTENSIONS`
-(`core/rag.py`) est la source ; `modules/settings/router.py:_SUPPORTED_EXT`
-l'importe, le message du 400 de l'upload en est dérivé, et le frontend en tient
-un miroir unique (`EXTENSIONS_ACCEPTEES` dans `ModuleBar.tsx`, d'où sortent
-`accept` **et** le filtre de `uploadFiles`). Il y en avait trois côté backend et
-deux côté frontend : l'oubli le plus probable produit le pire symptôme — un
-fichier accepté que le moteur ne sait pas lire s'indexe **à zéro chunk, en
-silence**.
-
-`.pptx`/`.xlsx` ajoutés le 2026-08-24 (python-pptx, openpyxl : `py3-none-any`,
-aucune extension compilée, +6,6 Mo, zéro transitif nouveau). `.docx` était déjà
-lu — ce qui manquait était le contenu de ses **tableaux**, que `doc.paragraphs`
-n'inclut pas. Pas de conversion externe : ni LibreOffice, ni Office, ni binaire
-appelé. Et **pas** de `.doc`/`.ppt`/`.xls` — aucune des trois bibliothèques ne lit
-l'OOXML pré-2007, les accepter donnerait une erreur à l'ouverture au lieu d'un
-refus à l'upload.
-
-Convention des extracteurs : paquet **absent** → avertissement + chaîne vide
-(dégradation, le paquet livré peut l'avoir perdu) ; fichier **illisible** →
-l'exception remonte, comme `.pdf` depuis toujours. Ne pas confondre les deux :
-l'un est une installation incomplète, l'autre un mauvais fichier.
-
-**Les images (`.png`/`.jpg`/`.jpeg`/`.webp`) ont, depuis le 2026-09-01, un
-troisième comportement — et lui non plus n'est pas uniforme entre les deux
-usages de `_extract_text_from_path` :**
-
-- **`index_file`** (l'indexation RAG) bascule vers `RAGEngine._texte_image`,
-  qui appelle un modèle vision (`LLMEngine.describe_image`, choisi par
-  `core.models.premier_modele_vision_disponible()` — FLM d'abord, sinon
-  l'Ollama de `config.yaml:vision.ollama_model`, défaut `moondream`) pour
-  produire une description ET transcrire le texte visible, remplaçant le
-  placeholder muet d'avant. **`index_file` rend ce texte** (`Optional[str]`,
-  `None` si rien n'a été indexé) — voir le piège ci-dessous, c'est précisément
-  ce que son absence a cassé une première fois.
-- **`read_file_text`/`read_pdf_text`** (lecture ad hoc d'un fichier — `/skills/
-  résumé`, l'aperçu d'upload de Réglages) restent sur `_extract_text_from_path`
-  et son placeholder statique. **C'est un choix de périmètre assumé, pas un
-  oubli** : seule l'indexation appelle un modèle vision.
-
-**IMPÉRATIF — ne jamais réextraire un fichier déjà passé par `index_file` :
-réutiliser sa valeur de retour.** Payé une fois : `_stream_load_sse`
-(`modules/settings/router.py`) appelait `rag.index_file(path)` PUIS
-`RAGEngine.read_file_text(path)` séparément pour construire le résumé affiché
-à l'import — un second appel qui passe par `_extract_text_from_path`,
-**statique**, donc qui ne voit jamais `_texte_image` ni le modèle vision. Le
-résumé d'une image importée disait donc systématiquement « je n'ai pas accès à
-l'image », alors que l'index, juste au-dessus dans la même boucle, avait la
-vraie description. Corrigé en faisant rendre à `index_file` le texte qu'il a
-réellement indexé ; `_stream_load_sse` le réutilise (`text or ""` pour le cas
-`None`, sans changer le comportement d'attachement d'avant). Pour les formats
-non-image, le bug ne changeait pas le RÉSULTAT (même texte des deux côtés) mais
-payait une relecture/reparsing en double à chaque import — éliminé par le même
-correctif. Verrouillé par `test_vision_images.py`.
-
-Dégradation à trois niveaux, même esprit que les extracteurs ci-dessus mais un
-cran de plus : aucun `llm` injecté (scripts, tests légers), aucun modèle
-vision disponible, ou l'appel échoue (timeout, réponse vide) → le placeholder,
-jamais une exception. Verrouillé par `test_vision_images.py`.
-
-**IMPÉRATIF — les TROIS cas dégradés SANS exception sont logués, pas seulement
-le `except`.** Angle mort trouvé en usage réel : `describe_image` peut réussir
-(pas de timeout, pas d'erreur) tout en rendant une chaîne vide — observé sur
-`flm:qwen3vl-it:4b`, sans qu'aucune trace n'indique pourquoi. `_texte_image`
-logue désormais ce cas, celui d'aucun modèle vision disponible, et celui
-d'aucun `llm` injecté du tout (`self._llm is None`) — les trois étaient
-silencieux (`logger.warning`, pas `exception` : ce n'est pas une erreur).
-
-**La branche `self._llm is None` a été la dernière trouvée, et c'est elle qui
-a fini par expliquer un cas réel** : les deux premiers logs ajoutés ne se
-déclenchaient JAMAIS chez un utilisateur, sur plusieurs fichiers — par
-élimination, c'est forcément celle-ci qui tournait. En production il n'y a
-QU'UN SEUL site de construction (`core/runtime.py:157`,
-`RAGEngine(store=vector_store, llm=llm)`), donc si ce log apparaît : soit
-`core/runtime.py` sur le disque est resté sur une version d'avant ce
-paramètre, soit le process tourne depuis avant la mise à jour — `_LazyEngine`
-construit le moteur **une seule fois** et le garde pour toute la durée du
-process, donc un `git pull` seul ne suffit pas, il faut redémarrer.
-
-`describe_image` va plus loin et logue le diagnostic BRUT quand le contenu est
-vide, pour la prochaine occurrence :
-
-- Ollama : `done_reason` et `eval_count` de la réponse ;
-- openai (flm) : `finish_reason`, `refusal` (champ du schéma OpenAI pour un
-  refus de contenu — jamais observé sur flm, mais gratuit à logger),
-  `model_extra` (un champ non modélisé par le SDK, comme `reasoning_content`
-  sur le chemin streaming, s'y retrouverait) et `usage`.
-
-**`finish_reason`/`done_reason` NE DISTINGUE PAS ce cas d'un succès — mesuré,
-pas supposé.** Sur `moondream` (avant que `_VISION_PROMPT` soit raccourci,
-prompt trop long) : `done_reason='stop'`, `eval_count=1`, réponse en 0,08 s,
-contenu vide. Le modèle a émis l'EOS comme PREMIER token — `"stop"` couvre
-donc aussi bien un succès qu'un contenu vide. **Le vrai discriminant est le
-nombre de tokens produits** (`eval_count`/`usage.completion_tokens` proche de
-0-1), pas `finish_reason`. C'est pour ça que les deux sont loggués ensemble.
-
-**IMPÉRATIF — la correspondance avec un modèle Ollama installé tolère
-l'absence de tag, jamais une égalité stricte.** Bug confirmé en production,
-distinct de celui ci-dessus : `config.yaml:vision.ollama_model` porte
-`moondream` SANS tag, mais `get_ollama_installed()` restitue les noms tels
-qu'Ollama les expose via `/api/tags` — AVEC tag, `moondream:latest`. Une
-égalité stricte (`ollama_model in ollama_installed`) ne les faisait donc
-jamais coïncider : `premier_modele_vision_disponible()` rendait `None` même
-Ollama joignable et le modèle installé, et le seul log visible était « aucun
-modèle vision disponible » — indiscernable d'une vraie absence d'installation.
-`core.models._match_ollama_model()` corrige ça : égalité stricte d'abord, puis
-repli sur le nom de BASE (partie avant `:`) des deux côtés. Rend le nom
-RÉELLEMENT installé (avec son tag), pas la valeur brute de `config.yaml` :
-c'est ce nom qui doit partir dans `describe_image`, pas celui de la config —
-reste correct si le tag installé change un jour. Verrouillé par
-`MatchOllamaModelTest` et deux cas dans `PremierModeleVisionDisponibleTest`
-(`test_vision_images.py`).
-
-**Non résolu à ce jour, spécifiquement sur `flm:qwen3vl-it:4b`** :
-reproduction tentée sans succès le 2026-09-01 (image blanche/noire/bruitée/
-RGBA/panoramique 4000×200, `.webp`, `.jpeg`, `think=True` forcé — tout est
-rendu avec un contenu correct et un nombre de tokens normal). La cause précise
-chez flm reste ouverte ; ces logs, avec le nombre de tokens qu'ils portent,
-sont ce qui la révélera à la prochaine occurrence réelle.
-
-**Coût mesuré, à garder en tête** : `index_file` est appelé par fichier depuis
-le flux de chargement du chat (`_stream_load_sse`) — attacher une image à une
-conversation bloque donc ce flux le temps de l'appel vision. Mesuré sur ce
-poste : ~2 s pour Ollama/`moondream` une fois le modèle chargé (25 s au premier
-appel après le pull). Pour `flm:qwen3vl-it:4b`, **6 à 19 s sur la MÊME image**
-rejouée trois fois (12,0 s / 6,2 s / 18,8 s) — la variance vient du run-to-run
-sur le NPU, pas de la complexité de l'image ; 26 s mesuré au tout premier appel
-après chargement du modèle. Ne pas lire une relation « image simple = rapide,
-image chargée = lent » dans ces chiffres, il n'y en a pas.
-
-**`_stream_load_sse` répond à ce coût par deux ajouts, sans toucher à
-l'indexation elle-même** (`backend/modules/settings/router.py`) : un événement
-SSE `{"type": "progress", "fichier", "index", "total"}` avant chaque fichier de
-la boucle (numéroté sur `paths`, la liste brute — un fichier ignoré compte quand
-même dans ce que voit l'utilisateur), et un paramètre `generate_summary: bool =
-True` (`LoadFilesRequest`, `POST /files/upload`) qui saute le résumé
-automatique sans jamais toucher à l'indexation/l'attachement. Coché par défaut
-dans `ModuleBar.tsx` — décoché, c'est pour plusieurs gros fichiers sur un poste
-sans FLM, où l'indexation séquentielle (repli Ollama ci-dessus) est déjà longue
-en soi. **`set_resume_contexte` n'est appelé que si `generate_summary` est
-vrai** : sauter le résumé ne doit jamais écraser un résumé déjà présent sur la
-conversation par une chaîne vide — ce que faisait, et continue de faire
-volontairement, le cas `generate_summary=True` avec `text_parts` vide.
-
-**IMPÉRATIF — `describe_image` a son propre timeout (`_VISION_TIMEOUT_S`,
-60 s dans `core/llm.py`), jamais `model.timeout_s`.** Cette méthode tourne en
-synchrone dans le chargement d'un fichier, pas dans une conversation active :
-elle doit échouer vite et retomber sur le placeholder, pas bloquer jusqu'aux
-défauts globaux des clients (600 s SDK openai, 300 s en lecture pour
-`ollama_client`, le client PARTAGÉ du chat). Deux mécanismes différents, parce
-qu'aucun des deux SDK ne se pose pareil :
-
-- **Ollama** : `Client.chat()` n'a pas de paramètre `timeout` par appel — un
-  second client, `_vision_ollama_client`, est construit une fois avec ce
-  timeout court, distinct de `ollama_client`.
-- **openai (flm)** : `create(timeout=...)` existe, mais **la retry policy par
-  défaut (2 essais) MULTIPLIE l'attente sur un timeout au lieu de la borner** —
-  mesuré : un `timeout=0.5` seul relève à 5,4 s avant de lever, contre 1,9 s
-  avec `max_retries=0`. `describe_image` pose donc les deux ensemble via
-  `.with_options(timeout=..., max_retries=0)`. Sans `max_retries=0`, le
-  timeout affiché ne borne rien — le pire cas réel serait ~3x plus long.
-
-**Qualité mesurée, pas supposée — `moondream` transcrit mais décrit mal.** Sur
-un texte simple (« THALES 42 » seul), les deux providers transcrivent
-correctement. Sur une image plus proche d'un cours réel (triangle annoté +
-formule « AB/AC = AM/AN = 3/5 ») : `flm:qwen3vl-it:4b` transcrit le titre ET
-la formule mot pour mot, en français ; `moondream` décrit la forme du triangle
-mais **ne transcrit pas la formule** (« a list of numbers and letters ») et
-répond en anglais à un prompt français. `moondream` reste le repli retenu
-(seul modèle vision Ollama vérifié, se pull et tourne vite) mais son résultat
-sur du texte structuré est plus faible que celui de `flm` — à garder en tête
-avant de compter sur la transcription Ollama pour des formules.
-
-**`_VISION_PROMPT` (`core/llm.py`) est délibérément COURT.** Mesuré sur
-`moondream` : une formulation plus longue, énumérant titres/légendes/formules/
-annotations entre parenthèses, fait dégénérer ce modèle — réponse VIDE
-(`eval_count: 1`) ou boucle de répétition (1265 tokens de charabia pour la même
-image). La forme courte est robuste sur les deux providers câblés ; ne pas
-l'étoffer sans rejouer la mesure sur `moondream`.
-
-### 3.3 ter Analyse d'image dans le CHAT — un troisième chemin, pas le même
-
-Ne pas confondre avec le §3.3 bis ci-dessus : celui-là décrit ce qui se passe
-à l'**import** d'une image. Ce qui suit se passe dans un **tour de chat**, et
-les deux coexistent volontairement.
-
-| chemin | quand | prompt | où va le résultat |
-|---|---|---|---|
-| **import** (`RAGEngine._texte_image`) | à l'indexation du fichier | générique (`prompt_vision()` sans question) | chunk du RAG + `résumé_contexte` |
-| **chat** (`core/vision_chat.py`) | au premier tour qui a une image attachée sans analyse | **la question de l'utilisateur** | `analyses_image[clé du chemin]` de la conversation |
-
-Ce qui a forcé le second, mesuré et non supposé : la légende générique **ne
-permet pas de répondre** à une vraie question sur un énoncé dense — elle décrit
-une figure et des symboles. Et le chat ne voyait jamais l'image, seulement ce
-résumé recopié dans `[CONTEXTE ACTIF]`.
-
-Cinq points qui se déduisent mal :
-
-- **`describe_image(path, model, question=None)` — sans question, le
-  comportement d'avant, à l'octet.** C'est ce que vérifie `test_vision_images.py`,
-  qui n'a pas été modifié d'une ligne : le jour où il faut le toucher pour
-  faire passer un changement de ce chemin, c'est l'import qui a bougé.
-- **Le déclenchement est une règle, pas une heuristique** : image attachée +
-  pas encore d'analyse = on analyse. Aucune détection de « cette question
-  a-t-elle besoin de l'image ? ». La **réanalyse**, elle, n'est jamais
-  automatique : seul `@image` (`vision_override`) la force.
-- **Le cache est par FICHIER** (`analyses_image`, dict clé `cle_chemin`), pas
-  par conversation. C'est exactement ce que `résumé_contexte` ne sait pas
-  faire, et la raison de ne pas s'en servir ici. Écrit par
-  `HistoryEngine.set_analyse_image`, **une transaction par image**, distincte
-  des deux du tour — une transaction ouverte pendant un appel vision tiendrait
-  le verrou 26 s. Corollaire : la copie de `conv` que détient l'appelant est
-  périmée juste après, il doit assembler son contexte avec la valeur en main.
-- **Une image analysée sort de la requête documentaire du tour**, et ses chunks
-  sont filtrés (`vision_chat.chunk_redondant`). Sans ça le prompt porte les
-  DEUX descriptions de la même image — l'analyse ciblée et la légende d'import
-  remontée par le RAG, la seconde étant la plus longue et la moins utile. Le
-  filtre post-hoc existe *en plus* de l'exclusion, parce que `@cours`
-  (`rag_override == "all"`) n'a aucune liste de fichiers à filtrer.
-- **Trois bornes, pour `n_ctx: 4096`** (`core/vision_chat.py`) : par analyse
-  conservée (2 000 caractères, tronqué **à l'écriture** pour que le disque et
-  le prompt disent la même chose), par tour (2 images, borne de LATENCE — le
-  reste est reporté au tour suivant, pas perdu), et par contexte injecté
-  (4 000 caractères, l'omission étant **écrite dans le bloc**).
-
-Le modèle vient de `core.models.modele_vision_pour(modèle_actif)` : le modèle
-actif s'il **déclare** la vision (`vision is True`, jamais un `None` ni le nom
-du modèle — cf. `decrire_capacites`), sinon le choix de l'import, sinon
-seulement un repli **cloud** (`_VISION_CLOUD`), qui est la seule entorse
-assumée au §3.7 et n'est atteint que sur une absence locale constatée. Les deux
-modèles de cette table **n'ont pas été mesurés** — ils empruntent le chemin
-`image_url` base64 déjà mesuré sur `flm`, et `gemini` en est exclu parce qu'il
-n'est pas dans `_OPENAI_COMPAT` (`describe_image` lèverait au lieu de dégrader).
-
-**IMPÉRATIF — cet appel entre dans `usage_tracker`, comme le reste du tour.**
-Trou trouvé en relecture, avant merge : le tour de chat compte ses tokens
-cloud depuis la sentinelle `__stats__` de `stream()`, mais `describe_image`
-n'en émettait aucun — un appel **payant** avait donc lieu dans un tour de chat
-sans figurer au quota. Un quota qui sous-compte est pire qu'un quota absent :
-il donne confiance dans un chiffre faux. D'où le paramètre de sortie
-`describe_image(..., stats=None)`, rempli sur place (`prompt_eval_count`/
-`eval_count` côté Ollama, `usage.prompt_tokens`/`completion_tokens` côté
-openai — deux vocabulaires traduits une fois, pas chez chaque appelant), ignoré
-quand l'appelant n'en fournit pas, donc **invisible pour le chemin d'import**.
-Compté sur SUCCÈS seulement : un échec peut être pré-vol (clé absente →
-`ValueError` avant tout HTTP), et sur-compter serait tout aussi faux. Aucune
-branche « est-ce local ? » dans le routeur — `QuotaTracker.track` écarte
-lui-même les providers locaux.
-
-**Latence : `run_in_executor`, et l'attente rendue VISIBLE.** L'appel reste
-synchrone et borné à 60 s ; il part dans l'exécuteur comme les appels RAG et
-mémoire du même tour, sinon la boucle d'événements du backend entier est bloquée
-6 à 26 s (plus un token nulle part, et le précédent est connu : un flux muet
-finit coupé côté client). Le TOUR attend quand même, et c'est le bon choix —
-l'analyse doit être dans le prompt du message qui l'a demandée. D'où
-l'événement `vision_analyse` (`en_cours` / `terminée` / `échec`), et un `échec`
-qui **survit au `done`** côté frontend : il dit que la réponse qu'on vient de
-lire a été construite sans l'image.
-
-**Périmètres explicitement laissés dehors** : LM Studio (`describe_image` le
-servirait par sa branche `_OPENAI_COMPAT`, mais son format vision n'a pas été
-mesuré et `modele_vision_pour` ne le propose jamais), et le **collage
-d'image** (Ctrl+V) dans la zone de saisie — aucun handler de collage n'existe
-dans le dépôt à ce jour ; le point d'accroche naturel serait `uploadFiles` de
-`ModuleBar.tsx`, déjà branché sur le `onDrop` du panneau 📎.
-
-### 3.7 Le cloud ne part jamais sans qu'on l'ait demandé
-
-**IMPÉRATIF — une tâche qui n'est pas le tour de chat de l'utilisateur tourne en
-LOCAL.** Elle ne part vers un fournisseur distant que sur un choix explicite
-*pour cette tâche précise*, jamais en héritant de `modèle_actif` : celui-là est
-un choix fait pour **répondre à un message**, pas un mandat sur tout ce que
-l'instance fait en arrière-plan.
-
-Ce que six sites faisaient avant le 2026-08-24, en lisant `ctx["modèle_actif"]` :
-choisir Groq ou Gemini pour discuter suffisait à envoyer le contenu des fiches
-(12 000 caractères pour `/skills/résumé`), celui des fichiers importés,
-14 000 caractères de cours (flashcards), les réponses de kholle avec le contexte
-mémoire, et le profil de révision — lacunes confirmées comprises. Deux autres
-partaient en cloud **en dur** : la classification du palier Adaptatif (avant
-chaque message) et la réflexion de l'agent de code.
-
-Le contrat, dans `core/instance.py` :
-
-| fonction | rôle |
-|---|---|
-| `modele_local_defaut()` | `providers.local` (le réglage) → `config.yaml` → `_DEFAULT_LOCAL_MODEL`. **Le seul point de lecture** : `self._llm._model` était lu en dur à 5 endroits, tous hors du réglage. |
-| `modele_pour_tache(use_cloud, modele_cloud, cle_env)` | `False` → local ; `True` → le modèle **nommé pour la tâche**, si sa clé est là, sinon repli local. |
-| `est_modele_cloud(id)` | préfixe comparé à `_FOURNISSEURS_CLOUD`, jamais la présence d'un « : » — `qwen2.5:7b` en contient un. **`flm` est LOCAL** (le NPU de la machine). |
-
-Trois règles qui se déduisent mal :
-
-- **`use_cloud=True` ne veut pas dire « le modèle du chat »** mais « le modèle
-  décidé pour cette tâche ». Le module Docs avait le drapeau et visait quand même
-  `modèle_actif` : le garde-fou existait et ne gardait rien.
-- **Pas de `use_cloud` là où l'utilisateur ne peut pas le poser.** Résumé
-  d'import, plan de révision (`GET`, sans corps) : toujours local. Un drapeau sans
-  interface pour le poser est une option que personne ne peut atteindre.
-- **Jamais `None` comme modèle de tâche de fond** : `LLMEngine` retombe alors sur
-  `config.yaml`, donc contourne le réglage sans que le site d'appel le sache.
-
-**Volontairement HORS de cette règle** : les paliers Medium/High de
-l'orchestrateur, dont les défauts cloud (Groq, Gemini) sont le but assumé du
-palier et sont modifiables dans l'interface — c'est un choix de l'utilisateur,
-pas une tâche de fond. Et l'Atelier, qui a sa propre configuration
-(`providers.actif` d'instance).
-
-Verrouillé par `test_taches_locales.py`, qui pose le pire cas — `modèle_actif`
-cloud **et** toutes les clés d'API présentes — avant chaque vérification.
-
-### 3.8 Transcription manuscrite — la seule pile lourde du dépôt, et elle ne sort pas
-
-`core/hmer.py`, phase 2 du module `encre` (`docs/module-encre.md`). Rend une page
-de tracés en bitmap, la donne à **`pix2text-mfr`** (TrOCR ré-entraîné sur
-formules, ONNX, CPU), rend du LaTeX. Déclenché par un BOUTON, une page à la fois
-(`POST /encre/pages/{id}/transcrire`), jamais en tâche de fond.
-
-**Ce que la transcription EST : un index, pas une sortie.** ExpRate mesuré en
-phase 0 sur 50 expressions manuscrites réelles : **24,0 %**. C'est assez pour
-retrouver une page au milieu des fiches, et très loin de ce qu'il faudrait pour
-la relire. D'où : texte affiché brut, en lecture seule, sans rendu mathématique,
-et aucune post-correction par LLM (`docs/module-encre.md` en fait une phase
-séparée — un LLM transforme volontiers une expression juste en expression
-plausible et fausse).
-
-**IMPÉRATIF — `core/hmer.py` n'importe QUE la bibliothèque standard au niveau
-module.** `core/runtime.py` fait `from core.hmer import HmerEngine` au niveau
-module ; `optimum`/`transformers`/`Pillow` sont importés **dans les méthodes**.
-Un import en tête de fichier ne coûterait pas « quelques secondes » : il ferait
-échouer à la COLLECTE tout test qui importe `main`, puisque le job rapide de la
-CI n'installe aucune de ces dépendances — l'incident `readability-lxml` rejoué
-(§8). Mesuré : 16,7 s d'import à chaud, 54,2 s à froid, parce
-qu'`optimum.onnxruntime` fait un `import torch` de niveau module.
-
-**IMPÉRATIF — `optimum-onnx` et `transformers` sont dans `HORS_PAQUET_PIP`, et
-c'est ce qui autorise leur existence.** `torch` part avec eux (≈765 Mo sur ce
-poste, plusieurs Go de plus sur Linux où il déclare `nvidia-*` et `triton`), et
-`tokenizers`/`regex` aussi — les deux `.pyd` non signés dont le blocage par Smart
-App Control est mesuré dans ce dépôt. Aucun module livré n'importe `core/hmer.py`
-(`encre` n'est ni dans `MODULES_COEUR` ni dans `modules-catalogue/`), donc aucun
-destinataire n'en a besoin. **L'invariant a changé de mécanisme le 2026-09-07** :
-`test_dependances_declarees.py` interdisait ces paquets de DÉCLARATION, il exige
-maintenant leur ABSENCE DU LIVRABLE (`HmerHorsPaquetTest`). C'est plus faible et
-il faut le savoir : retirer ces deux entrées de `HORS_PAQUET_PIP` livrerait des
-gigaoctets et deux binaires non signés, sans qu'aucun autre garde-fou proteste.
-
-**`torch` est requis, mesuré, pas supposé.** La question valait d'être posée —
-l'inférence est en ONNX Runtime, on n'appelle jamais torch. Vérification dans un
-venv propre : `pip uninstall torch` puis `from optimum.onnxruntime import
-ORTModelForVision2Seq` → `optimum/onnxruntime/modeling_seq2seq.py:23, import
-torch, ModuleNotFoundError`. Il n'existe pas de version sans torch de cette pile ;
-il existe le choix de réécrire le décodage seq2seq en numpy pur, que
-`docs/module-encre.md` §1 réserve au jour où ce module deviendrait livrable.
-
-Cinq points qui se déduisent mal :
-
-- **Les poids se chargent depuis un dossier LOCAL, jamais depuis le hub.**
-  `_hf_offline_if_cached()` pose `HF_HUB_OFFLINE=1` dès que le cache Whisper
-  existe (§3.2), c'est-à-dire sur ce poste : un
-  `from_pretrained("breezedeus/pix2text-mfr")` échouerait, en disant « absent du
-  cache ». On télécharge par `urllib` + sha256 dans `resolve_hmer_dir()` sur une
-  **révision épinglée**, puis on charge ce dossier — idiome de `core/voice.py`.
-  L'épinglage n'est pas de la prudence rituelle : la baseline de la phase 0 a été
-  mesurée sur ces poids-là.
-- **Le canevas est dimensionné sur le bounding box des POINTS**, jamais sur la
-  taille logique de la page côté frontend, puis recadré au contenu (+10 % de
-  marge). Ce recadrage est le geste qui a fait passer la phase 0 de **0 % à 24 %**
-  d'ExpRate — une encre occupant 2 % du canevas devient illisible une fois écrasée
-  en 384×384. Il est presque neutre sur une page rendue ici (le canevas est déjà
-  serré) ; il porte tout le gain le jour où l'entrée vient d'une photo. C'est
-  pour ça que `test_hmer.py` l'éprouve sur une image fabriquée à marges blanches
-  et non de bout en bout, où il ne prouverait rien.
-- **`.convert("RGB")` à l'entrée du modèle, et pas plus tôt.** Le rendu est en
-  niveaux de gris (`L`) — un canal, et le seuil du recadrage raisonne en
-  luminance — mais `DeiTImageProcessor` lève `Unsupported number of image
-  dimensions: 2` sur une image à un canal. Trouvé par un essai de bout en bout et
-  par rien d'autre : aucun test de rendu ne pouvait le voir.
-- **La source RAG est `encre:<id>`, pas un chemin de fichier fabriqué**
-  (`RAGEngine.index_page_encre`, méthode dédiée — `index_file` lit le disque et
-  relève un `mtime`, ce qu'une page n'a pas). Conséquence à ne pas oublier :
-  `GET /rag/files/ouvrir` passait le contrôle d'appartenance au corpus puis
-  levait sur `FileResponse`, donc 500. Refus explicite désormais
-  (`core.rag.est_source_virtuelle`).
-- **`set_transcription` ne touche pas `date_modification`.** Transcrire ne
-  MODIFIE pas la page : faire avancer cette date remonterait la page en tête de
-  liste sans qu'un trait ait bougé. La transcription porte sa propre date.
-
-### 3.4 Persistance
-
-Aucune base de données côté application. Deux stockages :
-
-- **Fichiers JSON** sous `backend/memory/` et `backend/history/`, via
-  **`core/jsonstore.py` — IMPÉRATIF : jamais de `json.load`/`json.dump` direct.**
-  Lecture en `utf-8-sig` (un BOM posé par PowerShell 5.1 rendait la mémoire de
-  session invisible, puis le fichier était écrasé), écriture en `utf-8` sans BOM.
-- **`core/vector_store.py`** (SQLite + numpy, cosinus par force brute) sous
-  `backend/vector_db/` — `resolve_vector_dir()`, `$EPURE_VECTOR_DIR` — pour les
-  trois collections vectorielles : `fiches` (RAG), `doc_analysis`, `history`.
-  **IMPÉRATIF : un seul store, construit par `core/runtime.py` et INJECTÉ aux
-  trois moteurs.** Ne pas en instancier un second, ni retourner aux attributs
-  privés `rag._client`/`rag._ef` qui portaient ce partage avant : c'est ce qui
-  rendait possible de brancher `core/rag.py` sur un nouveau stockage en laissant
-  `core/docanalysis.py` et `core/history.py` sur l'ancien sans que rien ne le
-  signale.
-
-  **IMPÉRATIF : `onnxruntime` s'importe DANS `MoteurEmbedding.__init__`, jamais
-  en tête de `core/embedding.py`.** La règle vient de `sentence_transformers`, qui
-  coûtait 17,4 s et chargeait torch au seul import du module — comme
-  `core/vector_store.py` importe la chaîne d'embedding et que `core/runtime.py`
-  importe `core/vector_store.py`, un import en tête de fichier se payait au
-  démarrage d'uvicorn. Le coût est tombé à **0,37 s** avec ONNX Runtime, et la
-  règle ne change pas de nature pour autant : **la paresse du proxy ne couvre que
-  la CONSTRUCTION des moteurs, jamais l'import de leurs dépendances.**
-
-  **LA PILE A CHANGÉ LE 2026-08-26** — `sentence-transformers` (donc torch,
-  transformers, scikit-learn, scipy) est remplacé par **`onnxruntime` +
-  `core/wordpiece.py`**, sur le MÊME modèle `all-MiniLM-L6-v2`, dont le dépôt
-  HuggingFace publie déjà l'export ONNX fp32.
-
-  Ce qui a forcé la sortie n'est pas le poids mais un blocage dur, mesuré deux
-  fois à huit minutes d'écart sur la machine ARM64 d'un destinataire : **Smart App
-  Control y bloque durablement `sklearn/utils/_isfinite`**, que
-  `sentence-transformers` importe sans condition à son chargement — pour un
-  `cos_sim` que `core/vector_store.py` n'appelle jamais, puisqu'il calcule son
-  cosinus en numpy. `pip install` réussissait, l'import plantait. Et
-  `scikit-learn` est une dépendance **inconditionnelle de toutes** les versions de
-  `sentence-transformers` (vérifié de la 2.7.0 à la 6.0.0) : changer de version
-  n'était pas une issue.
-
-  **Les vecteurs sont les mêmes, et c'est mesuré sur l'index réel** : les
-  180 chunks déjà stockés dans `vector_db/` — calculés par
-  `sentence-transformers` — se recalculent au **cosinus 1.000000** (écart absolu
-  maximal 2,1e-07) avec le nouveau moteur. **Aucune réindexation.**
-
-  Trois points à ne pas défaire :
-
-  - **`onnxruntime` est déclaré en DIRECT dans `requirements.txt`.** Il arrivait
-    par `faster-whisper` et `piper-tts`, tous deux retirés des paquets ARM64
-    (`HORS_PAQUET_PIP_ARM64`) : sans déclaration, la pile d'embedding aurait
-    dépendu de paquets vocaux absents sur l'architecture même qui a motivé le
-    chantier, et le poste de dev — où la voix est installée — n'aurait rien pu
-    voir. C'est mot pour mot l'incident `websockets`/`uvicorn[standard]` (§8).
-    Verrouillé par `test_dependances_declarees.py`.
-  - **Le tokeniseur est en Python pur**, et pas `tokenizers`. Son `.pyd` n'est pas
-    signé, c'est-à-dire la catégorie exacte de binaire que Smart App Control
-    bloque — et le blocage se décide **par fichier**, sur réputation : les `.pyd`
-    de numpy, non signés eux aussi, passaient sur la machine ARM64 ; celui de
-    scikit-learn non. On ne peut donc pas *raisonner* qu'un binaire non signé
-    passera. **Et la réputation dépend du FICHIER, donc de la version** : le
-    2026-09-07, sur CE poste, une wheel `numpy==2.5.3` fraîchement téléchargée
-    dans un venv neuf a été bloquée (`ImportError: DLL load failed while
-    importing _umath_linalg : une stratégie de contrôle d'application a bloqué ce
-    fichier`) alors que la `2.5.2` installée de longue date fonctionne. Même
-    paquet, même éditeur, verdict inverse — cf. la ligne SAC du §8. Les trois
-    binaires d'`onnxruntime`, eux, sont signés `CN=Microsoft Corporation` —
-    vérifié sur la machine cible. Parité du tokeniseur prouvée identifiant par
-    identifiant sur 200 échantillons (`test_wordpiece.py`, table figée : la CI la
-    tient sans installer `tokenizers`).
-  - **`core/embedding_install.py` a changé de nature, pas de rôle.** Il
-    n'installe plus de paquets — il télécharge les **90 Mo de poids** du modèle
-    (`urllib` + sha256, `.part` puis renommage atomique), exactement comme
-    `core/voice.py` fait des 76 Mo de Piper. Le contrat HTTP est inchangé :
-    `GET /rag/capabilities`, `POST /rag/install`, 503 porteur d'un état,
-    `EPURE_EMBEDDING_AUTOINSTALL=0` pour couper. `TAILLE_ESTIMEE_MO` est
-    désormais **dérivée** des tailles déclarées (91) au lieu d'être écrite à la
-    main (elle disait 2000 pour 198 Mo de wheels réelles).
-
-  Poids mesuré du changement : **198,3 Mo de wheels → 14,1 Mo**, et
-  **850,7 Mo retirés du disque** pour ~41,7 Mo ajoutés. Le contournement
-  `torch --index-url download.pytorch.org` construit pour ARM64 disparaît avec
-  torch.
-
-  chromadb a été retiré le 2026-08-13 (`docs/remplacement-vectoriel.md`) : aucune
-  wheel Windows ARM64, et une grappe — `grpcio`, `kubernetes`, `opentelemetry-*` —
-  qu'il déclarait en dépendances directes, donc impossible à écarter tant qu'il
-  restait. **Son extra, lui, avait été oublié** : `uvicorn[standard]` emportait la
-  seule implémentation WebSocket de l'arbre, et tout `/ws/*` est mort dans un
-  paquet livré dix jours plus tard — cf. §8 et la séquelle en fin d'étape D du
-  document. Une carte de dépendances inverse doit inclure les extras.
-
-  `backend/chroma_db/` peut encore exister sur le disque : c'est l'ancien index,
-  gardé le temps d'un usage réel du nouveau (étape C.4), et non une seconde base
-  vivante.
+**IMPÉRATIF : `backend/memory/modules_state.json` a été supprimé et ne doit
+pas être recréé** — deux fichiers pour un même état divergent mécaniquement
+(mesuré avant migration : `docs/claude/contexte-historique.md` §3.3). Un
+besoin d'état supplémentaire est probablement `installé`, qui se lit sur le
+disque. `core/module_registry.py:active_ids()` est la **seule** lecture
+d'état ; **toute écriture de `instance_config.json` passe par
+`core/jsonstore.transaction()`** (`InstanceConfig._mutate`).
+
+### 3.4 Persistance — aucune base de données côté application
+
+- **IMPÉRATIF : jamais de `json.load`/`json.dump` direct** — toujours
+  `core/jsonstore.py` (`backend/memory/`, `backend/history/`).
+- **IMPÉRATIF : un seul store vectoriel** (`core/vector_store.py`), construit
+  par `core/runtime.py` et **injecté** aux trois moteurs (`fiches`,
+  `doc_analysis`, `history`). Ne jamais en instancier un second.
+- **IMPÉRATIF : `onnxruntime` s'importe DANS `MoteurEmbedding.__init__`**,
+  jamais en tête de `core/embedding.py`.
+- **IMPÉRATIF : `onnxruntime` est déclaré en DIRECT dans `requirements.txt`**,
+  même déjà transitif. Verrouillé par `test_dependances_declarees.py`.
+
+Migration `sentence-transformers` → `onnxruntime`, retrait de chromadb,
+contraintes Smart App Control : `docs/claude/persistance-embedding.md`,
+`docs/remplacement-vectoriel.md`.
 
 ### 3.5 Chemins
 
-**IMPÉRATIF : aucun chemin absolu en dur.** Tout passe par `core/paths.py` :
+**IMPÉRATIF : aucun chemin absolu en dur.** Tout passe par `core/paths.py`
+(`resolve_fiches_dir()`, `resolve_workspace()`, `resolve_data_dir()`,
+`resolve_modules_dir()`, `resolve_generated_dir()`, `resolve_web_dir()`,
+`resolve_embedding_dir()`, `resolve_hmer_dir()`, `resolve_models_dir()`,
+chacune surchargeable par `$EPURE_*`). **Les appeler, jamais figer leur
+résultat dans une constante de module ni un défaut d'argument** — verrouillé
+par `test_data_dir.py`.
 
-- `FICHES_DIR` / `resolve_fiches_dir()` — `$EPURE_FICHES_DIR`, sinon `<repo>/data/fiches`
-- `resolve_workspace()` — `$EPURE_WORKSPACE`, sinon `<repo>/workspace`, toujours `.resolve()`
-- `resolve_data_dir()` — `$EPURE_DATA_DIR`, sinon `<backend>/memory`
-- `resolve_modules_dir()` — `$EPURE_MODULES_DIR`, sinon `<backend>/modules`
-- `resolve_generated_dir()` — `$EPURE_GENERATED_DIR`, sinon
-  `<repo>/frontend/src/modules/generated`. Le parent (`frontend/src/modules`)
-  s'en déduit par `.parent` : une seule variable pour les deux, sinon un
-  `generated/` détourné sous un parent resté en place ferait chercher le
-  composant d'un module core dans un arbre et son composant généré dans un autre.
-- `resolve_web_dir()` — `$EPURE_WEB_DIR`, sinon `<repo>/frontend/dist`. Frontend
-  **construit** que FastAPI sert lui-même dans le paquet distribué
-  (`docs/distribution-empaquetee.md` étape A). Le service est **éteint** si le
-  dossier n'a pas d'`index.html` : c'est le mode développement, où Vite sert
-  l'interface. Surchargeable non pour protéger des données mais pour rendre la
-  suite **déterministe** — sans ça son comportement dépendrait de la présence
-  d'un `npm run build` sur le poste, et un test de l'interface servie passerait
-  en local pour échouer en CI.
-- `resolve_embedding_dir()` — `$EPURE_EMBEDDING_DIR`, sinon
-  `<backend>/embedding_model`. Jumeau du suivant et **pour les mêmes raisons** :
-  cache de modèle (90,4 Mo d'ONNX + un vocabulaire, téléchargés au premier usage
-  et vérifiés par sha256), donc détourné par `_test_env` mais **absent** de
-  `REAL_DIRS`. Dossier séparé de `piper_models` et non un sous-dossier : les deux
-  caches n'ont pas le même sort dans un paquet ARM64, où la voix est retirée de
-  l'installation alors que l'embedding y fonctionne.
-- `resolve_hmer_dir()` — `$EPURE_HMER_DIR`, sinon `<backend>/hmer_model`. Troisième
-  jumeau des deux précédents : cache de 117,7 Mo (`pix2text-mfr`, deux `.onnx` et
-  six fichiers de configuration), téléchargé au premier usage sur une révision
-  HuggingFace **épinglée** et vérifié par sha256. Détourné par `_test_env`,
-  **absent** de `REAL_DIRS`. Ne pas le ranger avec `resolve_encre_dir()` sous
-  prétexte qu'ils appartiennent au même module : l'encre est irremplaçable, les
-  poids se retéléchargent à l'octet (§3.8).
-- `resolve_models_dir()` — `$EPURE_MODELS_DIR`, sinon `<backend>/piper_models`.
-  **C'est un cache de modèles, pas des données utilisateur**, et la distinction
-  a des conséquences. Le `.onnx` de Piper (76 Mo) y est téléchargé au premier
-  usage de la voix puis vérifié par sha256 : le contenu est reconstructible à
-  l'identique, rien d'irremplaçable n'y vit. Il est donc délibérément **absent**
-  de `_test_env.REAL_DIRS`, la liste surveillée par `test_zz_donnees_reelles` —
-  un téléchargement légitime pendant la suite y écrirait 76 Mo et ferait tomber
-  un garde-fou qui parle d'autre chose. Il est en revanche bien **détourné** par
-  `_test_env` : ne pas confondre « non surveillé » et « laissé au vrai chemin ».
-  Avant, `PiperEngine` recevait `models_dir="piper_models"` — un chemin
-  **relatif au cwd**, qui ne fonctionnait que parce qu'`epure_tray.py` lance
-  uvicorn depuis `backend/`.
+**IMPÉRATIF : `backend/test_zz_donnees_reelles.py` reste le DERNIER module
+découvert** (ordre alphabétique) — tout `test_*.py` neuf trie avant `test_zz_`.
 
-**Tous** suivent la même règle. **IMPÉRATIF : les appeler, jamais figer leur
-résultat dans une constante de module** — ni dans un défaut d'argument,
-`def f(p=CONST)` étant évalué à l'import (c'est sous cette forme que le piège
-s'était glissé dans `InstanceConfig` et `QuotaTracker`). Neuf modules
-calculaient `Path(__file__).parent.parent / "memory" / …` au chargement : la
-suite écrivait donc dans les données réelles, au point d'exécuter pour de bon la
-migration de `modules_activés` sur la config de l'utilisateur. Verrouillé par
-`test_data_dir.py`, qui pose les variables **après** les imports et vérifie que
-l'écriture suit.
-
-**Corollaire à ne pas rater : ne jamais remonter depuis un dossier de données
-pour obtenir une racine de code.** `MODULES_DIR.parent.parent` donnait la racine
-du dépôt tant que `MODULES_DIR` n'était pas déplaçable ; il l'est désormais.
-Utiliser `core.paths.REPO_ROOT` et `core.paths.BACKEND_DIR`, qui sont des anchors
-statiques dérivés de `__file__` et n'ont pas de surcharge d'environnement.
-
-Tout test qui importe `core.*` ou `main` doit faire `import _test_env` **avant**
-ces imports. `backend/_test_env.py` pose les **sept** variables sur des
-temporaires uniques pour la session — `backend/modules/` et
-`frontend/src/modules/` y sont **copiés** (sans `_backups`) pour que les tests
-voient un arbre réaliste. C'est ce qui rend `DELETE /settings/modules/{id}`
-testable : son `rmtree` frappe la copie.
-
-**IMPÉRATIF — la copie écarte les modules installés sur CE poste**, c'est-à-dire
-tout manifeste d'`origin` `catalogue` ou `workshop` (`_test_env.MODULES_DU_POSTE`,
-appliqué aux DEUX moitiés : `backend/modules/` et `frontend/src/modules/generated/`,
-que `catalogue.install()`/`uninstall()` écrivent et retirent ensemble). Sans ça
-l'arbre de test dépend de ce que l'utilisateur a installé, et la suite ne mesure
-pas la même chose ici et en CI — payé par
-`test_catalogue.test_catalogue_liste_les_six_avec_installe`, rouge en permanence
-sur le poste de dev et vert en CI parce que le module `code` y était réellement
-installé : `installé: True` était la bonne réponse à une question posée au
-mauvais arbre. **Ce n'était pas un problème d'ordre d'exécution** — il échouait
-seul, dans les deux sens de n'importe quelle paire — et c'est la fausse piste
-qui l'a fait survivre. Le défaut est de COPIER : un dossier sans manifeste
-(`_atelier`, un reliquat de désinstallation) ou un manifeste sans `origin` reste
-copié, mieux vaut un arbre trop riche qu'un module versionné disparu en silence.
-Verrouillé par `test_arbre_modules_deterministe.py`, qui tient aussi la liaison
-tardive de `resolve_modules_dir()`. `EPURE_MODELS_DIR`, `EPURE_EMBEDDING_DIR`,
-`EPURE_VECTOR_DIR` et `EPURE_WEB_DIR` sont posés sur des temporaires **vides**,
-pour des raisons distinctes : copier 76 Mo de modèle vocal ou 90 Mo de modèle
-d'embedding n'aurait aucun sens et aucun test ne les lit (détournés seulement pour
-qu'un test construisant `PiperEngine` ou `MoteurEmbedding` par accident ne tire
-rien dans les caches réels — et, pour l'embedding, avec
-`EPURE_EMBEDDING_AUTOINSTALL=0` par-dessus) ; `frontend/dist/` est vidé pour le
-**déterminisme** —
-`main._register_web` ne monte l'interface que s'il y trouve un `index.html`, donc
-sur le vrai chemin la suite se comporterait différemment selon que le front a été
-construit sur le poste. `test_web_statique.py` fabrique son propre `dist/`.
-
-**IMPÉRATIF — `backend/test_zz_donnees_reelles.py` doit rester le DERNIER module
-découvert.** Son `zz` n'est pas décoratif : `unittest discover` exécute les
-modules dans l'ordre alphabétique, et un garde-fou qui vérifie que personne n'a
-sali `backend/memory/` ne vaut que s'il passe après tous les autres. Le contrôle
-vivait dans `test_data_dir.py` (3e sur 12) : un fichier écrit par
-`test_workshop_paths` (12e) laissait la suite verte — 179 tests OK avec un
-intrus sur le disque, mesuré. Donc : **tout nouveau fichier de test doit trier
-avant `test_zz_`** (c'est le cas de tout nom ne commençant pas par `test_z`).
-L'invariant est lui-même testé (`test_ce_module_est_bien_le_dernier_decouvert`).
-
-Ce que le garde-fou ne couvre pas, et qu'il ne faut pas lui prêter : un
-`tearDownModule`/`tearDownClass` qui s'exécuterait après lui, les `atexit`, et
-les threads démons (`QuotaTracker` en lance un). Il prouve qu'aucun *test* n'a
-écrit, pas qu'aucune *ligne de code* n'écrira.
-
-Le confinement se fait par **`Path.resolve()` puis `is_relative_to()`**, jamais
-par `startswith` de chaînes (contournable par un dossier frère `modules-autre/`).
-Référence correcte : `codeagent._safe_path`, couverte par `test_safe_path.py`.
+Confinement : `Path.resolve()` + `is_relative_to()`, jamais `startswith`
+(`codeagent._safe_path`, `test_safe_path.py`). Détail des `resolve_*()` et de
+`_test_env.py` : `docs/claude/chemins.md`.
 
 ### 3.6 SSE et WebSocket
 
-**IMPÉRATIF — chaque trame de `/ws/chat` porte `conversation_id`.** Une seule
-connexion WebSocket sert TOUTES les conversations d'un onglet (voulu — on ne
-la ferme/rouvre pas à chaque bascule de fil), donc rien dans le protocole
-n'identifiait, avant le 2026-09-15, à quel fil appartenait un `token` : basculer
-vers une conversation B pendant qu'une conversation A générait encore laissait
-le texte de A s'accumuler dans l'écran de B. Chaque
-`websocket.send_text(json.dumps({...}))` de `modules/chat/router.py` porte
-donc `conversation_id`, capturé au moment de l'émission (jamais relu depuis un
-état mutable) ; le frontend le compare à une ref synchrone du fil affiché
-(`conversationIdRef`, `Component.tsx`) et ignore tout événement qui ne
-correspond pas, AVANT toute mutation d'état — un `conversation_id` absent ou
-vide reste permissif (appliqué quand même), pour ne jamais faire disparaître
-en silence un événement dont le serveur ne peut identifier le fil avec
-certitude. Verrouillé côté serveur par `test_chat_conversation_id_trames.py`,
-côté client par `frontend/src/modules/chat/Component.conversation.test.tsx`
-(fuite, troncature au retour avant `done`, cohérence des stats).
+**IMPÉRATIF — chaque trame de `/ws/chat` porte `conversation_id`** (une seule
+connexion sert toutes les conversations d'un onglet). Verrouillé par
+`test_chat_conversation_id_trames.py` et `Component.conversation.test.tsx`.
 
-Non couvert — deux limites, **ni l'une ni l'autre ne réintroduit de fuite
-entre conversations** :
+**IMPÉRATIF : tout consommateur de `LLMEngine.stream()` filtre par
+`isinstance(item, str)`** avant de concaténer — le flux yielde aussi des
+dicts sentinelles (`__stats__`, `__reasoning__`).
 
-- **Une comparaison multi-modèles abandonnée par navigation reste orpheline.**
-  `comparaisonUserMsgIdxRef` est remis à `-1` par `ouvrirConversation`/
-  `nouvelleConversation` à CHAQUE changement de fil — défaut **préexistant** à
-  ce correctif, pas introduit par lui. Conséquence : quitter un fil en pleine
-  comparaison puis y revenir ne laisse plus aucun index valide, donc le
-  panneau (jamais persisté sur disque) disparaît à la relecture, les
-  `compare_token` qui continuent d'arriver sont silencieusement ignorés (déjà
-  gardés par `if (!bloc...) return prev` avant ce correctif), et le bouton de
-  résolution (`compare_choix`) n'existe plus. Une comparaison orpheline et
-  perdue, PAS un texte tronqué affiché comme complet, et aucune fuite : le cas
-  `idxComparaison >= 0 ET etaitSuspecte` (dans le handler `done`) est
-  structurellement inatteignable, puisque toute bascule de fil remet l'index
-  à `-1` avant qu'aucun événement ne puisse être marqué suspect pour ce fil.
-- **Une course rare, celle-ci introduite par la relecture disque de ce
-  correctif** : une action prise (nouveau message, nouvelle comparaison) dans
-  la fenêtre étroite où une relecture déclenchée par un `done` suspect est
-  encore en vol peut voir son ajout optimiste écrasé par le résultat (périmé)
-  de cette relecture. Toujours la MÊME conversation ; le tour suivant (ses
-  propres événements) répare l'affichage, et le message est de toute façon
-  déjà persisté côté serveur — jamais perdu, juste retardé à l'écran.
+**IMPÉRATIF — WebSocket : `await ws_require_token(websocket)` AVANT
+`accept()`**, `return` si `False` (`core/auth.py`) — le middleware HTTP ne
+s'applique pas aux WebSockets.
 
-**Ce que `LLMEngine.stream()` yielde** : du `str` pour le texte, et des **dicts
-sentinelles** pour le reste — `{"__stats__": True, …}` (tokens et durées) et
-`{"__reasoning__": True, "content": …}` (raisonnement du modèle, Ollama seul).
-**IMPÉRATIF : tout consommateur filtre par `isinstance(item, str)` avant de
-concaténer.** Les douze sites d'appel le font ; le seul qui ne le faisait pas
-(`_stream_résumé_sse`) sérialisait `__stats__` comme un token depuis toujours, ce
-qui collait un « [object Object] » à la fin de chaque résumé. Une sentinelle de
-plus ne doit pas pouvoir se retrouver dans du texte.
+Raisonnement (bascule Ollama/FLM), sentinelle `__reasoning__`, limites
+connues et acceptées : `docs/claude/sse-websocket.md`.
 
-Côté WebSocket de chat, le raisonnement a son propre type — `{"type": "reasoning",
-"content": …}`, même forme que `{"type": "token", …}`. Il **n'entre pas** dans
-`accumulated`, donc pas dans `history`, donc pas dans le prompt du tour suivant :
-c'est ce que `test_raisonnement_stream.py` vérifie explicitement.
+### 3.7 Le cloud ne part jamais sans qu'on l'ait demandé
 
-**Bascule `raisonnement`** — `stream(..., raisonnement: bool = True)`, réglage de
-session (`memory` → clé `raisonnement`, `PATCH /context/settings`, toggle dans le
-panneau Compétences). Le défaut `True` est le comportement historique, donc les
-onze autres appelants n'ont rien à passer. Les deux moteurs locaux **ne se
-pilotent pas de la même façon**, et c'est mesuré, pas déduit :
+**IMPÉRATIF — une tâche qui n'est pas le tour de chat tourne en LOCAL.** Elle
+ne part vers un fournisseur distant que sur un choix explicite *pour cette
+tâche précise* (`modele_pour_tache(use_cloud, modele_cloud, cle_env)`,
+`core/instance.py`), jamais en héritant de `modèle_actif`. `flm` est
+**LOCAL** (NPU) malgré son nom. Hors règle : paliers Medium/High de
+l'orchestrateur, et l'Atelier (config propre).
 
-| | désactiver | activer |
-|---|---|---|
-| **Ollama** | `think=False` — ignoré proprement par un modèle sans raisonnement | **ne rien passer.** `think=True` → **400** `"qwen2.5:7b" does not support thinking`, y compris sur le modèle par défaut de `config.yaml` |
-| **FLM** (`/v1`) | `extra_body={"think": False}` | `extra_body={"think": True}` — toléré même par `lfm2:1.2b`, qui ne pense pas |
+Verrouillé par `test_taches_locales.py` (pire cas : `modèle_actif` cloud et
+toutes les clés présentes). Historique des six sites fautifs avant le
+2026-08-24 : `docs/claude/cloud-local.md`.
 
-Deux pièges propres à FLM : **omettre le flag ne veut pas dire « défaut du
-modèle » mais « garder la valeur du dernier appel »** (état collant côté serveur,
-mesuré) — donc toujours le passer, dans les deux sens ; et il passe par
-`extra_body`, le SDK `openai` levant sur un paramètre inconnu. Les fournisseurs
-cloud ne reçoivent rien : leur bascule n'a pas été mesurée.
+**IMPÉRATIF (règle posée le 2026-09-20) — les fournisseurs cloud d'Épure se
+paient en crédits prépayés, jamais par abonnement à facturation récurrente.**
+Mistral, Groq, Cerebras, NVIDIA, DeepSeek, Gemini : clé API classique sur
+solde prépayé. Aucun engagement récurrent à ajouter en configurant un nouveau
+fournisseur cloud pour le chat. Sans rapport avec `claude_sub`/
+`claude_gateway` (§5) : ces deux-là sont l'authentification CLI de l'Atelier,
+pas des fournisseurs cloud du chat.
 
-**Le raisonnement de FLM remonte aussi**, depuis le 2026-08-24 et sous la même
-sentinelle `__reasoning__` — donc le même `{"type": "reasoning"}` et le même bloc
-repliable, sans une ligne de frontend en plus. Le champ s'appelle
-**`reasoning_content`** (pas `reasoning`), il est atteignable en attribut bien que
-non modélisé par le SDK (`getattr`, jamais un accès direct), et **le premier chunk
-le porte VIDE** : tester la vérité, pas la présence. Mesuré : premier contenu à
-91,8 s avant, premier affichage à 5,3 s après — le silence était plus long ici
-que sur Ollama, sur le chemin NPU censé être le rapide.
+### 3.8 Transcription manuscrite (`core/hmer.py`) — la seule pile lourde du dépôt
 
-**Réservé à `flm`.** `deepseek` publie aussi un `reasoning_content` et le remonter
-serait probablement juste, mais ça n'a pas été mesuré — le vérifier veut dire
-appeler une API payante. Lever la garde tiendra en retirant le test sur
-`provider` ; rien d'autre à changer.
+**Un index, pas une sortie** (ExpRate 24,0 %) — texte brut, sans rendu
+mathématique, sans post-correction LLM.
 
-**Ce que deux mesures trop étroites ont coûté**, et c'est l'enseignement à garder :
-sondé sur `qwen3.5:4b` seul, FLM « ne séparait pas le raisonnement du contenu ».
-Vrai de ce modèle, faux de `qwen3:4b`. **Un modèle sondé ne dit rien de la
-famille** — même piège que le §0 de `docs/remplacement-vectoriel.md` a été écrit
-pour éviter, rejoué sur les modèles au lieu des wheels.
+**IMPÉRATIF — `core/hmer.py` n'importe QUE la bibliothèque standard au niveau
+module** (`optimum`/`transformers`/`Pillow` importés dans les méthodes) —
+sinon la collecte de tout test qui importe `main` échoue en CI.
 
-- SSE : `StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)`
-  où `SSE_HEADERS` vient de `core.runtime` (`Cache-Control: no-cache`,
-  `X-Accel-Buffering: no` — indispensable derrière nginx).
-- WebSocket : le middleware HTTP ne s'applique pas. **IMPÉRATIF : appeler
-  `await ws_require_token(websocket)` AVANT `accept()`** et `return` si False
-  (`core/auth.py`). Le token arrive en query param `?token=` parce que les
-  navigateurs n'autorisent pas d'en-tête sur `new WebSocket()`.
+**IMPÉRATIF — `optimum-onnx` et `transformers` restent dans
+`HORS_PAQUET_PIP`** (`torch` les accompagne). Verrouillé par
+`HmerHorsPaquetTest` (garantit l'absence du LIVRABLE, pas de la déclaration).
+
+Mesures et détail : `docs/claude/hmer-transcription.md`. Ingestion de
+documents et vision (RAG vs module Docs, import vs chat) : deux chemins
+distincts, journal complet dans `docs/claude/ingestion-documents.md`.
 
 ---
 
@@ -1172,47 +320,33 @@ approve       → copie vers modules/<id>/ + generated/<id>/, importlib, backup 
 reject        → rmtree du staging
 ```
 
-Trois moteurs de génération, diagnostiqués dans Réglages › Atelier :
+Quatre moteurs de génération (`ollama`, `claude_sub`, `claude_gateway`,
+`aider`), diagnostiqués dans Réglages › Atelier. **L'Atelier est
+désactivable pour le paquet distribué — désactivable, pas supprimable**
+(`EPURE_ATELIER=0` côté backend, `VITE_ATELIER=0` côté build). Détail des
+exigences par moteur et de l'effet exact des deux interrupteurs :
+`docs/claude/atelier-detail.md`.
 
-| Moteur | Exigence |
-|---|---|
-| `ollama` | toujours disponible, modèle actif de l'instance |
-| `claude_sub` | CLI `claude` + `claude setup-token`. **Ne pas définir `ANTHROPIC_API_KEY`** — elle primerait sur l'abonnement. |
-| `claude_gateway` | CLI `claude` + passerelle Anthropic-compatible locale (LiteLLM exposant `/v1/messages`). `ANTHROPIC_BASE_URL` pointé dessus. |
+**IMPÉRATIF — ne pas supprimer `core/module_workshop.py` ni
+`core/module_validate.py` d'un paquet.** `core/catalogue.py` importe sept
+symboles du premier, qui importe le second au niveau module : les retirer
+casse l'écran Réglages du destinataire, pas seulement l'Atelier.
 
-Un moteur `aider` existe également (mode architect, conversation Plan/Construire).
-
-**L'Atelier est désactivable, pour le paquet distribué** (`docs/distribution-empaquetee.md`
-étape B) — **désactivable, pas supprimable**. Deux interrupteurs, à poser ensemble
-(`tools/faire_paquet.py` le fait) mais indépendants :
-
-| Interrupteur | Effet |
-|---|---|
-| `EPURE_ATELIER=0` | 404 sur `/workshop*`, `/settings/test/*`, `/settings/gateway/*`, et fermeture de `/ws/workshop` avant `accept()`. Le 404 est posé **avant** le contrôle de token : un 401 révélerait que la route existe. |
-| `VITE_ATELIER=0` | l'Atelier sort du **bundle**, pas seulement de l'écran. |
-
-**IMPÉRATIF — ne pas supprimer `core/module_workshop.py` ni `core/module_validate.py`
-d'un paquet.** `core/catalogue.py` importe sept symboles du premier, qui importe le second
-au niveau module : les retirer casse `POST /settings/catalogue/{id}/install` et
-`DELETE /settings/modules/{id}`, c'est-à-dire l'écran Réglages du destinataire, pas
-l'Atelier.
-
-Côté frontend, `src/atelier.ts` doit rester une **comparaison directe**
-(`import.meta.env.VITE_ATELIER !== '0'`). Un `?.trim()` la rend non pliable par rolldown,
-la branche morte reste atteignable, et un `Workshop-*.js` de 26,1 ko **contenant le code de
-l'Atelier** part quand même dans le paquet — orphelin, mais sur le disque et lisible.
+**IMPÉRATIF — `src/atelier.ts` reste une comparaison directe**
+(`import.meta.env.VITE_ATELIER !== '0'`), jamais un `?.trim()` : ça
+empêcherait rolldown d'éliminer le code mort de l'Atelier du paquet.
 Verrouillé par `test_paquet.py`.
 
-**IMPÉRATIF : ne jamais ajouter de règle à la denylist de `core/module_validate.py`
-en croyant renforcer la sécurité.** C'est une denylist AST sur des noms exacts :
-elle est contournable par construction (alias de builtin, `Subscript`, dunder,
-`import sys`/`builtins`/`asyncio`, `dict(os.environ)`). Elle est un **garde-fou
-anti-accident**, pas une frontière. La vraie frontière est l'isolation worker
-(§7). Si tu veux durcir, discute d'abord de l'isolation.
+**IMPÉRATIF : ne jamais ajouter de règle à la denylist de
+`core/module_validate.py` en croyant renforcer la sécurité.** C'est une
+denylist AST contournable par construction (alias de builtin, `Subscript`,
+dunder…) — un garde-fou anti-accident, pas une frontière. La vraie frontière
+est l'isolation worker (§7). Si tu veux durcir, discute d'abord de
+l'isolation.
 
-Les conventions imposées au code généré sont dans
-`backend/modules/_atelier/CONVENTIONS.md` — c'est le prompt système de fait.
-Toute évolution du contrat d'un module doit y être répercutée.
+Conventions imposées au code généré : `backend/modules/_atelier/CONVENTIONS.md`
+— c'est le prompt système de fait, à tenir à jour avec tout changement de
+contrat.
 
 ---
 
@@ -1234,17 +368,12 @@ Règles :
 
 - **IMPÉRATIF : aucun `shell=True`.** `subprocess.Popen(["binaire", arg1, ...])`,
   toujours en liste. Une entrée utilisateur ne doit jamais atteindre un shell.
-- **IMPÉRATIF : le token d'API ne sort jamais** — ni de `GET /instance/config`
-  (le bloc `auth` est retiré), ni des logs, ni d'un message d'erreur. La partie
-  « logs » n'était pas tenue et ne pouvait pas se voir en relisant Épure : la
-  ligne fuyante est écrite par **uvicorn**, qui journalise le chemin avec sa
-  query (`"WebSocket /ws/chat?token=…" [accepted]`), et le token du WebSocket
-  voyage en query param faute d'en-tête possible sur `new WebSocket()`. Tenu
-  désormais par `core/logs.py`, un filtre de logging posé sur `uvicorn.access`,
-  `uvicorn.error` et la racine — ces deux loggers ont leurs propres handlers et
-  `propagate = False`, donc **il faut les nommer**, un filtre sur la racine ne
-  les voit pas. Vérifié par `test_logs_secrets.py`, qui affirme aussi que
-  `main` l'installe (sinon le module resterait parfait et jamais appelé).
+- **IMPÉRATIF : le token d'API ne sort jamais** — ni de `GET /instance/config`,
+  ni des logs (le token du WebSocket voyage en query param — uvicorn
+  journalise l'URL), ni d'un message d'erreur. Tenu par `core/logs.py`, un
+  filtre posé sur `uvicorn.access`, `uvicorn.error` **et** la racine (les deux
+  premiers ont `propagate = False`, donc il faut les nommer explicitement).
+  Vérifié par `test_logs_secrets.py`.
 - Un chemin venant du client est **toujours** `Path(...).name` ou confiné par
   `resolve()` + `is_relative_to()`. Jamais concaténé tel quel.
 - Comparaison de token : `hmac.compare_digest` (`core/auth.py`), jamais `==`.
@@ -1267,36 +396,17 @@ production, et `test_module_isolation.py` tourne en CI.
 
 ---
 
-## 8. Pièges connus (déjà payés une fois — ne pas les rejouer)
+## 8. Pièges connus
 
-| Piège | Règle |
-|---|---|
-| BOM UTF-8 dans les JSON de runtime | Toujours `core/jsonstore.py`. Lecture `utf-8-sig`. |
-| `OLLAMA_HOST=0.0.0.0` | Casse le client Python Ollama. Toujours une URL complète `http://hôte:11434`. `core/llm.py` normalise ; `core/admin.py` ne le fait pas encore. |
-| Démarrage bloqué plusieurs minutes | HF valide son cache au boot. Voir `_hf_offline_if_cached()`, §3.2. |
-| `uvicorn --reload` sous Windows | Instable. Restreint à `--reload-dir core` dans `epure_tray.py`, désactivable par `EPURE_RELOAD=0`. |
-| Rechargement intempestif de la page en pleine revue Atelier | Les dossiers `_*` sont exclus du glob de `registry.ts`. Ne pas « nettoyer » ce filtre. |
-| Mojibake dans les logs aider | Décodage explicite en UTF-8 du stdout. |
-| Premier message lent après une pause, **même vers un fournisseur cloud** | Un appel au modèle **local** traînait sur le chemin du message (sélection des sections de profil dans `core/memory.py`) : 2,000 s fermes de timeout, et l'appel n'était pas annulé pour autant, donc Ollama continuait de charger 4,7 Go (mesuré 13,8 s à froid) en concurrence avec la requête cloud. Un `future.result(timeout=…)` **borne l'attente, pas le travail** : `shutdown(wait=False)` ne tue pas le thread, et le read-timeout du client Ollama est de 300 s. Ne rien mettre de bloquant sur ce chemin — verrouillé par `test_memory_sans_llm.py`. |
-| Tout `/ws/*` répond **401** (chat, Atelier, dictée) alors que le token est bon | Lire la ligne de démarrage : « `No supported WebSocket library detected` ». `uvicorn` seul ne parle pas WebSocket — il lui faut `websockets` ou `wsproto` importable, sinon la requête d'upgrade est servie comme un GET HTTP, où le token de query param n'est pas lu. Le paquet en a manqué depuis le retrait de `chromadb`, qui la fournissait par son extra `uvicorn[standard]` — sur x64 comme sur ARM64, le poste de dev n'en gardant qu'un orphelin. `wsproto==1.3.2` est déclarée pour ça ; ne pas la retirer en la prenant pour un résidu. Verrouillé par `test_websocket_dependance.py`. |
-| La recherche documentaire répond **500 « ImportError »** dans un paquet livré | La pile d'embedding n'y était pas installée et rien ne l'installait — la promesse « s'installe au premier usage » était de la prose. Depuis le 2026-08-23, `VectorStore.__init__` appelle `exiger_pile()` : préparation en tâche de fond, 503 avec état, `GET /rag/capabilities`. Ne pas remettre `pip` dans `PURGE_SITE_PACKAGES`, ne pas préchauffer le RAG sans le modèle. Cf. §3.4 et `test_embedding_install.py`. |
-| Un binaire **non signé** bloqué par Smart App Control | ⚠️ **SAC N'EST PAS UN PROBLÈME DE DESTINATAIRE — c'est ce que cette ligne a laissé croire pendant deux semaines.** Elle ne parlait que de la machine ARM64 d'un destinataire, et on en a déduit que le poste de développement était hors de portée. Faux : `VerifiedAndReputablePolicyState = 1` sur CE poste (x64) — SAC y est **actif et en application**. Mesuré le 2026-09-07 en montant la pile de transcription manuscrite : dans un venv NEUF, une wheel `numpy==2.5.3` fraîchement téléchargée est bloquée à l'import (`DLL load failed while importing _umath_linalg`), alors que la `2.5.2` installée de longue date passe. La réputation se décide **par fichier**, donc **par version** : un `pip install -r requirements.txt` dans un environnement neuf n'est pas reproductible ici, et une montée de version d'un paquet à extension compilée peut casser le poste de dev lui-même. Épingler les versions n'est donc pas qu'une question de reproductibilité — c'est aussi ce qui évite de tirer un fichier sans réputation. Les deux incidents d'origine, sur la machine ARM64 et à un jour d'intervalle : `sklearn/utils/_isfinite` (plus de recherche documentaire), puis `regex/_regex.pyd` (plus aucun import de fichier). Deux paquets, une seule cause : **l'application lançait elle-même `pip install sentence-transformers`** au premier usage, faisant entrer ~40 paquets non relus — dont la chaîne `sentence-transformers` → `transformers` → `regex`. Corriger un binaire puis attendre le suivant n'est pas une stratégie : depuis le 2026-08-26, **le chemin d'embedding n'exécute plus aucun sous-processus** et ne fait entrer que deux fichiers dont il connaît le sha256. Verrouillé par `AucuneInstallationALExecutionTest` (`test_embedding_install.py`). Le seul `pip` d'exécution qui subsiste est `POST /code/install`, du module de catalogue `code` — opt-in, nom de paquet tapé par l'utilisateur. |
-| Une dépendance **porteuse** qui arrive par un paquet tiers finit par disparaître avec lui | Vu deux fois. `websockets` arrivait par l'extra `standard` d'`uvicorn`, déclaré par `chromadb` : son retrait a tué tout `/ws/*` dans un paquet livré, sur toutes les architectures, et le poste de dev n'a rien vu (il en gardait un orphelin). `onnxruntime` allait rejouer la même chose — installé en transitif par `faster-whisper`/`piper-tts`, tous deux exclus des paquets ARM64, alors qu'il porte désormais TOUT l'embedding. Règle : **ce dont on dépend directement est déclaré directement, même si c'est déjà installé.** « Installé » n'est pas « déclaré », et la différence n'apparaît que chez quelqu'un d'autre. Verrouillé par `test_dependances_declarees.py`. |
-| Un `.ps1` sans BOM meurt sur une **cascade d'erreurs de parsing** loin de sa cause | `powershell.exe` (5.1) lit un `.ps1` sans BOM avec la page de code système — Windows-1252, pas UTF-8. Le tiret cadratin `—` (E2 80 94) et le filet `─` (E2 94 80) y produisent tous deux un **U+201D**, que PowerShell traite comme un délimiteur de chaîne : une chaîne ouverte par `"` peut donc être fermée par lui. Mesuré : 33 erreurs, la première annoncée ligne 253 sur une ligne strictement ASCII, et 0 erreur sous `pwsh 7`. **ASCII pur** dans tout `.ps1`/`.cmd` versionné (`test_encodage_scripts.py`). |
-| `Expand-Archive` **s'imbrique** au lieu de remplacer, et tout réussit ensuite | `Expand-Archive -DestinationPath .` lancé depuis `epure\` n'écrase pas son contenu : il y crée `epure-main\`. Les étapes suivantes tournent alors sur l'ANCIEN code — `npm install` réussit, `faire_paquet.py` réussit, l'installation réussit, et le destinataire reçoit le paquet qu'il avait déjà. La pire forme d'échec : celle qui rend un succès. Extraire dans un **temporaire**, y trouver l'unique dossier de sommet, vérifier qu'il ressemble au dépôt, puis copier son CONTENU — jamais d'extraction dans le dossier de destination. Un piège de même nature guette une couche plus bas : `Copy-Item -Recurse` avec `-Destination <racine>\backend` crée `backend\backend` ; c'est `-Destination <racine>` qui fusionne. Verrouillé par `test_mise_a_jour.py`, cas de contrôle compris. |
-| Du code passé à `python -c` arrive **amputé de ses guillemets** | Troisième piège de `powershell.exe` 5.1, après le cp1252 et le stderr. La ligne de commande d'un binaire natif est reconstruite selon `CommandLineToArgvW`, et 5.1 **n'échappe pas les `"` internes** d'un argument : `print("absent " + nom)` arrive `print(absent  + nom)`, donc `SyntaxError: '(' was never closed`. Reproduit sur x64, sans SAC — `pwsh` 7 n'a pas le défaut, ce qui explique qu'on ne le voie jamais en développement. L'échauffement de `tools/installer-epure.ps1` n'a donc **jamais fonctionné chez un destinataire** : il accusait Smart App Control, attendait 20 s, rejouait le même échec. Écrire le code dans un fichier temporaire et lancer `python fichier.py` (stdin marche aussi) ; jamais `-c`. Verrouillé par `EchauffementTest` (`test_installeur.py`). |
-| Un script PowerShell s'arrête sur une commande qui a **réussi** | Sous `powershell.exe` (5.1), une redirection `2>&1` sur un binaire NATIF convertit chaque ligne de son stderr en `ErrorRecord`, et `$ErrorActionPreference = 'Stop'` en fait une erreur TERMINANTE — même quand le binaire sort en 0. Le `if ($LASTEXITCODE -ne 0)` écrit juste après n'est jamais atteint. `tools/dev-epure.ps1` mourait ainsi sur l'avertissement de taille de chunk de Vite, build réussi. Passer par `Invoquer-Externe`, qui relâche la préférence en portée de FONCTION. Verrouillé par `test_dev_epure.py`. |
-| `TypeError: Cannot read properties of undefined (reading 'length')` dans un chunk minifié | Un état alimenté par `r.json() as {champ: T[]}` sur une réponse d'ERREUR : le champ est absent, l'état passe à `undefined`, le `.catch()` ne voit rien (le parse a réussi) et ça ne casse qu'au rendu suivant. Mesuré : dans un paquet livré, `GET /rag/files` répondait 500 (la pile d'embedding n'y était pas installée, et le premier accès au moteur RAG la construit) — le panneau fichiers du module Docs était mort d'avance. Normaliser à CHAQUE frontière `.json()` (`liste()`/`categories()`/`dico()` dans `ModuleBar.tsx`), et `Array.isArray` plutôt que `?? []`, qui laisse passer une chaîne ou un objet. Un `cloud: {}` est TRUTHY : `?? {…}` ne le rattrape pas. Verrouillé par `frontend/src/components/ModuleBar.test.tsx`. |
-| Un enregistrement **REFUSÉ par le backend** s'affiche comme **réussi** | Même famille que la ligne au-dessus, un cran plus tôt : **`apiFetch` ne lève JAMAIS sur un statut HTTP** (`src/api.ts` rend la `Response` telle quelle), donc un `try { await apiFetch(…); marquerPropre() } catch {}` ne rattrape que les pannes réseau. Sur un 4xx/5xx la promesse RÉSOUT et le code de succès s'exécute. Mesuré dans le module Code : `saveFile` passait l'onglet en `dirty: false` sur un 409 — l'utilisateur croyait son fichier enregistré alors que rien n'était écrit. Le mode d'échec est né avec l'écriture fail-closed du backend (`SauvegardeError` → 409) : **ce chemin ne pouvait pas échouer avant, donc son absence de contrôle ne se voyait pas**. Règle : `res.ok` avant toute mise à jour d'état qui SIGNIFIE un succès, et afficher le message du backend — un état « sale » ou un compteur figé est trop discret pour dire « refusé, et voici pourquoi ». Lire `detail` en vérifiant le TYPE (`typeof === 'string'`) : une erreur de validation FastAPI y met une LISTE d'objets, affichée brute ça donne « [object Object] ». Même piège pour un GET dont l'état alimente l'éditeur : un `content` absent devient `''` et la sauvegarde suivante écrit du VIDE sur un fichier réel. **Le réessai de l'auto-save à chaque pause de frappe n'est PAS à borner** — un auto-save qui abandonne laisse le contenu dans le seul navigateur ; ce qui manquait était l'observabilité, d'où trois ajouts : le bandeau porte l'horodatage de la dernière tentative et le nombre de tentatives consécutives (compteur remis à zéro par un succès, une horloge d'une seconde le fait avancer SANS action de l'utilisateur — un bandeau figé ne distingue pas une panne qui dure d'un échec vieux de dix minutes) ; `_signaler_echec_sauvegarde` ne sort la pile qu'à la PREMIÈRE occurrence puis compte en `warning`, la clé de déduplication étant **chemin + type de la cause, jamais le message** — celui-ci nomme la copie visée, dont le nom porte un horodatage à la microseconde, donc dédupliquer dessus ne dédupliquerait rien. La pile est **ré-émise aux puissances de dix** (1, 10, 100, …, suite non bornée) : dédupliquer sans jamais ré-échantillonner cacherait une cause racine NEUVE de même type — `PermissionError` couvre aussi bien un dossier bloqué qu'un fichier verrouillé par un autre process. Géométrique et non à pas fixe : le déclencheur réessaie toutes les 1,5 s, un pas de 10 rendrait une pile toutes les 15 s, soit le bruit qu'on vient de retirer. Chaque `warning` **annonce le rang de la prochaine pile**, sans quoi l'opérateur ne sait pas s'il doit attendre ou provoquer la reproduction ; et un `beforeunload` demande confirmation tant qu'un onglet est sale, y compris auto-save désactivé (son défaut). Ce dernier est un SECOND filet : `openFiles` passe par `usePersistentState`, donc le contenu revient normalement de `localStorage` — sauf quota dépassé, et hors du navigateur d'origine. **Cet échec-là n'est plus silencieux non plus** : `usePersistentState` rend un TROISIÈME élément optionnel (`{ok, erreur, horodatage}`), la destructuration à deux du reste du dépôt continuant de marcher — ne pas transformer ce retour en objet. Les deux écritures du hook (effet debouncé et flush `pagehide`/`beforeunload`) partagent un point d'écriture unique qui rapporte ; `QuotaExceededError` et un refus en navigation privée veulent dire la même chose (**non conservé**), aucune branche ne doit dépendre du nom. Rapporter depuis le flush n'est pas inutile malgré le déchargement : un `beforeunload` peut être ANNULÉ, précisément par le garde ci-dessus. Le module Code le consomme dans le bandeau EXISTANT, pas dans une seconde zone d'alerte. Verrouillé par `frontend/src/usePersistentState.test.tsx`. Les autres consommateurs (Atelier, chat, docs, réviseur…) ne le lisent pas encore — cf. le rapport du 2026-09-05. |
-| Un modèle à raisonnement (qwen3) reste **muet une minute** puis lâche trois mots | Le raisonnement arrive dans un champ **séparé** du flux Ollama (`chunk.message.thinking`), pas en balises `<think>`, et **sans qu'on le demande** — aucun argument `think` n'est passé. `_stream_ollama` ne lisait que `content` et faisait `if content: yield content` : un chunk de raisonnement a `content == ""`, donc rien n'était yieldé. Mesuré sur `qwen3:8b` : **584 tokens en 78 s, premier caractère visible à 76,5 s**, pour `17 x 23 = 391.` — et `num_predict` consommé de façon invisible. Corrigé le 2026-08-24 : sentinelle `__reasoning__` → `{"type": "reasoning"}` sur `/ws/chat` → bloc repliable dans le chat (premier affichage à 7,8 s, mesuré). Ne PAS passer `think=True` : inutile pour les modèles qui pensent, et ça modifierait l'appel pour ceux qui ne pensent pas. Côté FLM il n'y a rien à récupérer — mesuré sur `qwen3.5:4b` via `/v1/chat/completions`, le delta ne porte que `role`/`content`. |
-| Le fichier ouvert dans le module Code est **remplacé par un fragment** après une simple question | Le repli « aucun tool appelé » de `CodeAgent.run_turn` écrivait le premier bloc ```` ``` ```` de la réponse sur le fichier actif (`create_file`, donc `write_text`), et n'émettait son avertissement qu'APRÈS. Le déclencheur n'est pas un cas tordu mais le cas normal : « explique-moi ce fichier », « montre-moi la fonction X » — un modèle qui explique cite un fragment. `workspace/` étant gitignoré, la version d'avant était perdue sans recours. Depuis le 2026-09-05 le repli **propose** (`write_request`) au lieu d'écrire, sur le patron d'`execute_code` : l'écriture n'a lieu qu'au `write_confirm` de `/ws/code`, via `appliquer_ecriture`, qui sauvegarde d'abord la version précédente dans `resolve_data_dir()/code_backups/` (hors workspace : `get_tree` ne filtre rien et `_safe_path` y donnerait accès au modèle). **Ne pas remplacer ça par une heuristique « est-ce un fragment ? »** — se tromper coûte un fichier. Les deux trous restants sont fermés le même jour. **(a) Le filet est descendu dans `_ecrire_avec_sauvegarde`** : la sauvegarde n'était faite que par `appliquer_ecriture`, donc uniquement sur le chemin confirmé, alors que le tool `create_file` du modèle (`dispatch_tool`, sans confirmation), `edit_file`, `generate_tests` et le `POST /code/file` de l'éditeur écrivaient sans trace. Toute écriture du workspace laisse désormais un `.bak`, quel que soit le chemin d'appel — présent ou futur, un nouvel appelant n'a rien à savoir du filet. `edit_file` en fait partie bien qu'il ne remplace qu'une portion : un remplacement raté fait perdre le texte remplacé tout aussi définitivement (il garde son message « modifié », d'où un helper qui rend la copie et laisse le message à l'appelant). **Si la sauvegarde échoue, l'écriture n'a pas lieu** (`SauvegardeError`, pas une sous-classe d'`OSError`) : sans copie, l'écrasement est irréversible. **`_ecrire_avec_sauvegarde` est le point de sauvegarde UNIQUE** — ne pas rappeler `sauvegarder_version` au-dessus, la même version serait copiée deux fois. **Chaque sauvegarde porte son ORIGINE dans son nom** (`<nom>.<horodatage>.modele|editeur.bak`) et `create_file(..., origine=)` est **obligatoire et nommée** : entrée commune aux deux chemins, elle ne peut pas la deviner, et un défaut classerait en silence les écritures d'un futur appelant du mauvais côté de la rétention. Le coût des instantanés d'auto-save n'est pas le disque mais la **findabilité** — la copie d'avant une écriture du modèle se noierait sous une copie par pause de frappe ; d'où deux rétentions : origine `modele` **jamais purgée**, origine `editeur` plafonnée à `RETENTION_EDITEUR` (10) par fichier. L'invariant « une purge n'emporte jamais une sauvegarde modèle » est donc vrai **par construction** (la purge ne matche que l'autre motif), pas défendu par une condition — le savoir avant de vouloir plafonner aussi le côté modèle. Les `.bak` d'avant l'étiquetage, sans segment d'origine, ne matchent rien et survivent : délibéré. La purge, elle, est du ménage : un échec y est logué et avalé, jamais fatal à l'écriture. **(b) `_MD_TOOL_RE` ne convertit plus `**edit_file** \`path\`` + bloc en `create_file`** : le modèle demandait une édition PARTIELLE et on écrivait le fragment comme fichier entier, sans confirmation. Le markdown ne portant ni `old` ni `new`, la vraie édition est inexécutable — ce cas rend le pseudo-outil `_TOOL_PROPOSITION_ECRITURE`, intercepté par `run_turn` avant `dispatch_tool` (qui le refuserait en « Outil inconnu » : repli sûr), et part dans le même `write_request` que le repli. `**create_file**` en markdown annonce bien un fichier complet et reste une écriture directe. Verrouillé par `test_codeagent_ecrasement.py`. |
-| « C'est vert en local » et la CI est **rouge** | Aucune commande locale ne reproduisait le périmètre de la CI, et ça a coûté deux incidents le même jour, sur deux axes indépendants. **(a)** eslint : la CI installe TOUT `modules-catalogue/*/Component.tsx` dans `frontend/src/modules/generated/` avant de linter, puis fait `rm -rf` dessus. `npm run lint` local ne voit que ce que le poste a installé — 51 avertissements ici, **62** là-bas, cliquet à 61. **(b)** `backend/modules/` : `_test_env` copiait le vrai dossier, qui contient sur un poste de dev les modules installés depuis le catalogue ; `test_catalogue` échouait ici et passait en CI. Corrigés séparément, mais la cause commune est l'absence de reproduction locale — deux correctifs ponctuels auraient laissé le troisième axe en embuscade. **`tools\verif-ci.ps1` est le seul contrôle qui vaut avant de pousser** (§2). Trois règles qui font sa valeur et qu'il ne faut pas défaire : il **lit `ci.yml`** (cliquet, commande de tests) au lieu de le recopier ; une lecture ratée **arrête** le script au lieu de retomber sur un défaut — un contrôle qui mesure silencieusement autre chose est pire que pas de contrôle ; et il travaille dans un arbre **temporaire** (`frontend/` recopié, `node_modules` joint par une JONCTION — sans droits admin, contrairement à un lien symbolique), parce que rejouer le `rm -rf` de la CI dans l'arbre de travail supprimerait les modules réellement installés. Le cliquet a **une seule source**, `env: ESLINT_MAX_WARNINGS` en tête de `ci.yml` : il vivait à trois endroits et deux avaient déjà divergé (« au plus 63 » face à une étape à 61). |
-| Un `.ps1` meurt avant sa première ligne utile, sur un message qui ne nomme rien | **PowerShell est insensible à la casse pour les variables** : `$FRONTEND = "C:\...\frontend"` et le paramètre `param([switch]$Frontend)` sont la MÊME variable, et l'affectation viole le type déclaré → `Impossible de convertir System.String en SwitchParameter`, sans qu'aucun des deux noms apparaisse. Payé sur `tools/verif-ci.ps1`. Corollaire de la même famille : **ne jamais nommer un paramètre `$Args`** — c'est une variable automatique, un `-Args` ne s'y lie jamais et le paramètre reste vide **en silence** (mesuré : l'étape lançait le binaire sans aucun argument). |
-| Une regex `(?m)…$` sur un fichier du dépôt ne matche **jamais** | Les fichiers sont en CRLF sur ce poste. `(?m)$` ne se place qu'avant le `\n`, donc une classe `[^\r\n]*` s'arrête avant le `\r` et l'ancre ne peut plus coller — sur un fichier parfaitement conforme. Vu en lisant `ci.yml` depuis `tools/verif-ci.ps1`. Terminer par `\s*$`, ou ne pas ancrer. |
-| Un verdict « tient » sur un modèle qui **ne peut pas se charger** | Une valeur DYNAMIQUE mise en cache avec les faits figés qui l'entourent. `core/materiel.py` comparait la taille d'un modèle à la mémoire **totale**, calculée une fois pour la vie du process : un modèle déjà résident n'était jamais déduit. Mesuré le 2026-09-06 — `qwen2.5:7b` chargé fait tomber `ullAvailPhys` de 15,65 à 9,47 Gio sur 31,32 Gio ; `mistral-small:24b` (13,35 Gio) sortait donc « tient » (43 % du total) alors qu'il en réclamait **141 % de ce qui restait**. Le défaut n'était PAS dans la donnée mise en cache — RAM totale, GPU, NPU sont des faits matériels justes — mais dans le fait que le verdict avait besoin d'une valeur de plus, celle qui ne peut pas être mise en cache. Règle : **`materiel()` ne contient QUE des faits figés** (RAM/VRAM totales, GPU) ; ce qui bouge — RAM/VRAM libres, joignabilité de FLM — est relu par `etat_frais()`, **une fois par requête et jamais par modèle**. Le NPU portait la même faute et a été corrigé en même temps : figé au démarrage, un FLM lancé APRÈS l'application restait « éteint » à vie. Deux corollaires qui se déduisent mal : une lecture fraîche ratée rend `inconnu` et **ne retombe jamais sur le total** (c'est justement la valeur fausse), et **on ne déduit pas `/api/ps` du libre** — `ullAvailPhys` compte déjà les modèles résidents (-6,18 Gio mesurés pour 6,44 Gio), les soustraire doublerait la note. Verrouillé par `test_materiel.py` (`ModeleResidentTest` rejoue la mesure, `CacheTest` interdit toute valeur périssable dans le cache). |
-| Un script d'intégration lancé « pour voir » **efface les réglages de la séance en cours** | `backend/integration_modules_mount.py` n'importe pas `_test_env` — c'est ce qui lui donne le vrai arbre de modules, et c'est aussi ce qui laisse `core.runtime` construire ses moteurs sur les VRAIES données : `MemoryEngine.__init__` réinitialise `backend/memory/context_session.json` (modèle actif, mode strict, raisonnement) au seul import. Aucune assertion n'échoue, rien ne l'annonce — c'est un effet de bord du chargement. Invisible en CI, où le job `integration` part d'un clone neuf. Sa docstring `Usage` porte désormais la réserve et le contournement : `EPURE_DATA_DIR` sur un temporaire (vérifié), **jamais `EPURE_MODULES_DIR`**, qui est l'arbre qu'on vient éprouver. Même famille que le §3.5 : un test qui touche les données réelles ne se voit qu'une fois qu'il a coûté quelque chose. |
-| Une dépendance de DÉVELOPPEMENT qui réintroduit ce qu'un chantier entier avait retiré | `core/hmer.py` (transcription manuscrite) ramène `optimum-onnx` → `optimum` → **`torch`**, plus `transformers` → `tokenizers` → `regex` : ≈765 Mo sur ce poste, et les deux `.pyd` non signés dont le blocage par Smart App Control est mesuré ici. C'est à peu de chose près ce que le remplacement de la pile d'embedding avait sorti du disque le 2026-08-26 (850,7 Mo). Acceptable **uniquement** parce que `HORS_PAQUET_PIP` les retire de tout paquet distribué et qu'aucun module livré n'importe ce fichier. La règle générale : une dépendance lourde n'entre que si on peut nommer le mécanisme qui l'empêche d'atteindre un destinataire, et écrire un test qui le vérifie — `HmerHorsPaquetTest`. L'ancien invariant (« ces paquets ne sont déclarés nulle part ») était plus fort et ne tient plus ; ne pas le croire encore vrai en lisant `BANNIES`. |
-| Sortie LLM non parsable | `json.loads(..., strict=False)` pour tolérer les retours ligne des modèles locaux ; strip des balises placeholder recopiées par le parseur Ollama. |
+Incidents déjà payés une fois, chacun verrouillé par un test — table complète
+(BOM UTF-8, `OLLAMA_HOST=0.0.0.0`, démarrage bloqué par HF, PowerShell 5.1
+[cp1252, stderr qui termine un script pourtant réussi, guillemets perdus par
+`-c`], Smart App Control par fichier/par version, dépendance porteuse
+disparue avec le paquet tiers qui l'amenait, `Expand-Archive` qui s'imbrique,
+raisonnement Ollama jeté en silence, écrasement de fichier par l'agent de
+code, régressions « vert en local, rouge en CI »…) :
+**`docs/claude/pieges-connus.md`** — à lire avant de conclure qu'un bug est
+nouveau.
 
 ---
 
