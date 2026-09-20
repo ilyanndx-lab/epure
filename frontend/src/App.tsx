@@ -232,7 +232,22 @@ export default function App() {
   ])
 
   // Si le module courant devient inaccessible, bascule vers le premier visible.
+  //
+  // `modules.length === 0` : au montage (et à CHAQUE F5), `useModules()` rend
+  // `[]` le temps que `GET /modules` réponde — un cache module-scope vidé par
+  // le rechargement complet de la page, pas un état applicatif. Sans ce garde,
+  // cette fenêtre de quelques dizaines de ms fait lire `ordre` vide, donc
+  // `visibleIds` sans AUCUN module réel (seulement 'settings'/'workshop') : le
+  // module actif persisté (`chat`, `docs`…) y paraît « inaccessible » alors
+  // qu'il ne l'est pas, et l'effet bascule sur Réglages — silencieusement, et
+  // pour de bon, puisque rien ne rétablit l'onglet d'origine une fois le
+  // catalogue chargé. Mesuré : reproductible à CHAQUE rechargement, y compris
+  // sur une conversation de Chat en cours dont la jauge de contexte restait
+  // alors invisible (le module restait monté et correct, juste caché derrière
+  // Réglages). Ne pas décider tant qu'on ignore encore le catalogue plutôt que
+  // de deviner sur une liste vide.
   useEffect(() => {
+    if (modules.length === 0) return
     if (!visibleIds.has(activeModule)) {
       const first = ordre.map(m => m.id).find(id => visibleIds.has(id))
       setActiveModule(first ?? 'settings')
