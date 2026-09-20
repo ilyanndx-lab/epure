@@ -648,8 +648,23 @@ class CataloguesSansModeleMortTest(unittest.TestCase):
             "..", "frontend", "src", "components", "ModuleBar.tsx"))
         with open(chemin, encoding="utf-8") as f:
             source = f.read()
-        bloc = source[source.index("const EFFORT_DEFINITIONS"):
-                      source.index("const EFFORT_LABELS")]
+
+        # Borne de fin : la PROCHAINE déclaration de premier niveau, jamais un
+        # symbole voisin nommé en dur. L'ancre était `const EFFORT_LABELS` —
+        # extrait vers `frontend/src/effort.ts` pour que le composant du chat
+        # puisse le réutiliser — et `index()` levait alors
+        # `ValueError: substring not found` : le test accusait une panne du code
+        # testé alors qu'il ne trouvait plus son propre repère. Un repère pris
+        # sur un symbole déplaçable casse à chaque extraction ; une borne
+        # structurelle survit au déplacement.
+        depart = source.index("const EFFORT_DEFINITIONS")
+        fin = len(source)
+        for declaration in re.finditer(
+                r"^(?:export )?(?:const|function|interface|type) ",
+                source[depart + 1:], re.M):
+            fin = depart + 1 + declaration.start()
+            break
+        bloc = source[depart:fin]
         attendu, palier = {}, None
         for ligne in bloc.splitlines():
             m = re.match(r"\s*(low|medium|high):", ligne)
