@@ -88,6 +88,16 @@ class RetraitDesClesGlobalesTest(_Base):
         self.assertNotIn("[CONTEXTE ACTIF]", rendu)
 
 
+class _ColEspion:
+    """`_col.get` minimal — `_stream_load_sse` compte les chunks par fichier
+    juste après `index_file`. Sans elle, l'`AttributeError` est avalée par le
+    `try/except` de comptage (silencieux, juste `chunks=0`), mais bruite les
+    logs de chaque test qui passe par `_RagEspion`."""
+
+    def get(self, where=None, include=None):
+        return {"ids": []}
+
+
 class _RagEspion:
     """Capture ce que le chat demande au RAG, sans construire de moteur réel."""
 
@@ -95,8 +105,9 @@ class _RagEspion:
         self.filtres: list = []
         self.globales: list = []
         self.indexes: list = []
+        self._col = _ColEspion()
 
-    def index_file(self, chemin):
+    def index_file(self, chemin, decrire_images=True):
         """`_stream_load_sse` l'appelle par fichier.
 
         Sans cette méthode, l'`AttributeError` était **avalée** par le
@@ -110,6 +121,11 @@ class _RagEspion:
         voyait jamais la description vision). Rendre `None` ici referait
         diverger ce double du contrat réel exactement de la façon qui a coûté
         ce bug : silencieusement, sur le seul champ qui comptait.
+
+        `decrire_images` est accepté et ignoré : ce double ne simule pas
+        d'images, seule la présence du paramètre compte, pour ne pas planter
+        sur l'appel réel de `_stream_load_sse` (`TypeError`, comme au moment
+        où ce paramètre a été ajouté et où ce double ne le prenait pas encore).
         """
         self.indexes.append(str(chemin))
         return f"[contenu indexé de {chemin}]"
@@ -438,8 +454,16 @@ class GenerateSummaryToggleTest(_Base):
 
 
 class ProgressionImportTest(_Base):
-    """Un événement SSE par fichier, avant son traitement — l'écran n'est plus
-    vide pendant toute la phase d'indexation."""
+    """Un événement SSE par fichier, avant ET après son traitement — l'écran
+    n'est plus vide pendant toute la phase d'indexation.
+
+    Les fichiers sont traités EN PARALLÈLE (borné) depuis le passage à
+    `asyncio.gather`/sémaphore de `_stream_load_sse` : l'ORDRE d'arrivée des
+    événements entre fichiers différents n'est donc plus garanti — ces tests
+    vérifient l'ENSEMBLE des `file_start` (index/total/nom), pas une séquence
+    figée, pour ne pas verrouiller un détail d'ordonnancement qui n'est plus
+    un contrat.
+    """
 
     def setUp(self):
         super().setUp()
@@ -470,32 +494,43 @@ class ProgressionImportTest(_Base):
         self.assertEqual(r.status_code, 200, r.text)
         return [json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
 
-    def test_un_evenement_progress_par_fichier_dans_l_ordre(self):
+    def test_un_evenement_file_start_par_fichier(self):
         fichiers = [self._fichier("a.txt"), self._fichier("b.txt"),
                    self._fichier("c.txt")]
-        progres = [e for e in self._evenements(fichiers, generate_summary=False)
-                  if e["type"] == "progress"]
-        self.assertEqual([e["index"] for e in progres], [1, 2, 3])
-        self.assertEqual([e["total"] for e in progres], [3, 3, 3])
-        self.assertEqual([e["fichier"] for e in progres], ["a.txt", "b.txt", "c.txt"])
+        evenements = self._evenements(fichiers, generate_summary=False)
+        departs = [e for e in evenements if e["type"] == "file_start"]
+        fins = [e for e in evenements if e["type"] == "file_done"]
+        # Ensemble, pas séquence : cf. docstring de la classe.
+        self.assertEqual(
+            sorted((e["index"], e["fichier"]) for e in departs),
+            [(1, "a.txt"), (2, "b.txt"), (3, "c.txt")])
+        self.assertTrue(all(e["total"] == 3 for e in departs))
+        self.assertEqual(
+            sorted((e["fichier"], e["ok"]) for e in fins),
+            [("a.txt", True), ("b.txt", True), ("c.txt", True)])
 
-    def test_un_fichier_ignore_au_milieu_compte_quand_meme_dans_la_numerotation(self):
+    def test_un_fichier_ignore_compte_quand_meme_dans_la_numerotation(self):
         """Numérotation sur `paths` (la liste brute), pas `indexed_paths` — une
         extension non supportée reste une étape visible pour l'utilisateur, même
-        si elle n'est pas indexée."""
+        si elle n'est pas indexée (`file_done` avec ``ok: false``)."""
         ignore = self.racine / "ignore.xyz"
         ignore.write_text("contenu", encoding="utf-8")
         fichiers = [self._fichier("a.txt"), str(ignore.resolve()),
                    self._fichier("c.txt")]
-        progres = [e for e in self._evenements(fichiers, generate_summary=False)
-                  if e["type"] == "progress"]
-        self.assertEqual([e["index"] for e in progres], [1, 2, 3])
-        self.assertEqual([e["total"] for e in progres], [3, 3, 3])
-        self.assertEqual([e["fichier"] for e in progres],
-                         ["a.txt", "ignore.xyz", "c.txt"])
-        # Le fichier ignoré ne doit tout de même pas s'indexer.
-        self.assertEqual(self.reglages.rag.indexes,
-                         [fichiers[0], fichiers[2]])
+        evenements = self._evenements(fichiers, generate_summary=False)
+        departs = [e for e in evenements if e["type"] == "file_start"]
+        fins = [e for e in evenements if e["type"] == "file_done"]
+        self.assertEqual(
+            sorted((e["index"], e["fichier"]) for e in departs),
+            [(1, "a.txt"), (2, "ignore.xyz"), (3, "c.txt")])
+        self.assertTrue(all(e["total"] == 3 for e in departs))
+        self.assertEqual(
+            sorted((e["fichier"], e["ok"]) for e in fins),
+            [("a.txt", True), ("c.txt", True), ("ignore.xyz", False)])
+        # Le fichier ignoré ne doit tout de même pas s'indexer. Ordre non
+        # garanti (fichiers traités en parallèle, cf. docstring de la classe).
+        self.assertEqual(sorted(self.reglages.rag.indexes),
+                         sorted([fichiers[0], fichiers[2]]))
 
 
 class ResumeSkillTest(_Base):

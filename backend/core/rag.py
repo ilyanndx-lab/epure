@@ -77,6 +77,26 @@ def est_source_virtuelle(source: str) -> bool:
     return str(source).startswith(SOURCE_VIRTUELLE_PREFIXES)
 
 
+def type_document(source: str) -> str:
+    """Classe une source en type affichable : ``pdf``/``image``/``encre``/
+    ``texte``/``autre`` — pour les chips de filtre du Corpus.
+
+    Purement dérivé de l'extension et d'`est_source_virtuelle` : aucune
+    métadonnée supplémentaire à tenir à jour ailleurs, donc rien qui puisse
+    diverger de ce que la source dit déjà d'elle-même.
+    """
+    if est_source_virtuelle(source):
+        return "encre"
+    ext = Path(source).suffix.lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext in _IMAGE_EXTENSIONS:
+        return "image"
+    if ext in (".txt", ".md", ".docx", ".pptx", ".xlsx", ".csv", ".json"):
+        return "texte"
+    return "autre"
+
+
 #: Nombre de lignes lues par feuille d'un classeur. Même borne que le `nrows=500`
 #: du `.csv` juste en dessous, et pour la même raison : au-delà, on indexe un
 #: export de base de données, pas un document qu'on lit.
@@ -332,35 +352,39 @@ class RAGEngine:
             return f"Image : {name} (analyse vision non disponible sans modèle vision)"
         return ""
 
-    def index_file(self, path: str) -> Optional[str]:
-        """Indexe le fichier et rend le texte RÉELLEMENT indexé (ou ``None``).
+    def texte_est_placeholder_image(self, path: str, texte: str) -> bool:
+        """``texte`` est-il le placeholder muet de `_extract_text_from_path`
+        pour une image, plutôt qu'une vraie description vision ?
 
-        Le retour existe pour que l'appelant qui a aussi besoin du contenu —
-        `_stream_load_sse` (`modules/settings/router.py`), qui construit le
-        résumé affiché à l'import — réutilise CE texte au lieu de le
-        recalculer avec `read_file_text`. Avant ce retour, cet appelant faisait
-        une extraction séparée, et c'était plus qu'un doublon de travail pour
-        les images : `read_file_text` est **statique**, donc n'appelle jamais
-        `_texte_image`/le modèle vision — le résumé affiché à l'import disait
-        systématiquement « je n'ai pas accès à l'image » alors que l'index
-        avait la vraie description, produite juste au-dessus par le même appel
-        à `index_file`. Pour les autres formats (pdf/docx/…), le contenu était
-        identique des deux côtés : seule la seconde lecture/parsing était
-        gaspillée, pas le résultat.
+        Vrai que la dégradation vienne d'un échec de `_texte_image` (aucun
+        modèle vision disponible, appel en échec) ou du choix explicite de ne
+        pas décrire (`index_file(..., decrire_images=False)`) — les trois
+        chemins d'échec de `_texte_image` rendent exactement ce texte, cf. son
+        docstring, donc l'égalité stricte suffit sans comparaison de
+        sous-chaîne fragile.
 
-        Rend ``None`` quand rien n'a été indexé (extension non supportée,
-        texte extrait vide après strip) — l'appelant ne doit pas construire de
-        contenu à partir de rien.
+        Méthode d'INSTANCE, et non une fonction du module, délibérément :
+        `modules/settings/router.py` fait le même constat via `rag.` plutôt
+        que `RAGEngine.` pour rester substituable par les doubles de test
+        (cf. son commentaire) — un `self._extract_text_from_path` ici suit la
+        même règle plutôt que de la contourner avec une fonction qui figerait
+        la classe réelle.
         """
         ext = Path(path).suffix.lower()
-        if ext not in SUPPORTED_EXTENSIONS:
-            return None
+        if ext not in _IMAGE_EXTENSIONS:
+            return False
+        return texte == self._extract_text_from_path(path)
 
-        full_text = (self._texte_image(path) if ext in _IMAGE_EXTENSIONS
-                    else self._extract_text_from_path(path))
-        if not full_text.strip():
-            return None
+    def _reindexer_texte(self, path: str, full_text: str) -> None:
+        """Remplace les chunks de `path` par ceux de `full_text`, MAJ les caches.
 
+        Extraite d'`index_file` pour être partagée avec
+        `decrire_image_maintenant` : les deux réindexent un texte déjà
+        extrait, seule la provenance de ce texte diffère (extraction normale
+        vs. description vision déclenchée à la demande). Dupliquer ce bloc
+        aurait fait diverger tôt ou tard la forme des identifiants ou
+        l'invalidation des caches entre les deux appelants.
+        """
         # Remove stale chunks before re-indexing to avoid duplicates
         try:
             self._col.delete(where={"source": str(path)})
@@ -395,7 +419,74 @@ class RAGEngine:
         self._query_lru.cache_clear()
         self._query_filtered_lru.cache_clear()
 
+    def index_file(self, path: str, decrire_images: bool = True) -> Optional[str]:
+        """Indexe le fichier et rend le texte RÉELLEMENT indexé (ou ``None``).
+
+        Le retour existe pour que l'appelant qui a aussi besoin du contenu —
+        `_stream_load_sse` (`modules/settings/router.py`), qui construit le
+        résumé affiché à l'import — réutilise CE texte au lieu de le
+        recalculer avec `read_file_text`. Avant ce retour, cet appelant faisait
+        une extraction séparée, et c'était plus qu'un doublon de travail pour
+        les images : `read_file_text` est **statique**, donc n'appelle jamais
+        `_texte_image`/le modèle vision — le résumé affiché à l'import disait
+        systématiquement « je n'ai pas accès à l'image » alors que l'index
+        avait la vraie description, produite juste au-dessus par le même appel
+        à `index_file`. Pour les autres formats (pdf/docx/…), le contenu était
+        identique des deux côtés : seule la seconde lecture/parsing était
+        gaspillée, pas le résultat.
+
+        ``decrire_images`` (toggle « Décrire les images » de l'import, coché
+        par défaut) ne concerne QUE les images : décoché, `_texte_image` n'est
+        jamais appelé et l'image s'indexe sur le placeholder de
+        `_extract_text_from_path`, instantanément — c'est le levier qui
+        découple l'indexation du coût de la description vision (6-19 s par
+        image, jusqu'à 26 s à froid, cf. `docs/claude/ingestion-documents.md`),
+        que l'ancien toggle « Résumer à l'import » ne coupait pas puisqu'il ne
+        conditionnait que le résumé, pas l'indexation elle-même. Le placeholder
+        posé ainsi est indiscernable, plus tard, d'un échec réel du modèle
+        vision — et c'est voulu : `texte_est_placeholder_image` sert les deux
+        cas de la même façon, et `decrire_image_maintenant` les répare de la
+        même façon.
+
+        Rend ``None`` quand rien n'a été indexé (extension non supportée,
+        texte extrait vide après strip) — l'appelant ne doit pas construire de
+        contenu à partir de rien.
+        """
+        ext = Path(path).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            return None
+
+        full_text = (self._texte_image(path) if ext in _IMAGE_EXTENSIONS and decrire_images
+                    else self._extract_text_from_path(path))
+        if not full_text.strip():
+            return None
+
+        self._reindexer_texte(path, full_text)
         return full_text
+
+    def decrire_image_maintenant(self, path: str) -> bool:
+        """Force la description vision d'une image DÉJÀ indexée, maintenant.
+
+        Le geste explicite « Décrire » d'une ligne du Corpus : contrairement à
+        `index_file(..., decrire_images=False)`, qui ne retente jamais, cet
+        appel ignore le placeholder existant et rappelle `_texte_image` pour de
+        vrai. Rend ``True`` si le résultat n'est plus le placeholder — ``False``
+        si la description a de nouveau échoué (toujours aucun modèle vision,
+        échec du modèle) ; dans ce cas les chunks existants ne sont PAS
+        remplacés par du vide, `_texte_image` degrade déjà proprement vers le
+        placeholder de son côté.
+
+        Pas d'extension non-image, pas d'exception : rend ``False``, l'appelant
+        (la route) n'a pas à distinguer « mauvais type » d'« échec vision ».
+        """
+        ext = Path(path).suffix.lower()
+        if ext not in _IMAGE_EXTENSIONS:
+            return False
+        full_text = self._texte_image(path)
+        if not full_text.strip():
+            return False
+        self._reindexer_texte(path, full_text)
+        return not self.texte_est_placeholder_image(path, full_text)
 
     def _decouper(self, texte: str) -> list[str]:
         """Découpe en chunks qui se recouvrent, selon la config de `config.yaml`.
@@ -588,7 +679,8 @@ class RAGEngine:
         return sorted(sources)
 
     def describe_indexed_files(self) -> list[dict]:
-        """Un descriptif par fichier indexé : chemins, chunks, mtime, indexation.
+        """Un descriptif par fichier indexé : chemins, chunks, mtime, indexation,
+        type (§ Corpus) et statut vision.
 
         Sert à choisir quoi retirer du corpus. Le **nombre de chunks** est la
         mesure qui compte : c'est ce que le fichier occupe réellement dans
@@ -604,25 +696,39 @@ class RAGEngine:
         modifié, pas quand on l'a lu). Absent = l'appelant affiche
         « non disponible ».
 
+        ``type`` (§ Corpus, chips de filtre) et ``vision_manquante`` (badge
+        « sans description vision ») sont dérivés ICI, pas stockés à part :
+        aucun second registre qui pourrait diverger de ce que l'index dit déjà
+        (cf. CLAUDE.md §3.3 sur `modules_state.json`). ``vision_manquante`` ne
+        se lit que sur le chunk 0 — c'est l'unique chunk du placeholder, et un
+        texte vision réel peut en avoir plusieurs ; comparer un chunk pris au
+        hasard donnerait un faux positif si ce n'est pas le premier.
+
         Une seule lecture de l'index pour tous les fichiers : un appel par
         fichier relirait tout le magasin à chaque fois.
         """
         try:
-            result = self._col.get(include=["metadatas"])
+            result = self._col.get(include=["metadatas", "documents"])
         except Exception:
             logger.exception("Erreur lecture de l'index pour le descriptif")
             return []
 
         par_source: dict[str, dict] = {}
-        for m in result.get("metadatas", []) or []:
+        metadatas = result.get("metadatas", []) or []
+        documents = result.get("documents", []) or []
+        for m, doc_texte in zip(metadatas, documents):
             if not m or "source" not in m:
                 continue
+            source = m["source"]
             fiche = par_source.setdefault(
-                m["source"], {"chemin": m["source"], "chunks": 0,
-                              "mtime": m.get("mtime", 0.0), "indexé_le": ""})
+                source, {"chemin": source, "chunks": 0,
+                         "mtime": m.get("mtime", 0.0), "indexé_le": "",
+                         "type": type_document(source), "vision_manquante": False})
             fiche["chunks"] += 1
             if not fiche["indexé_le"] and m.get("indexé_le"):
                 fiche["indexé_le"] = m["indexé_le"]
+            if fiche["type"] == "image" and m.get("chunk") == 0:
+                fiche["vision_manquante"] = self.texte_est_placeholder_image(source, doc_texte or "")
         return sorted(par_source.values(), key=lambda f: f["chemin"])
 
     def remove_source(self, path: str) -> int:

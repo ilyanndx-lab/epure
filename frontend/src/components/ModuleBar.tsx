@@ -1,10 +1,9 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  Paperclip, Mic, Bot, X, ChevronLeft, ChevronRight, Check,
-  AlertTriangle, HelpCircle, Loader2, FileText, FileImage, FileJson,
-  FileSpreadsheet, File as FileIcon, Save, Trash2, ExternalLink,
-  Wrench, Eye, Brain,
+  Paperclip, Mic, Bot, X, ChevronLeft, ChevronRight, Check, Plus,
+  AlertTriangle, HelpCircle, Loader2, Save, Trash2, ExternalLink,
+  Wrench, Eye, Brain, Search,
 } from 'lucide-react'
 import { Button, Input, Select, Toggle, Tooltip } from './ui'
 import type { EffortLevel, StepConfig } from '../App'
@@ -13,6 +12,14 @@ import { API, apiFetch } from '../api'
 import { dico, liste, texte } from '../normaliser'
 import { chargerRecherche, relancerRecherche, useRecherche } from '../recherche'
 import { useVoix } from '../voix'
+import { EXTENSIONS_ACCEPTEES, ACCEPT_FICHIERS } from '../fileTypes'
+// Composant du module chat, réutilisé ICI pour la jauge de tokens du panneau
+// fichiers — même donnée (fenêtre/dernier tour mesuré), même règle d'affichage
+// (`null` = rien plutôt qu'un chiffre inventé, cf. son docstring) que celle du
+// header de Chat. Pas de composant dupliqué : celui-ci n'a aucune dépendance
+// propre au module chat (aucun import dans son fichier), rien à casser en le
+// import ailleurs.
+import CamembertContexte from '../modules/chat/CamembertContexte'
 
 // Curated model recommendations per module (IDs morts retirés —
 // la disponibilité live /models grise automatiquement le reste)
@@ -365,70 +372,68 @@ function categories(v: unknown): CloudCategories {
 }
 
 
-/**
- * Extensions acceptées à l'upload. **Une seule liste**, et c'est le point.
- *
- * Elle était écrite deux fois — l'attribut `accept` du champ de fichier et le
- * filtre de `uploadFiles` — donc un ajout demandait de penser aux deux. Or les
- * deux copies ne disent pas la même chose à l'utilisateur quand elles divergent :
- * `accept` décide de ce que le sélecteur de fichiers PROPOSE, le filtre décide de
- * ce qui part vraiment. Désaccordées, elles produisent un fichier qu'on peut
- * choisir et qui disparaît sans message.
- *
- * Miroir de `SUPPORTED_EXTENSIONS` dans `backend/core/rag.py`, qui reste
- * l'autorité : le backend refuse en 400 ce qu'il ne sait pas lire, et le message
- * de ce 400 est dérivé de sa liste. Celle-ci n'est donc pas une garantie mais une
- * commodité — elle évite de laisser choisir un fichier voué au refus.
- */
-const EXTENSIONS_ACCEPTEES = [
-  'pdf', 'docx', 'pptx', 'xlsx', 'txt', 'md', 'csv', 'json',
-  'png', 'jpg', 'jpeg', 'webp',
-] as const
+// Extensions acceptées à l'upload — définies dans `fileTypes.ts`, pas ici :
+// `react-refresh/only-export-components` interdit d'exporter une constante
+// depuis un fichier de composant (cf. docstring de `fileTypes.ts`).
 
-const ACCEPT_FICHIERS = EXTENSIONS_ACCEPTEES.map(e => '.' + e).join(',')
+//: Libellé court par type — même vocabulaire que les chips de filtre du
+//: Corpus, dérivé du `type` que le backend a déjà calculé
+//: (`type_document()`, `core/rag.py`), jamais redérivé d'une extension ici.
+const LABEL_TYPE_DOCUMENT: Record<TypeDocument, string> = {
+  pdf: 'PDF', image: 'IMG', encre: 'ENC', texte: 'TXT', autre: '?',
+}
 
-function FileTypeIcon({ name }: { name: string }) {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  const cls = 'shrink-0 text-muted'
-  if (ext === 'pdf' || ext === 'docx' || ext === 'txt' || ext === 'md' || ext === 'pptx')
-    return <FileText size={13} className={cls} />
-  // `.xlsx` avec le `.csv` : ce sont les deux formats tabulaires, et l'icone est
-  // le seul indice de type dans une liste de noms tronques.
-  if (ext === 'xlsx') return <FileSpreadsheet size={13} className={cls} />
-  if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp')
-    return <FileImage size={13} className={cls} />
-  if (ext === 'json') return <FileJson size={13} className={cls} />
-  if (ext === 'csv') return <FileSpreadsheet size={13} className={cls} />
-  return <FileIcon size={13} className={cls} />
+function BadgeTypeDocument({ type }: { type: TypeDocument }) {
+  return (
+    <span className="shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded-sm border border-line bg-elevated text-muted">
+      {LABEL_TYPE_DOCUMENT[type]}
+    </span>
+  )
 }
 
 interface FileSummary {
   résumé: string
-  pages_totales: number
   chunks_indexés: number
 }
 
+//: Types affichables d'un document du Corpus — mêmes valeurs que
+//: `type_document()` côté backend (`core/rag.py`), jamais redérivées ici.
+type TypeDocument = 'pdf' | 'image' | 'encre' | 'texte' | 'autre'
+
 /**
- * Ce que le backend sait dire d'un fichier indexé.
+ * Une ligne du Corpus — ce que `GET /documents` sait dire d'un document
+ * indexé (RAG + encre). Remplace `DetailFichier` : `type`/`visionManquante`
+ * sont dérivés côté backend (`RAGEngine.describe_indexed_files`), jamais
+ * recalculés ici à partir du nom — une source `encre:…` n'a pas d'extension
+ * à lire.
  *
- * `indexé_le` est vide pour tout ce qui a été indexé avant l'ajout du champ :
+ * `indexeLe` est vide pour tout ce qui a été indexé avant l'ajout du champ :
  * rien ne permet de le reconstituer, et le déduire du `mtime` du fichier serait
  * faux — celui-ci dit quand le fichier a changé, pas quand on l'a lu.
  */
-interface DetailFichier {
+interface DocumentCorpus {
   chemin: string
+  type: TypeDocument
   chunks: number
   mtime: number
   indexeLe: string
+  visionManquante: boolean
+  attache: boolean
 }
 
-function detail(v: unknown): DetailFichier {
+const TYPES_DOCUMENT: readonly TypeDocument[] = ['pdf', 'image', 'encre', 'texte', 'autre']
+
+function documentCorpus(v: unknown): DocumentCorpus {
   const o = (v ?? {}) as Record<string, unknown>
+  const type = TYPES_DOCUMENT.includes(o.type as TypeDocument) ? (o.type as TypeDocument) : 'autre'
   return {
     chemin: texte(o.chemin),
+    type,
     chunks: typeof o.chunks === 'number' ? o.chunks : 0,
     mtime: typeof o.mtime === 'number' ? o.mtime : 0,
     indexeLe: texte(o['indexé_le']),
+    visionManquante: o['vision_manquante'] === true,
+    attache: o['attaché'] === true,
   }
 }
 
@@ -448,6 +453,16 @@ export interface ModuleBarProps {
   showMic?: boolean
   showModel?: boolean
   showEffort?: boolean
+  /**
+   * Jauge de tokens en tête du panneau fichiers — même donnée que
+   * `CamembertContexte` du header de Chat (fenêtre du modèle actif, tokens
+   * occupés au dernier tour mesuré, source du chiffre). `undefined` (défaut,
+   * pour tout consommateur autre que Chat) : la jauge ne s'affiche pas, ce
+   * qui est déjà la règle du composant lui-même sur `null`.
+   */
+  contextFenetre?: number | null
+  contextTokensUtilises?: number | null
+  contextSource?: string | null
   /**
    * Portails du bouton "Fichiers" et de son panneau — pour Chat, qui reloge le
    * déclencheur dans l'îlot du composer (à gauche des pilules d'effort) au
@@ -525,6 +540,16 @@ export interface ModuleBarProps {
    * rendu en place, dans cette barre (comportement d'origine).
    */
   modelPanelPortalTarget?: HTMLElement | null
+  /**
+   * Sortie de `uploadFiles` vers le parent, sans le dupliquer : un collage
+   * (Ctrl+V) dans le `<Textarea>` du composer de Chat vise le même point
+   * d'entrée que le glisser-déposer et le sélecteur de fichiers ci-dessous —
+   * `docs/claude/ingestion-documents.md` (§ collage) le désignait déjà comme
+   * l'accroche naturelle. Un ref plutôt qu'un state : `uploadFiles` change à
+   * chaque rendu où `conversationId`/`generateSummary` changent, un state la
+   * redéclencherait sans raison.
+   */
+  uploadFilesRef?: { current: ((files: File[], opts?: { generateSummary?: boolean }) => void) | null }
 }
 
 export default function ModuleBar({
@@ -534,6 +559,9 @@ export default function ModuleBar({
   showMic,
   showModel,
   showEffort,
+  contextFenetre = null,
+  contextTokensUtilises = null,
+  contextSource = null,
   hideEffortPills,
   onTranscribed,
   effort = 'direct',
@@ -550,6 +578,7 @@ export default function ModuleBar({
   onFilePanelOpenChange,
   filePanelPortalTarget,
   micButtonPortalTarget,
+  uploadFilesRef,
 }: ModuleBarProps) {
   // Le micro se décide ICI et pas chez les appelants. `showMic` dit « ce module
   // veut un micro » ; la capacité dit « cette machine en a un ». Le filtre est
@@ -578,20 +607,19 @@ export default function ModuleBar({
   /** Même patron que `modelPanelVisible`, pour le panneau fichiers. */
   const filePanelVisible = filePanelOpen ?? (activePanel === 'files')
 
-  // Files state
-  const [availableFiles, setAvailableFiles] = useState<string[]>([])
-  /**
-   * Descriptif par fichier (chunks, indexation), indexé par chemin.
-   *
-   * Séparé de `availableFiles` : celui-ci vient de `/rag/files`, appelé après
-   * chaque import et à chaque ouverture du panneau. Le descriptif vient d'une
-   * route distincte pour ne pas faire payer une agrégation de tout l'index aux
-   * appelants qui ne veulent que des chemins.
-   */
-  const [detailsFichiers, setDetailsFichiers] = useState<Record<string, DetailFichier>>({})
+  // Files state — deux onglets, une seule source de vérité (`GET /documents`,
+  // cf. `chargerCorpus`) : « Corpus » l'affiche en entier, « Dans ce fil » le
+  // filtre côté client sur `attache`.
+  const [activeFileTab, setActiveFileTab] = useState<'fil' | 'corpus'>('fil')
+  const [corpusDocs, setCorpusDocs] = useState<DocumentCorpus[]>([])
+  const [corpusFiltreType, setCorpusFiltreType] = useState<'tous' | TypeDocument>('tous')
+  const [corpusRecherche, setCorpusRecherche] = useState('')
   /** Fichier dont la suppression attend confirmation. `''` = aucune. */
   const [suppressionEnAttente, setSuppressionEnAttente] = useState('')
-  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
+  /** Chemins attachés à CETTE conversation — dérivé de `GET
+   * /chat/conversations/{id}` (`chargerAttachements`), pas de `corpusDocs` :
+   * c'est la source qui doit rester juste tant qu'aucun `PUT` n'a encore
+   * abouti (optimisme local dans `toggleAttachement`). */
   const [activeFiles, setActiveFiles] = useState<string[]>([])
   const [summary, setSummary] = useState<FileSummary | null>(null)
   const [summaryText, setSummaryText] = useState('')
@@ -599,13 +627,33 @@ export default function ModuleBar({
   const [loadingFiles, setLoadingFiles] = useState(false)
   // Coché par défaut : comportement historique inchangé pour qui n'y touche
   // pas. À décocher pour plusieurs gros fichiers sur un poste sans FLM, où
-  // l'indexation (repli vision Ollama, séquentielle) est déjà longue en soi.
+  // l'indexation (repli vision Ollama) est déjà longue en soi.
   const [generateSummary, setGenerateSummary] = useState(true)
-  const [loadProgress, setLoadProgress] = useState<{ fichier: string; index: number; total: number } | null>(null)
+  // Coché par défaut — comportement historique. Décoché, une image s'indexe
+  // sur son placeholder, instantanément : le levier qui découple l'import du
+  // coût de la description vision (6-19 s/image, `docs/claude/ingestion-
+  // documents.md`), que `generateSummary` seul ne coupait pas.
+  const [decrireImages, setDecrireImages] = useState(true)
+  /**
+   * Progression PAR FICHIER du lot en cours d'import, indexée par NOM (pas
+   * chemin) — c'est ce que portent les événements SSE `file_start`/
+   * `file_done` de `_stream_load_sse` (`backend/modules/settings/router.py`),
+   * les fichiers étant indexés en parallèle depuis son passage à un
+   * sémaphore : leur ORDRE d'arrivée n'est plus l'ordre de départ, mais leur
+   * NOM reste la seule clé stable pour retrouver la bonne ligne. Scope
+   * limité à cette session de streaming, comme `visionDegrades` juste en
+   * dessous : vidé au prochain import, jamais persisté.
+   */
+  const [fichiersEnCours, setFichiersEnCours] = useState<Record<string, { pret: boolean; chunks: number; ok: boolean }>>({})
   // Scope volontairement limité à CETTE session de streaming : pas de
   // persistance, un rechargement de la conversation ne montre plus ce
-  // marqueur (cf. `_stream_load_sse`, backend/modules/settings/router.py).
+  // marqueur (cf. `_stream_load_sse`, backend/modules/settings/router.py) —
+  // le Corpus, lui, continue de le voir via `visionManquante`.
   const [visionDegrades, setVisionDegrades] = useState<Set<string>>(new Set())
+  /** Chemin en cours de description vision à la demande (§ Corpus). `''` =
+   * aucune. Un seul à la fois : le bouton « Décrire » d'une ligne se
+   * verrouille, pas tout le panneau. */
+  const [decrireEnCours, setDecrireEnCours] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -920,40 +968,34 @@ export default function ModuleBar({
   // ── Initial load ──────────────────────────────────────────────────────────
 
   /**
-   * Liste des fichiers indexés. Un seul site d'appel, joué à trois moments.
+   * Le corpus unifié (RAG + encre) — `GET /documents`. Un seul site d'appel,
+   * joué à trois moments : au montage, après un import, et quand le moteur
+   * passe de « en préparation » à « prêt » (cf. l'effet juste en dessous).
    *
-   * Extrait en callback parce qu'il sert au montage, après un import de document,
-   * et à nouveau quand le moteur passe de « en préparation » à « prêt » (cf.
-   * l'effet juste en dessous). Il était écrit deux fois, avec la normalisation
-   * recopiée à la main de chaque côté — le genre de duplication où une seule des
-   * deux copies finit corrigée.
+   * Remplace `chargerFichiers` (`/rag/files` + `/rag/files/details`) : les
+   * deux onglets du panneau lisent maintenant la même route enrichie
+   * (`type`, `vision_manquante`, `attaché`), plutôt que de recomposer ces
+   * champs à partir de deux réponses côté client.
    *
-   * `503` déclenche une relecture de l'état de préparation : c'est la réponse du
-   * backend pendant que la pile d'embedding s'installe, et c'est ce qui fait
-   * apparaître le bandeau sans attendre l'interrogation périodique suivante.
+   * `conversation_id` en query : sans lui, `attaché` vaudrait `false` pour
+   * tout — légitime hors conversation ouverte, mais faux ici tant qu'on en a
+   * une.
+   *
+   * `503` déclenche une relecture de l'état de préparation : c'est la réponse
+   * du backend pendant que la pile d'embedding s'installe, et c'est ce qui
+   * fait apparaître le bandeau sans attendre l'interrogation périodique
+   * suivante.
    */
-  const chargerFichiers = useCallback(async () => {
+  const chargerCorpus = useCallback(async () => {
     try {
-      const res = await apiFetch(`${API}/rag/files`)
+      const qs = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''
+      const res = await apiFetch(`${API}/documents${qs}`)
       if (res.status === 503) { void chargerRecherche(); return }
-      const d = await res.json() as { files?: unknown }
-      setAvailableFiles(liste<string>(d.files))
-    } catch { /* backend qui démarre, token pas encore appairé : sans gravité */ }
-
-    // Le descriptif est accessoire : son échec ne doit pas priver le panneau de
-    // sa liste de fichiers, qui vient d'aboutir juste au-dessus.
-    try {
-      const res = await apiFetch(`${API}/rag/files/details`)
       if (!res.ok) return
-      const d = await res.json() as Record<string, unknown>
-      const carte: Record<string, DetailFichier> = {}
-      for (const brut of liste<unknown>(d.files)) {
-        const f = detail(brut)
-        if (f.chemin) carte[f.chemin] = f
-      }
-      setDetailsFichiers(carte)
-    } catch { /* sans gravité : la liste reste utilisable sans les détails */ }
-  }, [])
+      const d = await res.json() as { documents?: unknown }
+      setCorpusDocs(liste<unknown>(d.documents).map(documentCorpus))
+    } catch { /* backend qui démarre, token pas encore appairé : sans gravité */ }
+  }, [conversationId])
 
   /**
    * Retire un fichier du CORPUS INDEXÉ — pas du disque.
@@ -970,15 +1012,58 @@ export default function ModuleBar({
       const res = await apiFetch(`${API}/rag/files?path=${encodeURIComponent(chemin)}`,
                                  { method: 'DELETE' })
       if (!res.ok) return
-      setAvailableFiles(prev => prev.filter(f => f !== chemin))
-      setSelectedFiles(prev => prev.filter(f => f !== chemin))
-      setDetailsFichiers(prev => {
-        const copie = { ...prev }
-        delete copie[chemin]
-        return copie
-      })
+      setCorpusDocs(prev => prev.filter(d => d.chemin !== chemin))
+      setActiveFiles(prev => prev.filter(f => f !== chemin))
     } catch { /* le panneau reste tel quel : l'utilisateur peut réessayer */ }
   }, [])
+
+  /**
+   * Attache/détache un document DÉJÀ INDEXÉ à la conversation courante —
+   * la coche/le « + » d'une ligne du Corpus.
+   *
+   * `PUT` seul, jamais `/files/load` : le document est déjà dans l'index (il
+   * apparaît dans le Corpus précisément pour cette raison), donc rien à
+   * réindexer ni à résumer pour ce geste. Optimiste : `activeFiles`/
+   * `corpusDocs` sont mis à jour dès la réponse, sans attendre un
+   * `chargerCorpus()` complet.
+   */
+  const toggleAttachement = useCallback(async (chemin: string, estAttache: boolean) => {
+    if (!conversationId) return
+    const suivant = estAttache ? activeFiles.filter(f => f !== chemin) : [...activeFiles, chemin]
+    try {
+      const res = await apiFetch(`${API}/chat/conversations/${conversationId}/fichiers`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: suivant }),
+      })
+      if (!res.ok) return
+    } catch { return }
+    setActiveFiles(suivant)
+    setCorpusDocs(prev => prev.map(d => d.chemin === chemin ? { ...d, attache: !estAttache } : d))
+  }, [conversationId, activeFiles])
+
+  /**
+   * Décrit une image déjà indexée À LA DEMANDE — le bouton « Décrire » d'une
+   * ligne dont `visionManquante` est vrai (`POST /documents/decrire-vision`).
+   *
+   * Refetch complet du corpus après coup plutôt qu'une mise à jour optimiste :
+   * la description change aussi le décompte de chunks de la ligne (image
+   * ré-indexée), pas seulement le badge.
+   */
+  const decrireVision = useCallback(async (chemin: string) => {
+    setDecrireEnCours(chemin)
+    try {
+      await apiFetch(`${API}/documents/decrire-vision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: chemin }),
+      })
+    } catch { /* le panneau reste tel quel : la ligne garde son badge, réessayable */ }
+    finally {
+      setDecrireEnCours('')
+      await chargerCorpus()
+    }
+  }, [chargerCorpus])
 
   /**
    * Ouvre le CONTENU d'un fichier indexé dans un nouvel onglet
@@ -1018,23 +1103,22 @@ export default function ModuleBar({
    */
   const chargerAttachements = useCallback(async () => {
     if (!conversationId) {
-      setActiveFiles([]); setSelectedFiles([])
+      setActiveFiles([])
       return
     }
     try {
       const res = await apiFetch(`${API}/chat/conversations/${conversationId}`)
-      if (!res.ok) { setActiveFiles([]); setSelectedFiles([]); return }
+      if (!res.ok) { setActiveFiles([]); return }
       const d = await res.json() as Record<string, unknown>
       const chemins = liste<Record<string, unknown>>(d['fichiers_attachés'])
         .map(f => texte(f.chemin))
         .filter(Boolean)
       setActiveFiles(chemins)
-      setSelectedFiles(chemins)
     } catch { /* backend qui démarre : panneau vide, sans gravité */ }
   }, [conversationId])
 
   useEffect(() => {
-    if (showFile) { void chargerFichiers(); void chargerAttachements() }
+    if (showFile) { void chargerCorpus(); void chargerAttachements() }
 
     apiFetch(`${API}/context`)
       .then(r => r.json())
@@ -1076,10 +1160,10 @@ export default function ModuleBar({
         .then((d: { presets?: unknown }) => setPresets(liste<Preset>(d.presets)))
         .catch(() => {})
     }
-  }, [showFile, showModel, showEffort, chargerFichiers, chargerAttachements, chargerMateriel, chargerModeles, onModelChange])
+  }, [showFile, showModel, showEffort, chargerCorpus, chargerAttachements, chargerMateriel, chargerModeles, onModelChange])
 
   /**
-   * Le moteur vient d'être prêt : on redemande la liste, qui avait répondu 503.
+   * Le moteur vient d'être prêt : on redemande le corpus, qui avait répondu 503.
    *
    * Sans ça, le panneau resterait vide jusqu'à ce que l'utilisateur ferme et
    * réouvre l'écran — après une installation de plusieurs minutes qu'il vient
@@ -1088,8 +1172,8 @@ export default function ModuleBar({
    * départ (`inconnu`, donc pas de second appel).
    */
   useEffect(() => {
-    if (showFile && recherche.etat === 'prêt') void chargerFichiers()
-  }, [showFile, recherche.etat, chargerFichiers])
+    if (showFile && recherche.etat === 'prêt') void chargerCorpus()
+  }, [showFile, recherche.etat, chargerCorpus])
 
   // ── Settings sync ─────────────────────────────────────────────────────────
 
@@ -1142,16 +1226,23 @@ export default function ModuleBar({
 
   // ── Files ─────────────────────────────────────────────────────────────────
 
-  const consumeLoadStream = useCallback(async (res: Response, finalPaths?: string[]) => {
+  /**
+   * Consomme le flux SSE d'un import (`/files/upload`) — `file_start`/
+   * `file_done` par fichier (remplace l'unique `progress` d'avant le passage
+   * à un import parallèle, cf. `_stream_load_sse`), `token`/`done` pour le
+   * résumé global. `fichiersEnCours` est indexé par NOM, pas chemin : c'est
+   * ce que portent ces deux événements, les fichiers pouvant finir dans un
+   * ordre différent de celui où ils ont démarré.
+   */
+  const consumeLoadStream = useCallback(async (res: Response) => {
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let finalPages = 0
     let finalChunks = 0
     summaryAccRef.current = ''
     setSummaryText('')
     setSummary(null)
-    setLoadProgress(null)
+    setFichiersEnCours({})
     setVisionDegrades(new Set())
     while (true) {
       const { done, value } = await reader.read()
@@ -1163,39 +1254,23 @@ export default function ModuleBar({
         if (!part.startsWith('data: ')) continue
         try {
           const ev = JSON.parse(part.slice(6))
-          if (ev.type === 'progress') { setLoadProgress({ fichier: ev.fichier, index: ev.index, total: ev.total }) }
-          else if (ev.type === 'token') { summaryAccRef.current += ev.content; setSummaryText(summaryAccRef.current) }
-          else if (ev.type === 'done') {
-            finalPages = ev.pages; finalChunks = ev.chunks
+          if (ev.type === 'file_start') {
+            setFichiersEnCours(prev => ({ ...prev, [ev.fichier]: { pret: false, chunks: 0, ok: false } }))
+          } else if (ev.type === 'file_done') {
+            setFichiersEnCours(prev => ({ ...prev, [ev.fichier]: { pret: true, chunks: ev.chunks, ok: ev.ok } }))
+          } else if (ev.type === 'token') {
+            summaryAccRef.current += ev.content; setSummaryText(summaryAccRef.current)
+          } else if (ev.type === 'done') {
+            finalChunks = ev.chunks
             setVisionDegrades(new Set(liste<string>(ev.fichiers_vision_degrades)))
           }
         } catch { /* skip */ }
       }
     }
-    setLoadProgress(null)
     // Résumé désactivé : rien n'a rempli `summaryText`, donc pas de bloc résumé
-    // — mais `finalPages`/`finalChunks` viennent de `done` dans tous les cas.
-    if (generateSummary) setSummary({ résumé: summaryAccRef.current, pages_totales: finalPages, chunks_indexés: finalChunks })
-    // `undefined` signifie « garder les fichiers actifs » (cas de l'upload, qui
-    // les relit ensuite) ; toute autre valeur doit être un tableau.
-    if (finalPaths !== undefined) setActiveFiles(liste<string>(finalPaths))
+    // — mais `finalChunks` vient de `done` dans tous les cas.
+    if (generateSummary) setSummary({ résumé: summaryAccRef.current, chunks_indexés: finalChunks })
   }, [generateSummary])
-
-  const loadSelectedFiles = useCallback(async () => {
-    if (selectedFiles.length === 0) return
-    setLoadingFiles(true)
-    try {
-      const res = await apiFetch(`${API}/files/load`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paths: selectedFiles, conversation_id: conversationId, generate_summary: generateSummary }),
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      await consumeLoadStream(res, selectedFiles)
-      await chargerAttachements()
-    } catch { /* ignore */ }
-    finally { setLoadingFiles(false) }
-  }, [selectedFiles, conversationId, generateSummary, consumeLoadStream, chargerAttachements])
 
   /**
    * Détache tout de la conversation courante.
@@ -1214,10 +1289,11 @@ export default function ModuleBar({
         })
       } catch { /* ignore */ }
     }
-    setActiveFiles([]); setSelectedFiles([]); setSummary(null); setSummaryText('')
+    setActiveFiles([]); setSummary(null); setSummaryText('')
+    setCorpusDocs(prev => prev.map(d => ({ ...d, attache: false })))
   }, [conversationId])
 
-  const uploadFiles = useCallback(async (files: File[]) => {
+  const uploadFiles = useCallback(async (files: File[], opts?: { generateSummary?: boolean }) => {
     const supported = files.filter(f => {
       const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
       return (EXTENSIONS_ACCEPTEES as readonly string[]).includes(ext)
@@ -1231,7 +1307,14 @@ export default function ModuleBar({
       // multipart, et `Form("")` côté backend le rend optionnel — un import
       // hors conversation reste légitime (alimenter le corpus).
       form.append('conversation_id', conversationId)
-      form.append('generate_summary', String(generateSummary))
+      // `opts.generateSummary` prime sur la case à cocher du panneau — un
+      // collage (Ctrl+V) veut attacher vite, pas déclencher le résumé
+      // automatique que l'utilisateur a explicitement voulu éviter.
+      form.append('generate_summary', String(opts?.generateSummary ?? generateSummary))
+      // Pas de surcharge par `opts` ici, contrairement à `generateSummary` :
+      // coller une image (Ctrl+V), c'est justement vouloir la décrire — rien
+      // dans ce geste ne dit « sans vision ».
+      form.append('decrire_images', String(decrireImages))
       const res = await apiFetch(`${API}/files/upload`, { method: 'POST', body: form })
       // 503 = la pile d'embedding s'installe ; l'import ne peut pas aboutir, mais
       // c'est un état à annoncer, pas une erreur à avaler. Le bandeau du panneau
@@ -1241,14 +1324,18 @@ export default function ModuleBar({
       await consumeLoadStream(res)
       // LE point de l'incident : ce rechargement suit l'indexation, donc le
       // moteur RAG vient d'être sollicité. S'il n'est pas prêt (paquet livré dont
-      // le modèle n'est pas encore téléchargé), /rag/files répondait 500 et son
-      // corps n'avait pas de `files` — d'où `chargerFichiers`, qui normalise et
-      // sait lire le 503.
-      await chargerFichiers()
+      // le modèle n'est pas encore téléchargé), /documents répondait 500 et son
+      // corps n'avait pas de `documents` — d'où `chargerCorpus`, qui normalise
+      // et sait lire le 503.
+      await chargerCorpus()
       await chargerAttachements()
     } catch { /* ignore */ }
     finally { setLoadingFiles(false) }
-  }, [conversationId, generateSummary, consumeLoadStream, chargerFichiers, chargerAttachements])
+  }, [conversationId, generateSummary, decrireImages, consumeLoadStream, chargerCorpus, chargerAttachements])
+
+  useEffect(() => {
+    if (uploadFilesRef) uploadFilesRef.current = uploadFiles
+  }, [uploadFilesRef, uploadFiles])
 
   // ── STT ───────────────────────────────────────────────────────────────────
 
@@ -1407,8 +1494,42 @@ export default function ModuleBar({
 
       {/* ── Files panel ── */}
       {showFile && filePanelVisible && (() => {
+        // Filtre du Corpus : type puis recherche texte sur le nom. Calculé ici
+        // (pas de `useMemo`) — `corpusDocs` ne dépasse pas quelques centaines
+        // de lignes sur cette instance mono-utilisateur, et cette IIFE tourne
+        // déjà à chaque rendu du panneau, jamais en boucle serrée.
+        const corpusFiltre = corpusDocs.filter(d => {
+          if (corpusFiltreType !== 'tous' && d.type !== corpusFiltreType) return false
+          const q = corpusRecherche.trim().toLowerCase()
+          return !q || basename(d.chemin).toLowerCase().includes(q)
+        })
         const content = (
-        <div className="border-t border-line bg-surface px-4 py-4 max-h-72 overflow-y-auto space-y-4">
+        <div className="border-t border-line bg-surface px-4 py-4 max-h-96 overflow-y-auto space-y-3">
+          {/* ── En-tête : onglets + jauge de tokens ── */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                title="Dans ce fil"
+                onClick={() => setActiveFileTab('fil')}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors duration-150 ${
+                  activeFileTab === 'fil' ? 'bg-elevated text-primary' : 'text-muted hover:text-secondary'
+                }`}
+              >
+                Dans ce fil{activeFiles.length > 0 && <span className="ml-1 text-accent2">{activeFiles.length}</span>}
+              </button>
+              <button
+                title="Corpus"
+                onClick={() => setActiveFileTab('corpus')}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors duration-150 ${
+                  activeFileTab === 'corpus' ? 'bg-elevated text-primary' : 'text-muted hover:text-secondary'
+                }`}
+              >
+                Corpus{corpusDocs.length > 0 && <span className="ml-1 text-muted">{corpusDocs.length}</span>}
+              </button>
+            </div>
+            <CamembertContexte fenetre={contextFenetre} utilise={contextTokensUtilises} source={contextSource} />
+          </div>
+
           {/* Préparation du moteur documentaire — un ÉTAT, pas une erreur.
               Avant, ce cas produisait un 500 côté serveur et un panneau vide
               côté client : rien ne disait qu'il manquait un modèle à
@@ -1441,146 +1562,242 @@ export default function ModuleBar({
             </div>
           )}
 
-          {/* État du modèle vision — invisible ailleurs que dans les logs
-              backend avant cet ajout. Même appel que ci-dessus
-              (`GET /rag/capabilities`, `useRecherche()`), pas une seconde
-              requête réseau. `etat === 'inconnu'` (corps malformé, 401, ou
-              backend plus ancien sans ce champ) reste SILENCIEUX — même
-              principe que le bandeau de préparation juste au-dessus : une
-              incertitude ne doit jamais s'afficher comme un verdict négatif,
-              ici « aucun modèle détecté » sur un poste qui en a un. */}
-          {recherche.etat !== 'inconnu' && (
-            <p className="text-xs text-secondary">
-              {recherche.vision.disponible
-                ? `Vision : ${recherche.vision.modele} détecté (${recherche.vision.source === 'flm' ? 'FLM' : 'Ollama'})`
-                : 'Vision : aucun modèle détecté — installez-en un (ollama pull moondream)'}
-            </p>
-          )}
+          {activeFileTab === 'corpus' ? (
+            <>
+              {/* État du modèle vision — invisible ailleurs que dans les logs
+                  backend avant cet ajout. Même appel que ci-dessus
+                  (`GET /rag/capabilities`, `useRecherche()`), pas une seconde
+                  requête réseau. `etat === 'inconnu'` (corps malformé, 401, ou
+                  backend plus ancien sans ce champ) reste SILENCIEUX — même
+                  principe que le bandeau de préparation juste au-dessus : une
+                  incertitude ne doit jamais s'afficher comme un verdict négatif,
+                  ici « aucun modèle détecté » sur un poste qui en a un. */}
+              {recherche.etat !== 'inconnu' && (
+                <p className="text-xs text-secondary">
+                  {recherche.vision.disponible
+                    ? `Vision : ${recherche.vision.modele} détecté (${recherche.vision.source === 'flm' ? 'FLM' : 'Ollama'})`
+                    : 'Vision : aucun modèle détecté — installez-en un (ollama pull moondream)'}
+                </p>
+              )}
 
-          <div
-            onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(Array.from(e.dataTransfer.files)) }}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border border-dashed rounded-md px-4 py-3 cursor-pointer transition-colors duration-150 text-center ${
-              dragOver ? 'border-accent/50 bg-accent/5' : 'border-line hover:border-accent/30'
-            }`}
-          >
-            <span className="text-xs text-muted">
-              {loadingFiles ? 'Chargement...' : 'Glisser un fichier ici · Cliquer pour parcourir'}
-            </span>
-            <input ref={fileInputRef} type="file" multiple
-              accept={ACCEPT_FICHIERS}
-              className="hidden"
-              onChange={e => { if (e.target.files) uploadFiles(Array.from(e.target.files)) }}
-            />
-          </div>
+              <div className="relative">
+                <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+                <Input
+                  value={corpusRecherche}
+                  onChange={e => setCorpusRecherche(e.target.value)}
+                  placeholder="Filtrer le corpus..."
+                  className="pl-7 text-xs w-full"
+                />
+              </div>
 
-          {availableFiles.length > 0 && (
-            <div className="space-y-1">
-              <p className="text-xs text-muted uppercase tracking-wide mb-2">Fichiers indexés</p>
-              {availableFiles.map(f => {
-                const d = detailsFichiers[f]
-                const enAttente = suppressionEnAttente === f
-                return (
-                  <div key={f} className="flex items-center gap-2 group">
-                    <label className="flex items-center gap-2 cursor-pointer min-w-0 flex-1">
-                      <input type="checkbox" checked={selectedFiles.includes(f)}
-                        onChange={e => setSelectedFiles(prev => e.target.checked ? [...prev, f] : prev.filter(x => x !== f))}
-                        className="accent-[--accent-primary] shrink-0"
-                      />
-                      <FileTypeIcon name={basename(f)} />
-                      <span className="text-xs font-mono text-secondary group-hover:text-primary transition-colors duration-150 truncate">
-                        {basename(f)}
-                      </span>
-                      {visionDegrades.has(basename(f)) && (
+              <div className="flex flex-wrap gap-1.5">
+                {(['tous', ...TYPES_DOCUMENT] as const).map(t => {
+                  const count = t === 'tous' ? corpusDocs.length : corpusDocs.filter(d => d.type === t).length
+                  // Une chip vide n'aide personne à filtrer — sauf « Tous »,
+                  // toujours affichée pour revenir en arrière.
+                  if (t !== 'tous' && count === 0) return null
+                  const actif = corpusFiltreType === t
+                  return (
+                    <button
+                      key={t}
+                      onClick={() => setCorpusFiltreType(t)}
+                      className={`text-xs px-2 py-1 rounded-full border transition-colors duration-150 ${
+                        actif ? 'border-accent bg-accent/10 text-primary' : 'border-line text-muted hover:border-accent/30'
+                      }`}
+                    >
+                      {t === 'tous' ? 'Tous' : LABEL_TYPE_DOCUMENT[t]} {count}
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="space-y-1">
+                {corpusFiltre.length === 0 && (
+                  <p className="text-xs text-muted py-2">
+                    {corpusDocs.length === 0 ? 'Aucun document indexé.' : 'Aucun document pour ce filtre.'}
+                  </p>
+                )}
+                {corpusFiltre.map(d => {
+                  const enAttente = suppressionEnAttente === d.chemin
+                  return (
+                    <div key={d.chemin} className="flex items-center gap-2 group">
+                      <BadgeTypeDocument type={d.type} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-xs font-mono text-secondary group-hover:text-primary transition-colors duration-150 truncate">
+                            {basename(d.chemin)}
+                          </span>
+                          {d.visionManquante && (
+                            <span
+                              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-sm border border-warning/40 text-warning"
+                              title="Décochée à l'import, ou modèle vision indisponible à ce moment-là"
+                            >
+                              sans description vision
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs font-mono text-muted"
+                              title={d.indexeLe
+                                ? `Indexé le ${d.indexeLe.replace('T', ' à ')}`
+                                : "Date d'indexation non disponible (indexé avant ce champ)"}>
+                          {d.chunks} ch.
+                        </span>
+                      </div>
+                      {d.visionManquante && (
+                        <button
+                          className="text-xs text-accent2 hover:underline shrink-0 disabled:opacity-50 disabled:no-underline"
+                          disabled={decrireEnCours === d.chemin}
+                          onClick={() => void decrireVision(d.chemin)}
+                        >
+                          {decrireEnCours === d.chemin ? 'Description...' : 'Décrire'}
+                        </button>
+                      )}
+                      {enAttente ? (
+                        // Confirmation EN LIGNE plutôt qu'un `confirm()` : le
+                        // panneau se ferme au clic extérieur, et une boîte native
+                        // le ferait disparaître sous la question.
+                        <span className="flex items-center gap-1 shrink-0">
+                          <button className="text-xs text-error hover:underline"
+                                  onClick={() => void supprimerDuCorpus(d.chemin)}>
+                            retirer
+                          </button>
+                          <button className="text-xs text-muted hover:underline"
+                                  onClick={() => setSuppressionEnAttente('')}>
+                            annuler
+                          </button>
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 shrink-0">
+                          {d.type !== 'encre' && (
+                            <button
+                              className="opacity-0 group-hover:opacity-100 text-muted hover:text-secondary p-0.5"
+                              title="Ouvrir dans un nouvel onglet"
+                              aria-label={`Ouvrir ${basename(d.chemin)}`}
+                              onClick={() => void ouvrirFichier(d.chemin)}>
+                              <ExternalLink size={12} />
+                            </button>
+                          )}
+                          <button
+                            className="opacity-0 group-hover:opacity-100 text-muted hover:text-error p-0.5"
+                            title="Retirer du corpus indexé (le fichier reste sur le disque)"
+                            aria-label={`Retirer ${basename(d.chemin)} du corpus indexé`}
+                            onClick={() => setSuppressionEnAttente(d.chemin)}>
+                            <Trash2 size={12} />
+                          </button>
+                          <button
+                            className={`p-1 rounded-sm border shrink-0 disabled:opacity-40 ${
+                              d.attache ? 'border-accent bg-accent/10 text-accent' : 'border-line text-muted hover:border-accent/30'
+                            }`}
+                            disabled={!conversationId}
+                            title={!conversationId ? 'Aucune conversation ouverte' : (d.attache ? 'Retirer de ce fil' : 'Attacher à ce fil')}
+                            aria-label={d.attache ? `Retirer ${basename(d.chemin)} de ce fil` : `Attacher ${basename(d.chemin)} à ce fil`}
+                            onClick={() => void toggleAttachement(d.chemin, d.attache)}>
+                            {d.attache ? <Check size={12} /> : <Plus size={12} />}
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={e => { e.preventDefault(); setDragOver(false); uploadFiles(Array.from(e.dataTransfer.files)) }}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border border-dashed rounded-md px-4 py-3 cursor-pointer transition-colors duration-150 text-center ${
+                  dragOver ? 'border-accent/50 bg-accent/5' : 'border-line hover:border-accent/30'
+                }`}
+              >
+                <span className="text-xs text-muted">
+                  {loadingFiles ? 'Chargement...' : 'Glisser un fichier ici · Cliquer pour parcourir'}
+                </span>
+                <input ref={fileInputRef} type="file" multiple
+                  accept={ACCEPT_FICHIERS}
+                  className="hidden"
+                  onChange={e => { if (e.target.files) uploadFiles(Array.from(e.target.files)) }}
+                />
+              </div>
+
+              <div className="flex gap-3 flex-wrap items-center">
+                <span className="flex items-center gap-2">
+                  <Toggle checked={generateSummary} onChange={setGenerateSummary} label="Résumer à l'import" />
+                  <span className="text-xs text-secondary">Résumer à l'import</span>
+                </span>
+                <span className="flex items-center gap-2">
+                  <Toggle checked={decrireImages} onChange={setDecrireImages} label="Décrire les images" />
+                  <span className="text-xs text-secondary">Décrire les images</span>
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              {!conversationId && (
+                <p className="text-xs text-muted py-2">Aucune conversation ouverte.</p>
+              )}
+              {conversationId && activeFiles.length === 0 && (
+                <p className="text-xs text-muted py-2">
+                  Aucun fichier attaché — utilisez l'onglet Corpus pour en ajouter.
+                </p>
+              )}
+
+              <div className="space-y-1.5">
+                {activeFiles.map(chemin => {
+                  const doc = corpusDocs.find(d => d.chemin === chemin)
+                  const nom = basename(chemin)
+                  const enCours = fichiersEnCours[nom]
+                  return (
+                    <div key={chemin} className="flex items-center gap-2">
+                      <BadgeTypeDocument type={doc?.type ?? 'autre'} />
+                      <span className="text-xs font-mono text-secondary truncate flex-1 min-w-0">{nom}</span>
+                      {visionDegrades.has(nom) && (
                         // Scope de CETTE session de streaming seulement — pas
                         // persisté, disparaît au rechargement de la conversation.
                         <span className="shrink-0" title="Pas de description vision — modèle indisponible">
                           ⚠️
                         </span>
                       )}
-                      {d && (
-                        // Le décompte de chunks, pas la taille sur le disque :
-                        // c'est ce que le fichier occupe dans l'index, et un PDF
-                        // de 40 Mo tout en images peut ne peser qu'un chunk.
-                        <span className="text-xs font-mono text-muted shrink-0"
-                              title={d.indexeLe
-                                ? `Indexé le ${d.indexeLe.replace('T', ' à ')}`
-                                : "Date d'indexation non disponible (indexé avant ce champ)"}>
-                          {d.chunks} ch.
+                      {enCours ? (
+                        <div className="flex items-center gap-1.5 shrink-0 w-28">
+                          <div className="flex-1 h-1 rounded-full bg-elevated overflow-hidden">
+                            <div className={`h-full rounded-full ${
+                              !enCours.pret ? 'bg-accent2 w-1/3 animate-pulse'
+                                : enCours.ok ? 'bg-success w-full' : 'bg-error w-full'
+                            }`} />
+                          </div>
+                          <span className="text-[10px] font-mono text-muted shrink-0">
+                            {!enCours.pret ? '…' : enCours.ok ? `${enCours.chunks} ch.` : 'échec'}
+                          </span>
+                        </div>
+                      ) : doc && (
+                        <span className="text-[10px] font-mono text-success shrink-0" title="Index prêt">
+                          ● index prêt · {doc.chunks} ch.
                         </span>
                       )}
-                    </label>
-                    {enAttente ? (
-                      // Confirmation EN LIGNE plutôt qu'un `confirm()` : le
-                      // panneau se ferme au clic extérieur, et une boîte native
-                      // le ferait disparaître sous la question.
-                      <span className="flex items-center gap-1 shrink-0">
-                        <button className="text-xs text-error hover:underline"
-                                onClick={() => void supprimerDuCorpus(f)}>
-                          retirer
-                        </button>
-                        <button className="text-xs text-muted hover:underline"
-                                onClick={() => setSuppressionEnAttente('')}>
-                          annuler
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 shrink-0">
-                        <button
-                          className="opacity-0 group-hover:opacity-100 text-muted hover:text-secondary p-0.5"
-                          title="Ouvrir dans un nouvel onglet"
-                          aria-label={`Ouvrir ${basename(f)}`}
-                          onClick={() => void ouvrirFichier(f)}>
-                          <ExternalLink size={12} />
-                        </button>
-                        <button
-                          className="opacity-0 group-hover:opacity-100 text-muted hover:text-error p-0.5"
-                          title="Retirer du corpus indexé (le fichier reste sur le disque)"
-                          aria-label={`Retirer ${basename(f)} du corpus indexé`}
-                          onClick={() => setSuppressionEnAttente(f)}>
-                          <Trash2 size={12} />
-                        </button>
-                      </span>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
+                    </div>
+                  )
+                })}
+              </div>
 
-          <div className="flex gap-2 flex-wrap items-center">
-            <Button variant="secondary" size="sm" onClick={loadSelectedFiles} disabled={selectedFiles.length === 0 || loadingFiles}>
-              {loadingFiles ? 'Chargement...' : `Charger${selectedFiles.length > 0 ? ` (${selectedFiles.length})` : ''}`}
-            </Button>
-            {activeFiles.length > 0 && (
-              <Button variant="ghost" size="sm" onClick={clearActiveFiles}>
-                Vider le contexte
-              </Button>
-            )}
-            <span className="flex items-center gap-2">
-              <Toggle checked={generateSummary} onChange={setGenerateSummary} label="Résumer à l'import" />
-              <span className="text-xs text-secondary">Résumer à l'import</span>
-            </span>
-          </div>
+              {activeFiles.length > 0 && (
+                <Button variant="ghost" size="sm" onClick={clearActiveFiles}>
+                  Vider le contexte
+                </Button>
+              )}
 
-          {loadProgress && (
-            <p className="text-xs text-secondary font-mono">
-              Indexation {loadProgress.index}/{loadProgress.total} — {loadProgress.fichier}
-            </p>
-          )}
-
-          {(summaryText || summary) && (
-            <div className="bg-elevated border border-line rounded-md px-3 py-3 space-y-1">
-              <p className="text-xs text-muted uppercase tracking-wide">
-                {summary ? `Résumé · ${summary.pages_totales} pages · ${summary.chunks_indexés} chunks` : 'Génération du résumé...'}
-              </p>
-              <p className="text-xs text-secondary leading-relaxed whitespace-pre-wrap">
-                {summaryText || summary?.résumé}
-                {!summary && summaryText && <span className="animate-pulse text-accent2">▍</span>}
-              </p>
-            </div>
+              {(summaryText || summary) && (
+                <div className="bg-elevated border border-line rounded-md px-3 py-3 space-y-1">
+                  <p className="text-xs text-muted uppercase tracking-wide">
+                    {summary ? `Résumé à l'import · ${summary.chunks_indexés} chunks` : 'Génération du résumé...'}
+                  </p>
+                  <p className="text-xs text-secondary leading-relaxed whitespace-pre-wrap">
+                    {summaryText || summary?.résumé}
+                    {!summary && summaryText && <span className="animate-pulse text-accent2">▍</span>}
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </div>
         )
@@ -2015,7 +2232,7 @@ export default function ModuleBar({
                   ? 'bg-accent/10 text-accent'
                   : 'text-muted hover:text-secondary hover:bg-elevated'
               }`}>
-              <Paperclip size={15} />
+              {loadingFiles ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
               {activeFiles.length > 0 && (
                 <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-0.5 bg-accent2 rounded-full text-xs font-mono text-on-accent flex items-center justify-center leading-none">
                   {activeFiles.length}

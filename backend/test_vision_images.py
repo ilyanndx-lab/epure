@@ -734,7 +734,7 @@ class _RagPourResume:
         self._col = self._Col()
         self.appels_index: list[str] = []
 
-    def index_file(self, path):
+    def index_file(self, path, decrire_images=True):
         self.appels_index.append(path)
         return self._textes.get(path)
 
