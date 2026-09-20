@@ -300,6 +300,10 @@ describe('Chat — bouton "Fichiers" relogé dans l\'îlot du composer', () => {
     expect(fichiers.compareDocumentPosition(direct) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     await ouvrir('Fichiers')
+    // Le dropzone vit dans l'onglet Corpus (« Dans ce fil » est l'onglet par
+    // défaut, qui ne montre que les fichiers attachés) — cf.
+    // `ModuleBar.test.tsx`.
+    await ouvrir('Corpus')
     expect(screen.getByText('Glisser un fichier ici · Cliquer pour parcourir')).toBeTruthy()
   })
 })

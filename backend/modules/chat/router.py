@@ -906,6 +906,7 @@ async def ws_chat(websocket: WebSocket):
         conv_id: str, texte: str,
         sources: list[dict] | None = None, trace_recherche: list[dict] | None = None,
         model: Optional[str] = None,
+        contexte_tokens: Optional[int] = None,
     ) -> dict:
         """Seconde transaction du tour : la réponse, puis les travaux de fond.
 
@@ -927,6 +928,14 @@ async def ws_chat(websocket: WebSocket):
         comparaison multi-modèles (`compare_choix`) passe explicitement le
         modèle CHOISI par l'utilisateur après coup, distinct de celui qui a
         démarré le tour.
+
+        `contexte_tokens` (optionnel) : la taille du contexte envoyé au DERNIER
+        appel LLM de ce tour, telle qu'annoncée par la sentinelle `__stats__`.
+        Persistée en métadonnée du message pour que l'indicateur « contexte
+        restant » survive à un F5 — sinon l'information n'existerait que dans la
+        trame WebSocket du tour, et manquerait précisément sur les conversations
+        assez longues pour que la question se pose. `core/history.append_messages`
+        écarte une valeur absente ou nulle : un `0` se lirait « contexte vide ».
         """
         modele_a_persister = model if model is not None else _last_model[0]
         conv = await loop.run_in_executor(
@@ -934,6 +943,7 @@ async def ws_chat(websocket: WebSocket):
                 conv_id, [{
                     "role": "assistant", "content": texte,
                     "sources": sources or [], "trace_recherche": trace_recherche or [],
+                    "contexte_tokens": contexte_tokens,
                 }],
                 model=modele_a_persister,
             )
@@ -1696,6 +1706,11 @@ async def ws_chat(websocket: WebSocket):
             #: Renseigné par la sentinelle `__stats__` (`done_reason == "length"`
             #: côté Ollama, `finish_reason` côté API compatible OpenAI).
             _tronque = False
+            #: Taille du contexte envoyé au DERNIER appel LLM du tour — sert de
+            #: numérateur au « contexte restant » (cf. `core/fenetre_contexte.py`
+            #: pour le dénominateur). `None` tant qu'aucune sentinelle n'est
+            #: arrivée, et `None` aussi si le fournisseur ne l'a pas annoncée.
+            _contexte_tokens: Optional[int] = None
             _first_token = True
             while True:
                 item = await queue.get()
@@ -1750,6 +1765,7 @@ async def ws_chat(websocket: WebSocket):
                     continue
                 if isinstance(item, dict) and "__stats__" in item:
                     _tronque = bool(item.get("tronqué"))
+                    _contexte_tokens = item.get("contexte_tokens") or None
                     usage_tracker.track(
                         _provider_of(_last_model[0]),
                         item.get("prompt_tokens", 0),
@@ -1763,6 +1779,11 @@ async def ws_chat(websocket: WebSocket):
                         "eval_duration_ms": (item.get("eval_duration_ns", 0) or 0) // 1_000_000,
                         "prompt_duration_ms": (item.get("prompt_duration_ns", 0) or 0) // 1_000_000,
                         "tronqué": _tronque,
+                        # Distinct de `prompt_tokens` ci-dessus, qui est la SOMME
+                        # des rounds (cf. core/llm.py) : celui-ci est la taille du
+                        # contexte, donc la seule valeur qui puisse être comparée à
+                        # une fenêtre de modèle.
+                        "contexte_tokens": _contexte_tokens,
                     }))
                     continue
                 if _first_token:
@@ -1798,7 +1819,10 @@ async def ws_chat(websocket: WebSocket):
                 conv_id, accumulated, web_resultats, user_text, urls_rag,
                 etapes_recherche,
             )
-            _meta = await _enregistrer_reponse(conv_id, accumulated, _sources, _trace) if accumulated else {}
+            _meta = await _enregistrer_reponse(
+                conv_id, accumulated, _sources, _trace,
+                contexte_tokens=_contexte_tokens,
+            ) if accumulated else {}
             await websocket.send_text(json.dumps({
                 "type": "done",
                 "conversation_id": conv_id,

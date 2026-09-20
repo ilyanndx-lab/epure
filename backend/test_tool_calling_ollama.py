@@ -251,6 +251,48 @@ class NonRegressionTest(unittest.TestCase):
         self.assertEqual(set(r.appels[0]) - {"model", "messages", "stream", "options"}, set())
 
 
+class ContexteTokensTest(unittest.TestCase):
+    """`contexte_tokens` et `prompt_tokens` vivent dans la MÊME sentinelle et ne
+    mesurent PAS la même chose. Les confondre est la régression la plus facile à
+    introduire sur ce lot, et elle est silencieuse : elle n'affiche pas une
+    erreur, elle affiche une fenêtre saturée sur une conversation à moitié
+    pleine — au moment précis où l'utilisateur décide s'il peut encore poser sa
+    question."""
+
+    def test_mono_round_le_contexte_est_le_prompt(self):
+        with _Rejoueur(rounds=[[_chunk(
+            content="ok", done=True, prompt_tokens=613, output_tokens=12,
+        )]]) as r:
+            sortie, _ = _stream(r)
+        stats = _stats(sortie)[0]
+        self.assertEqual(stats["prompt_tokens"], 613)
+        self.assertEqual(stats["contexte_tokens"], 613)
+
+    def test_multi_round_le_contexte_est_le_dernier_round_pas_la_somme(self):
+        """Chaque round renvoie le prompt ENTIER augmenté des résultats d'outil
+        du précédent : la somme des `prompt_eval_count` vaut donc bien plus que
+        le contexte réel. C'est elle qui se facture (`usage_tracker`), et c'est
+        la DERNIÈRE qui décrit où en est la conversation."""
+        with _Rejoueur(rounds=[
+            [_chunk(tool_calls=[_tool_call(requete="q")], done=True, prompt_tokens=100)],
+            [_chunk(content="Fini.", done=True, prompt_tokens=250, output_tokens=5)],
+        ]) as r:
+            sortie, _ = _stream(r, outils=["web_search"])
+        stats = _stats(sortie)[0]
+        self.assertEqual(len(_appels_outil(sortie)), 1, "un round d'outil attendu")
+        self.assertEqual(stats["prompt_tokens"], 350,
+                         "la somme reste ce qui se facture — ne pas la changer")
+        self.assertEqual(stats["contexte_tokens"], 250,
+                         "le contexte est celui du DERNIER round")
+
+    def test_le_champ_est_present_meme_sans_outil(self):
+        """Champ additif au même titre que `tronqué` : sa présence ne doit pas
+        dépendre du chemin emprunté."""
+        with _Rejoueur(rounds=[[_chunk(content="ok", done=True, prompt_tokens=7)]]) as r:
+            sortie, _ = _stream(r)
+        self.assertIn("contexte_tokens", _stats(sortie)[0])
+
+
 class RoundTripBasiqueTest(unittest.TestCase):
     """Un appel d'outil, un round de plus, le modèle conclut."""
 

@@ -102,6 +102,12 @@ const CAPACITES_VISION_ABSENTE = {
 /** Le 503 que le backend rend pendant la préparation, corps compris. */
 const ERREUR_503 = { detail: CAPACITES_EN_COURS.message, ...CAPACITES_EN_COURS }
 
+/** Une ligne de `GET /documents`, forme nominale (PDF, indexé, pas attaché). */
+const DOCUMENT_COURS = {
+  chemin: '/fiches/cours.pdf', type: 'pdf', chunks: 3, mtime: 0,
+  'indexé_le': '', 'vision_manquante': false, 'attaché': false,
+}
+
 /** `GET /context` nominal — l'état de session, sans lequel rien ne s'affiche.
  *
  * Ne porte plus `fichiers_actifs` ni `résumé_contexte` : ces clés ont été
@@ -118,15 +124,12 @@ const CONTEXTE_OK = {
 /** `GET /chat/conversations/{id}` nominal, fichiers marqués `présent`. */
 const CONVERSATION_OK = {
   id: 'conv-1', titre: 'Thermo', messages: [],
-  // Le MEME chemin que `/rag/files` : le panneau liste le corpus indexé et coche
-  // ce qui est attaché. Un attaché hors corpus ne s'afficherait pas du tout.
+  // Le panneau liste ces chemins dans l'onglet « Dans ce fil », indépendamment
+  // du Corpus (`GET /documents`) : un attaché hors corpus s'afficherait quand
+  // même, juste sans badge de type ni décompte de chunks (cf. `corpusDocs.find`
+  // dans `ModuleBar.tsx`).
   'fichiers_attachés': [{ chemin: '/fiches/cours.pdf', 'présent': true }],
   corpus_interrogeable: true,
-}
-
-/** Les cases du panneau fichiers, dans l'ordre du corpus. */
-function cases(): HTMLInputElement[] {
-  return Array.from(document.querySelectorAll('input[type="checkbox"]'))
 }
 
 const MODELES_OK = {
@@ -153,7 +156,8 @@ type Reponse = { status?: number; corps: unknown }
  * jamais consultée. Un bouchon qui répond à côté est pire qu'un bouchon absent.
  */
 function poserFetch(table: Record<string, Reponse>) {
-  const impl = vi.fn(async (input: RequestInfo | URL) => {
+  const impl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    void init
     const url = typeof input === 'string' ? input : String(input)
     const cle = Object.keys(table)
       .filter(k => url.includes(k))
@@ -173,7 +177,7 @@ function tableSaine(): Record<string, Reponse> {
   return {
     '/pair': { corps: { token: 'jeton-de-test' } },
     '/context': { corps: CONTEXTE_OK },
-    '/rag/files': { corps: { files: ['/fiches/cours.pdf'] } },
+    '/documents': { corps: { documents: [DOCUMENT_COURS] } },
     '/rag/capabilities': { corps: CAPACITES_PRETES },
     '/models': { corps: MODELES_OK },
     '/voice/capabilities': {
@@ -217,37 +221,47 @@ afterEach(() => {
   reinitialiserRecherche()
 })
 
-describe('ModuleBar — panneau fichiers', () => {
-  it('affiche les fichiers indexés quand /rag/files répond', async () => {
+/**
+ * Ouvre le panneau fichiers puis bascule sur l'onglet Corpus — c'est là que
+ * vivent le dropzone, la liste du corpus et l'état vision/préparation
+ * (§ ModuleBar.tsx, en-tête + branche `activeFileTab === 'corpus'`). L'onglet
+ * « Dans ce fil » (par défaut à l'ouverture) n'affiche que les fichiers
+ * ATTACHÉS à la conversation, pas le corpus entier.
+ */
+async function ouvrirCorpus(conversationId = '') {
+  await rendre(conversationId)
+  await ouvrir('Fichiers')
+  await ouvrir('Corpus')
+}
+
+describe('ModuleBar — panneau fichiers, onglet Corpus', () => {
+  it('affiche les fichiers indexés quand /documents répond', async () => {
     poserFetch(tableSaine())
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
   })
 
-  it("s'ouvre sans planter quand /rag/files répond 500 — LE bug", async () => {
+  it("s'ouvre sans planter quand /documents répond 500 — LE bug", async () => {
     // Le cas exact du paquet livré : moteur d'embedding pas encore prêt, donc 500
     // sur toute route qui touche le RAG. Avant correction, l'ouverture du panneau
     // levait « Cannot read properties of undefined (reading 'length') ».
-    poserFetch({ ...tableSaine(), '/rag/files': { status: 500, corps: ERREUR_500 } })
-    await rendre()
-    await ouvrir('Fichiers')
+    poserFetch({ ...tableSaine(), '/documents': { status: 500, corps: ERREUR_500 } })
+    await ouvrirCorpus()
     // Le panneau existe, il est simplement vide : l'incapacité est honnête.
     expect(screen.getByText(/Glisser un fichier ici/)).toBeTruthy()
-    expect(screen.queryByText('Fichiers indexés')).toBeNull()
+    expect(screen.queryByText('cours.pdf')).toBeNull()
   })
 
-  it("survit à l'import d'un document quand /rag/files répond 500 ensuite", async () => {
+  it("survit à l'import d'un document quand /documents répond 500 ensuite", async () => {
     // Le geste rapporté : le panneau s'ouvre bien (le 500 n'arrive qu'après),
     // et c'est l'upload qui repose l'état à `undefined`.
     poserFetch(tableSaine())
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
 
     poserFetch({
       ...tableSaine(),
       '/files/upload': { corps: {} },
-      '/rag/files': { status: 500, corps: ERREUR_500 },
+      '/documents': { status: 500, corps: ERREUR_500 },
     })
     const entree = document.querySelector('input[type="file"]') as HTMLInputElement
     const fichier = new File(['%PDF-1.4'], 'cours.pdf', { type: 'application/pdf' })
@@ -261,17 +275,16 @@ describe('ModuleBar — panneau fichiers', () => {
   })
 
   it("annonce la préparation du moteur au lieu d'un panneau vide", async () => {
-    // Le cas d'un paquet livré : /rag/files répond 503 pendant que le backend
+    // Le cas d'un paquet livré : /documents répond 503 pendant que le backend
     // télécharge le modèle. Avant, c'était un 500 et un panneau vide sans
     // explication — l'utilisateur ne pouvait pas savoir qu'il fallait attendre,
     // ni combien.
     poserFetch({
       ...tableSaine(),
-      '/rag/files': { status: 503, corps: ERREUR_503 },
+      '/documents': { status: 503, corps: ERREUR_503 },
       '/rag/capabilities': { corps: CAPACITES_EN_COURS },
     })
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText(/Préparation du moteur/)).toBeTruthy())
     // Le message dit le poids ET que le réseau est nécessaire : ce sont les deux
     // seules choses que l'utilisateur peut vérifier de son côté.
@@ -279,15 +292,17 @@ describe('ModuleBar — panneau fichiers', () => {
     expect(screen.getByText(/connexion réseau/)).toBeTruthy()
     // Une préparation n'est pas un échec : pas de bouton « Réessayer ».
     expect(screen.queryByText('Réessayer')).toBeNull()
-    // Et le panneau reste utilisable, sans « Fichiers indexés » mensonger.
+    // Et le panneau reste utilisable, sans document mensonger.
     expect(screen.getByText(/Glisser un fichier ici/)).toBeTruthy()
-    expect(screen.queryByText('Fichiers indexés')).toBeNull()
+    expect(screen.queryByText('cours.pdf')).toBeNull()
   })
 
   it("distingue un échec réseau d'une préparation, et propose de réessayer", async () => {
+    // Bandeau commun aux deux onglets (au-dessus des onglets) : pas besoin de
+    // basculer sur Corpus pour l'éprouver.
     poserFetch({
       ...tableSaine(),
-      '/rag/files': { status: 503, corps: ERREUR_503 },
+      '/documents': { status: 503, corps: ERREUR_503 },
       '/rag/capabilities': { corps: CAPACITES_ECHEC_RESEAU },
       '/rag/install': { corps: CAPACITES_EN_COURS },
     })
@@ -308,11 +323,10 @@ describe('ModuleBar — panneau fichiers', () => {
     // fermer et réouvrir l'écran.
     poserFetch({
       ...tableSaine(),
-      '/rag/files': { status: 503, corps: ERREUR_503 },
+      '/documents': { status: 503, corps: ERREUR_503 },
       '/rag/capabilities': { corps: CAPACITES_EN_COURS },
     })
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText(/Préparation du moteur/)).toBeTruthy())
     expect(screen.queryByText('cours.pdf')).toBeNull()
 
@@ -331,8 +345,7 @@ describe('ModuleBar — panneau fichiers', () => {
     // SILENCIEUSE. Afficher « préparation en cours » par défaut mettrait un
     // bandeau anxiogène sur une installation parfaitement saine.
     poserFetch({ ...tableSaine(), '/rag/capabilities': { status: 404, corps: { detail: 'Not Found' } } })
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
     expect(screen.queryByText(/Préparation du moteur/)).toBeNull()
     expect(screen.queryByText('Réessayer')).toBeNull()
@@ -340,15 +353,13 @@ describe('ModuleBar — panneau fichiers', () => {
 
   it('annonce le modèle vision détecté', async () => {
     poserFetch({ ...tableSaine(), '/rag/capabilities': { corps: CAPACITES_VISION_OLLAMA } })
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText(/Vision : moondream:latest détecté \(Ollama\)/)).toBeTruthy())
   })
 
   it("propose d'installer un modèle vision quand aucun n'est détecté", async () => {
     poserFetch({ ...tableSaine(), '/rag/capabilities': { corps: CAPACITES_VISION_ABSENTE } })
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText(/aucun modèle détecté/)).toBeTruthy())
   })
 
@@ -357,8 +368,7 @@ describe('ModuleBar — panneau fichiers', () => {
     // même raison : `état: 'inconnu'` ne doit jamais s'afficher comme un
     // verdict négatif — ici « aucun modèle détecté » sur un poste qui en a un.
     poserFetch({ ...tableSaine(), '/rag/capabilities': { status: 404, corps: { detail: 'Not Found' } } })
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
     expect(screen.queryByText(/Vision :/)).toBeNull()
   })
@@ -375,8 +385,7 @@ describe('ModuleBar — panneau fichiers', () => {
     // fait que les formats bureautiques y sont — c'est ce qui a été ajouté, et
     // c'est ce qu'un `accept` réécrit à la main perdrait en premier.
     poserFetch(tableSaine())
-    await rendre()
-    await ouvrir('Fichiers')
+    await ouvrirCorpus()
     const entree = document.querySelector('input[type="file"]') as HTMLInputElement
     const accept = entree.getAttribute('accept') ?? ''
     for (const ext of ['.pdf', '.docx', '.pptx', '.xlsx', '.txt', '.md', '.csv', '.json']) {
@@ -389,11 +398,33 @@ describe('ModuleBar — panneau fichiers', () => {
     }
   })
 
-  it('coche les fichiers attachés À CETTE conversation', async () => {
+  it('sans conversation ouverte, le corpus reste consultable mais rien n’est attachable', async () => {
+    // Il n'y a rien à quoi attacher, mais le corpus indexé doit rester
+    // consultable — et le bouton d'attachement de chaque ligne se désactive
+    // plutôt que d'attacher au hasard une conversation inexistante.
+    poserFetch(tableSaine())
+    await ouvrirCorpus('')
+    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
+    const attacher = screen.getByLabelText('Attacher cours.pdf à ce fil') as HTMLButtonElement
+    expect(attacher.disabled).toBe(true)
+  })
+
+  it('reste rendu quand TOUT le backend répond 500', async () => {
+    // Backend qui démarre, token pas encore appairé, route absente : la barre
+    // doit s'afficher amputée, pas disparaître derrière une ErrorBoundary.
+    poserFetch({})
+    await ouvrirCorpus()
+    expect(screen.getByText(/Glisser un fichier ici/)).toBeTruthy()
+  })
+})
+
+describe('ModuleBar — panneau fichiers, onglet Dans ce fil', () => {
+  it('affiche les fichiers ATTACHÉS à cette conversation, par défaut à l’ouverture', async () => {
     poserFetch({ ...tableSaine(), '/chat/conversations/conv-1': { corps: CONVERSATION_OK } })
     await rendre('conv-1')
     await ouvrir('Fichiers')
-    await waitFor(() => expect(cases().some(c => c.checked)).toBe(true))
+    // Pas de clic sur « Corpus » : « Dans ce fil » est l'onglet par défaut.
+    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
   })
 
   it("s'ouvre sans planter quand la conversation répond 404", async () => {
@@ -420,24 +451,11 @@ describe('ModuleBar — panneau fichiers', () => {
     expect(screen.getByTitle('Fichiers')).toBeTruthy()
   })
 
-  it('sans conversation ouverte, le corpus reste visible mais rien n’est coché', async () => {
-    // Il n'y a rien à quoi attacher, mais le corpus indexé doit rester
-    // consultable — et surtout aucun fichier ne doit apparaître comme attaché,
-    // ce qui reviendrait à montrer les fichiers d'un autre fil.
+  it('sans conversation ouverte, dit qu’il n’y a rien d’attaché', async () => {
     poserFetch(tableSaine())
     await rendre('')
     await ouvrir('Fichiers')
-    await waitFor(() => expect(screen.getByText('cours.pdf')).toBeTruthy())
-    expect(cases().some(c => c.checked)).toBe(false)
-  })
-
-  it('reste rendu quand TOUT le backend répond 500', async () => {
-    // Backend qui démarre, token pas encore appairé, route absente : la barre
-    // doit s'afficher amputée, pas disparaître derrière une ErrorBoundary.
-    poserFetch({})
-    await rendre()
-    await ouvrir('Fichiers')
-    expect(screen.getByText(/Glisser un fichier ici/)).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Aucune conversation ouverte.')).toBeTruthy())
   })
 })
 
@@ -1188,5 +1206,44 @@ describe('ModuleBar — faisabilité matérielle', () => {
     await ouvrirAvec({ corps: { materiel: null, modeles: 'oups' } })
     await waitFor(() => expect(screen.getAllByText('qwen2.5:7b').length).toBeGreaterThan(0))
     expect(screen.queryByText('verdicts calculés sur')).toBeNull()
+  })
+})
+
+describe('ModuleBar — uploadFilesRef (collage Ctrl+V du composer de Chat)', () => {
+  /**
+   * Le composer de Chat (`modules/chat/Component.tsx`) n'a pas son propre
+   * champ de fichier : un collage vise `uploadFiles` de `ModuleBar` via ce
+   * ref, exactement comme le glisser-déposer et le sélecteur du panneau
+   * "Fichiers" ci-dessus. Deux choses ne se voient ni à `tsc -b` ni à eslint :
+   *
+   *   1. le ref est bien alimenté (sans lui, un collage ne fait RIEN — silence
+   *      total, pas d'erreur) ;
+   *   2. `{ generateSummary: false }` prime sur la case "Résumer à l'import"
+   *      (cochée par défaut) — un collage veut attacher vite, pas déclencher
+   *      le résumé automatique que l'utilisateur a justement voulu éviter.
+   *      Un refactor qui recollerait `opts` dans l'état de la case romprait
+   *      silencieusement cette garantie sans qu'aucun type ne s'en plaigne.
+   */
+  it('expose `uploadFiles` via le ref, et `generateSummary: false` prime sur la case cochée par défaut', async () => {
+    const fetchMock = poserFetch({ ...tableSaine(), '/files/upload': { corps: {} } })
+    const uploadFilesRef: { current: ((files: File[], opts?: { generateSummary?: boolean }) => void) | null } = { current: null }
+    render(
+      <ModuleBar module="chat" conversationId="conv-1" showFile uploadFilesRef={uploadFilesRef} />)
+    await act(async () => { await Promise.resolve() })
+
+    expect(uploadFilesRef.current).toBeTruthy()
+    const fichier = new File(['(binaire)'], 'capture.png', { type: 'image/png' })
+    await act(async () => {
+      uploadFilesRef.current!([fichier], { generateSummary: false })
+      await Promise.resolve()
+    })
+
+    const appelUpload = fetchMock.mock.calls.find(([input]) => {
+      const url = typeof input === 'string' ? input : String(input)
+      return url.includes('/files/upload')
+    })
+    expect(appelUpload).toBeTruthy()
+    const form = appelUpload![1]!.body as FormData
+    expect(form.get('generate_summary')).toBe('false')
   })
 })

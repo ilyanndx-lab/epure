@@ -20,7 +20,6 @@ from pathlib import Path
 from threading import Thread
 from typing import Optional
 
-import pypdf
 from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -30,7 +29,7 @@ from core import catalogue as _catalogue
 from core.codeagent import SecurityError
 from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config, modele_local_defaut
-from core.paths import PathOutsideDataError, resolve_user_path, safe_upload_name
+from core.paths import PathOutsideDataError, cle_chemin, resolve_user_path, safe_upload_name
 from core.models import premier_modele_vision_disponible
 from core.rag import SUPPORTED_EXTENSIONS, _IMAGE_EXTENSIONS, est_source_virtuelle
 from core.runtime import (
@@ -343,9 +342,18 @@ async def context_settings(request: Request):
 
 # ── Files ────────────────────────────────────────────────────────────────────
 
+#: Fichiers traités EN MÊME TEMPS pendant un import. Compromis simple, pas un
+#: réglage exposé : le gain vient de faire chevaucher extraction/vision de
+#: plusieurs fichiers (I/O et appel modèle, pas CPU), pas de maximiser le
+#: parallélisme — `Collection.upsert` (`core/vector_store.py`) reste sous un
+#: verrou global, donc au-delà d'un petit nombre le gain s'aplatit.
+_FICHIERS_EN_PARALLELE = 3
+
+
 async def _stream_load_sse(paths: list[str], conversation_id: str = "",
-                            generate_summary: bool = True):
-    """Indexe des fichiers, diffuse le résumé en SSE, puis émet `done`.
+                            generate_summary: bool = True, decrire_images: bool = True):
+    """Indexe des fichiers EN PARALLÈLE (borné), diffuse le résumé en SSE, puis
+    émet `done`.
 
     ``conversation_id`` est OPTIONNEL, et l'asymétrie est voulue :
 
@@ -362,10 +370,16 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = "",
 
     ``generate_summary`` (toggle « Résumer à l'import », coché par défaut) ne
     conditionne QUE le résumé automatique — l'indexation et l'attachement des
-    fichiers sont inconditionnels. Motivé par le repli vision Ollama (§3.3 bis) :
-    plusieurs gros fichiers, sur un poste sans FLM, font une indexation
-    séquentielle potentiellement longue ; le résumé (un appel LLM de plus, après
-    coup) n'est pas toujours voulu en plus de cette attente.
+    fichiers sont inconditionnels.
+
+    ``decrire_images`` (toggle « Décrire les images », coché par défaut) est le
+    levier qui manquait pour la vraie lenteur : la description vision d'une
+    image coûte 6-19 s (jusqu'à 26 s à froid, `docs/claude/ingestion-documents.md`)
+    et tournait DANS l'indexation elle-même, sans rapport avec
+    `generate_summary` — décocher « Résumer » n'a jamais évité cet appel.
+    Décoché, chaque image s'indexe sur son placeholder, instantanément ; le
+    fichier reste attaché normalement, seul son badge « sans description
+    vision » (persistant, `rag.describe_indexed_files`) le signale.
 
     **IMPÉRATIF — `set_resume_contexte` n'est appelé QUE si `generate_summary`
     est vrai.** Le cas `generate_summary=True` avec `text_parts` vide (donc
@@ -377,66 +391,118 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = "",
 
     ``done`` porte aussi ``fichiers_vision_degrades`` : les noms des images de
     CE lot dont l'indexation est retombée sur le placeholder de
-    `RAGEngine._extract_text_from_path` (aucun modèle vision, ou modèle en
-    échec) plutôt que sur une vraie description. Détecté par égalité stricte
-    contre ce placeholder — les trois chemins de dégradation de `_texte_image`
-    rendent tous exactement ce texte, cf. `core/rag.py`. Scope volontairement
-    limité à ce flux SSE : rien n'est persisté, un rechargement de la
-    conversation ne montre plus ce marqueur.
+    `RAGEngine._extract_text_from_path` (échec du modèle, ou `decrire_images`
+    décoché) plutôt que sur une vraie description. Même constat, même règle
+    qu'à la lecture du Corpus (`RAGEngine.texte_est_placeholder_image`), mais
+    PAS le même appel : ici c'est `rag._extract_text_from_path` (polymorphe,
+    substituable par un double de test) qui sert la comparaison, pas la
+    méthode d'instance — cf. le commentaire juste en dessous. Scope
+    volontairement limité à ce flux SSE : rien n'est persisté À PART de ce que
+    l'index dit déjà (le texte lui-même) ; un rechargement de la conversation
+    ne montre plus ce marqueur éphémère, mais le Corpus continue de le voir.
+
+    ── Le lot est parallèle, PAS l'ordre des événements ─────────────────────
+    Chaque fichier tourne dans sa propre tâche, bornée par un sémaphore
+    (`_FICHIERS_EN_PARALLELE`) — donc les fichiers ne finissent plus
+    nécessairement dans l'ordre où ils ont commencé. Les événements SSE
+    `file_start`/`file_done` portent le NOM du fichier (pas seulement un index
+    de position) pour que le client mette à jour la bonne ligne quel que soit
+    l'ordre d'arrivée. Le résumé et l'attachement, eux, restent construits dans
+    l'ordre d'origine (`resultats`/`text_parts` sont indexés par position, pas
+    remplis par ordre de complétion) : le résumé ne doit pas varier selon la
+    vitesse relative des fichiers.
     """
     loop = asyncio.get_running_loop()
-    total_pages = 0
-    text_parts: list[str] = []
-    indexed_paths: list[str] = []
+    text_parts: list[Optional[str]] = [None] * len(paths)
+    resultats: list[Optional[dict]] = [None] * len(paths)
     vision_degrades: list[str] = []
+    semaphore = asyncio.Semaphore(_FICHIERS_EN_PARALLELE)
+    # Nom distinct de la `queue` du worker de résumé plus bas dans cette même
+    # fonction : les deux coexisteraient dans la même portée si l'une éclipsait
+    # l'autre par son nom, un piège pour une relecture à froid.
+    evenements: "asyncio.Queue[tuple]" = asyncio.Queue()
 
-    for index, path in enumerate(paths, start=1):
-        yield f"data: {json.dumps({'type': 'progress', 'fichier': Path(path).name, 'index': index, 'total': len(paths)}, ensure_ascii=False)}\n\n"
-        ext = Path(path).suffix.lower()
-        if ext not in _SUPPORTED_EXT:
-            logger.warning("Extension non supportée : %s", path)
-            continue
-        if not os.path.exists(path):
-            logger.warning("Fichier non trouvé : %s", path)
-            continue
-        try:
-            # `index_file` rend le texte QU'IL A INDEXÉ — pas un second appel à
-            # `read_file_text` (statique, donc jamais de modèle vision) pour le
-            # même fichier. Sans ce retour, le résumé affiché à l'import d'une
-            # image disait systématiquement « je n'ai pas accès à l'image »
-            # même quand l'index avait la vraie description (cf. `index_file`,
-            # `core/rag.py`) ; pour les autres formats, seule une relecture/
-            # reparsing inutile était gaspillée. `text or ""` : un texte vide
-            # (rien indexé) ne doit pas planter `[:3000]` sur `None`, et le
-            # fichier reste marqué « chargé » comme avant ce changement.
-            text = await loop.run_in_executor(None, rag.index_file, path)
-            # `_texte_image` dégrade vers `_extract_text_from_path` (le
-            # placeholder) sur SES TROIS chemins d'échec — pas de LLM injecté,
-            # aucun modèle vision disponible, réponse vide. Les trois rendent
-            # exactement ce texte, donc l'égalité stricte suffit à détecter la
-            # dégradation sans comparaison de sous-chaîne fragile. `rag.` et
-            # non `RAGEngine.` : `_extract_text_from_path` est un staticmethod,
-            # accessible sur l'instance déjà importée — inutile de faire entrer
-            # le nom de la classe dans ce module (cf. `test_vision_images.py`,
-            # qui verrouille son absence).
-            if ext in _IMAGE_EXTENSIONS and text == rag._extract_text_from_path(path):
-                vision_degrades.append(Path(path).name)
-            text_parts.append((text or "")[:3000])
-            if ext == '.pdf':
-                reader = pypdf.PdfReader(path)
-                total_pages += len(reader.pages)
-            indexed_paths.append(path)
-        except Exception:
-            logger.exception("Erreur chargement fichier %s", path)
+    async def _indexer_un(i: int, path: str) -> None:
+        async with semaphore:
+            fichier = Path(path).name
+            await evenements.put(("file_start", fichier, i))
+            ext = Path(path).suffix.lower()
+            charge = False
+            texte: Optional[str] = None
+            if ext not in _SUPPORTED_EXT:
+                logger.warning("Extension non supportée : %s", path)
+            elif not os.path.exists(path):
+                logger.warning("Fichier non trouvé : %s", path)
+            else:
+                try:
+                    # `index_file` rend le texte QU'IL A INDEXÉ — pas un second
+                    # appel à `read_file_text` (statique, donc jamais de modèle
+                    # vision) pour le même fichier. Sans ce retour, le résumé
+                    # affiché à l'import d'une image disait systématiquement
+                    # « je n'ai pas accès à l'image » même quand l'index avait
+                    # la vraie description (cf. `index_file`, `core/rag.py`).
+                    texte = await loop.run_in_executor(
+                        None, rag.index_file, path, decrire_images)
+                    # `rag.` et non `RAGEngine.` : `_extract_text_from_path`
+                    # est un staticmethod, accessible sur l'instance déjà
+                    # importée (réelle ou double de test) — inutile de faire
+                    # entrer le nom de la classe dans ce module (cf.
+                    # `test_vision_images.py`, qui verrouille son absence).
+                    if texte is not None and ext in _IMAGE_EXTENSIONS \
+                            and texte == rag._extract_text_from_path(path):
+                        vision_degrades.append(fichier)
+                    charge = True
+                except Exception:
+                    logger.exception("Erreur chargement fichier %s", path)
+
+            chunks = 0
+            if charge:
+                # `text or ""` : un texte vide (rien indexé) ne doit pas
+                # planter `[:3000]` sur `None`, et le fichier reste marqué
+                # « chargé » comme avant ce changement.
+                text_parts[i] = (texte or "")[:3000]
+                try:
+                    r = await loop.run_in_executor(
+                        None, lambda p=path: rag._col.get(where={"source": str(p)}, include=[]))
+                    chunks = len(r.get("ids", []))
+                except Exception:
+                    logger.exception("Erreur comptage chunks pour %s", path)
+            resultats[i] = {"path": path, "charge": charge, "chunks": chunks}
+            await evenements.put(("file_done", fichier, chunks, charge))
+
+    taches = [asyncio.create_task(_indexer_un(i, p)) for i, p in enumerate(paths)]
+    restants = len(taches)
+    while restants:
+        evenement = await evenements.get()
+        kind, fichier = evenement[0], evenement[1]
+        if kind == "file_start":
+            _, _, index = evenement
+            yield f"data: {json.dumps({'type': 'file_start', 'fichier': fichier, 'index': index + 1, 'total': len(paths)}, ensure_ascii=False)}\n\n"
+        else:
+            _, _, chunks, charge = evenement
+            restants -= 1
+            yield f"data: {json.dumps({'type': 'file_done', 'fichier': fichier, 'chunks': chunks, 'ok': charge}, ensure_ascii=False)}\n\n"
+
+    # Déjà tous résolus (la boucle ci-dessus n'a compté `restants` qu'à 0 après
+    # le dernier `file_done`) — ce `gather` ne fait que propager une exception
+    # inattendue qui aurait échappé au `try/except` de `_indexer_un`.
+    await asyncio.gather(*taches)
+
+    indexed_paths = [r["path"] for r in resultats if r and r["charge"]]
 
     if conversation_id and indexed_paths:
         await loop.run_in_executor(
             None, history_engine.add_conversation_files, conversation_id, indexed_paths
         )
 
+    # Ordre d'ORIGINE, pas d'arrivée : `text_parts` est indexé par position
+    # (§ docstring), le filtre ci-dessous ne fait que retirer les fichiers non
+    # chargés sans changer l'ordre des autres.
+    text_parts_ok = [t for t in text_parts if t is not None]
+
     accumulated = ""
-    if generate_summary and text_parts:
-        combined = "\n\n---\n\n".join(text_parts)[:12000]
+    if generate_summary and text_parts_ok:
+        combined = "\n\n---\n\n".join(text_parts_ok)[:12000]
         prompt = (
             "Résume en 100-150 mots maximum ces documents de cours. "
             "Indique les sujets principaux et les notions clés. Sois factuel.\n\n"
@@ -492,17 +558,12 @@ async def _stream_load_sse(paths: list[str], conversation_id: str = "",
             None, history_engine.set_resume_contexte, conversation_id, accumulated
         )
 
-    chunks_count = 0
-    if indexed_paths:
-        try:
-            result = rag._col.get(
-                where={"source": {"$in": indexed_paths}}, include=[]
-            )
-            chunks_count = len(result.get("ids", []))
-        except Exception:
-            logger.exception("Erreur comptage chunks")
+    # Somme des décomptes déjà relevés par fichier (§ `_indexer_un`) — pas une
+    # seconde requête sur l'index : chaque fichier a déjà compté ses propres
+    # chunks pour son événement `file_done`, additionner coûte rien de plus.
+    chunks_count = sum(r["chunks"] for r in resultats if r and r["charge"])
 
-    yield f"data: {json.dumps({'type': 'done', 'pages': total_pages, 'chunks': chunks_count, 'fichiers_vision_degrades': vision_degrades}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'chunks': chunks_count, 'fichiers_vision_degrades': vision_degrades}, ensure_ascii=False)}\n\n"
 
 
 class LoadFilesRequest(BaseModel):
@@ -514,6 +575,11 @@ class LoadFilesRequest(BaseModel):
     #: dans l'interface — comportement historique inchangé pour qui n'y touche
     #: pas.
     generate_summary: bool = True
+    #: Description vision des images à l'import (cf. `_stream_load_sse`), coché
+    #: par défaut. Décoché, une image s'indexe sur son placeholder, sans appel
+    #: au modèle vision — le levier qui découple l'indexation du coût de la
+    #: description (§3.3 bis, `docs/claude/ingestion-documents.md`).
+    decrire_images: bool = True
 
 
 @router.post("/files/load")
@@ -532,7 +598,7 @@ async def files_load(req: LoadFilesRequest):
     except PathOutsideDataError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return StreamingResponse(
-        _stream_load_sse(paths, req.conversation_id, req.generate_summary),
+        _stream_load_sse(paths, req.conversation_id, req.generate_summary, req.decrire_images),
         media_type="text/event-stream", headers=SSE_HEADERS
     )
 
@@ -540,7 +606,8 @@ async def files_load(req: LoadFilesRequest):
 @router.post("/files/upload")
 async def files_upload(files: list[UploadFile] = File(...),
                        conversation_id: str = Form(""),
-                       generate_summary: bool = Form(True)):
+                       generate_summary: bool = Form(True),
+                       decrire_images: bool = Form(True)):
     """Dépose des fiches dans la racine des fiches, puis les indexe.
 
     ``upload.filename`` vient du client. ``_fiches_dir / filename`` acceptait
@@ -578,7 +645,7 @@ async def files_upload(files: list[UploadFile] = File(...),
                     + ", ".join(sorted(e.lstrip(".").upper() for e in _SUPPORTED_EXT))),
         )
     return StreamingResponse(
-        _stream_load_sse(saved_paths, conversation_id, generate_summary),
+        _stream_load_sse(saved_paths, conversation_id, generate_summary, decrire_images),
         media_type="text/event-stream", headers=SSE_HEADERS
     )
 
@@ -690,6 +757,60 @@ async def rag_files_details():
     loop = asyncio.get_running_loop()
     fichiers = await loop.run_in_executor(None, rag.describe_indexed_files)
     return {"files": fichiers}
+
+
+@router.get("/documents")
+async def documents_corpus(
+    conversation_id: str = Query("", description="Repère les documents déjà attachés à ce fil"),
+):
+    """Le corpus unifié (RAG + encre) pour le panneau fichiers — onglets
+    « Corpus » ET « Dans ce fil ».
+
+    Une seule route pour les deux : ils lisent exactement le même état
+    (`rag.describe_indexed_files`, déjà enrichi de `type`/`vision_manquante`),
+    seul le filtrage sur `attaché` change — et un filtrage qui ne change rien
+    au contenu se fait côté client, pas par une seconde route qui répéterait
+    la même lecture de l'index.
+
+    `conversation_id` est facultatif : sans lui, tous les documents rendent
+    `attaché: false` — c'est le cas légitime du Corpus consulté hors d'une
+    conversation ouverte (import depuis les Réglages).
+    """
+    loop = asyncio.get_running_loop()
+    fichiers = await loop.run_in_executor(None, rag.describe_indexed_files)
+    attaches: set[str] = set()
+    if conversation_id:
+        conv = history_engine.get_conversation(conversation_id)
+        if conv:
+            attaches = {cle_chemin(p) for p in conv.get("fichiers_attachés", [])}
+    for f in fichiers:
+        f["attaché"] = cle_chemin(f["chemin"]) in attaches
+    return {"documents": fichiers}
+
+
+class DecrireVisionRequest(BaseModel):
+    source: str
+
+
+@router.post("/documents/decrire-vision")
+async def documents_decrire_vision(req: DecrireVisionRequest):
+    """Décrit une image déjà indexée À LA DEMANDE — le bouton « Décrire » d'une
+    ligne du Corpus dont la vision est manquante (toggle « Décrire les
+    images » décoché à l'import, ou échec du modèle à l'époque).
+
+    Validation par appartenance au corpus indexé, comme `rag_file_delete` /
+    `rag_file_ouvrir` juste en dessous : `source` vient du client, seul un
+    chemin déjà connu du store doit pouvoir déclencher un appel au modèle
+    vision. Rend `{"ok": false}` sans lever si ce n'est pas une image ou si la
+    description échoue de nouveau (pas de modèle vision, échec du modèle) —
+    l'appelant refetch `/documents` dans tous les cas pour l'état à jour.
+    """
+    loop = asyncio.get_running_loop()
+    connus = await loop.run_in_executor(None, rag.get_indexed_files)
+    if req.source not in connus:
+        raise HTTPException(status_code=404, detail="Ce document n'est pas dans le corpus indexé")
+    ok = await loop.run_in_executor(None, rag.decrire_image_maintenant, req.source)
+    return {"ok": ok}
 
 
 @router.delete("/rag/files")

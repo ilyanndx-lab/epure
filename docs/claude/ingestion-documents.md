@@ -279,9 +279,21 @@ l'événement `vision_analyse` (`en_cours` / `terminée` / `échec`), et un `éc
 qui **survit au `done`** côté frontend : il dit que la réponse qu'on vient de
 lire a été construite sans l'image.
 
-**Périmètres explicitement laissés dehors** : LM Studio (`describe_image` le
+**Périmètre explicitement laissé dehors** : LM Studio (`describe_image` le
 servirait par sa branche `_OPENAI_COMPAT`, mais son format vision n'a pas été
-mesuré et `modele_vision_pour` ne le propose jamais), et le **collage
-d'image** (Ctrl+V) dans la zone de saisie — aucun handler de collage n'existe
-dans le dépôt à ce jour ; le point d'accroche naturel serait `uploadFiles` de
-`ModuleBar.tsx`, déjà branché sur le `onDrop` du panneau 📎.
+mesuré et `modele_vision_pour` ne le propose jamais).
+
+**Collage (Ctrl+V) dans le composer du chat.** `onPaste` sur le `<Textarea>`
+(`frontend/src/modules/chat/Component.tsx`) vise le même point d'entrée que le
+glisser-déposer : `uploadFiles` de `ModuleBar.tsx`, exposé au composer via la
+prop `uploadFilesRef` (un ref, pas un state — `uploadFiles` change de
+référence à chaque rendu où `conversationId`/`generateSummary` changent).
+`preventDefault()` n'est appelé qu'APRÈS avoir vérifié qu'au moins un fichier
+collé a une extension de `EXTENSIONS_ACCEPTEES` (désormais exportée) — un
+collage de texte ou d'un type non supporté suit son cours normal. Un fichier
+sans extension reconnue (screenshot au nom générique ou vide) est renommé
+depuis son type MIME avant ce filtre. L'appel passe
+`{ generateSummary: false }` : coller vite ne doit pas déclencher le résumé
+automatique (case cochée par défaut dans le panneau 📎) — seul l'attachement +
+l'indexation RAG/vision est voulu. L'image suit ensuite exactement le chemin
+§3.3 ter (`vision_chat`, au tour de chat suivant).

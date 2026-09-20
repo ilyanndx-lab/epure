@@ -104,6 +104,22 @@ def _decrire(entree: dict) -> dict:
     `processeur` est dérivé ici et pas côté frontend : la règle (`size_vram`
     sépare CPU et GPU, sans jamais dire si le modèle est chargé) est une
     connaissance d'Ollama, elle appartient au backend.
+
+    ── ``fenetre_contexte`` : la fenêtre RUNTIME, pas celle du modèle ────────
+
+    `/api/ps` porte ``context_length`` (mesuré, cf. en-tête) et il était jeté
+    ici. C'est pourtant **la seule source honnête de la fenêtre de contexte
+    d'un modèle Ollama** : elle dit ce qu'Ollama a effectivement alloué pour ce
+    modèle chargé, ``num_ctx`` et ``OLLAMA_CONTEXT_LENGTH`` déjà appliqués.
+
+    À ne pas confondre avec ``<arch>.context_length`` de ``POST /api/show``,
+    qui est la fenêtre **MAXIMALE** que le modèle sait tenir. Les deux
+    diffèrent : Ollama choisit au chargement une fenêtre plus petite sur une
+    machine contrainte. Afficher le maximum donnerait un contexte « plus vide
+    qu'il ne l'est », c'est-à-dire l'erreur exacte qu'on cherche à éviter.
+
+    ``None`` et non ``0`` quand le champ manque (Ollama plus ancien) : l'absence
+    d'information ne doit pas se lire comme une fenêtre nulle.
     """
     vram = entree.get("size_vram") or 0
     details = entree.get("details") or {}
@@ -115,6 +131,7 @@ def _decrire(entree: dict) -> dict:
         "expire_a": entree.get("expires_at") or "",
         "parametres": details.get("parameter_size") or "",
         "quantification": details.get("quantization_level") or "",
+        "fenetre_contexte": entree.get("context_length"),
     }
 
 
