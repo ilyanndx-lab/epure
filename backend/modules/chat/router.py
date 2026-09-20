@@ -1031,6 +1031,15 @@ async def ws_chat(websocket: WebSocket):
             # déclenchement, lui, n'a besoin de rien — image attachée sans
             # analyse suffit.
             vision_override: bool = bool(msg.get("vision_override", False))
+            # Bouton « Recherche approfondie » du popup web (frontend), PAS un
+            # second mode de `web_search_override` : geste ponctuel pour CE
+            # tour, jamais une bascule de session (cf. son commentaire côté
+            # client, `Component.tsx`). Force le skill de tool-calling natif
+            # `recherche_approfondie` (`core/llm.py`) actif pour ce tour SEUL,
+            # même quand `tool_calling.enabled` ou ce skill précis sont
+            # désactivés dans les Réglages — un choix explicite de
+            # l'utilisateur POUR ce message gagne sur un réglage ambiant.
+            deep_search_override: bool = bool(msg.get("deep_search_override", False))
 
             ctx = memory.get_context()
             model_override = ctx.get("modèle_actif") or None
@@ -1071,6 +1080,13 @@ async def ws_chat(websocket: WebSocket):
                 ] + list(_skills_perso)
             else:
                 outils_actifs = None
+            if deep_search_override and "recherche_approfondie" not in (outils_actifs or []):
+                # Le budget existe déjà dans `_tool_calling["skills"]` que le
+                # skill soit activé ou non dans les Réglages — `normaliser_
+                # tool_calling` fusionne toujours les 3 skills natifs sur le
+                # défaut (cf. sa docstring). Rien à ajouter à `budgets_override`
+                # pour ce cas.
+                outils_actifs = (outils_actifs or []) + ["recherche_approfondie"]
             budgets_override = {
                 nom: reglage["budget"] for nom, reglage in _tool_calling["skills"].items()
                 if "budget" in reglage
@@ -1280,6 +1296,13 @@ async def ws_chat(websocket: WebSocket):
                     )
                 except Exception:
                     logger.debug("Étape de trace non poussée (socket fermé ?)")
+
+            if deep_search_override:
+                # Jamais silencieux, même règle que `declenchement_auto`
+                # juste en dessous : l'utilisateur a explicitement demandé ce
+                # coût (jusqu'à 4 requêtes), le panneau de trace doit le dire
+                # même si le modèle finit par n'appeler l'outil aucune fois.
+                _on_etape_recherche({"etape": "recherche_approfondie_armee"})
 
             if web_search_override:
                 if declenchement_auto is not None:

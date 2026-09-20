@@ -232,6 +232,37 @@ describe('Chat — chip modèle du header (panneau complet de ModuleBar, porté 
 
 })
 
+describe('Chat — popover Paramètres, préfixes filtrés sur les actifs (Réglages › Préfixes & commandes)', () => {
+  it('masque un préfixe intégré désactivé et affiche un préfixe personnalisé actif', async () => {
+    await ouvrirParametres(tableSaine({
+      '/context': {
+        corps: {
+          ...CONTEXTE_OK,
+          prefixes: {
+            integres: {
+              cours: { trigger: '@cours', enabled: false },
+              strict: { trigger: '@strict', enabled: true },
+              web: { trigger: '@web', enabled: true },
+              image: { trigger: '@image', enabled: true },
+              historique: { trigger: '@historique', enabled: true },
+            },
+            personnalises: [{
+              id: 'p1', nom: 'Synthèse', trigger: '@synthese', description: 'Résumé structuré',
+              prefixe_actif: true, agentique: false, budget: 4,
+            }],
+          },
+        },
+      },
+    }))
+    await waitFor(() => expect(screen.getByText('@synthese')).toBeTruthy())
+    expect(screen.queryByText('@cours')).toBeNull()
+    expect(screen.getByText('@strict')).toBeTruthy()
+    // `@mémoire` n'a pas d'équivalent backend désactivable — toujours affiché.
+    expect(screen.getByText('@mémoire')).toBeTruthy()
+    expect(screen.getByText('Résumé structuré')).toBeTruthy()
+  })
+})
+
 describe('Chat — niveaux d\'effort dans l\'îlot du composer', () => {
   it("les 5 pilules d'effort sont dans le composer, plus dans le popover Paramètres", async () => {
     poserFetch(tableSaine())

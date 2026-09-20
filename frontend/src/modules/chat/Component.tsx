@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { usePersistentState } from '../../usePersistentState'
-import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, Columns3, Settings } from 'lucide-react'
+import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, Columns3, Settings, SearchCheck } from 'lucide-react'
 import { Button, Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
@@ -724,6 +724,16 @@ export default function Chat({
   const [webSearch, setWebSearch] = usePersistentState<boolean>('epure.chat.webSearch', false)
   const [webSearchMode, setWebSearchMode] = usePersistentState<'once' | 'always'>('epure.chat.webSearchMode', 'once')
   /**
+   * Recherche approfondie — armée pour le PROCHAIN message uniquement, jamais
+   * persistée (pas de `usePersistentState`, contrairement à `webSearch`) :
+   * jusqu'à 4 requêtes web enchaînées par le modèle (tool-calling natif,
+   * `recherche_approfondie` dans `core/llm.py`), donc un mode qui resterait
+   * collant referait ce coût à chaque message — même raisonnement que
+   * `visionOverride` ci-dessus pour l'analyse d'image. Réinitialisé après
+   * l'envoi (cf. `sendUserText`).
+   */
+  const [deepSearch, setDeepSearch] = useState(false)
+  /**
    * Un seul panneau du header ouvert à la fois — modèle, recherche web,
    * comparaison, ou le popover « Paramètres de la conversation ». Une valeur
    * UNIQUE plutôt que quatre booléens indépendants : ouvrir l'un ferme l'autre
@@ -789,6 +799,23 @@ export default function Chat({
   const [raisonnement, setRaisonnement] = useState(true)
   const [sessionInstruction, setSessionInstruction] = useState('')
   const [instructionDraft, setInstructionDraft] = useState('')
+  /**
+   * État des préfixes intégrés (Réglages › Préfixes & commandes) — `null` tant
+   * que `/context` n'a pas répondu, ce que `atCommandsActifs` traite comme
+   * « tout activé » (défaut serveur, cf. `core.memory._CONTEXT_DEFAULT`), pas
+   * comme « tout désactivé ». On ne garde QUE `enabled` ici : le `trigger`
+   * personnalisé n'est pas affiché (`AT_COMMANDS` reste la liste EN DUR
+   * consommée par `sendUserText`, cf. son commentaire — un libellé renommé ici
+   * mentirait sur ce qu'il faut réellement taper).
+   */
+  const [prefixesIntegresActifs, setPrefixesIntegresActifs] = useState<Record<string, boolean> | null>(null)
+  /** Préfixes personnalisés à déclenchement MANUEL actifs (`prefixe_actif` +
+   * `trigger`) — jamais affichés nulle part dans le chat avant cette
+   * itération. Purement informationnel : le déclenchement réel est déjà géré
+   * côté serveur indépendamment de cet affichage (`modules/chat/router.py`). */
+  const [prefixesPersonnalisesActifs, setPrefixesPersonnalisesActifs] = useState<
+    Array<{ id: string; trigger: string; desc: string }>
+  >([])
   /** Consigne libre DE CETTE CONVERSATION, distincte de la consigne de session
    * juste au-dessus — même distinction de portée que dans `ModuleBar.tsx`
    * avant sa migration ici. */
@@ -1740,6 +1767,33 @@ export default function Chat({
         const instr = (d['instruction_générale'] as string) ?? ''
         setSessionInstruction(instr)
         setInstructionDraft(instr)
+
+        const prefixes = d['prefixes']
+        const integres = prefixes && typeof prefixes === 'object'
+          ? (prefixes as Record<string, unknown>)['integres']
+          : null
+        if (integres && typeof integres === 'object' && !Array.isArray(integres)) {
+          const actifs: Record<string, boolean> = {}
+          for (const [cle, val] of Object.entries(integres as Record<string, unknown>)) {
+            actifs[cle] = !!(val && typeof val === 'object' && (val as Record<string, unknown>)['enabled'])
+          }
+          setPrefixesIntegresActifs(actifs)
+        }
+        const personnalises = prefixes && typeof prefixes === 'object'
+          ? (prefixes as Record<string, unknown>)['personnalises']
+          : null
+        setPrefixesPersonnalisesActifs(
+          Array.isArray(personnalises)
+            ? personnalises
+              .filter((o): o is Record<string, unknown> => !!o && typeof o === 'object')
+              .filter(o => o['prefixe_actif'] && typeof o['trigger'] === 'string' && o['trigger'])
+              .map(o => ({
+                id: String(o['id'] ?? o['trigger']),
+                trigger: o['trigger'] as string,
+                desc: typeof o['description'] === 'string' && o['description'] ? o['description'] as string : String(o['nom'] ?? ''),
+              }))
+            : []
+        )
       })
       .catch(() => {})
   }, [])
@@ -1815,16 +1869,30 @@ export default function Chat({
   const { nonSupporte: raisonnementNonSupporte, budgetSeul: raisonnementBudgetSeul } =
     capacitesRaisonnement(providerActif)
 
+  /** `AT_COMMANDS` filtré sur les préfixes intégrés ACTIFS (Réglages ›
+   * Préfixes & commandes), plus les préfixes personnalisés à déclenchement
+   * manuel — consommé par l'autocomplete `@` et par le popover « Préfixes @ »
+   * ci-dessous, pour que les deux affichent la MÊME liste. `?? true` : tant
+   * que `/context` n'a pas répondu (ou pour `@mémoire`, `cle: null`), un
+   * préfixe reste affiché plutôt que de disparaître le temps du chargement. */
+  const atCommandsActifs = useMemo(() => {
+    const integres = AT_COMMANDS
+      .filter(c => c.cle === null || (prefixesIntegresActifs?.[c.cle] ?? true))
+      .map(c => ({ trigger: c.trigger as string, desc: c.desc as string }))
+    const perso = prefixesPersonnalisesActifs.map(p => ({ trigger: p.trigger, desc: p.desc }))
+    return [...integres, ...perso]
+  }, [prefixesIntegresActifs, prefixesPersonnalisesActifs])
+
   // ── Autocomplete ──────────────────────────────────────────────────────────
 
   const suggestions = useMemo(() => {
     if (input.includes(' ')) return []
-    if (input.startsWith('@')) return AT_COMMANDS.filter(c => c.trigger.startsWith(input))
+    if (input.startsWith('@')) return atCommandsActifs.filter(c => c.trigger.startsWith(input))
     // Les commandes `/` incluent une entrée par module INSTALLÉ : on ne propose
     // jamais d'ouvrir quelque chose qui n'est pas là.
     if (input.startsWith('/')) return allSlashCommands(modules).filter(c => c.trigger.startsWith(input))
     return []
-  }, [input, modules])
+  }, [input, modules, atCommandsActifs])
 
   useEffect(() => { setSelectedSuggestion(0) }, [suggestions])
 
@@ -2067,14 +2135,22 @@ export default function Chat({
     if (effort !== 'direct' && pipelineSteps.length > 0) wsMsg.steps = pipelineSteps
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
-    if (webSearchOverride) wsMsg.web_search_override = true
+    // `deepSearch` implique `web_search_override` : sur un provider où le
+    // tool-calling natif n'est pas câblé (tout sauf Ollama, cf.
+    // `core/llm.py::stream`), le bouton dégrade vers la recherche simple
+    // plutôt que de rester silencieusement sans effet.
+    if (webSearchOverride || deepSearch) wsMsg.web_search_override = true
+    if (deepSearch) wsMsg.deep_search_override = true
     if (visionOverride) wsMsg.vision_override = true
     if (compareActive) wsMsg.compare_models = compareModeles
     lastSentRef.current = wsMsg
     wsRef.current?.send(JSON.stringify(wsMsg))
 
     if (webSearch && webSearchMode === 'once') setWebSearch(false)
-  }, [connected, comparaisonEnCours, compareModeles, conversationId, effort, pipelineSteps, webSearch, webSearchMode, pushMsg, setWebSearch])
+    // Toujours réinitialisé après l'envoi : jamais un mode collant, cf. le
+    // commentaire de `deepSearch` à sa déclaration.
+    if (deepSearch) setDeepSearch(false)
+  }, [connected, comparaisonEnCours, compareModeles, conversationId, effort, pipelineSteps, webSearch, webSearchMode, deepSearch, pushMsg, setWebSearch])
 
   const send = useCallback(async () => {
     const rawText = input.trim()
@@ -2301,7 +2377,7 @@ export default function Chat({
           {headerMenuOuvert === 'model' && (
             <div
               ref={setModelPanelAncre}
-              className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-72 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20"
+              className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[30rem] max-w-[90vw] bg-elevated border border-line rounded-md shadow-md overflow-hidden z-20"
             />
           )}
         </div>
@@ -2311,7 +2387,7 @@ export default function Chat({
         <div className="relative shrink-0" ref={webMenuRef}>
           <div
             className={`flex items-stretch rounded-md border transition-colors duration-150 ${
-              webSearch ? 'border-accent/40 bg-accent/10' : 'border-line bg-elevated'
+              webSearch || deepSearch ? 'border-accent/40 bg-accent/10' : 'border-line bg-elevated'
             }`}
           >
             <button
@@ -2322,15 +2398,24 @@ export default function Chat({
                 ? 'Recherche web activée — forcée avant la réponse'
                 : 'Forcer une recherche web avant la réponse'}
               className={`relative p-2.5 rounded-l-md transition-colors duration-150 ${
-                webSearch ? 'text-accent' : 'text-muted hover:text-secondary'
+                webSearch || deepSearch ? 'text-accent' : 'text-muted hover:text-secondary'
               }`}
             >
               <Globe size={16} className={webSearch && streaming ? 'animate-pulse' : ''} />
-              {webSearch && (
-                <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
-                  {webSearchMode === 'once' ? '1×' : '∞'}
-                </span>
-              )}
+              {deepSearch
+                ? (
+                  <span
+                    className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center"
+                    title="Recherche approfondie armée pour le prochain message"
+                  >
+                    <SearchCheck size={9} />
+                  </span>
+                )
+                : webSearch && (
+                  <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-accent text-on-accent text-[10px] font-mono leading-none flex items-center justify-center">
+                    {webSearchMode === 'once' ? '1×' : '∞'}
+                  </span>
+                )}
             </button>
             <button
               type="button"
@@ -2339,7 +2424,7 @@ export default function Chat({
               aria-expanded={headerMenuOuvert === 'web'}
               title="Options de recherche web"
               className={`px-1 rounded-r-md border-l transition-colors duration-150 ${
-                webSearch
+                webSearch || deepSearch
                   ? 'border-accent/30 text-accent hover:bg-accent/10'
                   : 'border-line text-muted hover:text-secondary hover:bg-elevated'
               }`}
@@ -2390,6 +2475,31 @@ export default function Chat({
                     </button>
                   )
                 })}
+              </div>
+
+              <div className="p-1.5 border-t border-line">
+                <button
+                  type="button"
+                  onClick={() => setDeepSearch(v => !v)}
+                  aria-pressed={deepSearch}
+                  title="Autorise le modèle à enchaîner plusieurs recherches web pour reformuler et creuser le sujet (jusqu'à 4 requêtes), pour CE message uniquement"
+                  className={`w-full text-left px-2.5 py-1.5 rounded-sm transition-colors duration-150 flex items-start gap-2 ${
+                    deepSearch ? 'bg-accent/10' : 'hover:bg-surface'
+                  }`}
+                >
+                  <span className="shrink-0 w-4 inline-flex justify-center pt-0.5">
+                    <SearchCheck size={13} className={deepSearch ? 'text-accent' : 'text-muted'} />
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className={`block text-xs ${deepSearch ? 'text-accent font-medium' : 'text-secondary'}`}>
+                      Recherche approfondie
+                    </span>
+                    <span className="block text-[11px] text-muted">
+                      Plusieurs requêtes enchaînées, pour ce message uniquement
+                    </span>
+                  </span>
+                  {deepSearch && <Check size={13} className="text-accent shrink-0 mt-0.5" />}
+                </button>
               </div>
 
               <div className="px-3 py-2.5 border-t border-line space-y-1.5">
@@ -2552,8 +2662,12 @@ export default function Chat({
 
               <div className="p-3 border-b border-line space-y-1">
                 <p className="text-xs text-muted uppercase tracking-wide mb-1">Préfixes @</p>
-                {AT_COMMANDS.map(c => (
-                  <div key={c.trigger} className="flex items-baseline gap-2">
+                {atCommandsActifs.map((c, i) => (
+                  // Index en tête de clé : un préfixe personnalisé peut porter
+                  // le même trigger littéral qu'un intégré ou qu'un autre
+                  // personnalisé — `normaliser_prefixes` valide la FORME,
+                  // jamais l'unicité entre triggers (cf. sa docstring, backend).
+                  <div key={`${i}-${c.trigger}`} className="flex items-baseline gap-2">
                     <span className="text-xs font-mono text-accent2 shrink-0">{c.trigger}</span>
                     <span className="text-xs text-muted truncate">{c.desc}</span>
                   </div>
@@ -2901,7 +3015,7 @@ export default function Chat({
           <div className="absolute bottom-full left-4 mb-2 bg-elevated border border-line rounded-md shadow-md overflow-hidden z-10 min-w-60">
             {suggestions.map((s, i) => (
               <button
-                key={s.trigger}
+                key={`${i}-${s.trigger}`}
                 onMouseDown={e => { e.preventDefault(); applySuggestion(s.trigger) }}
                 className={`w-full text-left px-3 py-2 flex gap-3 items-baseline transition-colors duration-150 ${
                   i === selectedSuggestion ? 'bg-accent/10' : 'hover:bg-surface'

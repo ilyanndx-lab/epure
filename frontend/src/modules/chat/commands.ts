@@ -11,13 +11,19 @@
  * conservé tel quel (surface publique inchangée) plutôt que supprimé au passage.
  */
 
+/**
+ * `cle` : clé correspondante dans `prefixes.integres` côté backend
+ * (`core/memory.py`), utilisée pour filtrer sur `enabled` (Réglages › Préfixes
+ * & commandes) — `null` pour `@mémoire`, qui n'a pas d'équivalent désactivable
+ * côté serveur (toujours actif, cf. son commentaire dans `core/memory.py`).
+ */
 export const AT_COMMANDS = [
-  { trigger: '@cours',      desc: 'RAG sur tous les fichiers indexés' },
-  { trigger: '@strict',     desc: 'Réponse concise, sans intro' },
-  { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel' },
-  { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]' },
-  { trigger: '@web',        desc: 'Recherche web complémentaire avant la réponse [sujet]' },
-  { trigger: '@image',      desc: 'Relit les images attachées pour CETTE question [question]' },
+  { trigger: '@cours',      desc: 'RAG sur tous les fichiers indexés', cle: 'cours' },
+  { trigger: '@strict',     desc: 'Réponse concise, sans intro', cle: 'strict' },
+  { trigger: '@mémoire',    desc: 'Affiche le contexte mémoire actuel', cle: null },
+  { trigger: '@historique', desc: 'Recherche dans les échanges passés [sujet]', cle: 'historique' },
+  { trigger: '@web',        desc: 'Recherche web complémentaire avant la réponse [sujet]', cle: 'web' },
+  { trigger: '@image',      desc: 'Relit les images attachées pour CETTE question [question]', cle: 'image' },
 ] as const
 
 /**
