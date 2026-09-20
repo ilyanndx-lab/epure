@@ -1917,7 +1917,36 @@ export default function Chat({
     capacitesRaisonnement(providerActif)
 
   /**
-   * Fenêtre de contexte du modèle ACTIF, relue à chaque changement de modèle.
+   * Contexte du DERNIER tour mesuré, et seulement s'il a été mesuré par le
+   * modèle ACTIF.
+   *
+   * Ce garde-fou n'est pas une précaution de style : la fenêtre décrit le modèle
+   * sélectionné, le numérateur vient du modèle qui a RÉPONDU. Quand
+   * l'utilisateur change de modèle au milieu d'un fil, les deux ne mesurent plus
+   * la même chose et le rapport serait faux. On n'affiche alors rien — même
+   * règle que pour une fenêtre inconnue.
+   *
+   * L'égalité est littérale parce que les deux valeurs viennent de la MÊME
+   * chaîne : `ModuleBar` passe le même identifiant à `onModelChange` (qui remplit
+   * `modeleActifId`) et à `pushSettings({'modèle_actif': …})` (que le backend
+   * persiste tel quel dans `modèle`).
+   *
+   * Déclaré AVANT la fenêtre ci-dessous, et pas après, parce que celle-ci en
+   * dépend : c'est le numérateur qui dit QUAND la fenêtre devient connaissable
+   * (cf. le commentaire de l'effet). Un `useMemo` consommé plus haut qu'il n'est
+   * déclaré serait une zone morte temporelle, pas un simple avertissement.
+   */
+  const contexteDuFil = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role !== 'assistant' || m.contexteTokens === undefined) continue
+      return m.modele === modeleActifId ? m.contexteTokens : null
+    }
+    return null
+  }, [messages, modeleActifId])
+
+  /**
+   * Fenêtre de contexte du modèle ACTIF — le DÉNOMINATEUR.
    *
    * Elle vient d'un endpoint (`GET /models/contexte`) et non de la trame
    * `stats`, parce que l'en-tête doit pouvoir l'afficher AVANT le premier
@@ -1938,6 +1967,26 @@ export default function Chat({
    * drapeau d'annulation ferait le même travail de façon impérative, et une
    * remise à `null` synchrone dans le corps de l'effet déclencherait un rendu
    * en cascade pour rien.
+   *
+   * ── Quand elle est relue : au changement de modèle ET à chaque tour mesuré ──
+   *
+   * Le second déclencheur n'est pas un confort. Un modèle Ollama n'est pas
+   * résident au repos — `/api/ps` ne liste que les modèles CHARGÉS, et c'est le
+   * premier message envoyé qui le charge (mesuré : `qwen2.5:7b` annonce
+   * `context_length: 32768` une fois résident, et rien du tout avant). La fenêtre
+   * est donc inconnue au montage, et elle devient connaissable à l'instant
+   * précis où le premier tour MESURÉ arrive — à aucun autre.
+   *
+   * Ne relire qu'au changement de modèle laissait la jauge invisible pour tout
+   * le premier tour d'une session, puis pour tous les suivants : elle
+   * n'apparaissait qu'après un aller-retour de modèle ou un F5, c'est-à-dire en
+   * perdant la conversation qui la justifiait. C'est précisément le cas d'usage
+   * de l'indicateur, donc le seul qu'il ne faut pas rater.
+   *
+   * D'où `contexteDuFil` en dépendance. Le coût reste borné : une relecture par
+   * tour mesuré, donc aucune pour un fournisseur muet (aucun numérateur n'arrive
+   * jamais) et aucune rafale en cours de génération — `contexteDuFil` est un
+   * `useMemo` sur `messages`, il ne change pas à chaque morceau de texte reçu.
    */
   const [fenetreLue, setFenetreLue] = useState<{ modele: string; valeur: number | null; source: string | null } | null>(null)
 
@@ -1956,7 +2005,11 @@ export default function Chat({
       } catch { /* backend injoignable : pas de fenêtre, donc pas de jauge */ }
     }
     void lire()
-  }, [modeleActifId])
+    // `contexteDuFil` : relire quand un tour MESURÉ arrive, parce que c'est le
+    // moment où le modèle vient d'être chargé et où la fenêtre devient lisible.
+    // Cf. le commentaire de la docstring ci-dessus — ce n'est pas une dépendance
+    // de confort.
+  }, [modeleActifId, contexteDuFil])
 
   const fenetreContexte = fenetreLue?.modele === modeleActifId ? fenetreLue : null
 
@@ -1973,17 +2026,6 @@ export default function Chat({
    * L'égalité est littérale parce que les deux valeurs viennent de la MÊME
    * chaîne : `ModuleBar` passe le même identifiant à `onModelChange` (qui remplit
    * `modeleActifId`) et à `pushSettings({'modèle_actif': …})` (que le backend
-   * persiste tel quel dans `modèle`).
-   */
-  const contexteDuFil = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.role !== 'assistant' || m.contexteTokens === undefined) continue
-      return m.modele === modeleActifId ? m.contexteTokens : null
-    }
-    return null
-  }, [messages, modeleActifId])
-
   /** `AT_COMMANDS` filtré sur les préfixes intégrés ACTIFS (Réglages ›
    * Préfixes & commandes), plus les préfixes personnalisés à déclenchement
    * manuel — consommé par l'autocomplete `@` et par le popover « Préfixes @ »

@@ -270,6 +270,50 @@ describe('Chat — contexte restant en direct et après rechargement', () => {
     expect(screen.getByText('75 %')).toBeTruthy()
   })
 
+  it('modèle à froid au montage : la fenêtre est RELUE quand le premier tour mesuré arrive', async () => {
+    // Le scénario réel d'un modèle Ollama, et le seul qui compte : au montage,
+    // rien n'est chargé — `/api/ps` ne liste que les RÉSIDENTS — donc la fenêtre
+    // est inconnue. Or c'est le premier message envoyé qui fait charger le
+    // modèle. La fenêtre devient donc connaissable à l'instant précis où le
+    // numérateur arrive, et à aucun autre.
+    //
+    // Ne relire qu'au changement de modèle laissait la jauge invisible pour tout
+    // le premier tour d'une session — puis, comme rien d'autre ne changeait la
+    // dépendance, pour tous les suivants. Elle n'apparaissait qu'après un aller-
+    // retour de modèle ou un F5 : c'est-à-dire en perdant la conversation qui la
+    // justifiait.
+    localStorage.setItem('epure.chat.conversationId', JSON.stringify('conv-a'))
+    const routes = table({ fenetre: null, source: null })
+    poserFetch(routes)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const { ws } = await rendreEtConnecter()
+    await attendre()
+    expect(jauge()).toBeNull()
+
+    // Le tour a fait charger `qwen2.5:7b` : `/api/ps` le liste à présent, et
+    // l'endpoint répond pour de bon. Le bouchon répond par mutation, donc la
+    // relecture voit la NOUVELLE valeur et non celle du montage.
+    routes['/models/contexte'] = {
+      corps: { modele: 'qwen2.5:7b', fenetre: 32768, source: 'ollama /api/ps' },
+    }
+
+    await act(async () => { envoyer(ws, { type: 'token', content: 'Bonjour', conversation_id: 'conv-a' }) })
+    await act(async () => {
+      envoyer(ws, {
+        type: 'stats', conversation_id: 'conv-a',
+        prompt_tokens: 4096, output_tokens: 12, eval_duration_ms: 900,
+        contexte_tokens: 8192,
+      })
+    })
+    await act(async () => {
+      envoyer(ws, { type: 'done', conversation_id: 'conv-a', 'modèle': 'qwen2.5:7b', horodatage: '2026-09-20T10:00:00' })
+    })
+    await attendre()
+
+    // restant = 32 768 − 8 192 = 24 576 → 75 %.
+    expect(screen.getByText('75 %')).toBeTruthy()
+  })
+
   it('fournisseur muet : la trame `stats` sans `contexte_tokens` ne fait rien apparaître', async () => {
     localStorage.setItem('epure.chat.conversationId', JSON.stringify('conv-a'))
     poserFetch(table({ fenetre: null, source: null }))
