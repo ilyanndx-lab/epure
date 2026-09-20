@@ -53,9 +53,9 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "description": "Sciences & maths · NVIDIA",
         "usages": ["Kholle physique", "Kholle maths"],
     },
-    "nvidia/llama-3.1-nemotron-nano-8b-v1": {
+    "nvidia/nemotron-nano-3-30b-a3b": {
         "categorie": "rapide",
-        "description": "Léger sciences · 48 tok/s",
+        "description": "Léger sciences · NVIDIA",
         "usages": ["Chat rapide"],
     },
     "gemini-2.5-flash": {
@@ -78,13 +78,10 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "description": "Nouveau · Google",
         "usages": ["Chat rapide"],
     },
-    # NVIDIA NIM DeepSeek
-    "deepseek-ai/deepseek-r1": {
-        "categorie": "puissant",
-        "description": "Raisonnement · NVIDIA NIM",
-        "usages": ["Kholle maths", "Kholle physique"],
-    },
-    "deepseek-ai/deepseek-v4-flash": {
+    # NVIDIA NIM DeepSeek — deepseek-ai/deepseek-r1 retiré le 2026-09-19
+    # (mesuré : absent de /v1/models, aucun équivalent DeepSeek raisonnement sur
+    # NIM), non remplacé — cf. commentaire de `_NVIDIA_STATIC`.
+    "deepseek-ai/deepseek-v4-flash-0731": {
         "categorie": "puissant",
         "description": "Chat général · NVIDIA NIM",
         "usages": ["Discussion libre", "Flashcards"],
@@ -106,9 +103,9 @@ QUALITATIVE_METADATA: dict[str, dict] = {
         "description": "Raisonnement avancé · DeepSeek",
         "usages": ["Code", "Kholle maths", "Kholle physique"],
     },
-    "deepseek-v4-flash": {
+    "deepseek-flash": {
         "categorie": "rapide",
-        "description": "Rapide · DeepSeek",
+        "description": "Rapide · DeepSeek V4.1",
         "usages": ["Chat rapide", "Code"],
     },
     # Ollama qualitative metadata
@@ -149,17 +146,16 @@ _NOM_MAP: dict[str, str] = {
     "openai/gpt-oss-120b":                "GPT OSS 120B",
     "openai/gpt-oss-20b":                 "GPT OSS 20B",
     "nvidia/nemotron-3-super-120b-a12b":   "Nemotron 120B",
-    "nvidia/llama-3.1-nemotron-nano-8b-v1":"Nemotron Nano 8B",
+    "nvidia/nemotron-nano-3-30b-a3b":      "Nemotron Nano 3 30B-A3B",
     "gemini-2.5-flash":                   "Gemini 2.5 Flash",
     "gemini-2.5-flash-lite":              "Gemini 2.5 Flash-Lite",
     "gemini-2.5-pro":                     "Gemini 2.5 Pro",
     "gemini-3.1-flash-lite":              "Gemini 3.1 Flash-Lite",
-    "deepseek-ai/deepseek-r1":        "DeepSeek R1 (NIM)",
-    "deepseek-ai/deepseek-v4-flash":  "DeepSeek V4 Flash (NIM)",
+    "deepseek-ai/deepseek-v4-flash-0731": "DeepSeek V4.1 Flash (NIM)",
     "codestral-latest":               "Codestral",
     "mistral-small-latest":           "Mistral Small",
     "deepseek-v4-pro":                "DeepSeek V4 Pro",
-    "deepseek-v4-flash":              "DeepSeek V4 Flash",
+    "deepseek-flash":                 "DeepSeek V4.1 Flash",
     "llama3.1-8b":  "Llama 3.1 8B",
     "llama-4-scout":   "Llama 4 Scout",
     "llama-4-maverick":"Llama 4 Maverick",
@@ -201,17 +197,42 @@ _GROQ_STATIC = [
     "openai/gpt-oss-20b",
 ]
 _CEREBRAS_STATIC = ["llama3.1-8b", "llama-4-scout", "llama-4-maverick"]
+#: Mesuré le 2026-09-19 sur `/v1/models` (NIM) : `nvidia/nemotron-3-super-120b-a12b`
+#: est toujours au catalogue, les trois autres entrées historiques ne l'étaient
+#: plus.
+#:
+#: - `nvidia/llama-3.1-nemotron-nano-8b-v1` → remplacé par
+#:   `nvidia/nemotron-nano-3-30b-a3b` : même gamme produit (« Nemotron Nano »),
+#:   une génération plus loin — même relation que le remplacement DeepSeek
+#:   ci-dessous. Pas de mesure de débit ni de qualité réelle : `/v1/chat/
+#:   completions` répond 401 « Authentication Fails » avec la clé de ce poste,
+#:   y compris sur `nemotron-3-super-120b-a12b` qui, lui, EST déjà en
+#:   production ici — donc un problème d'habilitation de la clé (`/v1/models`
+#:   répond 200), pas quelque chose que ce changement casse ou pourrait mesurer.
+#: - `deepseek-ai/deepseek-v4-flash` → `deepseek-ai/deepseek-v4-flash-0731` :
+#:   même modèle, la version datée toujours exposée par NIM (cf. DeepSeek API
+#:   officielle plus bas pour le même retrait côté DeepSeek direct).
+#: - `deepseek-ai/deepseek-r1` → retiré, NON remplacé : plus aucune variante
+#:   DeepSeek de raisonnement au catalogue NIM à cette date. Recommander un
+#:   modèle sans rapport (résumé, code...) à sa place serait pire que ne rien
+#:   recommander (cf. le même choix documenté pour Groq plus haut) ; le
+#:   raisonnement DeepSeek reste disponible par ailleurs via le provider
+#:   `deepseek` direct (`deepseek-v4-pro`).
 _NVIDIA_STATIC = [
     "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/llama-3.1-nemotron-nano-8b-v1",
-    "deepseek-ai/deepseek-r1",
-    "deepseek-ai/deepseek-v4-flash",
+    "nvidia/nemotron-nano-3-30b-a3b",
+    "deepseek-ai/deepseek-v4-flash-0731",
 ]
 _MISTRAL_STATIC = ["codestral-latest", "mistral-small-latest"]
 _GEMINI_STATIC  = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-3.1-flash-lite"]
 # DeepSeek API officielle (api.deepseek.com). deepseek-chat / deepseek-reasoner
 # ont été retirés le 2026-07-24 — on n'expose que les v4.
-_DEEPSEEK_STATIC = ["deepseek-v4-pro", "deepseek-v4-flash"]
+# `deepseek-v4-flash` a lui-même été retiré le 2026-09-10 au profit de
+# `deepseek-flash` (DeepSeek V4.1 Flash, GA ce jour-là) — l'ancien id est
+# encore ACCEPTÉ par l'API (alias serveur, facturé au tarif Flash), mais ne
+# plus l'exposer ici : CLAUDE.md ne garde jamais un id qu'un fournisseur a
+# retiré dans une surface curatée quand un remplaçant existe.
+_DEEPSEEK_STATIC = ["deepseek-v4-pro", "deepseek-flash"]
 
 # FastFlowLM (local NPU) — static list, availability checked at request time
 FLM_MODELS_STATIC: list[dict] = [
@@ -1037,6 +1058,9 @@ class ModelsRegistry:
     def _fetch_nvidia(self) -> Optional[list[str]]:
         return self._fetch_models("NVIDIA", "https://integrate.api.nvidia.com/v1/models", "NVIDIA_API_KEY")
 
+    def _fetch_deepseek(self) -> Optional[list[str]]:
+        return self._fetch_models("DeepSeek", "https://api.deepseek.com/v1/models", "DEEPSEEK_API_KEY")
+
     # ── Async orchestration ──────────────────────────────────────────────────
 
     async def _guarded(self, func) -> Optional[list]:
@@ -1051,11 +1075,12 @@ class ModelsRegistry:
             return None
 
     async def _build(self) -> dict:
-        groq_ids, cerebras_ids, mistral_ids, nvidia_ids = await asyncio.gather(
+        groq_ids, cerebras_ids, mistral_ids, nvidia_ids, deepseek_ids = await asyncio.gather(
             self._guarded(self._fetch_groq),
             self._guarded(self._fetch_cerebras),
             self._guarded(self._fetch_mistral),
             self._guarded(self._fetch_nvidia),
+            self._guarded(self._fetch_deepseek),
         )
 
         rapide: list[dict] = []
@@ -1081,13 +1106,23 @@ class ModelsRegistry:
         # Groq/Cerebras: the live list is the surface; static fallback on failure
         _add("groq", groq_ids if groq_ids else _GROQ_STATIC, groq_ids)
         _add("cerebras", cerebras_ids if cerebras_ids else _CEREBRAS_STATIC, cerebras_ids)
-        # NVIDIA/Mistral: curated surface, live list only validates availability
+        # NVIDIA/Mistral/DeepSeek: curated surface, live list only validates availability.
+        # DeepSeek a changé de comportement le 2026-09-10 (bascule deepseek-flash) :
+        # avant cette date, `/v1/models` live ne listait PAS les noms curatés
+        # (v4-pro/v4-flash), et la validation live les aurait marqués à tort
+        # indisponibles — d'où un repli sur la présence de clé seule (comme
+        # Gemini). La référence officielle (api-docs.deepseek.com) documente
+        # désormais `id: "deepseek-flash"` / `id: "deepseek-v4-pro"` en toutes
+        # lettres dans la réponse de `/v1/models` : les deux ids curatés
+        # correspondent exactement à la surface live, donc la validation live
+        # peut s'appliquer sans risque de masquer un modèle réel. Non rejoué en
+        # conditions réelles faute de clé DeepSeek valide sur ce poste au moment
+        # du changement (§ rapport) — la clé refusée EST rejouée en réel : 401
+        # mesuré sur `/v1/models`, donc `_fetch_models` rend `[]` et les deux ids
+        # se marquent `_disponible: False`, jamais un crash ni un repli muet.
         _add("nvidia", _NVIDIA_STATIC, nvidia_ids)
         _add("mistral", _MISTRAL_STATIC, mistral_ids)
-        # DeepSeek : le /v1/models live ne liste PAS les noms curatés (v4-pro/flash),
-        # donc la validation live les marquerait à tort indisponibles. Comme Gemini :
-        # disponibilité = présence de la clé (live=None).
-        _add("deepseek", _DEEPSEEK_STATIC, None)
+        _add("deepseek", _DEEPSEEK_STATIC, deepseek_ids)
         # Gemini: pas de /v1/models OpenAI-compatible — availability = key presence
         _add("gemini", _GEMINI_STATIC, None)
 

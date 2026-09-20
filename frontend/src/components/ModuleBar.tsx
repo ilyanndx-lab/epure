@@ -37,12 +37,12 @@ const MODULE_RECOMMENDATIONS: Record<string, { id: string; label: string }[]> = 
   code: [
     { id: 'mistral:codestral-latest',                 label: 'Code · Mistral' },
     { id: 'groq:openai/gpt-oss-120b',                 label: 'Agent · Groq' },
-    { id: 'nvidia:deepseek-ai/deepseek-v4-flash',     label: 'Raisonnement · Cloud' },
+    { id: 'nvidia:deepseek-ai/deepseek-v4-flash-0731', label: 'Raisonnement · Cloud' },
     { id: 'qwen2.5-coder:7b',                         label: 'Local · CPU' },
   ],
   docs: [
     { id: 'gemini:gemini-2.5-flash',                  label: 'Long contexte · Cloud' },
-    { id: 'nvidia:deepseek-ai/deepseek-v4-flash',     label: 'Analyse · Cloud' },
+    { id: 'nvidia:deepseek-ai/deepseek-v4-flash-0731', label: 'Analyse · Cloud' },
     { id: 'flm:qwen3:8b',                             label: 'Local · NPU' },
   ],
 }

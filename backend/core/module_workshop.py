@@ -1176,9 +1176,13 @@ def _aider_cmd(aider_bin, aider_model, message, edit_fmt, architect, restore,
         cmd += ["--chat-mode", "ask"]                      # Plan : discute, n'édite pas
     elif architect:
         # Modèle éditeur moins cher pour DeepSeek (pro raisonne, flash applique).
+        # `deepseek-v4-flash` est retiré côté API depuis le 2026-09-10, remplacé
+        # par `deepseek-flash` (core/models.py:_DEEPSEEK_STATIC) — ne pas
+        # recopier l'ancien id ici, aider recevrait un id que le catalogue
+        # n'expose plus.
         editor_model = aider_model
         if aider_model.startswith("deepseek/") and "v4-pro" in aider_model:
-            editor_model = "deepseek/deepseek-v4-flash"
+            editor_model = "deepseek/deepseek-flash"
         cmd += ["--architect", "--editor-model", editor_model, "--editor-edit-format", edit_fmt]
     else:
         cmd += ["--edit-format", edit_fmt]
