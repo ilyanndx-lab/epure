@@ -189,6 +189,23 @@ class ListerChargesTest(_OllamaBouchonne):
         self.repondre("/api/ps", {"detail": "quelque chose d'autre"})
         self.assertEqual(ollama_memoire.lister_charges(), [])
 
+    def test_la_fenetre_de_contexte_est_remontee(self):
+        """`context_length` était jeté ici alors qu'il est la SEULE source
+        honnête de la fenêtre d'un modèle Ollama : c'est la fenêtre RUNTIME,
+        `num_ctx` déjà appliqué — pas le maximum du modèle, que rendrait
+        `POST /api/show`."""
+        self.repondre("/api/ps", PS_MOONDREAM)
+        self.assertEqual(ollama_memoire.lister_charges()[0]["fenetre_contexte"], 2048)
+
+    def test_fenetre_absente_reste_none_pas_zero(self):
+        """Ollama plus ancien, ou modèle qui ne déclare pas le champ : `None`,
+        jamais `0`. Un zéro se lirait « fenêtre nulle », donc un contexte
+        toujours saturé — l'inverse exact de l'information cherchée."""
+        sans = {"models": [{k: v for k, v in PS_MOONDREAM["models"][0].items()
+                            if k != "context_length"}]}
+        self.repondre("/api/ps", sans)
+        self.assertIsNone(ollama_memoire.lister_charges()[0]["fenetre_contexte"])
+
     def test_l_hote_vient_de_core_llm(self):
         """Ne PAS réimplémenter la normalisation : `OLLAMA_HOST=0.0.0.0` est une
         adresse d'écoute, inutilisable en connexion sous Windows (§8)."""

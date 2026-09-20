@@ -1090,6 +1090,24 @@ class LLMEngine:
         ``messages``, l'objet de l'appelant : ils ne doivent jamais atteindre
         ``accumulated`` ni l'historique persisté (modules/chat/router.py),
         qui rejoue ``messages`` tel quel au tour suivant.
+
+        ── ``contexte_tokens`` : le dernier round, pas la somme ───────────────
+
+        Cette sentinelle porte DEUX mesures de tokens d'entrée, et les
+        confondre est l'erreur à ne pas commettre :
+
+        * ``prompt_tokens`` = la **somme** sur tous les rounds. C'est ce que le
+          fournisseur a traité, donc ce qui se facture — `usage_tracker` s'en
+          sert et doit continuer.
+        * ``contexte_tokens`` = le prompt du **dernier** round. C'est la TAILLE
+          DU CONTEXTE au moment de conclure, la seule qui décrive où en est la
+          conversation dans la fenêtre du modèle.
+
+        L'écart n'est pas théorique : chaque round renvoie le prompt entier
+        AUGMENTÉ des résultats d'outil du round précédent, donc un tour à trois
+        rounds a une somme proche du triple du contexte réel. Afficher la somme
+        comme « contexte utilisé » montrerait une fenêtre saturée sur une
+        conversation à moitié pleine.
         """
         # `_SKILLS` gagne toute collision — cf. docstring ci-dessus.
         registre: dict[str, dict] = {**(skills_dynamiques or {}), **_SKILLS}
@@ -1109,6 +1127,15 @@ class LLMEngine:
         total_output_tokens = 0
         total_eval_ns = 0
         total_prompt_ns = 0
+        #: Prompt du DERNIER round seul, par opposition à `total_prompt_tokens`
+        #: qui les ADDITIONNE. Les deux sont nécessaires et ne mesurent pas la
+        #: même chose : la somme est ce que le fournisseur facture (elle part
+        #: dans `usage_tracker`), le dernier round est la TAILLE DU CONTEXTE au
+        #: moment de conclure — un round inclut les résultats d'outil des rounds
+        #: précédents, donc la somme sur trois rounds vaut environ le triple du
+        #: contexte réel. S'en servir pour un « contexte restant » afficherait
+        #: une fenêtre saturée qui ne l'est pas.
+        dernier_prompt_tokens = 0
         dernier_tronque = False
         stats_vues = False
 
@@ -1171,6 +1198,8 @@ class LLMEngine:
                         total_output_tokens += chunk["eval_count"] or 0
                         total_eval_ns += chunk["eval_duration"] or 0
                         total_prompt_ns += chunk["prompt_eval_duration"] or 0
+                        # AFFECTATION, pas addition — cf. la déclaration plus haut.
+                        dernier_prompt_tokens = chunk["prompt_eval_count"] or 0
                         dernier_tronque = chunk.get("done_reason") == "length"
                         stats_vues = True
                 except Exception:
@@ -1232,6 +1261,12 @@ class LLMEngine:
                 "eval_duration_ns": total_eval_ns,
                 "prompt_duration_ns": total_prompt_ns,
                 "tronqué": dernier_tronque,
+                # Champ ADDITIF, au même titre que `tronqué` : les onze autres
+                # consommateurs de `stream()` filtrent par `isinstance(item, str)`
+                # et ne voient rien passer. `usage_tracker` continue de compter
+                # `prompt_tokens` (la somme), qui reste la bonne valeur pour une
+                # facturation.
+                "contexte_tokens": dernier_prompt_tokens,
             }
 
     def _generate_ollama(self, messages: list[dict], model: str) -> str:
@@ -1288,6 +1323,10 @@ class LLMEngine:
                 "output_tokens": meta.candidates_token_count or 0,
                 "eval_duration_ns": int((stream_end - stream_start) * 1e9),
                 "prompt_duration_ns": 0,
+                # Mono-round par construction (pas de boucle d'outils ici) :
+                # le contexte EST le prompt. Même nom que côté Ollama pour que
+                # le consommateur n'ait pas à savoir d'où vient la trame.
+                "contexte_tokens": meta.prompt_token_count or 0,
             }
         except Exception:
             pass
@@ -1486,6 +1525,8 @@ class LLMEngine:
             "eval_duration_ns": int((time.time() - stream_start) * 1e9),
             "prompt_duration_ns": 0,
             "tronqué": tronque,
+            # Mono-round ici aussi : le contexte EST le prompt du tour.
+            "contexte_tokens": prompt_tokens,
         }
 
     def _generate_openai(self, messages: list[dict], model_id: str, client, provider: str = "") -> str:

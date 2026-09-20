@@ -57,6 +57,7 @@ from core.module_registry import (
     set_status as _set_module_status,
 )
 from core.paths import resolve_web_dir
+from core import fenetre_contexte
 from core.models import (
     ModelsRegistry, RECOMMENDATION_OVERRIDES, FLM_MODELS_STATIC,
     QUALITATIVE_METADATA, check_flm, flm_model_ids, get_flm_installed,
@@ -511,6 +512,32 @@ async def models_loaded():
     loop = asyncio.get_running_loop()
     charges = await loop.run_in_executor(None, ollama_memoire.lister_charges)
     return {"charges": charges}
+
+
+@app.get("/models/contexte")
+async def models_contexte(modele: str = ""):
+    """Fenêtre de contexte du modèle demandé, ou `null` si elle n'est pas connue.
+
+    Endpoint distinct de la trame WebSocket `stats` parce que l'en-tête du chat
+    doit pouvoir afficher l'indicateur **avant** le premier message d'une
+    conversation — au moment où aucun tour n'a encore eu lieu. Une seule source
+    par valeur : la fenêtre vient d'ici, le contexte consommé vient de la trame.
+
+    `source` n'est pas décoratif : l'interface la met dans l'infobulle de
+    l'indicateur, qui doit nommer l'origine du chiffre. Un pourcentage sans
+    provenance est un chiffre qu'on ne peut pas contester.
+
+    `fenetre: null` est la réponse NORMALE pour la plupart des fournisseurs
+    cloud — Cerebras, NVIDIA et DeepSeek n'exposent aucun équivalent, mesuré le
+    2026-09-20 — et pour un modèle Ollama pas encore chargé. L'appelant n'affiche
+    alors rien du tout : cf. `core/fenetre_contexte.py`, où c'est la règle et non
+    un cas de repli.
+    """
+    if not modele:
+        return {"modele": "", "fenetre": None, "source": None}
+    loop = asyncio.get_running_loop()
+    fenetre, source = await loop.run_in_executor(None, fenetre_contexte.fenetre_de, modele)
+    return {"modele": modele, "fenetre": fenetre, "source": source}
 
 
 @app.post("/models/load")

@@ -356,6 +356,72 @@ class TraceRechercheParMessageTest(_Base):
         self.assertEqual(conv["messages"][0]["content"], "Une vieille réponse, sans trace.")
 
 
+class ContexteTokensParMessageTest(_Base):
+    """`contexte_tokens` : troisième métadonnée de présentation, même mécanisme
+    que `sources` et `trace_recherche`.
+
+    Elle existe pour une raison datée : sans persistance, l'indicateur
+    « contexte restant » de l'interface n'existerait que dans la trame WebSocket
+    du tour en cours, donc disparaîtrait à chaque F5 — c'est-à-dire exactement
+    sur les conversations assez longues pour que la question se pose.
+    """
+
+    def test_contexte_persiste_a_cote_du_contenu(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Réponse.", "contexte_tokens": 2431},
+        ])
+        message = self._brut(conv["id"])["messages"][0]
+        self.assertEqual(message["content"], "Réponse.")
+        self.assertEqual(message["contexte_tokens"], 2431)
+
+    def test_sans_contexte_la_cle_reste_absente(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [{"role": "assistant", "content": "Sans comptage."}])
+        self.assertNotIn("contexte_tokens", self._brut(conv["id"])["messages"][0])
+
+    def test_zero_n_est_pas_ecrit(self):
+        """Un `0` se lirait « contexte vide », donc « fenêtre entièrement
+        disponible » — le défaut le plus trompeur possible pour cet indicateur.
+        Absent vaut mieux que faux."""
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Zéro.", "contexte_tokens": 0},
+        ])
+        self.assertNotIn("contexte_tokens", self._brut(conv["id"])["messages"][0])
+
+    def test_une_valeur_non_entier_est_ignoree(self):
+        """Le champ vient d'une sentinelle WebSocket relue par le routeur : il
+        ne doit pas pouvoir écrire autre chose qu'un entier dans l'historique."""
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Floppy.", "contexte_tokens": 2431.5},
+        ])
+        self.assertNotIn("contexte_tokens", self._brut(conv["id"])["messages"][0])
+
+    def test_get_conversation_rend_la_valeur_telle_quelle(self):
+        conv = self.moteur.create_conversation()
+        self.moteur.append_messages(conv["id"], [
+            {"role": "assistant", "content": "Réponse.", "contexte_tokens": 8192},
+        ])
+        relue = self.moteur.get_conversation(conv["id"])
+        self.assertEqual(relue["messages"][0]["contexte_tokens"], 8192)
+
+    def test_message_ancien_sans_contexte_reste_lisible(self):
+        """Rétrocompatibilité : un message d'avant ce champ se relit sans erreur
+        ni indicateur fantôme."""
+        conv_id = "8a2f3b4c-5555-6666-7777-888899990000"
+        (self.tmp / f"{conv_id}.json").write_text(json.dumps({
+            "id": conv_id, "date": "2026-06-01", "titre": "Avant le comptage",
+            "modèle": "qwen2.5:7b", "modules": ["chat"], "n_messages": 1,
+            "messages": [{"role": "assistant", "content": "Une vieille réponse."}],
+        }, ensure_ascii=False), encoding="utf-8")
+
+        conv = self.moteur.get_conversation(conv_id)
+        self.assertIsNotNone(conv)
+        self.assertNotIn("contexte_tokens", conv["messages"][0])
+
+
 class RetrocompatibiliteBlocSourcesDansContenuTest(_Base):
     """Compatibilité ascendante EXPLICITE, demandée par la tâche : une
     conversation écrite par la version PRÉCÉDENTE (bloc « Sources » avec URLs

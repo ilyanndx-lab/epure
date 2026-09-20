@@ -541,6 +541,22 @@ class HistoryEngine:
         modèle relirait au tour suivant — une trace de plusieurs centaines de
         caractères par tour n'a rien à faire dans le prompt. Optionnelle,
         absente si vide, aucune migration.
+
+        ── ``contexte_tokens`` : troisième métadonnée, même raison ─────────────
+
+        Un message peut porter ``contexte_tokens`` — le nombre de tokens
+        d'entrée du DERNIER appel LLM de ce tour, c'est-à-dire la taille de la
+        conversation telle qu'elle a été envoyée au modèle (cf.
+        ``core.llm._stream_ollama``, qui distingue cette valeur de la somme des
+        rounds facturée à part).
+
+        Persistée ici pour que l'indicateur « contexte restant » de l'interface
+        survive à un F5 : sans elle, l'information n'existerait que dans la
+        trame WebSocket du tour en cours, donc disparaîtrait exactement au
+        moment où une conversation est assez longue pour que la question se
+        pose. Même statut que ``sources`` et ``trace_recherche`` — de la
+        PRÉSENTATION, jamais réinjectée dans le prompt : le modèle n'a que faire
+        de la comptabilité de son propre contexte.
         """
         try:
             with self._conversation_transaction(conv_id) as conv:
@@ -560,6 +576,14 @@ class HistoryEngine:
                     trace_recherche = m.get("trace_recherche")
                     if isinstance(trace_recherche, list) and trace_recherche:
                         entree["trace_recherche"] = trace_recherche
+                    # Entier STRICTEMENT positif, et pas seulement présent : un
+                    # `contexte_tokens: 0` (modèle qui n'a rien annoncé) décrirait
+                    # une conversation vide, donc un contexte « entièrement
+                    # disponible » — la valeur par défaut la plus trompeuse
+                    # possible pour cet indicateur. Absent vaut mieux que faux.
+                    contexte_tokens = m.get("contexte_tokens")
+                    if isinstance(contexte_tokens, int) and contexte_tokens > 0:
+                        entree["contexte_tokens"] = contexte_tokens
                     conv["messages"].append(entree)
                 if model:
                     conv["modèle"] = model

@@ -15,6 +15,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { etapesDe, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import CamembertContexte from './CamembertContexte'
 
 interface MsgStats {
   tps: number
@@ -136,6 +137,21 @@ interface Message {
    * message plus ancien que ce champ (cf. CLAUDE.md, convention `sources`).
    */
   traceRecherche?: EtapeTrace[]
+  /**
+   * Tokens occupés dans la fenêtre de contexte par CE tour, tel que le
+   * fournisseur l'a rapporté (`contexte_tokens` de la sentinelle `__stats__`).
+   *
+   * À ne pas confondre avec `stats.promptTokens`, qui est une SOMME sur tous
+   * les rounds d'appel d'outil — c'est ce qui se facture, pas ce qui occupe la
+   * fenêtre. Seul le DERNIER round mesure le contexte ; c'est cette valeur-ci
+   * qui alimente `CamembertContexte`, et elle seule.
+   *
+   * Même statut que `sources` / `traceRecherche` : métadonnée de présentation,
+   * persistée par `core/history.py` et jamais réinjectée dans le prompt. Absent
+   * veut dire « pas rapporté » (fournisseur muet, message antérieur au champ,
+   * comparaison multi-modèles) — jamais « zéro », qui décrirait un tour vide.
+   */
+  contexteTokens?: number
   /**
    * Comparaison multi-modèles déclenchée par CE message utilisateur, tant
    * qu'elle n'est pas résolue. Absent : soit ce message n'a jamais déclenché
@@ -859,7 +875,13 @@ export default function Chat({
   const lastAssistantRef = useRef('')
   const tokenCountRef = useRef(0)
   const streamStartRef = useRef<number | null>(null)
-  const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number } | null>(null)
+  /**
+   * Stats de la trame `stats` du tour en cours. `contexteTokens` y est le
+   * contexte du DERNIER round d'outil, pas la somme `promptTokens` — les deux
+   * sortent de la même trame mais ne mesurent pas la même chose, et seul le
+   * premier alimente la jauge (cf. `Message.contexteTokens`).
+   */
+  const pendingOllamaStatsRef = useRef<{ promptTokens: number; outputTokens: number; evalMs: number; contexteTokens: number | null } | null>(null)
   const inPipelineRef = useRef(false)
   const pipelineUserMsgIdxRef = useRef(-1)
   /** Index, dans `messages`, du message UTILISATEUR qui porte une comparaison
@@ -978,6 +1000,12 @@ export default function Chat({
         const modele = texte(m['modèle'])
         const sources = sourcesDe(m['sources'])
         const traceRecherche = etapesDe(m['trace_recherche'])
+        // Entier STRICTEMENT positif, même règle que côté backend : un
+        // `contexte_tokens: 0` persisté décrirait un tour vide, ce qui n'arrive
+        // jamais — c'est une absence déguisée. Le test est numérique et non
+        // `texte()`, qui ne sert qu'aux chaînes.
+        const contexteBrut = m['contexte_tokens']
+        const contexteTokens = typeof contexteBrut === 'number' && contexteBrut > 0 ? contexteBrut : null
         // Les champs ABSENTS restent absents : `texte()` rend `''`, qu'on ne
         // recopie pas. Un `horodatage: ''` se distinguerait mal d'une vraie
         // valeur vide, et l'interface doit pouvoir dire « non disponible ».
@@ -988,6 +1016,7 @@ export default function Chat({
           ...(modele ? { modele } : {}),
           ...(sources.length ? { sources } : {}),
           ...(traceRecherche.length ? { traceRecherche } : {}),
+          ...(contexteTokens !== null ? { contexteTokens } : {}),
         }
       }))
       return true
@@ -1267,6 +1296,10 @@ export default function Chat({
             promptTokens: data.prompt_tokens as number,
             outputTokens: data.output_tokens as number,
             evalMs: data.eval_duration_ms as number,
+            // Absent de la trame pour les fournisseurs qui ne partagent pas leur
+            // fenêtre : `null`, jamais 0 — la jauge doit disparaître, pas
+            // afficher « 100 % restants » sur un tour dont on ne sait rien.
+            contexteTokens: (data.contexte_tokens as number | undefined) ?? null,
           }
 
         // ── Comparaison multi-modèles ────────────────────────────────────
@@ -1438,6 +1471,20 @@ export default function Chat({
                 const last = prev[prev.length - 1]
                 if (last?.role === 'assistant' && !last.thinking) return [...prev.slice(0, -1), { ...last, stats: s }]
                 return prev
+              })
+            }
+            // Le contexte du tour monte sur le MÊME message, mais sous une
+            // condition INDÉPENDANTE de `finalStats` : un fournisseur peut
+            // rapporter `contexte_tokens` sans les durées d'évaluation qui
+            // composent les tok/s (c'est le cas du cloud), et l'inverse. Deux
+            // ajouts conditionnels plutôt qu'un test unique, qui perdrait l'un
+            // des deux cas.
+            const contexteDuTour = pending?.contexteTokens ?? null
+            if (contexteDuTour !== null) {
+              setMessages(prev => {
+                const last = prev[prev.length - 1]
+                if (last?.role !== 'assistant' || last.thinking) return prev
+                return [...prev.slice(0, -1), { ...last, contexteTokens: contexteDuTour }]
               })
             }
             // Métadonnées de la réponse, telles que le serveur vient de les
@@ -1868,6 +1915,74 @@ export default function Chat({
   const providerActif = modelesDisponiblesListe.find(m => m.id === modeleActifId)?.provider
   const { nonSupporte: raisonnementNonSupporte, budgetSeul: raisonnementBudgetSeul } =
     capacitesRaisonnement(providerActif)
+
+  /**
+   * Fenêtre de contexte du modèle ACTIF, relue à chaque changement de modèle.
+   *
+   * Elle vient d'un endpoint (`GET /models/contexte`) et non de la trame
+   * `stats`, parce que l'en-tête doit pouvoir l'afficher AVANT le premier
+   * message d'une conversation — or la trame n'arrive qu'à la fin d'un tour.
+   * Une seule source par valeur, donc rien à faire diverger entre avant et
+   * après le premier tour. Le backend ne sonde que le modèle demandé, jamais
+   * toute la surface (`core/fenetre_contexte.py`).
+   *
+   * `null` couvre les trois cas où l'on ne sait pas : fournisseur muet, modèle
+   * Ollama pas encore chargé, backend injoignable. L'échec est SILENCIEUX — on
+   * ne pose simplement rien, et la jauge disparaît. Un indicateur qui
+   * empêcherait le chat de répondre serait un bug ; un indicateur qui s'efface
+   * est un désagrément.
+   *
+   * **La valeur est estampillée de son modèle**, et c'est la seule protection
+   * nécessaire : une réponse qui arrive après un changement de modèle porte
+   * l'ancien nom, donc ne décrit plus le modèle actif et n'est pas lue. Un
+   * drapeau d'annulation ferait le même travail de façon impérative, et une
+   * remise à `null` synchrone dans le corps de l'effet déclencherait un rendu
+   * en cascade pour rien.
+   */
+  const [fenetreLue, setFenetreLue] = useState<{ modele: string; valeur: number | null; source: string | null } | null>(null)
+
+  useEffect(() => {
+    if (!modeleActifId) return
+    const lire = async () => {
+      try {
+        const res = await apiFetch(`${API}/models/contexte?modele=${encodeURIComponent(modeleActifId)}`)
+        if (!res.ok) return
+        const d = await res.json() as { fenetre?: unknown; source?: unknown }
+        setFenetreLue({
+          modele: modeleActifId,
+          valeur: typeof d.fenetre === 'number' && d.fenetre > 0 ? d.fenetre : null,
+          source: typeof d.source === 'string' ? d.source : null,
+        })
+      } catch { /* backend injoignable : pas de fenêtre, donc pas de jauge */ }
+    }
+    void lire()
+  }, [modeleActifId])
+
+  const fenetreContexte = fenetreLue?.modele === modeleActifId ? fenetreLue : null
+
+  /**
+   * Contexte du DERNIER tour mesuré, et seulement s'il a été mesuré par le
+   * modèle ACTIF.
+   *
+   * Ce garde-fou n'est pas une précaution de style : la fenêtre décrit le modèle
+   * sélectionné, le numérateur vient du modèle qui a RÉPONDU. Quand
+   * l'utilisateur change de modèle au milieu d'un fil, les deux ne mesurent plus
+   * la même chose et le rapport serait faux. On n'affiche alors rien — même
+   * règle que pour une fenêtre inconnue.
+   *
+   * L'égalité est littérale parce que les deux valeurs viennent de la MÊME
+   * chaîne : `ModuleBar` passe le même identifiant à `onModelChange` (qui remplit
+   * `modeleActifId`) et à `pushSettings({'modèle_actif': …})` (que le backend
+   * persiste tel quel dans `modèle`).
+   */
+  const contexteDuFil = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role !== 'assistant' || m.contexteTokens === undefined) continue
+      return m.modele === modeleActifId ? m.contexteTokens : null
+    }
+    return null
+  }, [messages, modeleActifId])
 
   /** `AT_COMMANDS` filtré sur les préfixes intégrés ACTIFS (Réglages ›
    * Préfixes & commandes), plus les préfixes personnalisés à déclenchement
@@ -2383,6 +2498,16 @@ export default function Chat({
         </div>
 
         <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
+        {/* ── Contexte restant : jauge permanente de la conversation active ──
+            N'affiche RIEN quand la fenêtre ou le dernier tour mesuré manquent :
+            le composant porte lui-même cette règle, pour qu'il n'y ait qu'un
+            endroit à relire (et qu'un test puisse l'éprouver isolément). */}
+        <CamembertContexte
+          fenetre={fenetreContexte?.valeur ?? null}
+          utilise={contexteDuFil}
+          source={fenetreContexte?.source ?? null}
+        />
+
         {/* ── Recherche web : icône cliquable + menu déroulable (déplacée du composer) ── */}
         <div className="relative shrink-0" ref={webMenuRef}>
           <div
