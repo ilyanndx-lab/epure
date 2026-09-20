@@ -5,6 +5,7 @@ import { Button, Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
 import ModuleBar from '../../components/ModuleBar'
 import { EFFORT_LABELS } from '../../effort'
+import { EXTENSIONS_ACCEPTEES } from '../../fileTypes'
 import { capacitesRaisonnement } from '../../raisonnement'
 import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
@@ -798,6 +799,13 @@ export default function Chat({
   const [micButtonAncre, setMicButtonAncre] = useState<HTMLDivElement | null>(null)
   /** Ouverture du panneau fichiers, désormais pilotée depuis le composer. */
   const [filesPanelOuvert, setFilesPanelOuvert] = useState(false)
+  /**
+   * Sortie de `uploadFiles` de `ModuleBar` — un collage (Ctrl+V) d'image ou de
+   * fichier dans le `<Textarea>` du composer vise ce même point d'entrée que
+   * le glisser-déposer et le sélecteur du panneau "Fichiers", pour profiter
+   * de l'indexation RAG/vision existante sans la dupliquer.
+   */
+  const uploadFilesRef = useRef<((files: File[], opts?: { generateSummary?: boolean }) => void) | null>(null)
   /** Titre de la conversation affichée, reporté par `ConversationList` — seule
    * source de l'index des conversations (cf. sa prop `onTitreActif`). */
   const [titreConversationActive, setTitreConversationActive] = useState('Nouvelle conversation')
@@ -3156,6 +3164,9 @@ export default function Chat({
         module="chat"
         conversationId={conversationId}
         showFile
+        contextFenetre={fenetreContexte?.valeur ?? null}
+        contextTokensUtilises={contexteDuFil}
+        contextSource={fenetreContexte?.source ?? null}
         fileButtonPortalTarget={fileButtonAncre}
         filePanelOpen={filesPanelOuvert}
         onFilePanelOpenChange={setFilesPanelOuvert}
@@ -3175,6 +3186,7 @@ export default function Chat({
         onEffortChange={setEffort}
         pipelineSteps={pipelineSteps}
         onPipelineStepsChange={setPipelineSteps}
+        uploadFilesRef={uploadFilesRef}
       />
 
       <div className="border-t border-line px-4 py-4 relative">
@@ -3207,6 +3219,33 @@ export default function Chat({
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={e => {
+              const brut = Array.from(e.clipboardData?.files ?? [])
+              if (brut.length === 0) return
+              // Un screenshot collé arrive souvent sans extension reconnue
+              // (nom vide ou générique) — on la complète depuis le type MIME
+              // avant de filtrer, sinon `EXTENSIONS_ACCEPTEES` le rejette à tort.
+              const renommes = brut.map(f =>
+                /\.[a-z0-9]+$/i.test(f.name)
+                  ? f
+                  : new File([f], `collage-${Date.now()}.${f.type.split('/').pop() || 'png'}`, { type: f.type })
+              )
+              const supportes = renommes.filter(f => {
+                const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
+                return (EXTENSIONS_ACCEPTEES as readonly string[]).includes(ext)
+              })
+              // Rien de supporté (ex. un .zip copié) : on laisse le collage de
+              // texte normal du presse-papier suivre son cours, PAS avant —
+              // `preventDefault` ne doit avaler le collage que si on l'utilise
+              // réellement.
+              if (supportes.length === 0) return
+              e.preventDefault()
+              // Le point d'entrée est celui du panneau "Fichiers"
+              // (`uploadFiles`), pour l'indexation RAG/vision déjà en place —
+              // pas un chemin parallèle. `generateSummary: false` : coller vite
+              // veut attacher vite, pas déclencher le résumé automatique.
+              uploadFilesRef.current?.(supportes, { generateSummary: false })
+            }}
             disabled={streaming || comparaisonEnCours}
             placeholder={
               !connected ? 'Connexion au serveur...'
