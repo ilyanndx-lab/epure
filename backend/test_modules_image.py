@@ -411,6 +411,69 @@ class GenererImageLoraTest(unittest.TestCase):
         self.assertEqual(lora["strength_clip"], image_router._LORA_STRENGTH_DEFAUT)
 
 
+class CalibrerPromptTest(unittest.TestCase):
+    """`calibrer_prompt` — même patron que
+    `test_web_search.py::ReformulerRequeteTest` : modèle local mocké
+    (`image_router.llm.generate`), jamais de réseau réel."""
+
+    def test_sortie_propre_est_utilisee(self):
+        with mock.patch.object(
+            image_router.llm, "generate", return_value="a red fox, forest, morning light",
+        ) as gen:
+            out = image_router.calibrer_prompt("un renard roux dans la foret le matin")
+        self.assertEqual(out, "a red fox, forest, morning light")
+        self.assertEqual(gen.call_args.kwargs.get("model"), image_router.modele_local_defaut())
+
+    def test_parametres_midjourney_absents_de_la_sortie_acceptee(self):
+        """Observé en usage réel (`--ar 1:2 --chaos 20 --style raw`) : ce test
+        ne vérifie pas que `calibrer_prompt` les retire lui-même (c'est le
+        modèle local, mocké, qui le fait) — il vérifie que la validation de
+        sortie accepte bien un résultat nettoyé et ne le rejette pas à tort."""
+        brut = "a cat --ar 1:2 --chaos 20 --style raw"
+        with mock.patch.object(image_router.llm, "generate", return_value="a cat, photorealistic, studio lighting"):
+            out = image_router.calibrer_prompt(brut)
+        self.assertNotIn("--ar", out)
+        self.assertNotIn("--chaos", out)
+        self.assertNotIn("--style", out)
+
+    def test_prompt_vide_retourne_tel_quel_sans_appeler_le_modele(self):
+        with mock.patch.object(image_router.llm, "generate") as gen:
+            out = image_router.calibrer_prompt("   ")
+        gen.assert_not_called()
+        self.assertEqual(out, "   ")
+
+    def test_sortie_vide_replie_sur_le_prompt_brut(self):
+        with mock.patch.object(image_router.llm, "generate", return_value=""):
+            out = image_router.calibrer_prompt("un chat")
+        self.assertEqual(out, "un chat")
+
+    def test_sortie_trop_longue_replie_sur_le_prompt_brut(self):
+        trop_long = "x" * (image_router._CALIBRATION_MAX_LEN + 1)
+        with mock.patch.object(image_router.llm, "generate", return_value=trop_long):
+            out = image_router.calibrer_prompt("un chat")
+        self.assertEqual(out, "un chat")
+
+    def test_sortie_multiligne_replie_sur_le_prompt_brut(self):
+        with mock.patch.object(image_router.llm, "generate", return_value="a cat\nsitting"):
+            out = image_router.calibrer_prompt("un chat")
+        self.assertEqual(out, "un chat")
+
+    def test_sortie_avec_backtick_replie_sur_le_prompt_brut(self):
+        with mock.patch.object(image_router.llm, "generate", return_value="a cat `code`"):
+            out = image_router.calibrer_prompt("un chat")
+        self.assertEqual(out, "un chat")
+
+    def test_modele_local_indisponible_replie_sur_le_prompt_brut(self):
+        with mock.patch.object(image_router.llm, "generate", side_effect=Exception("timeout")):
+            out = image_router.calibrer_prompt("un chat")
+        self.assertEqual(out, "un chat")
+
+    def test_guillemets_englobants_retires(self):
+        with mock.patch.object(image_router.llm, "generate", return_value='"a cat, studio lighting"'):
+            out = image_router.calibrer_prompt("un chat")
+        self.assertEqual(out, "a cat, studio lighting")
+
+
 class ImagesDirDefautTest(unittest.TestCase):
     """`_images_dir()` sans `EPURE_DATA_DIR` — jamais exercé jusqu'ici (les
     deux sessions précédentes ne passaient que par un `EPURE_DATA_DIR` de
@@ -491,6 +554,40 @@ class ImageFileRouteTest(unittest.TestCase):
             with self.subTest(nom=nom):
                 r = self.client.get(f"/image/file/{nom}")
                 self.assertEqual(r.status_code, 404)
+
+
+class ImageCalibratePromptEndpointTest(unittest.TestCase):
+    """`POST /image/calibrate-prompt` — découplé de `/generate` à dessein :
+    ne doit JAMAIS atteindre ComfyUI. `httpx.post`/`httpx.get` remplacés par
+    un espion qui échoue s'il est appelé, pas seulement `generer_image` non
+    mocké (qui prouverait l'absence d'appel à *cette* fonction, pas l'absence
+    d'appel réseau vers `COMFYUI_HOST` par un autre chemin)."""
+
+    def setUp(self):
+        app = FastAPI()
+        app.include_router(image_router.router, prefix="/image")
+        self.client = TestClient(app)
+
+    def _echec_si_appele(self, *args, **kwargs):
+        raise AssertionError("calibrate-prompt ne doit jamais appeler ComfyUI")
+
+    def test_retourne_le_prompt_calibre_sans_appeler_comfyui(self):
+        with mock.patch.object(image_router.httpx, "post", side_effect=self._echec_si_appele), \
+             mock.patch.object(image_router.httpx, "get", side_effect=self._echec_si_appele), \
+             mock.patch.object(image_router.llm, "generate", return_value="a red fox, forest"):
+            r = self.client.post("/image/calibrate-prompt", data={"prompt": "un renard roux"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"prompt": "a red fox, forest"})
+
+    def test_repli_sur_prompt_brut_si_modele_local_echoue(self):
+        with mock.patch.object(image_router.httpx, "post", side_effect=self._echec_si_appele), \
+             mock.patch.object(image_router.httpx, "get", side_effect=self._echec_si_appele), \
+             mock.patch.object(image_router.llm, "generate", side_effect=Exception("indisponible")):
+            r = self.client.post("/image/calibrate-prompt", data={"prompt": "un chat"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"prompt": "un chat"})
 
 
 class ImageGenerateEndpointTest(unittest.TestCase):

@@ -111,6 +111,30 @@ strictement inchangé — aucun node ``LoraLoader`` ajouté.
 garantie côté source (le checkpoint de ce module est Schnell,
 ``flux1-schnell-fp8.safetensors``), à surveiller au premier test réel plutôt
 que supposée bonne.
+
+**Calibration de prompt (``calibrer_prompt``) — observé en usage réel
+(2026-09-21) : des utilisateurs écrivent des prompts avec la syntaxe d'un
+autre outil** (ex. ``--ar 1:2 --chaos 20 --style raw``, façon Midjourney).
+Flux ne lève aucune erreur : ``CLIPTextEncode`` encode ce texte tel quel, la
+partie qui n'est pas un descripteur d'image est simplement inerte. Même
+patron que ``core.websearch.reformuler_requete`` (CLAUDE.md §3.7 : tâche de
+fond, ``modele_local_defaut()`` **toujours**, jamais de cloud, repli
+silencieux sur l'entrée brute) — une fonction NOUVELLE et pas une extension
+de ``reformuler_requete`` : objectif différent (prompt de diffusion
+structuré, pas mots-clés de recherche web).
+
+Ce que le prompt système impose, et pourquoi — vérifié dans
+``workflow_txt2img.json`` (nœud ``31``, ``KSampler``), pas supposé :
+``cfg`` y est fixé à ``1`` et ``steps`` à ``4`` — Flux Schnell les ignore par
+construction. Un prompt calibré qui mentionnerait un réglage de CFG ou un
+negative prompt (nœud ``33``, toujours vide dans le gabarit) induirait donc
+l'utilisateur en erreur ; la calibration ne doit jamais en ajouter. Traduit
+systématiquement vers l'anglais, quelle que soit la langue d'entrée.
+
+**Découplée de ``/generate`` à dessein** : ``/calibrate-prompt`` ne déclenche
+aucun appel ComfyUI, ne retourne que le texte calibré. Le résultat est
+affiché et éditable côté frontend, jamais appliqué silencieusement — décision
+actée, pas un choix d'implémentation à revisiter ici.
 """
 
 import asyncio
@@ -129,7 +153,9 @@ import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from core.instance import modele_local_defaut
 from core.paths import resolve_data_dir
+from core.runtime import llm
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +294,65 @@ def _appliquer_lora(workflow: dict, strength: float) -> None:
     workflow[_NODE_KSAMPLER]["inputs"]["model"] = [_NODE_LORA, 0]
     workflow[_NODE_POSITIVE]["inputs"]["clip"] = [_NODE_LORA, 1]
     workflow[_NODE_NEGATIVE]["inputs"]["clip"] = [_NODE_LORA, 1]
+
+
+#: Seuils de validation de `calibrer_prompt` — même esprit que
+#: `websearch._REFORMULATION_MAX_LEN`, mais un prompt de diffusion structuré
+#: (sujet, style, éclairage, composition) est légitimement plus long que 2-3
+#: mots-clés de recherche. PLACEHOLDER non mesuré, même statut que
+#: `_LORA_STRENGTH_DEFAUT` ci-dessus.
+_CALIBRATION_MAX_LEN = 400
+
+
+def calibrer_prompt(prompt_brut: str) -> str:
+    """Calibre un prompt utilisateur pour Flux.1 Schnell via le modèle LOCAL.
+
+    Même patron que `core.websearch.reformuler_requete` (tâche de fond au
+    sens de CLAUDE.md §3.7 : jamais de cloud, `modele_local_defaut()`
+    toujours, repli silencieux sur `prompt_brut` en cas d'échec) — nouvelle
+    fonction, pas une extension de `reformuler_requete` elle-même : objectif
+    différent (prompt de diffusion structuré, pas mots-clés de recherche
+    web). Cf. docstring de tête, §Calibration, pour le contexte complet
+    (contraintes Flux vérifiées, pas supposées).
+
+    Ne lève jamais : un échec (modèle local absent, timeout, sortie invalide)
+    replie silencieusement sur `prompt_brut` tel quel — jamais d'exception
+    remontée au frontend, jamais de génération bloquée par une calibration
+    ratée.
+    """
+    if not prompt_brut or not prompt_brut.strip():
+        return prompt_brut
+    prompt = (
+        "Tu calibres un prompt pour un modèle de génération d'image par "
+        "diffusion (Flux.1 Schnell). Réécris le prompt suivant en ANGLAIS, "
+        "quelle que soit sa langue d'origine, structuré comme une liste de "
+        "descripteurs séparés par des virgules (sujet, style, éclairage, "
+        "composition) — pas une phrase narrative.\n"
+        "Retire toute syntaxe empruntée à un autre outil de génération "
+        "d'image : paramètres commençant par -- (ex. --ar, --chaos, "
+        "--style), poids de mots entre parenthèses (ex. (mot:1.3)), ou "
+        "toute autre option de ligne de commande.\n"
+        "N'ajoute JAMAIS de negative prompt ni de mention d'un réglage CFG "
+        "— ce modèle n'en tient pas compte (cfg fixe, ignoré).\n"
+        "Réponds UNIQUEMENT le prompt calibré, sur une seule ligne, sans "
+        "explication ni préambule ni guillemets.\n\n"
+        f"Prompt original : {prompt_brut}"
+    )
+    try:
+        sortie = llm.generate([{"role": "user", "content": prompt}], model=modele_local_defaut())
+        candidate = sortie.strip().strip('"').strip("'")
+        if (
+            not candidate
+            or len(candidate) > _CALIBRATION_MAX_LEN
+            or "\n" in candidate
+            or "```" in candidate
+            or "`" in candidate
+        ):
+            return prompt_brut
+        return candidate
+    except Exception:
+        logger.debug("Calibration de prompt image échouée, repli sur le prompt brut", exc_info=True)
+        return prompt_brut
 
 
 def generer_image(
@@ -449,6 +534,19 @@ async def image_status():
     loop = asyncio.get_running_loop()
     reachable = await loop.run_in_executor(None, check_comfyui)
     return {"comfyui_reachable": reachable, "host": _COMFYUI_HOST}
+
+
+@router.post("/calibrate-prompt")
+async def image_calibrate_prompt(prompt: str = Form(...)):
+    """Calibre un prompt SANS lancer de génération — cf. docstring de tête,
+    §Calibration : découplé de `/generate` à dessein, aucun appel ComfyUI ici.
+
+    `run_in_executor` : `calibrer_prompt` bloque sur `llm.generate()` (appel
+    HTTP synchrone vers le modèle local), même raison que `/status` ci-dessus.
+    """
+    loop = asyncio.get_running_loop()
+    calibrated = await loop.run_in_executor(None, calibrer_prompt, prompt)
+    return {"prompt": calibrated}
 
 
 @router.post("/generate")
