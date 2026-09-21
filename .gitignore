@@ -102,6 +102,10 @@ backend/memory/modules_state.json
 # que backend/memory/*.json a plat, ne les couvre pas.
 backend/memory/code_backups/
 
+# Images générées par le module Image (ComfyUI) — mêmes raisons que
+# code_backups/ ci-dessus : sous backend/memory/ mais pas du JSON à plat.
+backend/memory/generated_images/
+
 # Atelier de modules : bac à sable et sauvegardes (runtime, non versionnés)
 backend/modules/_staging/
 backend/modules/_backups/
@@ -131,6 +135,7 @@ backend/modules/*/
 !backend/modules/encre/
 !backend/modules/hello/
 !backend/modules/history/
+!backend/modules/image/
 !backend/modules/settings/
 
 # Un module installé depuis le catalogue est copié ici : il est PERSONNEL à
