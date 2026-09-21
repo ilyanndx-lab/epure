@@ -145,6 +145,7 @@ backend/modules/*/
 frontend/src/modules/generated/*/
 !frontend/src/modules/generated/encre/
 !frontend/src/modules/generated/hello/
+!frontend/src/modules/generated/image/
 
 # Logs
 *.log
