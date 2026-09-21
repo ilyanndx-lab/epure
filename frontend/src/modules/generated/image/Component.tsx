@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { Image as ImageIcon, Sparkles, X } from 'lucide-react'
+import { Image as ImageIcon, Loader2, Sparkles, Wand2, X } from 'lucide-react'
 import type { SharedModuleProps } from '../../registry'
 import { usePersistentState } from '../../../usePersistentState'
 import { API, apiFetch } from '../../../api'
@@ -30,6 +30,18 @@ import { Button, Card, Textarea } from '../../../components/ui'
  * `slides/Component.tsx::exportDeck` pour `/slides/decks/:id/export`. La
  * source, elle, n'a jamais besoin du serveur : son URL objet vient
  * directement du `File` choisi par l'utilisateur.
+ *
+ * Bouton "Calibrer" (`POST /image/calibrate-prompt`) : observé en usage réel,
+ * des prompts contiennent une syntaxe d'un autre outil (ex. paramètres façon
+ * Midjourney) sans effet sur Flux — la calibration passe par le modèle local
+ * (`core/instance.py::modele_local_defaut`, jamais de cloud, cf. docstring
+ * backend). Décision actée, pas un choix d'implémentation : le résultat
+ * REMPLACE le contenu du textarea (reste éditable, rien n'est figé) plutôt
+ * que d'être appliqué silencieusement à la génération — `generate()` lit
+ * `prompt` au moment du clic Générer, donc une édition après calibration est
+ * bien celle qui part, pas le texte calibré tel quel. Action séparée de
+ * `generate()` à dessein : aucun appel ComfyUI ici, un clic ne fait pas
+ * l'autre.
  */
 export default function ImageModule(_props: SharedModuleProps) {
   const [prompt, setPrompt] = usePersistentState<string>('epure.image.prompt', '')
@@ -45,6 +57,7 @@ export default function ImageModule(_props: SharedModuleProps) {
   const [sourceFile, setSourceFile] = useState<File | null>(null)
   const [sourcePreviewUrl, setSourcePreviewUrl] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [calibrating, setCalibrating] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [error, setError] = useState<string | null>(null)
   // Éphémère et non persisté : une URL objet ne survit pas à un F5, la
@@ -114,6 +127,34 @@ export default function ImageModule(_props: SharedModuleProps) {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [choisirFichier])
 
+  const calibrerPrompt = useCallback(async () => {
+    if (!prompt.trim() || calibrating || generating) return
+    setCalibrating(true)
+    setError(null)
+    try {
+      const body = new FormData()
+      body.append('prompt', prompt.trim())
+      const res = await apiFetch(`${API}/image/calibrate-prompt`, { method: 'POST', body })
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const d: { detail?: unknown } = await res.json()
+          if (typeof d.detail === 'string') detail = d.detail
+        } catch { /* corps non JSON — le statut HTTP suffit */ }
+        throw new Error(detail)
+      }
+      const data: { prompt?: unknown } = await res.json()
+      // Remplace le textarea (cf. docstring de tête) — reste éditable, rien
+      // n'est appliqué à la génération avant un clic Générer séparé.
+      if (typeof data.prompt === 'string') setPrompt(data.prompt)
+    } catch (err) {
+      console.error('POST /image/calibrate-prompt:', err)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCalibrating(false)
+    }
+  }, [prompt, calibrating, generating, setPrompt])
+
   const generate = useCallback(async () => {
     if (!prompt.trim() || generating) return
     setGenerating(true)
@@ -170,7 +211,8 @@ export default function ImageModule(_props: SharedModuleProps) {
     }
   }, [prompt, generating, sourceFile, denoise, useLora, loraStrength])
 
-  const canGenerate = prompt.trim().length > 0 && !generating
+  const canGenerate = prompt.trim().length > 0 && !generating && !calibrating
+  const canCalibrate = prompt.trim().length > 0 && !generating && !calibrating
 
   return (
     <main className="flex flex-col flex-1 overflow-y-auto px-8 py-8">
@@ -189,10 +231,21 @@ export default function ImageModule(_props: SharedModuleProps) {
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
               rows={4}
-              disabled={generating}
+              disabled={generating || calibrating}
               className="w-full disabled:opacity-40"
               placeholder="Ex. : un renard roux dans une forêt enneigée, lumière du matin"
             />
+            <div className="mt-2 flex justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={calibrerPrompt}
+                disabled={!canCalibrate}
+                icon={calibrating ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+              >
+                {calibrating ? 'Calibration…' : 'Calibrer'}
+              </Button>
+            </div>
           </div>
 
           <div>

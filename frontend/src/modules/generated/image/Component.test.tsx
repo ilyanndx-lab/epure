@@ -15,7 +15,7 @@ import ImageModule from './Component'
 type ReponseJson = { status?: number; corps: unknown }
 
 /** `/pair` + `/image/generate` bouchonnés ; `/image/file/*` sert un PNG factice. */
-function poserFetch(opts: { generate?: ReponseJson; fichier?: { status?: number } } = {}) {
+function poserFetch(opts: { generate?: ReponseJson; fichier?: { status?: number }; calibrate?: ReponseJson } = {}) {
   // Second paramètre déclaré (même inutilisé) : sans lui, le type inféré des
   // appels de `impl.mock.calls` est un tuple à un seul élément, et
   // `appel[1]` (le `RequestInit` — corps de la requête inspecté plus bas)
@@ -30,6 +30,12 @@ function poserFetch(opts: { generate?: ReponseJson; fichier?: { status?: number 
     if (url.includes('/image/file/')) {
       const { status = 200 } = opts.fichier ?? {}
       return new Response(new Blob(['PNGDATA'], { type: 'image/png' }), { status })
+    }
+    if (url.includes('/image/calibrate-prompt')) {
+      const { status = 200, corps = { prompt: 'a cat, watercolor style' } } = opts.calibrate ?? {}
+      return new Response(JSON.stringify(corps), {
+        status, headers: { 'Content-Type': 'application/json' },
+      })
     }
     if (url.includes('/image/generate')) {
       const { status = 200, corps = { filename: 'sortie.png' } } = opts.generate ?? {}
@@ -247,5 +253,71 @@ describe('module image', () => {
     const body = appel[1]!.body as FormData
     expect(body.get('use_lora')).toBe('true')
     expect(body.get('lora_strength')).toBe('0.8')
+  })
+
+  // ── Calibration de prompt (bouton "Calibrer") ──────────────────────────────
+
+  it('affiche le bouton Calibrer, désactivé sans prompt', () => {
+    poserFetch()
+    render(<ImageModule />)
+    const bouton = screen.getByText('Calibrer').closest('button')!
+    expect(bouton.disabled).toBe(true)
+
+    saisirPrompt('un chat')
+    expect(bouton.disabled).toBe(false)
+  })
+
+  it('remplace le contenu du textarea par le résultat calibré, sans appeler /image/generate', async () => {
+    const impl = poserFetch({ calibrate: { corps: { prompt: 'a cat, watercolor style' } } })
+    render(<ImageModule />)
+    saisirPrompt('un chat en aquarelle')
+
+    fireEvent.click(screen.getByText('Calibrer'))
+    await screen.findByDisplayValue('a cat, watercolor style')
+
+    expect(impl.mock.calls.some(([input]) => String(input).includes('/image/generate'))).toBe(false)
+  })
+
+  it('le résultat calibré reste éditable — le textarea accepte une saisie après calibration', async () => {
+    poserFetch({ calibrate: { corps: { prompt: 'a cat, watercolor style' } } })
+    render(<ImageModule />)
+    saisirPrompt('un chat en aquarelle')
+
+    fireEvent.click(screen.getByText('Calibrer'))
+    await screen.findByDisplayValue('a cat, watercolor style')
+
+    saisirPrompt('a cat, watercolor style, dramatic lighting')
+    expect(screen.getByDisplayValue('a cat, watercolor style, dramatic lighting')).toBeTruthy()
+  })
+
+  it('envoie le prompt tel qu\'édité après calibration, pas le texte calibré figé', async () => {
+    const impl = poserFetch({
+      calibrate: { corps: { prompt: 'a cat, watercolor style' } },
+      generate: { corps: { filename: 'sortie.png' } },
+    })
+    render(<ImageModule />)
+    saisirPrompt('un chat en aquarelle')
+
+    fireEvent.click(screen.getByText('Calibrer'))
+    await screen.findByDisplayValue('a cat, watercolor style')
+
+    // Édition APRÈS calibration, avant de générer.
+    saisirPrompt('a cat, watercolor style, dramatic lighting')
+    fireEvent.click(screen.getByText('Générer'))
+    await screen.findByRole('img')
+
+    const appel = impl.mock.calls.find(([input]) => String(input).includes('/image/generate'))!
+    const body = appel[1]!.body as FormData
+    expect(body.get('prompt')).toBe('a cat, watercolor style, dramatic lighting')
+  })
+
+  it('affiche le message d\'erreur renvoyé par le backend en cas d\'échec de calibration', async () => {
+    poserFetch({ calibrate: { status: 500, corps: { detail: 'calibration indisponible' } } })
+    render(<ImageModule />)
+    saisirPrompt('un chat')
+
+    fireEvent.click(screen.getByText('Calibrer'))
+
+    expect(await screen.findByText(/calibration indisponible/)).toBeTruthy()
   })
 })
