@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "nom": "Image",
   "icon": "Image",
-  "description": "Génération d'image via ComfyUI (Flux.1 Schnell, txt2img/img2img). Backend seulement pour l'instant — pas de Component.tsx : ne pas activer depuis Réglages > Catalogue avant la Phase 2 (cf. rapport du 2026-09-21).",
+  "description": "Génération d'image via ComfyUI (Flux.1 Schnell) — txt2img, img2img et un LoRA « Réalisme » optionnel.",
   "frontend": { "component": "Component" },
   "backend": { "prefix": "/image" },
   "core_module": false,

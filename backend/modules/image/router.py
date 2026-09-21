@@ -1,9 +1,7 @@
 """Module Image — génération via ComfyUI, appelé par réseau local.
 
-Phase 1 : backend seulement, pas de ``Component.tsx`` — voir ``manifest.json``
-et le rapport du 2026-09-21 sur la raison de ne pas activer le module tant
-que la Phase 2 n'a pas posé de frontend (le bouton de la barre resterait
-sans écran, isolé par ``ModuleErrorBoundary`` mais inutile).
+Module actif, avec ``Component.tsx`` (``frontend/src/modules/generated/image``)
+— txt2img, img2img et LoRA optionnel.
 
 ComfyUI tourne sur une machine SECONDE (pas celle du backend Épure), sur le
 wifi partagé — la traversée réseau, pas seulement l'appel, peut échouer.
@@ -82,6 +80,37 @@ le poste de l'utilisateur pendant ses essais manuels, pas un défaut
 délibéré (signalé comme tel). Le défaut de ce module reste ``0.75``, déjà
 documenté comme placeholder arbitraire faute de mesure — rien dans cet
 export ne le justifie mieux, donc pas de changement sans raison.
+
+**LoRA optionnel (``use_lora``) — signature ``LoraLoader`` confirmée contre
+le VRAI ComfyUI distant, pas supposée (Étape 0, 2026-09-21) :**
+``GET /object_info/LoraLoader`` sur ``COMFYUI_HOST`` donne
+``inputs.required = {model: MODEL, clip: CLIP, lora_name: enum, strength_model:
+FLOAT, strength_clip: FLOAT}``, ``output = [MODEL, CLIP]`` — DEUX champs de
+force séparés (modèle/CLIP), pas un seul ``strength`` comme dans d'autres
+loaders ComfyUI ; l'énumération ``lora_name`` ne listait à cette date que
+``super-realism.safetensors``, ce qui confirme au passage que le fichier est
+bien en place côté ComfyUI. Décision de scope déjà actée : ce module
+n'expose qu'un seul ``lora_strength`` côté API et le reproduit sur les DEUX
+champs du node plutôt que d'exposer un réglage séparé — pas de sélecteur de
+fichier, pas de multi-LoRA, ``lora_name`` fixe en dur
+(:data:`_LORA_NAME`).
+
+Le node ``LoraLoader`` (:data:`_NODE_LORA`) s'insère entre le checkpoint
+(``30``) et TOUS ses consommateurs actuels de MODEL/CLIP — ``KSampler.model``
+et les deux ``CLIPTextEncode.clip`` (positif ``6``, négatif ``33``) — dans
+les deux branches (txt2img et img2img), puisque les deux partagent le même
+graphe de base chargé par :func:`_charger_workflow`. La branche img2img ne
+touche ni MODEL ni CLIP (seulement ``latent_image``/``denoise`` du
+``KSampler``, et ``vae`` du checkpoint pour ``VAEEncode``) : l'insertion du
+LoRA est donc indépendante de la construction du payload img2img, pas
+dupliquée entre les deux. ``use_lora=False`` (défaut) laisse le graphe
+strictement inchangé — aucun node ``LoraLoader`` ajouté.
+
+``_LORA_STRENGTH_DEFAUT`` est un PLACEHOLDER non mesuré, même statut que
+``denoise=0.75`` ci-dessus — compatibilité Dev/Schnell de ce LoRA précis non
+garantie côté source (le checkpoint de ce module est Schnell,
+``flux1-schnell-fp8.safetensors``), à surveiller au premier test réel plutôt
+que supposée bonne.
 """
 
 import asyncio
@@ -98,6 +127,7 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from core.paths import resolve_data_dir
 
@@ -136,6 +166,22 @@ _NODE_SAVE = "9"
 _NODE_LOAD_IMAGE = "38"
 _NODE_IMAGE_SCALE = "40"
 _NODE_VAE_ENCODE = "39"
+
+#: Node LoraLoader, inséré à la demande (`use_lora=True`) — ID hors de la
+#: plage déjà occupée par le graphe de base et la branche img2img (cf.
+#: docstring de tête, §LoRA).
+_NODE_LORA = "34"
+_NODE_NEGATIVE = "33"
+
+#: Fixe en dur — décision de scope actée, pas de sélecteur multi-LoRA (cf.
+#: docstring de tête).
+_LORA_NAME = "super-realism.safetensors"
+
+#: Placeholder non mesuré, même statut que le `0.75` de `denoise` plus bas —
+#: appliqué identiquement à `strength_model` ET `strength_clip` (cf.
+#: docstring de tête, §LoRA : deux champs séparés côté ComfyUI, un seul
+#: exposé côté API de ce module).
+_LORA_STRENGTH_DEFAUT = 0.6
 
 #: Dossier des images générées, sous `resolve_data_dir()` comme
 #: `code_backups/` (CLAUDE.md §3.5 : jamais de chemin figé, mais un
@@ -199,11 +245,38 @@ def _uploader_image(image_source: bytes) -> str:
     return f"{sous_dossier}/{nom}" if sous_dossier else nom
 
 
+def _appliquer_lora(workflow: dict, strength: float) -> None:
+    """Insère `LoraLoader` entre le checkpoint (30) et tous ses consommateurs
+    actuels de MODEL/CLIP — commun aux deux branches (txt2img/img2img), qui
+    partagent le même graphe de base (cf. docstring de tête, §LoRA).
+
+    Signature confirmée contre le vrai ComfyUI distant (`GET
+    /object_info/LoraLoader`), pas supposée : deux champs de force séparés,
+    reproduits ici depuis le seul `strength` exposé côté API de ce module.
+    """
+    workflow[_NODE_LORA] = {
+        "inputs": {
+            "model": [_NODE_CHECKPOINT, 0],
+            "clip": [_NODE_CHECKPOINT, 1],
+            "lora_name": _LORA_NAME,
+            "strength_model": strength,
+            "strength_clip": strength,
+        },
+        "class_type": "LoraLoader",
+        "_meta": {"title": "Load LoRA (super-realism)"},
+    }
+    workflow[_NODE_KSAMPLER]["inputs"]["model"] = [_NODE_LORA, 0]
+    workflow[_NODE_POSITIVE]["inputs"]["clip"] = [_NODE_LORA, 1]
+    workflow[_NODE_NEGATIVE]["inputs"]["clip"] = [_NODE_LORA, 1]
+
+
 def generer_image(
     prompt: str,
     seed: Optional[int] = None,
     image_source: Optional[bytes] = None,
     denoise: Optional[float] = None,
+    use_lora: bool = False,
+    lora_strength: Optional[float] = None,
 ) -> bytes:
     """Génère une image via ComfyUI et retourne ses octets PNG.
 
@@ -215,12 +288,23 @@ def generer_image(
     `VAEEncode`, IDs vérifiés contre un export réel, cf. docstring de tête).
     `denoise` n'a d'effet que dans ce cas ; ignoré en txt2img où le gabarit
     fixe `denoise=1` sur latent vide.
+
+    `use_lora=True` insère `LoraLoader` (cf. :func:`_appliquer_lora`),
+    indépendamment de la branche txt2img/img2img choisie. `use_lora=False`
+    (défaut) laisse le graphe strictement identique à avant cette option —
+    aucune régression sur le comportement déjà vérifié.
     """
     workflow = _charger_workflow()
     workflow[_NODE_POSITIVE]["inputs"]["text"] = prompt
     workflow[_NODE_KSAMPLER]["inputs"]["seed"] = (
         seed if seed is not None else random.randint(0, 2**32 - 1)
     )
+
+    if use_lora:
+        _appliquer_lora(
+            workflow,
+            lora_strength if lora_strength is not None else _LORA_STRENGTH_DEFAUT,
+        )
 
     if image_source is not None:
         ref = _uploader_image(image_source)
@@ -372,21 +456,22 @@ async def image_generate(
     prompt: str = Form(...),
     seed: Optional[int] = Form(None),
     denoise: Optional[float] = Form(None),
+    use_lora: bool = Form(False),
+    lora_strength: Optional[float] = Form(None),
     image: Optional[UploadFile] = File(None),
 ):
     """Génère une image (txt2img, ou img2img si `image` est fourni).
 
     Multipart (`Form` + `File`), pas un corps JSON : c'est le seul moyen
     d'accepter un upload binaire et des champs texte sur le même endpoint
-    FastAPI. Aucun consommateur ne dépendait du corps JSON précédent (module
-    installé mais toujours inactif — pas de `Component.tsx`, cf. manifest) :
-    changer le contrat maintenant, avant un frontend, ne casse rien.
+    FastAPI.
     """
     image_bytes_source = await image.read() if image is not None else None
     loop = asyncio.get_running_loop()
     try:
         image_bytes = await loop.run_in_executor(
-            None, generer_image, prompt, seed, image_bytes_source, denoise
+            None, generer_image, prompt, seed, image_bytes_source, denoise,
+            use_lora, lora_strength,
         )
     except ComfyUIError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -395,3 +480,26 @@ async def image_generate(
     chemin = _images_dir() / nom
     chemin.write_bytes(image_bytes)
     return {"path": str(chemin), "filename": nom}
+
+
+@router.get("/file/{nom}")
+async def image_file(nom: str):
+    """Sert le PNG généré par `/generate`, référencé par son `filename`.
+
+    Confinement par `cible.parent == racine`, pas `is_relative_to` — même
+    choix que `EncreEngine._page_path`/`HistoryEngine._conv_path` (CLAUDE.md
+    §6) et pour la même raison écrite là-bas : `is_relative_to` admettrait
+    encore un sous-dossier (`sub/x` → `<images>/sub/x.png`), confiné mais pas
+    ce qu'on veut valider pour un nom qui doit être un segment nu ; et un
+    antislash est un séparateur de chemin sous Windows (plateforme primaire),
+    pas seulement `/` — un `{nom}` construit avec `..\\..\\x` doit donc être
+    rejeté par la comparaison de PARENT, pas supposé inoffensif parce que
+    Starlette n'a laissé passer aucun `/`.
+    """
+    if not nom or nom in (".", ".."):
+        raise HTTPException(status_code=404, detail="Fichier introuvable")
+    racine = _images_dir()
+    cible = (racine / nom).resolve()
+    if cible.parent != racine or not cible.is_file():
+        raise HTTPException(status_code=404, detail="Fichier introuvable")
+    return FileResponse(cible, media_type="image/png")
