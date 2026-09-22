@@ -189,7 +189,42 @@ lanceur, ce script doit changer avec elle -- c'est tout son interet.
     # repasser les arguments a un binaire Windows sans qu'ils y restent colles.
     $cmd = $m.Groups['cmd'].Value.Trim().Replace("'", '"')
 
-    return [pscustomobject]@{ Cliquet = $cliquet; CommandeBackend = $cmd }
+    # Version de Node : ci.yml ne la porte plus en dur, il pointe un fichier
+    # (`node-version-file`). On lit le MEME fichier que la CI, jamais une
+    # valeur recopiee ici.
+    $m = [regex]::Match($texte, "(?m)^\s*node-version-file:\s*(?<f>[^\s#]+)")
+    if (-not $m.Success) {
+        Arreter "impossible de lire node-version-file dans ci.yml" @"
+La CI ne declare plus sa version de Node par un fichier. Ce script refuse de
+deviner laquelle elle utilise : corriger le motif, ou remettre la cle.
+"@
+    }
+    $fichierNode = Join-Path $REPO $m.Groups['f'].Value
+
+    return [pscustomobject]@{ Cliquet = $cliquet; CommandeBackend = $cmd; FichierNode = $fichierNode }
+}
+
+function Verifier-VersionNode([string]$fichier) {
+    <#
+        Compare la version MAJEURE de Node locale a celle que la CI installe.
+        Incident a l'origine : CI en 22, poste en 24, 9 tests verts ici et
+        rouges la-bas pendant des jours -- aucune etape locale ne pouvait le
+        voir, puisque toutes tournent sous le Node du poste. Une etape comme
+        les autres (verdict, code de retour), pas un simple avertissement.
+    #>
+    $nom = "Version de Node (locale vs $(Split-Path -Leaf $fichier))"
+    Ecrire-Titre $nom
+    if (-not (Test-Path $fichier)) { Arreter "fichier de version introuvable : $fichier" }
+    $attendue = ((Get-Content $fichier -Raw).Trim() -replace '^v', '').Split('.')[0]
+    $r = Invoquer-Externe "node" @('--version')
+    $locale = if ($r.Code -eq 0) { ($r.Texte.Trim() -replace '^v', '').Split('.')[0] } else { "?" }
+    $ok = ($locale -eq $attendue)
+    if ($ok) {
+        Write-Host ("   OK (Node {0} ici comme en CI)" -f $r.Texte.Trim()) -ForegroundColor Green
+    } else {
+        Write-Host ("   ECHEC : Node {0} ici, {1} en CI -- installer Node {1}, ou changer frontend/.nvmrc (source de verite de la CI)" -f $r.Texte.Trim(), $attendue) -ForegroundColor Red
+    }
+    $script:Resultats += [pscustomobject]@{ Nom = $nom; Ok = $ok; Duree = 0 }
 }
 
 # -- Replique temporaire du frontend ------------------------------------------
@@ -267,6 +302,8 @@ Write-Host ("Cliquet eslint lu dans ci.yml : {0}" -f $ci.Cliquet) -ForegroundCol
 $replique = $null
 try {
     if ($Frontend) {
+        Verifier-VersionNode $ci.FichierNode
+
         Ecrire-Titre "Replique du frontend (arbre temporaire)"
         $replique = Construire-Replique
         Ecrire-Info $replique.Front
