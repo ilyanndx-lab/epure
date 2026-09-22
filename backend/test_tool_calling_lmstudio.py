@@ -243,6 +243,20 @@ class NonRegressionSixFournisseursTest(unittest.TestCase):
                 self.assertEqual(dicts[0]["prompt_tokens"], 40)
                 self.assertEqual(dicts[0]["contexte_tokens"], 40)
 
+    def test_plusieurs_chunks_d_usage_le_dernier_fait_foi(self):
+        """Comportement d'avant : l'usage est AFFECTÉ, pas additionné — un
+        fournisseur qui l'enverrait deux fois (valeurs cumulées) ne doit pas
+        être compté double dans `usage_tracker`."""
+        for provider in _SIX_AUTRES:
+            with self.subTest(provider=provider):
+                client = _ClientFactice(rounds=[[
+                    _chunk(content="ok"), _usage(10, 1), _usage(40, 3),
+                ]])
+                sortie = self._tour(provider, client, **self._kwargs_routeur())
+                stats = [p for p in sortie if isinstance(p, dict)][0]
+                self.assertEqual((stats["prompt_tokens"], stats["output_tokens"],
+                                  stats["contexte_tokens"]), (40, 3, 40))
+
 
 # ── Chemin LM Studio ─────────────────────────────────────────────────────────
 

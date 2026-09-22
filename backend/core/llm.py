@@ -1753,6 +1753,8 @@ class LLMEngine:
             fragments: dict[int, dict] = {}
             finish_reason = None
             tronque = False
+            round_prompt = 0
+            round_output = 0
             try:
                 for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
@@ -1806,16 +1808,22 @@ class LLMEngine:
                         if fr == "length":
                             tronque = True
                     if getattr(chunk, "usage", None):
-                        # Un chunk d'usage par round : additionné pour la
-                        # facturation, AFFECTÉ pour le contexte (cf. plus haut).
+                        # AFFECTATION dans le round, comme avant ce chantier :
+                        # un fournisseur qui enverrait l'usage sur plusieurs
+                        # chunks (valeurs cumulées) serait compté plusieurs
+                        # fois par une addition ici. Le DERNIER fait foi.
                         round_prompt = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                        total_prompt_tokens += round_prompt
-                        total_output_tokens += getattr(chunk.usage, "completion_tokens", 0) or 0
-                        dernier_prompt_tokens = round_prompt
+                        round_output = getattr(chunk.usage, "completion_tokens", 0) or 0
             except Exception as exc:
                 # Erreur survenue en cours de streaming (coupure, refus serveur…).
                 logger.warning("Stream %s (%s) interrompu : %s", provider, model_id, exc)
                 raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
+
+            # Entre rounds, en revanche, on ADDITIONNE pour la facturation et on
+            # AFFECTE pour le contexte (cf. `dernier_prompt_tokens` plus haut).
+            total_prompt_tokens += round_prompt
+            total_output_tokens += round_output
+            dernier_prompt_tokens = round_prompt
 
             if not fragments:
                 break
