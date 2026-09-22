@@ -1,0 +1,13 @@
+{
+  "id": "image",
+  "version": "0.1.0",
+  "nom": "Image",
+  "icon": "Image",
+  "description": "Génération d'image via ComfyUI (Flux.1 Schnell) — txt2img, img2img et un LoRA « Réalisme » optionnel.",
+  "frontend": { "component": "Component" },
+  "backend": { "prefix": "/image" },
+  "core_module": false,
+  "origin": "builtin",
+  "status": "active",
+  "removable": true
+}

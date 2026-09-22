@@ -793,6 +793,30 @@ class LLMEngine:
             )
 
     def generate(self, messages: list[dict], model: Optional[str] = None) -> str:
+        """Réponse complète, non streamée. **Lève en cas d'échec** — comme
+        :meth:`stream`, jamais un message d'échec rendu comme texte.
+
+        Le chemin Ollama a toujours levé (l'exception du client remonte
+        telle quelle) ; les chemins OpenAI-compatible et Gemini, eux,
+        RETOURNAIENT ``"[flm:qwen3:4b] échec d'appel : …"``. Incident du
+        2026-09-22 : FLM éteint, ce texte passait les heuristiques de
+        validation de ``HistoryEngine._generate_title`` et de
+        ``modules/image/router.py::calibrer_prompt`` (court, une ligne, sans
+        backtick) et s'affichait comme titre de conversation / prompt
+        calibré — leur repli silencieux n'était écrit que dans leur
+        ``except``. Même piège, non observé mais présent, chez
+        ``websearch.reformuler_requete`` (la requête de recherche devenait
+        le message d'erreur) et ``kholle._generate_questions`` (le message
+        découpé en « questions »).
+
+        Corrigé à la source plutôt que par détection du motif ``[x:y]
+        échec`` chez chaque appelant : tous les appelants avaient déjà un
+        ``try/except`` (imposé par le chemin Ollama), et un motif textuel ne
+        protège que ceux qui le connaissent. Le message de
+        ``_provider_error_message`` n'est pas perdu : il voyage dans
+        l'exception (logs, trame d'erreur SSE des modules qui la relaient).
+        Verrouillé par ``test_generate_echec_leve.py``.
+        """
         m = model or self._model
         provider, model_id = self._parse_model(m)
         if provider == "gemini":
@@ -1335,10 +1359,10 @@ class LLMEngine:
         try:
             import google.generativeai as genai
         except ImportError:
-            return "[Erreur: google-generativeai non installé]"
+            raise RuntimeError("Package 'google-generativeai' non installé")
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
-            return "[Erreur: GEMINI_API_KEY non configurée]"
+            raise ValueError("GEMINI_API_KEY non configurée — ajoutez-la dans Settings")
         try:
             genai.configure(api_key=api_key)
             model_name = model.split("gemini:", 1)[1]
@@ -1357,7 +1381,9 @@ class LLMEngine:
             return response.text
         except Exception as exc:
             logger.warning("Generate Gemini (%s) échec : %s", model, exc)
-            return f"[gemini:{model.split('gemini:', 1)[-1]}] échec : {exc}"
+            raise RuntimeError(
+                f"[gemini:{model.split('gemini:', 1)[-1]}] échec : {exc}"
+            ) from exc
 
     # ── OpenAI-compatible providers ──────────────────────────────────────────
 
@@ -1540,4 +1566,4 @@ class LLMEngine:
             return response.choices[0].message.content or ""
         except Exception as exc:
             logger.warning("Generate %s (%s) refusé : %s", provider, model_id, exc)
-            return _provider_error_message(provider, model_id, exc)
+            raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
