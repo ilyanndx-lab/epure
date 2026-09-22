@@ -89,6 +89,9 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
   // annoncerait une recherche en cours qui n'a jamais eu lieu — et qui n'aura
   // jamais lieu. Même règle que plus haut : ne pas prétendre.
   if (!derniere && aUneRechercheAbandonnee(etapes)) return 'Recherche abandonnée'
+  // Même raisonnement pour le plafond d'allers-retours (`tool_call_plafond_atteint`,
+  // `core/llm.py::_schemas_du_round`) : le tour s'est conclu SANS outil.
+  if (!derniere && aAtteintLimiteRecherches(etapes)) return 'Limite de recherches atteinte'
   if (!derniere) return 'Recherche web…'
   if (derniere.etape === 'recherche_erreur') return 'Recherche web : échec'
   const nombre = Number(derniere.nombre) || 0
@@ -98,14 +101,6 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
   return `Recherche web : ${nombre} résultat${nombre > 1 ? 's' : ''} en ${secondes} s`
 }
 
-/**
- * Libellé du badge affiché À CÔTÉ du résumé, ou `null` si aucun n'est dû.
- *
- * Le badge n'existe qu'EN PLUS d'un résumé de recherche : sans recherche,
- * `resumeTrace` dit déjà « Citation hors sources »/« Lien non vérifié » — un
- * badge identique juste à côté serait un doublon, pas une information
- * supplémentaire.
- */
 /**
  * Le modèle a-t-il tenté un appel de recherche que le serveur a ABANDONNÉ ?
  * (`tool_call_abandonne`, émise par `core/llm.py::_stream_openai` quand les
@@ -131,6 +126,31 @@ export function libelleBadgeAbandon(etapes: EtapeTrace[]): string | null {
   return resumeTrace(etapes) === 'Recherche abandonnée' ? null : 'recherche abandonnée'
 }
 
+/**
+ * Le tour a-t-il atteint le plafond d'allers-retours avec le modèle
+ * (`tool_call_plafond_atteint`, `core/llm.py::_schemas_du_round`) ? Les
+ * outils lui ont alors été retirés et il a conclu sans eux — typiquement un
+ * petit modèle qui réclamait en boucle un outil qui n'existe pas.
+ */
+export function aAtteintLimiteRecherches(etapes: EtapeTrace[]): boolean {
+  return etapes.some(e => e.etape === 'tool_call_plafond_atteint')
+}
+
+/** Pendant de `libelleBadgeAbandon` pour le plafond : badge seulement quand le
+ * résumé ne le dit pas déjà (une autre recherche du tour a abouti). */
+export function libelleBadgeLimite(etapes: EtapeTrace[]): string | null {
+  if (!aAtteintLimiteRecherches(etapes)) return null
+  return resumeTrace(etapes) === 'Limite de recherches atteinte' ? null : 'limite de recherches atteinte'
+}
+
+/**
+ * Libellé du badge affiché À CÔTÉ du résumé, ou `null` si aucun n'est dû.
+ *
+ * Le badge n'existe qu'EN PLUS d'un résumé de recherche : sans recherche,
+ * `resumeTrace` dit déjà « Citation hors sources »/« Lien non vérifié » — un
+ * badge identique juste à côté serait un doublon, pas une information
+ * supplémentaire.
+ */
 export function libelleBadgeCitations(etapes: EtapeTrace[]): string | null {
   const etapeCitations = etapes.find(e => e.etape === 'citations_invalides')
   const aUneEtapeDeRecherche = etapes.some(e => e.etape !== 'citations_invalides')

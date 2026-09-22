@@ -15,7 +15,7 @@ import { creerConversation, reprendreAncienChat } from './conversations'
 import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
-import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 
 interface MsgStats {
@@ -504,6 +504,12 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
           La réponse s'appuie sur ses connaissances, qui peuvent être datées.
         </p>
       )
+    case 'tool_call_plafond_atteint':
+      return (
+        <p className="m-0 text-warning">
+          Limite de recherches atteinte : le modèle a conclu sans nouvelle recherche.
+        </p>
+      )
     default:
       return (
         <p className="m-0 font-mono text-[11px] break-all">
@@ -533,6 +539,7 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
   // Visible sans déplier le panneau, comme le badge des citations : c'est ce
   // qui distingue une réponse sourcée d'une réponse donnée de mémoire.
   const libelleAbandon = libelleBadgeAbandon(etapes)
+  const libelleLimite = libelleBadgeLimite(etapes)
   return (
     <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden">
       <button
@@ -550,6 +557,11 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
           {libelleAbandon && (
             <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
               {libelleAbandon}
+            </span>
+          )}
+          {libelleLimite && (
+            <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
+              {libelleLimite}
             </span>
           )}
         </span>
