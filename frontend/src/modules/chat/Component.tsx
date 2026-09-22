@@ -15,7 +15,7 @@ import { creerConversation, reprendreAncienChat } from './conversations'
 import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
-import { etapesDe, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 
 interface MsgStats {
@@ -494,6 +494,16 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
         </p>
       )
     }
+    case 'tool_call_abandonne':
+      // Formulation NON technique : l'utilisateur n'a pas à savoir ce qu'est
+      // un JSON d'arguments — seulement que la recherche n'a pas eu lieu et
+      // sur quoi repose donc la réponse.
+      return (
+        <p className="m-0 text-warning">
+          Recherche abandonnée : le modèle n'a pas formulé sa recherche correctement.
+          La réponse s'appuie sur ses connaissances, qui peuvent être datées.
+        </p>
+      )
     default:
       return (
         <p className="m-0 font-mono text-[11px] break-all">
@@ -520,6 +530,9 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
   onToggle: () => void
 }) {
   const libelleBadge = libelleBadgeCitations(etapes)
+  // Visible sans déplier le panneau, comme le badge des citations : c'est ce
+  // qui distingue une réponse sourcée d'une réponse donnée de mémoire.
+  const libelleAbandon = libelleBadgeAbandon(etapes)
   return (
     <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden">
       <button
@@ -532,6 +545,11 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
           {libelleBadge && (
             <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
               {libelleBadge}
+            </span>
+          )}
+          {libelleAbandon && (
+            <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
+              {libelleAbandon}
             </span>
           )}
         </span>

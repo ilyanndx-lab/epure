@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { etapesDe, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aUneRechercheAbandonnee, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -115,5 +115,35 @@ describe('libelleBadgeCitations — le badge n’est dû qu’EN PLUS d’un ré
 
   it('null sur une trace vide', () => {
     expect(libelleBadgeCitations([])).toBeNull()
+  })
+})
+
+describe('recherche abandonnée (tool_call_abandonne) — visible sans déplier la trace', () => {
+  const ABANDON: EtapeTrace = { etape: 'tool_call_abandonne', raison: 'arguments_invalides', outils: ['web_search'] }
+  const TOOL_CALL: EtapeTrace = { etape: 'tool_call_web_search', requete: 'météo Lyon' }
+
+  it('résumé « Recherche abandonnée », jamais « Recherche web… » quand rien n’a abouti', () => {
+    expect(resumeTrace([ABANDON])).toBe('Recherche abandonnée')
+    expect(resumeTrace([ABANDON, CITATIONS_AUCUNE_SOURCE])).toBe('Recherche abandonnée')
+  })
+
+  it('pas de badge en double quand le résumé le dit déjà', () => {
+    expect(libelleBadgeAbandon([ABANDON])).toBeNull()
+  })
+
+  it('badge quand une première recherche a abouti puis une seconde a été abandonnée', () => {
+    const etapes = [TOOL_CALL, RECHERCHE_RESULTATS, ABANDON]
+    expect(resumeTrace(etapes)).toBe('Recherche web : 5 résultats en 0,8 s')
+    expect(libelleBadgeAbandon(etapes)).toBe('recherche abandonnée')
+  })
+
+  it('aucun badge ni changement de résumé sans abandon', () => {
+    expect(aUneRechercheAbandonnee([TOOL_CALL, RECHERCHE_RESULTATS])).toBe(false)
+    expect(libelleBadgeAbandon([TOOL_CALL, RECHERCHE_RESULTATS])).toBeNull()
+    expect(resumeTrace([RECHERCHE_ERREUR])).toBe('Recherche web : échec')
+  })
+
+  it('survit à la normalisation d’une trace persistée', () => {
+    expect(aUneRechercheAbandonnee(etapesDe([{ etape: 'tool_call_abandonne', raison: 'flux_interrompu' }]))).toBe(true)
   })
 })
