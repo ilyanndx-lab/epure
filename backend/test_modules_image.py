@@ -79,7 +79,48 @@ class CheckComfyuiTest(unittest.TestCase):
             self.assertFalse(image_router.check_comfyui())
 
 
-class GenererImageTxt2ImgTest(unittest.TestCase):
+class _SondeJoignable(unittest.TestCase):
+    """Sonde `check_comfyui()` forcée à True : `generer_image()` sonde avant
+    tout envoi, et ces tests ne mockent que `httpx` — sans ce patch ils
+    sonderaient le VRAI `COMFYUI_HOST` de `.env` (vert quand l'Acer est
+    allumé, rouge en CI)."""
+
+    def setUp(self):
+        p = mock.patch.object(image_router, "check_comfyui", return_value=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+
+class GenererImageInjoignableTest(unittest.TestCase):
+    """Sonde négative → échec immédiat, rien d'envoyé, aucune attente."""
+
+    def test_txt2img_echoue_sans_poster_ni_attendre(self):
+        with mock.patch.object(image_router, "check_comfyui", return_value=False),              mock.patch.object(image_router.httpx, "post") as post,              mock.patch.object(image_router.httpx, "get") as get,              mock.patch.object(image_router.time, "sleep") as sleep:
+            with self.assertRaises(image_router.ComfyUIError) as ctx:
+                image_router.generer_image("un chat")
+        self.assertIn("injoignable", str(ctx.exception))
+        self.assertIn(image_router._COMFYUI_HOST, str(ctx.exception))
+        post.assert_not_called()
+        get.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_img2img_n_uploade_pas_l_image_source(self):
+        with mock.patch.object(image_router, "check_comfyui", return_value=False),              mock.patch.object(image_router.httpx, "post") as post:
+            with self.assertRaises(image_router.ComfyUIError):
+                image_router.generer_image("un chat", image_source=b"PNG")
+        post.assert_not_called()
+
+    def test_endpoint_repond_502(self):
+        app = FastAPI()
+        app.include_router(image_router.router, prefix="/image")
+        with mock.patch.object(image_router, "check_comfyui", return_value=False),              mock.patch.object(image_router.httpx, "post") as post:
+            r = TestClient(app).post("/image/generate", data={"prompt": "un chat"})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("injoignable", r.json()["detail"])
+        post.assert_not_called()
+
+
+class GenererImageTxt2ImgTest(_SondeJoignable):
     """`generer_image()` sans `image_source` — branche txt2img, celle lue
     depuis le fichier fourni (pas de nœud construit)."""
 
@@ -210,8 +251,60 @@ class GenererImageTxt2ImgTest(unittest.TestCase):
         self.assertEqual(resultat, b"PNGDATA")
         self.assertGreaterEqual(appels["n"], 2)
 
+    def test_perte_en_cours_de_generation_abandonne_sans_attendre_l_echeance(self):
+        """Coupure APRÈS un POST réussi — le cas qui coûtait les 180 s entières.
+        `_ECHECS_AVANT_RESONDE` ratés d'affilée → re-sonde négative → abandon,
+        bien avant `_TIMEOUT_S` (laissé à 180 : c'est la re-sonde qui coupe,
+        pas l'échéance)."""
+        n = image_router._ECHECS_AVANT_RESONDE
+        with mock.patch.object(image_router, "check_comfyui", side_effect=[True, False]) as sonde,              mock.patch.object(image_router.httpx, "post", side_effect=self._mock_post),              mock.patch.object(image_router.httpx, "get",
+                               side_effect=image_router.httpx.ConnectError("hotspot coupé")) as get,              mock.patch.object(image_router.time, "sleep") as sleep,              mock.patch.object(image_router, "_TIMEOUT_S", 180.0):
+            with self.assertRaises(image_router.ComfyUIError) as ctx:
+                image_router.generer_image("prompt")
+        self.assertIn("perdu en cours de génération", str(ctx.exception))
+        self.assertIn(image_router._COMFYUI_HOST, str(ctx.exception))
+        self.assertEqual(sonde.call_count, 2)       # pré-check + une re-sonde
+        self.assertEqual(get.call_count, n)
+        self.assertEqual(sleep.call_count, n - 1)
 
-class GenererImageImg2ImgTest(unittest.TestCase):
+    def test_re_sonde_positive_continue_le_sondage(self):
+        """Série de ratés mais serveur joignable (wifi capricieux, ComfyUI
+        occupé) : le budget `_TIMEOUT_S` reste entier, la génération aboutit."""
+        n = image_router._ECHECS_AVANT_RESONDE
+        appels = {"n": 0}
+
+        def _mock_get(url, **kwargs):
+            appels["n"] += 1
+            if appels["n"] <= n:
+                raise image_router.httpx.ConnectError("raté")
+            return self._mock_get(url, **kwargs)
+
+        with mock.patch.object(image_router, "check_comfyui", return_value=True) as sonde,              mock.patch.object(image_router.httpx, "post", side_effect=self._mock_post),              mock.patch.object(image_router.httpx, "get", side_effect=_mock_get),              mock.patch.object(image_router.time, "sleep"):
+            self.assertEqual(image_router.generer_image("prompt"), b"PNGDATA")
+        self.assertEqual(sonde.call_count, 2)
+
+    def test_rates_non_consecutifs_ne_declenchent_pas_de_re_sonde(self):
+        """Un sondage réussi (même sans image encore) remet le compteur à zéro."""
+        n = image_router._ECHECS_AVANT_RESONDE
+        # (n - 1) ratés, un sondage « pas encore fini », (n - 1) ratés, puis l'image.
+        sequence = (["rate"] * (n - 1) + ["vide"] + ["rate"] * (n - 1) + ["image"])
+
+        def _mock_get(url, **kwargs):
+            if url.endswith("/view"):
+                return self._mock_get(url, **kwargs)
+            etape = sequence.pop(0)
+            if etape == "rate":
+                raise image_router.httpx.ConnectError("raté")
+            if etape == "vide":
+                return _FakeHttpxResponse({})
+            return self._mock_get(url, **kwargs)
+
+        with mock.patch.object(image_router, "check_comfyui", return_value=True) as sonde,              mock.patch.object(image_router.httpx, "post", side_effect=self._mock_post),              mock.patch.object(image_router.httpx, "get", side_effect=_mock_get),              mock.patch.object(image_router.time, "sleep"):
+            self.assertEqual(image_router.generer_image("prompt"), b"PNGDATA")
+        self.assertEqual(sonde.call_count, 1)       # le pré-check seul
+
+
+class GenererImageImg2ImgTest(_SondeJoignable):
     """Branche LoadImage(38) → ImageScale(40) → VAEEncode(39), IDs vérifiés
     contre un export réel (cf. docstring module, §2026-09-21) — vérifie le
     câblage, pas une vraie réponse ComfyUI."""
@@ -288,7 +381,7 @@ class GenererImageImg2ImgTest(unittest.TestCase):
         self.assertEqual(workflow[image_router._NODE_KSAMPLER]["inputs"]["denoise"], 0.75)
 
 
-class GenererImageLoraTest(unittest.TestCase):
+class GenererImageLoraTest(_SondeJoignable):
     """`use_lora=True` — insertion de `LoraLoader` et rebranchement
     MODEL/CLIP, sur txt2img ET img2img ; `use_lora=False` (ou absent) reste
     un test de non-régression EXPLICITE (cf. rapport de tâche, §Tests)."""

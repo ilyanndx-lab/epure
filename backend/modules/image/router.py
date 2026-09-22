@@ -175,6 +175,13 @@ _COMFYUI_HOST = _COMFYUI_HOST.rstrip("/")
 #: injoignable ou éteint en cours de route (après un check_comfyui() positif).
 _TIMEOUT_S = float(os.environ.get("COMFYUI_TIMEOUT_S", "180"))
 _POLL_INTERVAL_S = 1.0
+
+#: Sondages `/history` ratés D'AFFILÉE avant de re-sonder la joignabilité
+#: (`check_comfyui()`) — cf. :func:`generer_image`. PLACEHOLDER non mesuré :
+#: assez haut pour qu'un raté isolé du wifi partagé ne coûte même pas une
+#: sonde, assez bas pour qu'une coupure franche se lise en ~20 s (3 ratés
+#: bornés par `connect=5.0`, plus la sonde de 2 s) au lieu de `_TIMEOUT_S`.
+_ECHECS_AVANT_RESONDE = 3
 _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
 _WORKFLOW_FILE = Path(__file__).parent / "workflow_txt2img.json"
@@ -378,7 +385,35 @@ def generer_image(
     indépendamment de la branche txt2img/img2img choisie. `use_lora=False`
     (défaut) laisse le graphe strictement identique à avant cette option —
     aucune régression sur le comportement déjà vérifié.
+
+    **Sonde `check_comfyui()` d'abord, avant l'upload img2img et avant
+    `/prompt`** : un Acer injoignable échoue en ~2 s avec un message qui dit
+    « injoignable », pas « lent ». `_TIMEOUT_S` (180 s) reste le budget d'une
+    génération LENTE sur un serveur joignable — cas distinct, inchangé. Coût
+    assumé : ~2 s de plus quand tout va bien (mesuré : 0,7 s sur le LAN).
+
+    Mesuré le 2026-09-22, et à savoir avant de croire l'attente de 180 s
+    réglée par cette sonde : sans elle, un hôte injoignable DÈS LE DÉPART
+    échouait déjà en 5,6 s (`connect=5.0` de `_HTTP_TIMEOUT` sur le POST,
+    hôte en IP nue donc aucune résolution DNS non bornée). Une attente
+    complète de 180 s ne s'explique que par une coupure APRÈS un POST
+    réussi — la boucle de sondage avalait alors chaque échec jusqu'à
+    l'échéance.
+
+    **D'où la re-sonde dans la boucle** : après `_ECHECS_AVANT_RESONDE`
+    sondages ratés d'affilée, `check_comfyui()` tranche. Injoignable →
+    abandon immédiat (« perdu en cours de génération ») ; joignable → le
+    compteur repart de zéro et le sondage continue, jusqu'à `_TIMEOUT_S`
+    comme avant. C'est la sonde qui décide, pas le nombre de ratés : un
+    serveur qui répond à `/system_stats` n'est jamais abandonné, donc une
+    génération lente ou un wifi capricieux gardent tout leur budget.
     """
+    if not check_comfyui():
+        raise ComfyUIError(
+            f"ComfyUI injoignable sur {_COMFYUI_HOST} — génération jamais lancée "
+            "(machine éteinte ou réseau coupé ?)"
+        )
+
     workflow = _charger_workflow()
     workflow[_NODE_POSITIVE]["inputs"]["text"] = prompt
     workflow[_NODE_KSAMPLER]["inputs"]["seed"] = (
@@ -464,6 +499,7 @@ def generer_image(
         raise ComfyUIError(f"Réponse ComfyUI sans prompt_id : {data!r}")
 
     echeance = time.monotonic() + _TIMEOUT_S
+    echecs_consecutifs = 0
     while time.monotonic() < echeance:
         try:
             resp = httpx.get(
@@ -476,10 +512,21 @@ def generer_image(
             # docstring de tête) — un sondage raté est le cas attendu, pas
             # une raison d'abandonner une génération que ComfyUI mène encore.
             # Seul l'échec du POST /prompt initial, ci-dessus, veut dire
-            # "jamais lancée".
+            # "jamais lancée" ; une série de ratés, elle, n'abandonne que si
+            # la re-sonde confirme la perte (cf. docstring de la fonction).
+            echecs_consecutifs += 1
+            if echecs_consecutifs >= _ECHECS_AVANT_RESONDE:
+                if not check_comfyui():
+                    raise ComfyUIError(
+                        f"ComfyUI injoignable sur {_COMFYUI_HOST} — perdu en cours "
+                        f"de génération ({echecs_consecutifs} sondages ratés "
+                        "d'affilée, machine éteinte ou réseau coupé ?)"
+                    ) from exc
+                echecs_consecutifs = 0
             logger.warning("Sondage ComfyUI momentanément en échec (%s) — nouvel essai avant l'échéance", exc)
             time.sleep(_POLL_INTERVAL_S)
             continue
+        echecs_consecutifs = 0
 
         entree = historique.get(prompt_id)
         if entree:
