@@ -576,13 +576,60 @@ class ArgumentsInvalidesTest(unittest.TestCase):
         self.assertEqual(scene.recherches, [])
         self.assertEqual(scene.etapes[0]["outils"], ["web_search", "web_search"])
 
-    def test_texte_deja_emis_n_est_pas_duplique(self):
-        rounds = [_round_outil([(0, "web_search", "{cassé", "c1")],
-                               contenu_avant="Voici ce que je sais : il fait doux.")]
+    def test_texte_deja_emis_est_continue_sans_duplication(self):
+        """Phrase d'annonce puis appel cassé : la réponse n'est ni coupée sur
+        l'annonce, ni recommencée — le round suivant CONTINUE le message
+        assistant déjà affiché (comportement mesuré sur LM Studio, cf.
+        `core.llm._continuer_sans_outil`)."""
+        annonce = "Je vais chercher la météo."
+        rounds = [
+            _round_outil([(0, "web_search", "{cassé", "c1")], contenu_avant=annonce),
+            _round_final(texte=" D'après mes connaissances, qui peuvent être datées, il fait doux."),
+        ]
+        with _Scene(rounds) as scene:
+            sortie = scene.tour()
+        self.assertEqual(
+            _textes(sortie),
+            "Je vais chercher la météo. D'après mes connaissances, qui peuvent être datées, il fait doux.")
+        self.assertEqual(len(scene.client.appels), 2)
+        relance = scene.client.appels[1]
+        self.assertNotIn("tools", relance)
+        self.assertEqual(relance["messages"][-1], {"role": "assistant", "content": annonce})
+        # Pas de système dans l'historique du test : la consigne est insérée en tête.
+        self.assertEqual(relance["messages"][0],
+                         {"role": "system", "content": module_llm._CONSIGNE_SANS_OUTIL})
+        self.assertEqual(relance["messages"][1:-1], scene.client.appels[0]["messages"])
+        self.assertEqual(scene.etapes[0]["raison"], "arguments_invalides")
+
+    def test_continuation_complete_le_prompt_systeme_existant(self):
+        rounds = [
+            _round_outil([(0, "web_search", "{cassé", "c1")], contenu_avant="Un instant."),
+            _round_final(texte=" Voilà."),
+        ]
+        with _Scene(rounds) as scene:
+            moteur = LLMEngine(config_path=_CONFIG)
+            list(moteur.stream(list(_HISTORIQUE), model=f"lmstudio:{_MODELE}",
+                               outils=["web_search"], on_etape_recherche=scene.etapes.append))
+        systeme = scene.client.appels[1]["messages"][0]
+        self.assertEqual(systeme["role"], "system")
+        self.assertEqual(systeme["content"], "Tu es Épure.\n\n" + module_llm._CONSIGNE_SANS_OUTIL)
+        # Un seul message système : complété, pas doublé.
+        self.assertEqual(sum(m["role"] == "system" for m in scene.client.appels[1]["messages"]), 1)
+        # L'historique de l'appelant n'est jamais muté par la continuation.
+        self.assertEqual(_HISTORIQUE[0], {"role": "system", "content": "Tu es Épure."})
+
+    def test_texte_coupe_par_max_tokens_n_est_pas_relance(self):
+        """`finish_reason: "length"` : la réponse est tronquée (et signalée
+        `tronqué`) — relancer consommerait un second budget entier."""
+        coupe = [_chunk(content="Je cherche.")] + _fragments_tool_call(
+            0, "web_search", '{"requete": "mét', "c1")
+        rounds = [coupe + [_chunk(finish_reason="length"), _usage(60, 2048)]]
         with _Scene(rounds) as scene:
             sortie = scene.tour()
         self.assertEqual(len(scene.client.appels), 1)
-        self.assertEqual(_textes(sortie), "Voici ce que je sais : il fait doux.")
+        self.assertEqual(_textes(sortie), "Je cherche.")
+        self.assertTrue(_sentinelles(sortie, "__stats__")[0]["tronqué"])
+        self.assertEqual(scene.etapes[0]["raison"], "flux_interrompu")
 
     def test_flux_coupe_avec_fragments_en_attente(self):
         coupe = _fragments_tool_call(0, "web_search", '{"requete": "mét', "c1")

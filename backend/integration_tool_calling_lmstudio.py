@@ -96,6 +96,26 @@ class ToolCallingLmStudioBoutEnBoutTest(unittest.TestCase):
                         "l'id est répété sur les fragments suivants — l'accumulation "
                         "par index reste correcte, mais la mesure documentée a changé")
 
+    def test_continuation_apres_annonce_sans_repetition(self):
+        """Ce que `_continuer_sans_outil` suppose de LM Studio : un dernier
+        message `assistant` est CONTINUÉ, pas recommencé. Mêmes messages que
+        ceux que le moteur construit après un appel d'outil abandonné."""
+        from core.llm import _continuer_sans_outil
+        client = LLMEngine(config_path=_CONFIG)._openai_client("lmstudio")
+        annonce = "Je vais chercher le cours actuel du bitcoin."
+        for _ in range(3):
+            msgs = [{"role": "system", "content": "Tu es Épure, un assistant d'étude."},
+                    {"role": "user", "content": _QUESTION}]
+            _continuer_sans_outil(msgs, annonce)
+            flux = client.chat.completions.create(
+                model=_MODELE, stream=True, temperature=0.7, max_tokens=120, messages=msgs)
+            suite = "".join((c.choices[0].delta.content or "") for c in flux if c.choices)
+            self.assertTrue(suite.strip(), "continuation vide")
+            self.assertFalse(suite.strip().lower().startswith("je vais chercher"),
+                             f"le préambule est répété au lieu d'être continué : {suite[:120]!r}")
+            self.assertNotRegex(suite, r"\{|\[TOOL_REQUEST",
+                                f"pseudo-appel d'outil écrit en clair : {suite[:120]!r}")
+
     def test_round_trip_reel(self):
         moteur = LLMEngine(config_path=_CONFIG)
         texte, appels, stats, etapes = [], [], [], []

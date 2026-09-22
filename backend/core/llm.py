@@ -409,6 +409,51 @@ def _capacites_lmstudio_fraiches() -> dict:
     return capacites
 
 
+#: Consigne ajoutée au prompt système quand LM Studio CONTINUE un message
+#: assistant après une tentative d'outil abandonnée (`_continuer_sans_outil`).
+#: Mesuré sans elle : le modèle suit parfois sa propre annonce et écrit
+#: « *(Je vais chercher les informations actualisées)* » — une recherche
+#: promise qui n'aura jamais lieu. Avec elle, il répond et signale que ses
+#: données peuvent être datées.
+_CONSIGNE_SANS_OUTIL = (
+    "La recherche web n'a pas pu aboutir pour ce message et aucun outil n'est "
+    "disponible : termine ta réponse directement avec tes connaissances, sans "
+    "annoncer ni simuler de recherche, et signale qu'elles peuvent être datées."
+)
+
+
+def _continuer_sans_outil(oai: list[dict], texte_emis: str) -> None:
+    """Prépare `oai` (la copie LOCALE des messages) pour que le round suivant
+    CONTINUE la réponse déjà affichée au lieu d'en recommencer une.
+
+    **LM Studio continue un dernier message `assistant` inachevé — mesuré le
+    2026-09-22, pas supposé** (`mistralai/ministral-3-3b`) :
+
+    * aucun drapeau n'est nécessaire : un historique qui se termine par un
+      message `assistant` est traité comme un préfixe de la réponse
+      (« …sont le bleu, » → « le blanc et le rouge… », « 1, 2, 3, 4, » →
+      « 5, 6, … 10 », 3/3 à température 0). `continue_final_message` dans
+      `extra_body` ne change rien — il n'est donc pas envoyé ;
+    * scénario réel (système + question d'actualité + annonce « Je vais
+      chercher… », température 0,7 du chat, 3 formulations × 5 tirages) :
+      **aucune répétition du préambule, aucun pseudo-appel d'outil** dans le
+      texte, avec ou sans consigne. Sans consigne, en revanche, le modèle
+      annonce parfois encore une recherche — d'où `_CONSIGNE_SANS_OUTIL` ;
+    * sans prompt système du tout et à température 0, le même scénario a
+      produit un `{fetch…` en clair : la consigne est donc posée même quand
+      l'historique n'avait pas de message système.
+
+    Mute `oai` en place : consigne ajoutée au PREMIER message système (ou
+    insérée en tête), puis le texte émis en dernier message `assistant`. Ne
+    touche jamais l'historique de l'appelant (`oai` est déjà une copie).
+    """
+    if oai and oai[0].get("role") == "system":
+        oai[0] = {**oai[0], "content": f"{oai[0].get('content') or ''}\n\n{_CONSIGNE_SANS_OUTIL}"}
+    else:
+        oai.insert(0, {"role": "system", "content": _CONSIGNE_SANS_OUTIL})
+    oai.append({"role": "assistant", "content": texte_emis})
+
+
 def _capacite_tools_lmstudio(model_id: str) -> bool:
     """Le modèle LM Studio est-il ENTRAÎNÉ au tool-calling ? Jamais supposé.
 
@@ -1653,7 +1698,10 @@ class LLMEngine:
           seulement à la fin ;
         * arguments en chaîne JSON, pas en dict : un JSON final invalide (petit
           modèle) ABANDONNE la tentative — étape de trace
-          ``tool_call_abandonne``, puis réponse sans outil, jamais un crash ;
+          ``tool_call_abandonne`` (badge « recherche abandonnée » dans le
+          chat), puis réponse sans outil, jamais un crash. Si une phrase était
+          déjà partie, le round suivant la CONTINUE au lieu de la répéter
+          (`_continuer_sans_outil`, mesuré) ;
         * le message ``role="tool"`` se corrèle par ``tool_call_id``, que
           l'API exige (Ollama, lui, n'a pas d'``id``).
 
@@ -1876,13 +1924,20 @@ class LLMEngine:
                     )
                     continue
 
-            # Tentative abandonnée. Si du texte est déjà parti ce round, c'est
-            # la réponse : relancer un round la dupliquerait dans la bulle.
-            # Sinon, un round de plus SANS outil (`budgets` vidé par
-            # `_abandonner`), pour ne jamais laisser une bulle vide à un modèle
-            # qui n'avait émis qu'un appel cassé.
+            # Tentative abandonnée : un round de plus SANS outil (`budgets` vidé
+            # par `_abandonner`), pour ne jamais laisser une bulle vide ni une
+            # réponse coupée sur une phrase d'annonce.
             if contenu_du_round:
-                break
+                if finish_reason == "length":
+                    # Plafond `max_tokens` atteint : la réponse est COUPÉE et
+                    # signalée comme telle (`tronqué`) — relancer consommerait
+                    # un second budget entier pour la même question.
+                    break
+                # Du texte est déjà parti ce round (« Je vais chercher… »). Le
+                # relancer tel quel le DUPLIQUERAIT dans la bulle ; on CONTINUE
+                # donc ce message assistant — mesuré sur LM Studio, cf.
+                # `_continuer_sans_outil`.
+                _continuer_sans_outil(oai, "".join(contenu_du_round))
 
         yield {
             "__stats__": True,
