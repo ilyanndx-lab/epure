@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import os
 import re
@@ -233,9 +234,14 @@ def _gemini_contents(messages: list[dict]) -> tuple[str, list[dict]]:
 # répondre au message en cours, jamais une tâche de fond). Rien ici ne touche,
 # ne désactive ni ne remplace les chemins manuels/heuristiques existants.
 #
-# `tools=` n'est câblé QUE sur `_stream_ollama` : `_stream_openai` et
-# `_gemini_contents` normalisent les messages en `{role, content}` et
-# perdraient `tool_calls`/`role="tool"`, cf. `LLMEngine.stream`.
+# `tools=` est câblé sur `_stream_ollama` ET, depuis le 2026-09-22, sur
+# `_stream_openai` pour le SEUL fournisseur `lmstudio` (cf. sa docstring). Les
+# six autres fournisseurs de `_stream_openai` et `_gemini_contents` continuent
+# de normaliser les messages en `{role, content}` et ne reçoivent aucun outil.
+# La boucle de dispatch (budgets, outil inconnu, exécuteur, renumérotation,
+# sentinelle `__tool_call__`) est COMMUNE aux deux chemins :
+# `_executer_appels_outil` — seuls la forme du message `role="tool"` et le
+# décodage des arguments diffèrent, et restent chez chaque appelant.
 #
 # `_SKILLS` est le registre : chaque entrée porte son schéma exposé au modèle,
 # son exécuteur (signature uniforme `(arguments: dict, on_etape=None,
@@ -375,6 +381,109 @@ def _schemas_du_round(
                 on_etape({"etape": "tool_call_plafond_atteint", "rounds": round_courant})
         return []
     return schemas
+
+
+#: Pendant LM Studio de `_capacites_cache`, même TTL et même raison : sans
+#: cache, une requête HTTP (`/api/v1/models`) de plus par tour de chat.
+_capacites_lmstudio_cache: tuple[float, dict] = (0.0, {})
+
+
+def _capacites_lmstudio_fraiches() -> dict:
+    """`{clé du modèle: bool}`, caché `_CAPACITES_TTL_S` — cf.
+    `core.models.capacites_outils_lmstudio` pour la source et sa mesure.
+
+    Import PARESSEUX, même raison que `_capacites_ollama_fraiches` :
+    `core.models` importe `core.llm` au niveau module (`lmstudio_host`,
+    `LLMEngine`), un import en tête de fichier ici créerait un cycle.
+
+    `{}` si LM Studio ne répond pas — l'appelant se prive de l'outil, ne
+    plante jamais.
+    """
+    global _capacites_lmstudio_cache
+    horodatage, cache = _capacites_lmstudio_cache
+    if time.time() - horodatage < _CAPACITES_TTL_S:
+        return cache
+    from core.models import capacites_outils_lmstudio
+    capacites = capacites_outils_lmstudio() or {}
+    _capacites_lmstudio_cache = (time.time(), capacites)
+    return capacites
+
+
+def _capacite_tools_lmstudio(model_id: str) -> bool:
+    """Le modèle LM Studio est-il ENTRAÎNÉ au tool-calling ? Jamais supposé.
+
+    Même règle que `_capacite_tools_disponible` côté Ollama : absent,
+    injoignable ou `False` → aucun outil. `False` couvre aussi le mode d'outils
+    « par défaut » de LM Studio (prompt injecté + parsing de marqueurs), filtré
+    volontairement — cf. `core.models.capacites_outils_lmstudio`.
+    """
+    return _capacites_lmstudio_fraiches().get(model_id) is True
+
+
+def _executer_appels_outil(
+    appels: list[tuple[str, dict, object]],
+    registre: dict[str, dict],
+    budgets: dict[str, int],
+    msgs: list[dict],
+    message_outil: Callable[[str, object, str], dict],
+    on_etape: Optional[Callable[[dict], None]],
+    rang_suivant: int,
+) -> Generator:
+    """Dispatch des appels d'outil d'UN round — commun à `_stream_ollama` et au
+    chemin LM Studio de `_stream_openai`, pour qu'il n'existe qu'une seule
+    implémentation des budgets, du message « outil inconnu »/« budget
+    épuisé », de l'exécuteur, de la renumérotation des rangs et de la
+    sentinelle `__tool_call__` (que `modules/chat/router.py` replie dans
+    `web_resultats`, validé ensuite par `core.citations` quelle que soit
+    l'origine).
+
+    `appels` : `(nom, arguments déjà décodés en dict, corrélation)`. Les deux
+    différences entre les chemins restent CHEZ L'APPELANT, jamais ici :
+    le décodage des arguments (Ollama les rend déjà en dict ; l'API OpenAI en
+    chaîne JSON, accumulée fragment par fragment) et la forme du message
+    `role="tool"` (`message_outil(nom, correlation, contenu)` — `tool_name`
+    côté Ollama, qui n'a pas d'`id` ; `tool_call_id` côté OpenAI, qui l'exige).
+
+    Générateur : yielde les sentinelles `__tool_call__`, AJOUTE les messages
+    `role="tool"` à `msgs` (la copie locale de l'appelant, jamais l'historique)
+    et DÉCRÉMENTE `budgets` sur place. Rend (`return`, lu via `yield from`)
+    le `rang_suivant` après ce round.
+    """
+    for nom, arguments, correlation in appels:
+        if nom not in budgets:
+            # Absent du registre, OU présent mais pas actif pour CE tour (le
+            # caller ne l'a pas demandé) : les deux cas se traitent pareil, un
+            # modèle ne peut pas invoquer un outil qui ne lui a pas été offert.
+            msgs.append(message_outil(nom, correlation, f"Outil inconnu : {nom}"))
+            continue
+        if budgets[nom] <= 0:
+            msgs.append(message_outil(
+                nom, correlation,
+                "Budget d'appels d'outil épuisé pour ce tour — réponds avec ce que tu as déjà.",
+            ))
+            continue
+        budgets[nom] -= 1
+        texte_outil, resultats = registre[nom]["executor"](
+            arguments, on_etape=on_etape, rang_de_depart=rang_suivant,
+        )
+        # `len(resultats)` vaut 0 par construction pour un skill dont les
+        # résultats ne sont pas des `ResultatWeb` numérotés (`history_search`
+        # en rend toujours `[]`) : la renumérotation ne s'applique donc, de
+        # fait, qu'aux skills citables — sans qu'une branche ait à le savoir.
+        rang_suivant += len(resultats)
+        # Sentinelle distincte de `__reasoning__`/`__stats__` : porte les
+        # résultats STRUCTURÉS jusqu'au consommateur async
+        # (modules/chat/router.py), seul endroit qui connaît `web_resultats` —
+        # ce générateur tourne dans le thread de fond de `_stream`, il ne peut
+        # pas l'étendre lui-même. Le champ `outil` permet à l'appelant de
+        # n'étendre `web_resultats` qu'avec les skills citables
+        # (`skill_citable`).
+        yield {
+            "__tool_call__": True, "outil": nom,
+            "arguments": arguments, "resultats": resultats,
+        }
+        msgs.append(message_outil(nom, correlation, texte_outil))
+    return rang_suivant
 
 
 def _executer_outil_web_search(
@@ -765,9 +874,10 @@ class LLMEngine:
 
         ``outils``/``on_etape_recherche``/``rang_web_existant`` : tool-calling
         natif du registre ``_SKILLS`` (``web_search``, ``history_search``,
-        ``recherche_approfondie``), **Ollama seul** — ignorés silencieusement
-        pour gemini/openai-compatible, dont le format de message n'a pas
-        `tool_calls`/`role="tool"` (cf. `_stream_ollama`). Les appelants qui ne
+        ``recherche_approfondie``), **Ollama et LM Studio seuls** — ignorés
+        silencieusement pour gemini et les six autres fournisseurs
+        compatibles OpenAI, dont les messages restent `{role, content}` (cf.
+        `_stream_ollama`, `_stream_openai`). Les appelants qui ne
         passent rien n'ont rien à changer : ``outils=None`` (défaut) est le
         comportement historique, à l'octet — aucune sonde de capacité, aucun
         `tools=` exposé, une seule boucle. ``outils`` liste les NOMS de skills
@@ -821,8 +931,17 @@ class LLMEngine:
             yield from self._stream_gemini(messages, m, max_tokens or self._gen["max_tokens"])
         elif provider in _OPENAI_COMPAT:
             client = self._openai_client(provider)  # raises if key missing
-            yield from self._stream_openai(messages, model_id, client, provider, max_tokens,
-                                          raisonnement=raisonnement)
+            # Les paramètres d'outils sont transmis à TOUS les fournisseurs
+            # compatibles OpenAI, mais `_stream_openai` ne les lit que pour
+            # `lmstudio` — cf. sa docstring.
+            yield from self._stream_openai(
+                messages, model_id, client, provider, max_tokens,
+                raisonnement=raisonnement,
+                outils=outils, budgets_override=budgets_override,
+                skills_dynamiques=skills_dynamiques,
+                on_etape_recherche=on_etape_recherche,
+                rang_web_existant=rang_web_existant,
+            )
         else:
             yield from self._stream_ollama(
                 messages, m, max_tokens, raisonnement=raisonnement,
@@ -1295,46 +1414,20 @@ class LLMEngine:
                 "role": "assistant", "content": "".join(contenu_du_round),
                 "tool_calls": tool_calls_recus,
             })
-            for tc in tool_calls_recus:
-                nom = tc["function"]["name"]
-                if nom not in budgets:
-                    # Absent de `_SKILLS`, OU présent mais pas dans `actifs`
-                    # pour CE tour (le caller ne l'a pas demandé) : les deux
-                    # cas se traitent pareil, un modèle ne peut pas invoquer un
-                    # outil qui ne lui a pas été offert ce round.
-                    msgs.append({"role": "tool", "tool_name": nom, "content": f"Outil inconnu : {nom}"})
-                    continue
-                if budgets[nom] <= 0:
-                    msgs.append({
-                        "role": "tool", "tool_name": nom,
-                        "content": "Budget d'appels d'outil épuisé pour ce tour — réponds avec ce que tu as déjà.",
-                    })
-                    continue
-                budgets[nom] -= 1
-                arguments = tc["function"]["arguments"] or {}
-                texte_outil, resultats = registre[nom]["executor"](
-                    arguments, on_etape=on_etape_recherche, rang_de_depart=rang_suivant,
-                )
-                # `len(resultats)` vaut 0 par construction pour un skill dont
-                # les résultats ne sont pas des `ResultatWeb` numérotés
-                # (`history_search` en rend toujours `[]`) : la renumérotation
-                # ne s'applique donc, de fait, qu'à `web_search` — sans qu'une
-                # branche explicite ait besoin de le savoir.
-                rang_suivant += len(resultats)
-                # Sentinelle distincte de `__reasoning__`/`__stats__` : porte
-                # les résultats STRUCTURÉS jusqu'au consommateur async
-                # (modules/chat/router.py), seul endroit qui connaît
-                # `web_resultats` — ce générateur tourne dans le thread de
-                # fond de `_stream`, il ne peut pas l'étendre lui-même. Le
-                # champ `outil` permet à l'appelant de n'étendre `web_resultats`
-                # qu'avec les résultats de `web_search` (cf. §3 du chantier
-                # skills — `history_search` rend `[]` mais un futur skill non
-                # citable ne doit pas pouvoir s'y mélanger).
-                yield {
-                    "__tool_call__": True, "outil": nom,
-                    "arguments": arguments, "resultats": resultats,
-                }
-                msgs.append({"role": "tool", "tool_name": nom, "content": texte_outil})
+            # Dispatch commun (`_executer_appels_outil`, partagé avec le chemin
+            # LM Studio de `_stream_openai`). Ce qui reste propre à Ollama est
+            # ici : les arguments arrivent DÉJÀ en dict, et le message
+            # `role="tool"` se corrèle par `tool_name` — pas d'`id` côté
+            # Ollama, cf. docstring.
+            rang_suivant = yield from _executer_appels_outil(
+                [(tc["function"]["name"], tc["function"]["arguments"] or {}, None)
+                 for tc in tool_calls_recus],
+                registre, budgets, msgs,
+                lambda nom, _correlation, contenu: {
+                    "role": "tool", "tool_name": nom, "content": contenu,
+                },
+                on_etape_recherche, rang_suivant,
+            )
 
         if stats_vues:
             yield {
@@ -1447,8 +1540,15 @@ class LLMEngine:
     # ── OpenAI-compatible providers ──────────────────────────────────────────
 
     def _stream_openai(self, messages: list[dict], model_id: str, client, provider: str = "",
-                       max_tokens: Optional[int] = None, raisonnement: bool = True) -> Generator:
-        """Flux OpenAI-compatible. ``raisonnement`` n'agit que sur ``flm``.
+                       max_tokens: Optional[int] = None, raisonnement: bool = True,
+                       outils: Optional[list[str]] = None,
+                       budgets_override: Optional[dict[str, int]] = None,
+                       skills_dynamiques: Optional[dict[str, dict]] = None,
+                       on_etape_recherche: Optional[Callable[[dict], None]] = None,
+                       rang_web_existant: int = 0) -> Generator:
+        """Flux OpenAI-compatible. ``raisonnement`` n'agit que sur ``flm`` ; les
+        outils (``outils`` & co., mêmes paramètres que `_stream_ollama`) que sur
+        ``lmstudio`` — cf. la section « Tool-calling » en fin de docstring.
 
         **FastFlowLM (le NPU) a une bascule, et elle ne marche pas comme celle
         d'Ollama.** Mesuré sur ce poste (FLM 0.9.43, ``qwen3:4b``, dont
@@ -1537,15 +1637,74 @@ class LLMEngine:
         mesure, et la vérifier veut dire appeler une API **payante**. Lever la
         garde quand ce sera mesuré tient en un mot : retirer le test sur
         ``provider``. Le reste du code n'a pas à changer.
+
+        **Tool-calling natif — ``lmstudio`` SEUL (2026-09-22).** Même registre
+        ``_SKILLS`` (plus les skills dynamiques), mêmes budgets, même dispatch
+        (`_executer_appels_outil`, partagé avec `_stream_ollama`), même
+        sentinelle ``__tool_call__``, un seul ``__stats__`` agrégé. Ce qui
+        diffère d'Ollama, et qui a été MESURÉ sur LM Studio
+        (``mistralai/ministral-3-3b``) avant d'écrire :
+
+        * les ``tool_calls`` arrivent en **deltas fragmentés** — l'``id`` et le
+          ``name`` dans le premier fragment seulement, les ``arguments`` token
+          par token (``""`` → ``"{"`` → ``"\\""`` → ``"ville"``…), la fin
+          signalée par ``finish_reason: "tool_calls"``. Accumulation PAR
+          ``index`` (l'``id`` manque aux fragments suivants), JSON parsé
+          seulement à la fin ;
+        * arguments en chaîne JSON, pas en dict : un JSON final invalide (petit
+          modèle) ABANDONNE la tentative — étape de trace
+          ``tool_call_abandonne``, puis réponse sans outil, jamais un crash ;
+        * le message ``role="tool"`` se corrèle par ``tool_call_id``, que
+          l'API exige (Ollama, lui, n'a pas d'``id``).
+
+        Capacité jamais supposée : `_capacite_tools_lmstudio`
+        (``trained_for_tool_use`` de ``/api/v1/models``, cf.
+        `core.models.capacites_outils_lmstudio` — le mode d'outils « par
+        défaut » de LM Studio y est filtré).
+
+        **Les six autres fournisseurs ne voient RIEN de ce chantier** : pas de
+        sonde, pas de ``tools``, un seul round, le corps d'avant à l'octet
+        (verrouillé par ``test_tool_calling_lmstudio.py``). Les étendre
+        demandera de mesurer chacun — format des deltas, acceptation de
+        ``tools`` et de ``role="tool"`` — sur des API FACTURÉES : ce n'est pas
+        un simple retrait de la garde sur ``provider``.
         """
+        # Normalisation HISTORIQUE, inchangée : l'historique d'une conversation
+        # reste `{role, content}` pour les sept fournisseurs. Seuls les
+        # messages ajoutés PENDANT la boucle d'outils ci-dessous (assistant
+        # avec `tool_calls`, `role="tool"` avec `tool_call_id`) portent
+        # d'autres clés — et ils ne vivent que dans cette copie locale.
         oai = [{"role": m["role"], "content": m["content"]} for m in messages]
         stream_start = time.time()
-        prompt_tokens = 0
-        output_tokens = 0
+        total_prompt_tokens = 0
+        total_output_tokens = 0
+        #: Prompt du DERNIER round — même distinction que `_stream_ollama`
+        #: (`contexte_tokens` ≠ somme facturée), cf. sa docstring.
+        dernier_prompt_tokens = 0
         tronque = False
         mt = self._budget(max_tokens, raisonnement)
 
-        def _create(with_usage: bool):
+        # Tool-calling : `lmstudio` SEUL. Pour les six autres fournisseurs,
+        # `actifs` est vide, donc `budgets` aussi, donc aucun `tools=` posé,
+        # aucune sonde, un seul round — le corps d'avant à l'octet (verrouillé
+        # par `test_tool_calling_lmstudio.NonRegressionSixFournisseursTest`).
+        # `and` court-circuite la sonde HTTP quand rien n'est actif, comme
+        # côté Ollama.
+        registre: dict[str, dict] = {**(skills_dynamiques or {}), **_SKILLS}
+        actifs = [n for n in (outils or []) if n in registre] if provider == "lmstudio" else []
+        capacite_ok = bool(actifs) and _capacite_tools_lmstudio(model_id)
+        overrides = budgets_override or {}
+        budgets: dict[str, int] = (
+            {n: overrides.get(n, registre[n]["budget_max"]) for n in actifs} if capacite_ok else {}
+        )
+        rang_suivant = rang_web_existant
+        #: Garde-fou propre à ce chemin : un petit modèle qui appellerait en
+        #: boucle un outil INCONNU ne décrémente aucun budget (cf.
+        #: `_executer_appels_outil`) — rien ne bornerait alors la boucle. Au
+        #: plus un round par invocation budgétée, plus le round de conclusion.
+        rounds_restants = sum(budgets.values()) + 1
+
+        def _create(with_usage: bool, tools: list[dict]):
             kwargs = dict(
                 model=model_id, messages=oai, stream=True,
                 temperature=self._gen["temperature"], max_tokens=mt,
@@ -1554,64 +1713,180 @@ class LLMEngine:
                 kwargs["extra_body"] = {"think": bool(raisonnement)}
             if with_usage:
                 kwargs["stream_options"] = {"include_usage": True}
+            if tools:
+                kwargs["tools"] = tools
             return client.chat.completions.create(**kwargs)
 
-        try:
-            stream = _create(with_usage=True)
-        except Exception:
-            # Le provider peut ne pas gérer stream_options : on retente sans.
-            # Si ça échoue encore, c'est une vraie erreur API → message explicite.
+        def _abandonner(raison: str, noms: list[str]) -> None:
+            """Tentative d'appel d'outil ABANDONNÉE — pas de crash, une étape
+            de trace qui le dit, et le tour continue sans outil. Nom d'étape
+            distinct des `tool_call_<nom>` (émis, eux, par les exécuteurs) :
+            la trace dit qu'un appel a été TENTÉ puis écarté, pas exécuté."""
+            logger.info("Tool-calling %s (%s) abandonné : %s %s", provider, model_id, raison, noms)
+            if on_etape_recherche:
+                on_etape_recherche({"etape": "tool_call_abandonne", "raison": raison, "outils": noms})
+            budgets.clear()
+
+        while True:
+            rounds_restants -= 1
+            tools_actifs = (
+                [registre[n]["schema"] for n in budgets if budgets[n] > 0]
+                if rounds_restants > 0 else []
+            )
             try:
-                stream = _create(with_usage=False)
+                stream = _create(with_usage=True, tools=tools_actifs)
+            except Exception:
+                # Le provider peut ne pas gérer stream_options : on retente sans.
+                # Si ça échoue encore, c'est une vraie erreur API → message explicite.
+                try:
+                    stream = _create(with_usage=False, tools=tools_actifs)
+                except Exception as exc:
+                    logger.warning("Stream %s (%s) refusé : %s", provider, model_id, exc)
+                    raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
+
+            contenu_du_round: list[str] = []
+            #: Fragments de `tool_calls` accumulés PAR INDEX, jamais par `id` :
+            #: mesuré sur LM Studio, l'`id` (et le `name`) n'arrivent que dans
+            #: le PREMIER fragment d'un appel, les suivants ne portent que
+            #: `index` + un morceau d'`arguments`. Rien n'est parsé avant la
+            #: fin du flux.
+            fragments: dict[int, dict] = {}
+            finish_reason = None
+            tronque = False
+            try:
+                for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta is not None:
+                        if provider == "flm":
+                            # Champ extra, non modélisé par le SDK : `getattr` et non
+                            # `delta.reasoning_content`, pour que la fin de cette
+                            # tolérance rende None au lieu de lever. Test de VÉRITÉ et
+                            # non de présence — le premier chunk le porte vide.
+                            reasoning = getattr(delta, "reasoning_content", None)
+                            if reasoning:
+                                # Avant le contenu du même chunk, comme sur le chemin
+                                # Ollama. Mesuré : aucun chunk ne porte les deux, mais
+                                # l'ordre correct ne coûte rien.
+                                yield {"__reasoning__": True, "content": reasoning}
+                        # Le texte part au fil de l'eau MÊME s'il précède ou
+                        # accompagne un `tool_call` dans le même chunk — comme
+                        # côté Ollama, où il est déjà affiché avant l'outil.
+                        if delta.content:
+                            contenu_du_round.append(delta.content)
+                            yield delta.content
+                        # Lu SEULEMENT si des outils ont été envoyés ce round :
+                        # pour les six autres fournisseurs (et LM Studio sans
+                        # capacité), rien de ce qui suit n'existe.
+                        if tools_actifs:
+                            for frag in getattr(delta, "tool_calls", None) or []:
+                                entree = fragments.setdefault(
+                                    frag.index, {"id": "", "name": "", "arguments": ""})
+                                if frag.id and not entree["id"]:
+                                    entree["id"] = frag.id
+                                fn = frag.function
+                                if fn is not None:
+                                    # Concaténés tous les deux (forme de
+                                    # référence de l'API) : un serveur peut
+                                    # morceler le `name` aussi, pas seulement
+                                    # les `arguments`.
+                                    entree["name"] += fn.name or ""
+                                    entree["arguments"] += fn.arguments or ""
+                    # `finish_reason == "length"` : le plafond `max_tokens` a été
+                    # atteint, donc la génération est COUPÉE. Pendant OpenAI du
+                    # `done_reason` d'Ollama, et même conséquence — sur FLM, dont le
+                    # raisonnement puise dans le même budget, la réponse peut ne
+                    # jamais être produite.
+                    #
+                    # `getattr` en cascade : `choices` peut être vide sur le chunk
+                    # d'usage final, et `finish_reason` absent selon le fournisseur.
+                    if chunk.choices:
+                        fr = getattr(chunk.choices[0], "finish_reason", None)
+                        if fr:
+                            finish_reason = fr
+                        if fr == "length":
+                            tronque = True
+                    if getattr(chunk, "usage", None):
+                        # Un chunk d'usage par round : additionné pour la
+                        # facturation, AFFECTÉ pour le contexte (cf. plus haut).
+                        round_prompt = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                        total_prompt_tokens += round_prompt
+                        total_output_tokens += getattr(chunk.usage, "completion_tokens", 0) or 0
+                        dernier_prompt_tokens = round_prompt
             except Exception as exc:
-                logger.warning("Stream %s (%s) refusé : %s", provider, model_id, exc)
+                # Erreur survenue en cours de streaming (coupure, refus serveur…).
+                logger.warning("Stream %s (%s) interrompu : %s", provider, model_id, exc)
                 raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
 
-        try:
-            for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta is not None:
-                    if provider == "flm":
-                        # Champ extra, non modélisé par le SDK : `getattr` et non
-                        # `delta.reasoning_content`, pour que la fin de cette
-                        # tolérance rende None au lieu de lever. Test de VÉRITÉ et
-                        # non de présence — le premier chunk le porte vide.
-                        reasoning = getattr(delta, "reasoning_content", None)
-                        if reasoning:
-                            # Avant le contenu du même chunk, comme sur le chemin
-                            # Ollama. Mesuré : aucun chunk ne porte les deux, mais
-                            # l'ordre correct ne coûte rien.
-                            yield {"__reasoning__": True, "content": reasoning}
-                    if delta.content:
-                        yield delta.content
-                # `finish_reason == "length"` : le plafond `max_tokens` a été
-                # atteint, donc la génération est COUPÉE. Pendant OpenAI du
-                # `done_reason` d'Ollama, et même conséquence — sur FLM, dont le
-                # raisonnement puise dans le même budget, la réponse peut ne
-                # jamais être produite.
-                #
-                # `getattr` en cascade : `choices` peut être vide sur le chunk
-                # d'usage final, et `finish_reason` absent selon le fournisseur.
-                if chunk.choices:
-                    if getattr(chunk.choices[0], "finish_reason", None) == "length":
-                        tronque = True
-                if getattr(chunk, "usage", None):
-                    prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                    output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
-        except Exception as exc:
-            # Erreur survenue en cours de streaming (coupure, refus serveur…).
-            logger.warning("Stream %s (%s) interrompu : %s", provider, model_id, exc)
-            raise RuntimeError(_provider_error_message(provider, model_id, exc)) from exc
+            if not fragments:
+                break
+
+            appels = [fragments[i] for i in sorted(fragments)]
+            noms = [a["name"] for a in appels]
+            if finish_reason != "tool_calls":
+                # Flux terminé (`length`, `stop`…) avec des fragments encore en
+                # attente : l'appel n'a jamais été complété, ses arguments sont
+                # au mieux tronqués. Rien à exécuter.
+                _abandonner("flux_interrompu", noms)
+            else:
+                decodes: list[tuple[str, dict, object]] = []
+                for position, a in enumerate(appels):
+                    try:
+                        arguments = json.loads(a["arguments"] or "{}")
+                    except (json.JSONDecodeError, ValueError):
+                        arguments = None
+                    if not isinstance(arguments, dict) or not a["name"]:
+                        decodes = []
+                        break
+                    # `id` réel fourni par LM Studio (mesuré) ; un id
+                    # synthétique seulement pour un serveur qui l'omettrait —
+                    # l'API exige que chaque `role="tool"` le référence.
+                    a["id"] = a["id"] or f"call_{position}"
+                    decodes.append((a["name"], arguments, a["id"]))
+                if not decodes:
+                    # JSON final invalide (petit modèle qui produit des
+                    # arguments cassés) : TOUT le round est écarté — l'API
+                    # exige une réponse `role="tool"` par `tool_call_id` du
+                    # message assistant, donc exécuter les appels valides et
+                    # taire les autres produirait un historique refusé.
+                    _abandonner("arguments_invalides", noms)
+                else:
+                    oai.append({
+                        "role": "assistant", "content": "".join(contenu_du_round),
+                        "tool_calls": [
+                            {"id": a["id"], "type": "function",
+                             "function": {"name": a["name"], "arguments": a["arguments"]}}
+                            for a in appels
+                        ],
+                    })
+                    rang_suivant = yield from _executer_appels_outil(
+                        decodes, registre, budgets, oai,
+                        lambda _nom, correlation, contenu: {
+                            "role": "tool", "tool_call_id": correlation, "content": contenu,
+                        },
+                        on_etape_recherche, rang_suivant,
+                    )
+                    continue
+
+            # Tentative abandonnée. Si du texte est déjà parti ce round, c'est
+            # la réponse : relancer un round la dupliquerait dans la bulle.
+            # Sinon, un round de plus SANS outil (`budgets` vidé par
+            # `_abandonner`), pour ne jamais laisser une bulle vide à un modèle
+            # qui n'avait émis qu'un appel cassé.
+            if contenu_du_round:
+                break
 
         yield {
             "__stats__": True,
-            "prompt_tokens": prompt_tokens,
-            "output_tokens": output_tokens,
+            "prompt_tokens": total_prompt_tokens,
+            "output_tokens": total_output_tokens,
             "eval_duration_ns": int((time.time() - stream_start) * 1e9),
             "prompt_duration_ns": 0,
+            # Du DERNIER round : c'est lui qui a produit (ou coupé) la réponse.
             "tronqué": tronque,
-            # Mono-round ici aussi : le contexte EST le prompt du tour.
-            "contexte_tokens": prompt_tokens,
+            # Mono-round pour les six autres fournisseurs : le contexte EST le
+            # prompt du tour, comme avant. Multi-round (LM Studio avec
+            # outils) : le dernier round, pas la somme.
+            "contexte_tokens": dernier_prompt_tokens,
         }
 
     def _generate_openai(self, messages: list[dict], model_id: str, client, provider: str = "") -> str:

@@ -1283,7 +1283,7 @@ async def ws_chat(websocket: WebSocket):
 
                 Hissée hors du `if web_search_override:` (originellement définie
                 dedans) : le tool-calling natif (`LLMEngine._stream_ollama`,
-                `outils=[...]`) peut déclencher une recherche même quand le
+                ou `_stream_openai` pour LM Studio, `outils=[...]`) peut déclencher une recherche même quand le
                 classifieur n'a RIEN détecté ce tour — les deux mécanismes sont
                 indépendants (CLAUDE.md), donc cette trace doit exister pour
                 les deux, pas seulement quand `web_search_override` est vrai.
@@ -1661,8 +1661,8 @@ async def ws_chat(websocket: WebSocket):
                     for token in llm.stream(
                         msgs, model=model, raisonnement=raisonnement,
                         # Tool-calling natif (core/llm.py, registre `_SKILLS`)
-                        # — Ollama seul, ignoré silencieusement pour les
-                        # autres providers. `web_search`/`recherche_approfondie`
+                        # — Ollama et LM Studio seuls, ignoré silencieusement
+                        # pour les autres providers (cf. `_stream_openai`). `web_search`/`recherche_approfondie`
                         # restent indépendants du classifieur heuristique juste
                         # au-dessus (`web_search_override`) : les deux peuvent
                         # agir sur le même tour, d'où `rang_web_existant` pour
@@ -1723,8 +1723,9 @@ async def ws_chat(websocket: WebSocket):
                     break
                 if isinstance(item, dict) and item.get("__tool_call__"):
                     # Résultats STRUCTURÉS d'un outil déclenché par le MODÈLE
-                    # (tool-calling natif, core/llm.py::_stream_ollama,
-                    # registre `_SKILLS`). Seuls les skills marqués
+                    # (tool-calling natif, core/llm.py::_stream_ollama ou
+                    # `_stream_openai` pour LM Studio — même dispatch,
+                    # `_executer_appels_outil` —, registre `_SKILLS`). Seuls les skills marqués
                     # `citable=True` dans `_SKILLS` (`web_search`,
                     # `recherche_approfondie` — même exécuteur, mêmes
                     # `ResultatWeb`) versent dans `web_resultats` : c'est la
