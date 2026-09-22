@@ -1698,11 +1698,13 @@ class LLMEngine:
             {n: overrides.get(n, registre[n]["budget_max"]) for n in actifs} if capacite_ok else {}
         )
         rang_suivant = rang_web_existant
-        #: Garde-fou propre à ce chemin : un petit modèle qui appellerait en
-        #: boucle un outil INCONNU ne décrémente aucun budget (cf.
-        #: `_executer_appels_outil`) — rien ne bornerait alors la boucle. Au
-        #: plus un round par invocation budgétée, plus le round de conclusion.
-        rounds_restants = sum(budgets.values()) + 1
+        #: Même borne dure que `_stream_ollama` (`_plafond_rounds_outils`) : un
+        #: outil INCONNU appelé en boucle ne décrémente aucun budget. Pas de
+        #: « relance de conclusion » ici, contrairement à Ollama : des fragments
+        #: d'outil reçus sans outil offert sont ignorés (cf. plus bas), donc le
+        #: round sans outil termine toujours le tour.
+        plafond_rounds = _plafond_rounds_outils(budgets)
+        round_courant = 0
 
         def _create(with_usage: bool, tools: list[dict]):
             kwargs = dict(
@@ -1728,11 +1730,10 @@ class LLMEngine:
             budgets.clear()
 
         while True:
-            rounds_restants -= 1
-            tools_actifs = (
-                [registre[n]["schema"] for n in budgets if budgets[n] > 0]
-                if rounds_restants > 0 else []
+            tools_actifs = _schemas_du_round(
+                registre, budgets, round_courant, plafond_rounds, on_etape_recherche,
             )
+            round_courant += 1
             try:
                 stream = _create(with_usage=True, tools=tools_actifs)
             except Exception:

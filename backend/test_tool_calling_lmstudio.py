@@ -532,6 +532,8 @@ class FragmentationTest(unittest.TestCase):
         self.assertEqual(_textes(sortie), "Il fait beau [1].")
         self.assertEqual(scene.client.appels[1]["messages"][-1]["content"],
                          "Outil inconnu : outil_invente")
+        # Même étape de trace que côté Ollama, émise une seule fois.
+        self.assertEqual(scene.etapes, [{"etape": "tool_call_plafond_atteint", "rounds": 2}])
 
 
 class ArgumentsInvalidesTest(unittest.TestCase):
