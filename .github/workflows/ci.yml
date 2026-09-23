@@ -79,7 +79,7 @@ permissions:
 # Le nombre ne peut que BAISSER. Quiconque ajoute un avertissement casse la CI ;
 # quiconque en resorbe descend le plafond dans le meme commit.
 env:
-  ESLINT_MAX_WARNINGS: "61"
+  ESLINT_MAX_WARNINGS: "59"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

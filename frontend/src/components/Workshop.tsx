@@ -7,6 +7,8 @@ import { Badge, Button, Card, Input, Select, Textarea } from './ui'
 import { API, apiFetch, wsUrl } from '../api'
 import { useInstanceConfig } from '../instance'
 import { usePersistentState } from '../usePersistentState'
+import { signalerChangementModules, useFluxEnCours } from '../redemarrage'
+import RedemarrageRequis from './RedemarrageRequis'
 
 type Engine = 'ollama' | 'claude_sub' | 'claude_gateway' | 'aider'
 type Mode = 'headless' | 'terminal'
@@ -58,6 +60,11 @@ export default function Workshop() {
   const [log, setLog] = usePersistentState<string>('epure.workshop.log', '')
   const [terminalInfo, setTerminalInfo] = useState<{ cwd?: string; cmd?: string[]; prompt?: string } | null>(null)
   const [staging, setStaging] = usePersistentState<Staging | null>('epure.workshop.staging', null)
+  // Une génération (ou une session terminal / de discussion) est un flux vers le
+  // backend : un redémarrage demandé pendant ce temps la couperait — le bandeau
+  // prévient d'abord (src/redemarrage.ts).
+  useFluxEnCours("une génération de l'Atelier",
+    phase === 'generating' || phase === 'validating' || phase === 'terminal' || phase === 'chatting')
   const [report, setReport] = usePersistentState<Report | null>('epure.workshop.report', null)
   const [smoke, setSmoke] = usePersistentState<SmokeInfo | null>('epure.workshop.smoke', null)
   const [activeTab, setActiveTab] = usePersistentState<string>('epure.workshop.activeTab', 'router.py')
@@ -440,18 +447,28 @@ export default function Workshop() {
         return
       }
       const sid = staging.id
+      // Le backend ne monte plus rien à chaud : un module qui a un routeur est
+      // chargé au REDÉMARRAGE, que le bandeau propose. `requis` vient du
+      // backend (écart calculé) ; une réponse sans ce champ vaut « pas requis ».
+      const requis = data?.['redémarrage']?.requis === true
       setApproveResult(
         `Module « ${sid} » activé${data.backup ? ` (backup créé)` : ''}.`
-        + (data.restart_required ? ' ⚠️ routes non montées à chaud — un redémarrage backend peut être nécessaire.' : '')
-        + ' Rechargement de l\'interface…'
+        + (requis
+          ? ' Redémarrage requis pour le charger — bouton ci-dessus.'
+          : ' Rechargement de l\'interface…')
       )
       wsRef.current?.close()
-      // IMPORTANT : on vide l'état de revue PERSISTÉ avant de recharger, sinon la
-      // revue (sur un staging maintenant supprimé) réapparaîtrait après le reload.
+      // IMPORTANT : on vide l'état de revue PERSISTÉ avant tout rechargement,
+      // sinon la revue (sur un staging maintenant supprimé) réapparaîtrait.
       setPhase('idle'); setStaging(null); setReport(null); setSmoke(null); setLog(''); setFeedbackText('')
-      // Recharge l'interface pour garantir l'affichage du composant à jour.
-      // Le backend a déjà monté les routes à chaud (aucun redémarrage backend).
-      // Côté frontend, Vite ne propage PAS fiablement le HMR d'un composant généré
+      if (requis) {
+        // Le rechargement viendra après le redémarrage (RedemarrageRequis), et
+        // c'est lui qui ré-importera le composant à jour.
+        signalerChangementModules()
+        return
+      }
+      // Module sans changement de routeur (composant seul) : rien à redémarrer,
+      // mais Vite ne propage PAS fiablement le HMR d'un composant généré
       // (lazy + import.meta.glob) déjà monté lors d'une MODIFICATION (le set de
       // fichiers ne change pas) → on force un rechargement qui ré-importe le
       // composant à jour. L'état du formulaire (description, moteur…) est persisté.
@@ -496,6 +513,8 @@ export default function Workshop() {
       <h1 className="text-xl font-semibold text-primary flex items-center gap-2">
         <Hammer size={18} className="text-accent" /> Atelier de modules
       </h1>
+
+      <RedemarrageRequis />
 
       {/* ── Configuration ── */}
       <Card className="max-w-2xl space-y-4">

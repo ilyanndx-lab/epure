@@ -18,6 +18,7 @@ import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
 import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
+import { useFluxEnCours } from '../../redemarrage'
 
 interface MsgStats {
   tps: number
@@ -2247,6 +2248,10 @@ export default function Chat({
     const idx = comparaisonUserMsgIdxRef.current
     return idx >= 0 && !!messages[idx]?.comparaison
   })()
+  // Un redémarrage du backend (changement de modules) coupe /ws/chat : le
+  // bandeau « Redémarrage requis » prévient d'abord si une réponse est en cours
+  // ou si une comparaison attend encore son choix (src/redemarrage.ts).
+  useFluxEnCours('une réponse du chat', streaming || comparaisonEnCours)
 
   const toggleCompareModel = useCallback((id: string) => {
     setCompareModeles(prev => {

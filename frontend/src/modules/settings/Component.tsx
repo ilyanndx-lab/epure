@@ -11,6 +11,8 @@ import { useInstanceConfig, updateInstance } from '../../instance'
 import { useModules, resolveIcon, fetchModules } from '../../modules'
 import { API, apiFetch } from '../../api'
 import { ATELIER_PRESENT } from '../../atelier'
+import { signalerChangementModules } from '../../redemarrage'
+import RedemarrageRequis from '../../components/RedemarrageRequis'
 import { modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 
 interface EngineStatus { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
@@ -536,9 +538,9 @@ export default function Settings() {
       const res = await apiFetch(`${API}/settings/catalogue/${id}/install`, { method: 'POST' })
       const d = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`)
-      if (d?.erreur_montage) {
-        setCatalogueMsg(`Installé, mais le routeur n'a pas pu être monté à chaud : ${d.erreur_montage}. Redémarrez le backend.`)
-      }
+      // Rien n'est monté à chaud : le module est chargé au redémarrage, que le
+      // bandeau en tête des Réglages propose.
+      signalerChangementModules()
       await Promise.all([loadCatalogue(), fetchModules()])
     } catch (err) {
       setCatalogueMsg(`Installation impossible : ${(err as Error).message}`)
@@ -563,6 +565,8 @@ export default function Settings() {
       const res = await apiFetch(`${API}/settings/modules/${id}`, { method: 'DELETE' })
       const d = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(d?.detail || `HTTP ${res.status}`)
+      // Sa route répond encore jusqu'au redémarrage (aucun démontage à chaud).
+      signalerChangementModules()
       await Promise.all([loadCatalogue(), fetchModules()])
     } catch (err) {
       setCatalogueMsg(`Suppression impossible : ${(err as Error).message}`)
@@ -837,6 +841,10 @@ export default function Settings() {
 
       <h1 className="text-lg font-display font-semibold text-primary">Réglages</h1>
       <Tabs tabs={TABS} active={currentTab} onChange={setActiveTab} />
+
+      {/* Au-dessus des onglets et non dans l'un d'eux : le changement peut venir
+          du Catalogue (installer, supprimer) comme de l'Instance (activer). */}
+      <RedemarrageRequis />
 
       {/* ── Apparence ── */}
       {currentTab === 'apparence' && (
@@ -1134,12 +1142,13 @@ export default function Settings() {
 
         {catalogueMsg && <p className="text-xs text-warning">{catalogueMsg}</p>}
 
-        {/* Limite assumée du catalogue local, cf. README : le backend monte la
-            route immédiatement, mais le composant n'entre dans le bundle que si
+        {/* Limite assumée du catalogue local, cf. README : le backend charge la
+            route au redémarrage, et le composant n'entre dans le bundle que si
             un serveur de dev le recompile. */}
         <p className="text-xs text-muted/70">
-          En développement, un module installé apparaît immédiatement. Avec un
-          frontend déjà construit (Docker), il faut reconstruire l'interface.
+          Un module installé ou supprimé prend effet au redémarrage du backend.
+          En développement, son interface suit au rechargement de la page ; avec
+          un frontend déjà construit (Docker), il faut reconstruire l'interface.
         </p>
       </Card>
       )}
