@@ -471,5 +471,73 @@ class OutilInconnuTest(unittest.TestCase):
         self.assertIn("inconnu", message_outil["content"].lower())
 
 
+#: Garde-fou DU TEST, pas du code : sans le plafond de rounds, le rejoueur
+#: infini ci-dessous ferait tourner `stream()` pour toujours. Au-delà de ce
+#: nombre d'appels `chat()`, le faux lève — le test échoue au lieu de geler.
+_APPELS_MAX_AVANT_ECHEC = 50
+
+
+def _toujours_inconnu():
+    """Un modèle qui appelle un outil inventé À CHAQUE round, sans fin — y
+    compris quand plus aucun outil ne lui est offert."""
+    for _ in range(_APPELS_MAX_AVANT_ECHEC):
+        yield [_chunk(tool_calls=[_tool_call(nom="outil_invente")], done=True)]
+    raise AssertionError("boucle d'outils non bornée : le plafond de rounds n'a pas agi")
+
+
+class PlafondRoundsTest(unittest.TestCase):
+    """Un outil INCONNU ne décrémente aucun budget (message « Outil inconnu »),
+    donc seuls les budgets ne bornent pas la boucle : `_plafond_rounds_outils`
+    la termine, et le dit dans la trace."""
+
+    def test_outil_inconnu_en_boucle_s_arrete_au_plafond(self):
+        etapes: list[dict] = []
+        with _Rejoueur(rounds=_toujours_inconnu()) as r:
+            sortie, _ = _stream(r, outils=["web_search"], on_etape_recherche=etapes.append)
+        # Budget web = 2 → 2 rounds avec outils, 1 de conclusion sans outil,
+        # et — le modèle insistant quand même — 1 seule relance de conclusion
+        # (réponses « outil inconnu » reçues), jamais davantage.
+        self.assertEqual(len(r.appels), 4)
+        self.assertIn("tools", r.appels[0])
+        self.assertIn("tools", r.appels[1])
+        self.assertNotIn("tools", r.appels[2])
+        self.assertNotIn("tools", r.appels[3])
+        self.assertEqual(r.appels_recherche, [])
+        self.assertEqual(etapes, [{"etape": "tool_call_plafond_atteint", "rounds": 2}])
+        self.assertEqual(len(_stats(sortie)), 1)
+
+    def test_plafond_suit_la_somme_des_budgets(self):
+        with _Rejoueur(rounds=_toujours_inconnu()) as r:
+            _stream(r, outils=["web_search", "recherche_approfondie"],
+                    budgets_override={"recherche_approfondie": 3})
+        self.assertEqual(len(r.appels), 2 + 3 + 1 + 1)
+
+    def test_conclusion_normale_apres_le_plafond(self):
+        etapes: list[dict] = []
+        inconnu = [_chunk(tool_calls=[_tool_call(nom="outil_invente")], done=True)]
+        with _Rejoueur(rounds=[inconnu, inconnu, [_chunk(content="Réponse.", done=True)]]) as r:
+            sortie, _ = _stream(r, outils=["web_search"], on_etape_recherche=etapes.append)
+        self.assertEqual("".join(_textes(sortie)), "Réponse.")
+        self.assertEqual([e["etape"] for e in etapes], ["tool_call_plafond_atteint"])
+
+    def test_epuisement_normal_des_budgets_n_emet_pas_l_etape(self):
+        etapes: list[dict] = []
+        with _Rejoueur(rounds=[
+            [_chunk(tool_calls=[_tool_call(requete="un")], done=True)],
+            [_chunk(tool_calls=[_tool_call(requete="deux")], done=True)],
+            [_chunk(content="Conclusion.", done=True)],
+        ]) as r:
+            _stream(r, outils=["web_search"], on_etape_recherche=etapes.append)
+        self.assertNotIn("tool_call_plafond_atteint", [e["etape"] for e in etapes])
+        self.assertEqual(len(r.appels), 3)
+
+    def test_sans_outils_le_plafond_ne_change_rien(self):
+        etapes: list[dict] = []
+        with _Rejoueur(rounds=[[_chunk(content="ok", done=True)]]) as r:
+            _stream(r, on_etape_recherche=etapes.append)
+        self.assertEqual(len(r.appels), 1)
+        self.assertEqual(etapes, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

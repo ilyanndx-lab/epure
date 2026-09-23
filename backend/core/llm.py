@@ -337,6 +337,46 @@ def _capacite_tools_disponible(model: str) -> bool:
     return declarees is not None and "tools" in declarees
 
 
+def _plafond_rounds_outils(budgets: dict[str, int]) -> int:
+    """Nombre MAXIMAL de rounds d'un tour de tool-calling : un par invocation
+    budgétée, plus le round de conclusion.
+
+    Les budgets par skill ne suffisent pas à borner la boucle : un appel à un
+    outil INCONNU (nom inventé, skill non actif ce tour) reçoit un message
+    « Outil inconnu » sans décrémenter aucun budget. Un petit modèle qui
+    insiste relancerait donc un round, puis un autre, sans fin — chaque round
+    renvoyant le prompt entier et consommant un `num_predict`. Au-delà de
+    ce plafond, aucune invocation budgétée ne peut plus avoir eu lieu, donc
+    aucun round de plus n'est justifié.
+    """
+    return sum(budgets.values()) + 1
+
+
+def _schemas_du_round(
+    registre: dict[str, dict], budgets: dict[str, int], round_courant: int,
+    plafond: int, on_etape: Optional[Callable[[dict], None]] = None,
+) -> list[dict]:
+    """Schémas `tools` à exposer au round `round_courant` (compté depuis 0).
+
+    Ceux dont le budget est encore positif — sauf au DERNIER round permis par
+    `plafond` (`_plafond_rounds_outils`), qui conclut sans outil. Si ce
+    dernier round retire des outils que les budgets autorisaient encore, c'est
+    le plafond qui a tranché, pas l'épuisement normal : étape de trace
+    `tool_call_plafond_atteint`, pour que l'arrêt se voie dans le panneau au
+    lieu d'être un silence. Un épuisement normal des budgets n'émet rien.
+    """
+    schemas = [registre[n]["schema"] for n in budgets if budgets[n] > 0]
+    if schemas and round_courant >= plafond - 1:
+        # `==` et non `>=` pour l'étape : un round de conclusion SUPPLÉMENTAIRE
+        # (cf. `conclusion_forcee` dans `_stream_ollama`) ne la réémet pas.
+        if round_courant == plafond - 1:
+            logger.info("Tool-calling : plafond de %d rounds atteint, conclusion sans outil", plafond)
+            if on_etape:
+                on_etape({"etape": "tool_call_plafond_atteint", "rounds": round_courant})
+        return []
+    return schemas
+
+
 def _executer_outil_web_search(
     arguments: dict, on_etape: Optional[Callable[[dict], None]] = None,
     rang_de_depart: int = 0,
@@ -1087,7 +1127,11 @@ class LLMEngine:
         réciproquement. À chaque round, seuls les schémas des skills dont le
         budget est encore positif sont exposés dans ``tools=`` — budgets tous
         épuisés (ou liste filtrée vide) → pas de clé ``tools`` du tout, le
-        modèle conclut avec ce qu'il a.
+        modèle conclut avec ce qu'il a. Borne DURE en plus des budgets :
+        ``_plafond_rounds_outils`` (un round par invocation budgétée + un de
+        conclusion), parce qu'un outil INCONNU ne décrémente aucun budget —
+        sans elle, un modèle qui l'appelle en boucle ne s'arrêtait jamais.
+        Atteinte, elle émet l'étape de trace ``tool_call_plafond_atteint``.
 
         Un ``tool_calls`` reçu est dispatché par son ``nom`` : absent de
         ``budgets`` (skill non actif ce tour, ou inventé par le modèle) →
@@ -1146,6 +1190,16 @@ class LLMEngine:
             {n: overrides.get(n, registre[n]["budget_max"]) for n in actifs} if capacite_ok else {}
         )
         rang_suivant = rang_web_existant
+        #: Borne DURE de la boucle, cf. `_plafond_rounds_outils` : les budgets
+        #: seuls ne la garantissent pas face à un outil inconnu appelé en boucle.
+        plafond_rounds = _plafond_rounds_outils(budgets)
+        round_courant = 0
+        #: Vrai après un round où le modèle a émis un `tool_calls` SANS
+        #: qu'aucun outil lui ait été offert (budgets épuisés ou plafond) :
+        #: il reçoit ses réponses « budget épuisé »/« outil inconnu » et UN
+        #: round pour conclure — comportement d'avant le plafond, conservé —
+        #: mais pas un de plus, sinon la boucle ne serait toujours pas bornée.
+        conclusion_forcee = False
 
         total_prompt_tokens = 0
         total_output_tokens = 0
@@ -1175,7 +1229,10 @@ class LLMEngine:
             }
             if not raisonnement:
                 appel["think"] = False
-            tools_actifs = [registre[n]["schema"] for n in budgets if budgets[n] > 0]
+            tools_actifs = _schemas_du_round(
+                registre, budgets, round_courant, plafond_rounds, on_etape_recherche,
+            )
+            round_courant += 1
             if tools_actifs:
                 appel["tools"] = tools_actifs
 
@@ -1229,8 +1286,10 @@ class LLMEngine:
                 except Exception:
                     pass
 
-            if not tool_calls_recus:
+            if not tool_calls_recus or conclusion_forcee:
                 break
+            if not tools_actifs:
+                conclusion_forcee = True
 
             msgs.append({
                 "role": "assistant", "content": "".join(contenu_du_round),
