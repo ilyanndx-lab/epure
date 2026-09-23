@@ -149,6 +149,18 @@ class FournisseursMuctsTest(_SondeBouchonnee):
 
 
 class MistralTest(_SondeBouchonnee):
+    """`_fenetre_mistral` rend `None` SANS appel HTTP quand `MISTRAL_API_KEY`
+    est vide. La clé est donc posée ici, factice : sans elle, ces tests ne
+    passaient que sur un poste dont le `backend/.env` porte une vraie clé
+    (chargée par `core.llm` à l'import) — rouges en CI et dans tout worktree,
+    verts sur le poste de dev, sans que rien ne le signale."""
+
+    def setUp(self):
+        super().setUp()
+        cle = mock.patch.dict(os.environ, {"MISTRAL_API_KEY": "cle-factice-de-test"})
+        cle.start()
+        self.addCleanup(cle.stop)
+
     def test_la_fenetre_du_modele_demande_est_lue(self):
         """La liste Mistral sert 46 modèles aux fenêtres DIFFÉRENTES (le premier
         annonce 256 000, `mistral-small-latest` 262 144) : c'est celui qui est
@@ -171,6 +183,14 @@ class MistralTest(_SondeBouchonnee):
         fenetre_contexte.fenetre_de("mistral:m")
         fenetre_contexte.fenetre_de("mistral:m")
         self.assertEqual(self.requete.call_count, 1)
+
+    def test_sans_cle_aucun_appel_reseau(self):
+        """Le cas que la clé factice du `setUp` masquerait sinon : sans
+        `MISTRAL_API_KEY`, pas de requête et pas de fenêtre — jamais un appel
+        anonyme vers l'API."""
+        with mock.patch.dict(os.environ, {"MISTRAL_API_KEY": ""}):
+            self.assertEqual(fenetre_contexte.fenetre_de("mistral:m"), (None, None))
+        self.requete.assert_not_called()
 
     def test_un_echec_n_est_pas_memoise(self):
         """Mémoriser un échec réseau figerait pour toute la session une absence
