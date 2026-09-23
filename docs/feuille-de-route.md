@@ -137,6 +137,11 @@ Aucun code, aucun commit. Les réponses changent le périmètre de l'étape 2.
 
 ## 4 — Démontage, option D
 
+> **Fait le 2026-09-23**, dans une forme plus large que les prompts ci-dessous :
+> AUCUN montage ni démontage à chaud (installation comprise), redémarrage demandé
+> depuis l'interface. Détail et écarts au plan : en-tête de
+> `docs/demontage-option-d.md`. Les prompts sont gardés pour l'historique.
+
 Cinq à six commits, selon le découpage de `docs/demontage-option-d.md` §3.
 Chacun poussé et vert avant le suivant.
 
@@ -178,6 +183,35 @@ Puis, une fois la mesure du §4 rapportée et si elle est concluante :
 > l'en-tête de `docs/limite-demontage.md` sans supprimer le document.
 >
 > Commit : `chore(deps): depinglage de fastapi apres suppression du demontage a chaud`.
+
+---
+
+## 4 bis — Trou ouvert : le paquet distribué ne sait ni quitter ni redémarrer
+
+Constaté le 2026-09-23 en exécutant l'option D, **non traité**.
+
+Le lanceur que génère `tools/installer-epure.ps1` (`Epure.cmd` → `pythonw`)
+fait `uvicorn.run()` **dans son propre processus**, sans icône ni menu. Chez un
+destinataire :
+
+- **Aucun moyen visible de quitter Épure**, ni de le redémarrer — en dehors de
+  l'Atelier comme dedans. Il faut tuer `pythonw.exe` dans le Gestionnaire des
+  tâches, ce qu'on ne peut pas demander à un proche.
+- Or l'option D fait dépendre d'un redémarrage tout changement de module, y
+  compris ceux que le destinataire garde (activer/désactiver, supprimer). Faute
+  de `EPURE_SENTINELLE_REDEMARRAGE`, le backend répond honnêtement « redémarrage
+  manuel requis » — mais le destinataire n'a aucun moyen de l'exécuter.
+
+**Solution envisagée** : faire du lanceur généré un **superviseur** — il lance
+uvicorn en SOUS-PROCESSUS, lui passe `EPURE_SENTINELLE_REDEMARRAGE`, sonde la
+sentinelle, et redémarre par `lanceur.tuer_arbre` + relance, exactement comme
+`epure_tray.py::_restart_backend` (même sentinelle, même `consommer_sentinelle`).
+Il faudra aussi une sortie visible (au minimum une entrée « Quitter »).
+
+**À ne pas faire** : relancer uvicorn dans le MÊME processus (`uvicorn.run()`
+une seconde fois). Les modules restent dans `sys.modules` : le « redémarrage »
+servirait l'ancien code des modules modifiés, et un module supprimé resterait
+importable — le démontage fantôme, sous une autre forme.
 
 ---
 

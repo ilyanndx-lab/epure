@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-09-23 — Plus de montage ni de démontage de modules à chaud : redémarrage
+
+Un changement de module — installation depuis le catalogue, approbation dans
+l'Atelier, suppression, activation/désactivation — **prend effet au redémarrage
+du backend**, et non plus dans l'app en cours. L'interface l'affiche (bandeau
+« Redémarrage requis » dans l'Atelier et les Réglages) et le déclenche en un
+clic quand Épure a été lancé par son icône de notification ; lancé à la main,
+elle dit de relancer. Motif : le démontage filtrait `app.router.routes`, un
+interne que fastapi 0.137 a changé, ce qui gelait fastapi en 0.136.3
+(`docs/limite-demontage.md`, `docs/demontage-option-d.md`).
+
+**Ce que l'échange coûte, écrit ici pour ne pas le laisser passer pour un gain
+net :**
+
+- une installation n'est plus instantanée : quelques secondes de redémarrage
+  (mesuré : 5 à 10 s), au moment choisi, qui COUPENT les flux en cours (chat,
+  génération Atelier) — l'interface prévient avant ;
+- entre la suppression d'un module et le redémarrage, **sa route répond
+  encore** (c'est dit, pas caché : écart « à décharger ») ;
+- la vérification « un module supprimé ne répond plus » ne se fait plus dans le
+  processus de test : elle exige un vrai processus, donc
+  `backend/integration_redemarrage.py`, hors CI (job manuel). Les tests
+  unitaires simulent le redémarrage (app neuve, `sys.modules` purgé) ;
+- le paquet distribué, qui n'a pas de tray, ne sait pas redémarrer — trou
+  consigné dans `docs/feuille-de-route.md` §4 bis.
+
 ## 2026-08-09 — Purge du modèle vocal Piper de l'historique git (hashes réécrits)
 
 L'intégralité de l'historique (les deux branches, `main` et

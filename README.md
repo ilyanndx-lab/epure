@@ -420,8 +420,13 @@ L'installation écrit dans `frontend/src/modules/generated/`. Deux cas :
 
 | Contexte | Effet |
 |---|---|
-| **Serveur de développement** (`npm run dev`, ce que lance `epure_tray.py`) | Vite détecte le fichier et recharge à chaud — le module apparaît **immédiatement**. |
-| **Frontend déjà construit** (image Docker, `npm run build`) | Le bundle est figé : le module n'apparaît **qu'après un `npm run build`** et un redémarrage du conteneur. Le backend, lui, monte sa route tout de suite. |
+| **Serveur de développement** (`npm run dev`, ce que lance `epure_tray.py`) | Le module apparaît **après le redémarrage du backend**, proposé par un bandeau « Redémarrage requis » (quelques secondes) ; la page se recharge d'elle-même. |
+| **Frontend déjà construit** (image Docker, `npm run build`) | Le bundle est figé : le module n'apparaît **qu'après un `npm run build`** et un redémarrage du conteneur. |
+
+Le backend ne monte ni ne démonte plus rien à chaud (depuis le 2026-09-23) : une
+installation, une suppression ou une (dés)activation de module prend effet au
+redémarrage du backend. Lancé par l'icône de notification, Épure le fait tout
+seul au clic ; lancé à la main (`uvicorn`), il faut le relancer soi-même.
 
 C'est une limite assumée du choix « catalogue local » plutôt que chargement de
 JavaScript distant à l'exécution : exécuter du JS tiers dans l'origine de

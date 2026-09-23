@@ -157,9 +157,18 @@ frontend/src/modules/generated/<id>/Component.tsx   (généré ou installé)
 `frontend.component`, `backend.prefix`, `core_module`, `origin`, `status`,
 `removable`. `modules-catalogue/<id>/` est la **source** des modules
 installables (`docs/catalogue-modules.md`) — rien n'y est monté. Installer =
-copier vers `backend/modules/<id>/` et `frontend/src/modules/generated/<id>/`,
-puis `app.include_router(router, prefix=manifest.backend.prefix)`
-(`core/module_registry.py:74`).
+copier vers `backend/modules/<id>/` et `frontend/src/modules/generated/<id>/` ;
+le routeur est chargé au **redémarrage** suivant, par
+`app.include_router(router, prefix=manifest.backend.prefix)`
+(`core/module_registry.register_routers`).
+
+**IMPÉRATIF — aucun montage ni démontage de routes pendant que l'app tourne.**
+`register_routers` n'est appelé qu'à l'import de `main.py` ; installer,
+approuver, supprimer ou (dés)activer change l'état voulu, et « redémarrage
+requis » est l'écart calculé `ecart_redemarrage(app)` (jamais un drapeau
+stocké). Le démontage filtrait `app.router.routes`, interne que fastapi 0.137 a
+changé (`docs/limite-demontage.md`, `docs/demontage-option-d.md`). Verrouillé
+par `test_redemarrage_modules.py`.
 
 **IMPÉRATIF — le prefix de montage est `""` pour les modules générés.** Chaque
 route doit être écrite préfixée à la main : `@router.get("/<id>/ping")`. Sans
@@ -350,7 +359,7 @@ Cycle de vie d'un module généré :
 prepare(id)   → backend/modules/_staging/<id>/ + .workshop.json
 generate      → un moteur écrit router.py / manifest.json / Component.tsx
 validate      → core/module_validate.py (gate AST + tsc best-effort)
-approve       → copie vers modules/<id>/ + generated/<id>/, importlib, backup dans _backups/
+approve       → copie vers modules/<id>/ + generated/<id>/, backup dans _backups/ ; chargé au redémarrage
 reject        → rmtree du staging
 ```
 

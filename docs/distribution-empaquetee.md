@@ -143,9 +143,9 @@ Ce que le destinataire téléchargera au premier usage du RAG (résolu, non pes�
 `POST /settings/test/gateway`, `POST /settings/gateway/start`.
 
 **IMPÉRATIF — `core/module_workshop.py` ne peut pas être supprimé du paquet.**
-`core/catalogue.py:32-40` en importe sept symboles (`_FILES`, `_backup_existing`,
-`_check_module_id`, `_drop_module_routes`, `_frontend_component_path`, `_remount`,
-`modules_dir`), et c'est ce qui fait marcher `POST /settings/catalogue/{id}/install` et
+`core/catalogue.py:32-40` en importe les symboles (`_FILES`, `_backup_existing`,
+`_check_module_id`, `_frontend_component_path`, `modules_dir` — `_drop_module_routes`
+et `_remount` ont disparu le 2026-09-23 avec le montage à chaud), et c'est ce qui fait marcher `POST /settings/catalogue/{id}/install` et
 `DELETE /settings/modules/{id}` — les deux fonctions que le proche garde. On retire les
 routes, pas le module.
 
@@ -252,8 +252,10 @@ prend son schéma sur `window.location.origin` quand `API` est vide. Le réglage
 ni `history.pushState`, ni `hash` : la navigation est l'état React `activeModule`, persisté
 dans localStorage, `App.tsx:24`). Il n'existe **qu'une seule URL, `/`** — donc pas de
 catch-all, et c'est heureux : un mount sur `/` capterait aussi les routes des modules
-installés **après** le démarrage, puisque `module_workshop._remount` fait un
-`app.include_router` qui **ajoute en fin** de `app.router.routes`. Un catch-all posé au
+installés **après** le démarrage, puisque `module_workshop._remount` faisait un
+`app.include_router` qui **ajoute en fin** de `app.router.routes` *(état d'avant le
+2026-09-23 : les modules ne se montent plus qu'au démarrage, avant le statique — le
+catch-all reste proscrit pour le jour où cet ordre changerait)*. Un catch-all posé au
 démarrage ferait répondre `index.html` à la place d'un module fraîchement installé depuis
 le catalogue — précisément la fonction que le proche garde. Servir explicitement
 `/` + `/assets/*` + les fichiers racine de `dist/`, rien de plus.
@@ -292,7 +294,7 @@ neuf** (donc cache et localStorage vides, l'appairage devant se refaire de zéro
   du HTML** — l'absence de catch-all, vue du client.
 
 Couvert par `backend/test_web_statique.py` (10 tests), dont celui qui compte :
-`PasDeCatchAllTest` installe une route **après** le montage statique, comme le fait
+`PasDeCatchAllTest` installe une route **après** le montage statique, comme le faisait
 `_remount`, et échoue si le statique la masque.
 
 #### Deux constats faits en vérifiant l'étape A
