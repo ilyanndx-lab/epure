@@ -12,12 +12,14 @@ import ollama
 import yaml
 from dotenv import load_dotenv
 
+from core.paths import BACKEND_DIR
+
 _ENV_FILE = Path(__file__).parent.parent / ".env"
 load_dotenv(_ENV_FILE)
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_FILE = Path(__file__).parent.parent / "config.yaml"
+_CONFIG_FILE = BACKEND_DIR / "config.yaml"
 
 # OLLAMA_HOST=0.0.0.0 is a server *listen* address — the client can't connect
 # to it on Windows. Normalize to localhost for all client calls.
@@ -33,8 +35,8 @@ def _ollama_timeout_s() -> float:
 
     Lu au niveau module et pas dans ``LLMEngine.__init__`` : le client est un
     singleton partagé (admin l'utilise aussi) construit avant qu'un moteur
-    existe. Chemin absolu — LLMEngine reçoit ``"config.yaml"`` en relatif, ce qui
-    dépend du répertoire courant.
+    existe. Chemin absolu, comme le défaut de ``LLMEngine`` : un ``"config.yaml"``
+    relatif dépendrait du répertoire courant (``test_config_hors_cwd.py``).
     """
     try:
         with open(_CONFIG_FILE, encoding="utf-8") as f:
@@ -855,8 +857,8 @@ _SKILLS: dict[str, dict] = {
 
 
 class LLMEngine:
-    def __init__(self, config_path: str = "config.yaml"):
-        with open(config_path) as f:
+    def __init__(self, config_path: str | Path | None = None):
+        with open(config_path or _CONFIG_FILE) as f:
             cfg = yaml.safe_load(f)
         self._model = cfg["model"]["name"]
         self._gen = cfg["generation"]
