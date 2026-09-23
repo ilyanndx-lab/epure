@@ -15,6 +15,7 @@ import { creerConversation, reprendreAncienChat } from './conversations'
 import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
+import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
 import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 
@@ -773,13 +774,23 @@ export default function Chat({
   /**
    * Recherche approfondie — armée pour le PROCHAIN message uniquement, jamais
    * persistée (pas de `usePersistentState`, contrairement à `webSearch`) :
-   * jusqu'à 4 requêtes web enchaînées par le modèle (tool-calling natif,
-   * `recherche_approfondie` dans `core/llm.py`), donc un mode qui resterait
+   * jusqu'à `budgetApprofondie` requêtes web enchaînées par le modèle
+   * (tool-calling natif, `recherche_approfondie` dans `core/llm.py` ; budget
+   * réglable de 1 à 10 dans Réglages › Tool calling), donc un mode qui resterait
    * collant referait ce coût à chaque message — même raisonnement que
    * `visionOverride` ci-dessus pour l'analyse d'image. Réinitialisé après
    * l'envoi (cf. `sendUserText`).
    */
   const [deepSearch, setDeepSearch] = useState(false)
+  /**
+   * Budget RÉELLEMENT configuré pour `recherche_approfondie` (cf.
+   * `rechercheApprofondie.ts`), affiché dans l'info-bulle du bouton. `null`
+   * tant qu'inconnu : l'info-bulle ne cite alors aucun nombre. Relu à CHAQUE
+   * ouverture du menu web, pas seulement au montage : un module visité reste
+   * monté (`App.tsx`, `mountedIds`), donc un budget changé dans les Réglages
+   * entre-temps serait sinon affiché périmé.
+   */
+  const [budgetApprofondie, setBudgetApprofondie] = useState<number | null>(null)
   /**
    * Un seul panneau du header ouvert à la fois — modèle, recherche web,
    * comparaison, ou le popover « Paramètres de la conversation ». Une valeur
@@ -1833,6 +1844,20 @@ export default function Chat({
     return () => { annule = true }
   }, [])
 
+  // Budget de `recherche_approfondie`, relu à chaque ouverture du menu web —
+  // seul endroit où l'info-bulle qui le cite est visible (cf. la déclaration
+  // de `budgetApprofondie`). Une réponse de refus (401, 500…) a une autre
+  // forme : `budgetRechercheApprofondie` rend alors `null`, jamais un nombre.
+  useEffect(() => {
+    if (headerMenuOuvert !== 'web') return
+    let annule = false
+    apiFetch(`${API}/context`)
+      .then(r => r.json())
+      .then((d: unknown) => { if (!annule) setBudgetApprofondie(budgetRechercheApprofondie(d)) })
+      .catch(() => { if (!annule) setBudgetApprofondie(null) })
+    return () => { annule = true }
+  }, [headerMenuOuvert])
+
   /**
    * Réglages de session — migrés depuis `ModuleBar.tsx`. Requête séparée de
    * celle que `ModuleBar` fait encore sur `/context` (pour son propre
@@ -2330,10 +2355,13 @@ export default function Chat({
     if (effort !== 'direct' && pipelineSteps.length > 0) wsMsg.steps = pipelineSteps
     if (ragOverride) wsMsg.rag_override = ragOverride
     if (strictOverride) wsMsg.strict_override = true
-    // `deepSearch` implique `web_search_override` : sur un provider où le
-    // tool-calling natif n'est pas câblé (tout sauf Ollama, cf.
-    // `core/llm.py::stream`), le bouton dégrade vers la recherche simple
-    // plutôt que de rester silencieusement sans effet.
+    // `deepSearch` pose TOUJOURS `web_search_override`, quel que soit le
+    // provider : la recherche heuristique du classifieur (@web) part donc à
+    // chaque recherche approfondie, EN PLUS de l'outil `recherche_approfondie`
+    // là où le tool-calling natif est câblé (Ollama et LM Studio, cf.
+    // `core/llm.py::stream`), et seule ailleurs — c'est ce qui évite au bouton
+    // de rester sans effet sur les autres providers. Les résultats des deux
+    // origines sont renumérotés à la suite (`rang_web_existant`).
     if (webSearchOverride || deepSearch) wsMsg.web_search_override = true
     if (deepSearch) wsMsg.deep_search_override = true
     if (visionOverride) wsMsg.vision_override = true
@@ -2687,7 +2715,7 @@ export default function Chat({
                   type="button"
                   onClick={() => setDeepSearch(v => !v)}
                   aria-pressed={deepSearch}
-                  title="Autorise le modèle à enchaîner plusieurs recherches web pour reformuler et creuser le sujet (jusqu'à 4 requêtes), pour CE message uniquement"
+                  title={infoBulleRechercheApprofondie(budgetApprofondie)}
                   className={`w-full text-left px-2.5 py-1.5 rounded-sm transition-colors duration-150 flex items-start gap-2 ${
                     deepSearch ? 'bg-accent/10' : 'hover:bg-surface'
                   }`}
