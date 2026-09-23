@@ -396,6 +396,20 @@ class SansModeleDEmbeddingTest(_Base):
         self.assertEqual(r.status_code, 404, r.text)
 
 
+def _chemins_servis() -> set[str]:
+    """Chemins HTTP servis par l'app, lus dans son schéma OpenAPI (API publique).
+
+    Et non `{r.path for r in main.app.routes}` : depuis fastapi 0.137,
+    `include_router` ne recopie plus les routes d'un module à plat dans
+    `app.routes` — il y pose une seule entrée `_IncludedRouter`, sans `path`.
+    Cette lecture ne voyait donc plus AUCUNE route de module : les tests
+    « absente » passaient par vacuité, les tests « présente » échouaient
+    (docs/limite-demontage.md §4). Le schéma, lui, liste ce qui est servi quelle
+    que soit la disposition interne.
+    """
+    return set(main.app.openapi()["paths"])
+
+
 class ModuleHistoriqueRetireTest(_Base):
     """Le module Historique n'existe plus — ses routes non plus.
 
@@ -411,7 +425,7 @@ class ModuleHistoriqueRetireTest(_Base):
                     self.client.get(url, headers=self.auth).status_code, 404)
 
     def test_aucune_route_history_n_est_montee(self):
-        chemins = {r.path for r in main.app.routes if hasattr(r, "path")}
+        chemins = _chemins_servis()
         residus = [c for c in chemins if c == "/history" or c.startswith("/history/")]
         self.assertEqual(residus, [], f"routes résiduelles : {residus}")
 
@@ -610,14 +624,14 @@ class PrefixeTest(_Base):
     def test_les_routes_sont_bien_sous_chat(self):
         """Le module chat est monté avec `prefix: ""` : sans le `/chat/` écrit à
         la main, la route entrerait en collision avec le cœur (§3.3)."""
-        chemins = {r.path for r in main.app.routes if hasattr(r, "path")}
+        chemins = _chemins_servis()
         for attendu in ("/chat/conversations", "/chat/conversations/{conv_id}",
                         "/chat/conversations/{conv_id}/fichiers"):
             with self.subTest(route=attendu):
                 self.assertIn(attendu, chemins)
 
     def test_aucune_route_de_conversation_a_la_racine(self):
-        chemins = {r.path for r in main.app.routes if hasattr(r, "path")}
+        chemins = _chemins_servis()
         self.assertNotIn("/conversations", chemins)
 
 

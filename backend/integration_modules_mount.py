@@ -87,16 +87,19 @@ class ModulesMountTest(unittest.TestCase):
                 router = getattr(mod, "router", None)
                 self.assertIsNotNone(router, f"{mid}: router.py ne définit pas 'router'")
                 prefix = (m.get("backend") or {}).get("prefix", "")
-                before = set(id(r) for r in app.routes)
                 app.include_router(router, prefix=prefix)
                 mounted.append(mid)
-                for r in app.routes:
-                    if id(r) in before:
-                        continue
-                    for key in _route_keys(r):
-                        if key in owner and owner[key] != mid:
-                            collisions.append(f"{key[0]} {key[1]} ({owner[key]} vs {mid})")
-                        owner.setdefault(key, mid)
+                # Les routes du MODULE (router.routes), pas le diff de
+                # `app.routes` : depuis fastapi 0.137 l'app n'y range plus
+                # qu'une entrée `_IncludedRouter` sans `path`, et ce diff
+                # devenait vide — aucune collision ne pouvait plus être vue.
+                cles = [(mth, prefix + chemin) for mth, chemin in
+                        (k for r in router.routes for k in _route_keys(r))]
+                self.assertTrue(cles, f"{mid}: router.py déclare un `router` sans aucune route")
+                for key in cles:
+                    if key in owner and owner[key] != mid:
+                        collisions.append(f"{key[0]} {key[1]} ({owner[key]} vs {mid})")
+                    owner.setdefault(key, mid)
             except Exception as exc:
                 failures.append(f"{mid}: {type(exc).__name__}: {exc}")
 

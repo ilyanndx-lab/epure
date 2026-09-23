@@ -109,34 +109,51 @@ def main() -> dict:
         result["error"] = "Montage du router échoué :\n" + traceback.format_exc()[-_TB_LIMIT:]
         return result
 
+    # Les routes se lisent sur le router DU MODULE, pas sur `app.routes`. Depuis
+    # fastapi 0.137, `include_router` ne recopie plus les routes à plat dans
+    # l'app : il y pose une seule entrée `_IncludedRouter`, sans `path`. Une
+    # boucle sur `app.routes` n'y trouvait donc plus rien, et le smoke test
+    # rendait « ok » sans avoir appelé une seule route — un vert par vacuité.
+    # `router.routes` est la liste que le module a lui-même déclarée, quelle que
+    # soit la façon dont l'app la range.
+    routes = list(getattr(router, "routes", None) or [])
+    if not routes:
+        # Un routeur sans aucune route n'est pas « rien à tester » : c'est soit un
+        # module vide, soit une lecture qui ne voit plus les routes. Dans les deux
+        # cas, conclure au succès serait mentir.
+        result["error"] = ("router.py déclare un `router` sans aucune route : "
+                           "rien n'a pu être testé.")
+        return result
+
     # raise_server_exceptions=True : une exception du handler remonte ici avec
     # son traceback complet (plus exploitable pour la réparation qu'un 500 nu).
     with TestClient(app, raise_server_exceptions=True) as client:
-        for route in app.routes:
+        for route in routes:
             if not isinstance(route, APIRoute) or "GET" not in (route.methods or ()):
                 continue
-            if "{" in route.path:
-                result["skipped"].append(f"GET {route.path} (paramètre de chemin requis)")
+            chemin = prefix + route.path
+            if "{" in chemin:
+                result["skipped"].append(f"GET {chemin} (paramètre de chemin requis)")
                 continue
             try:
-                resp = client.get(route.path)
+                resp = client.get(chemin)
             except Exception:
                 tb = traceback.format_exc()
                 if _stub_touched(tb):
-                    result["skipped"].append(f"GET {route.path} (dépend d'un moteur stubé — non testable hors app)")
+                    result["skipped"].append(f"GET {chemin} (dépend d'un moteur stubé — non testable hors app)")
                 else:
-                    result["failures"].append({"route": f"GET {route.path}", "status": None,
+                    result["failures"].append({"route": f"GET {chemin}", "status": None,
                                                "error": tb[-_TB_LIMIT:]})
                 continue
             if resp.status_code >= 500:
                 body = resp.text[:_TB_LIMIT]
                 if _stub_touched(body):
-                    result["skipped"].append(f"GET {route.path} (dépend d'un moteur stubé — non testable hors app)")
+                    result["skipped"].append(f"GET {chemin} (dépend d'un moteur stubé — non testable hors app)")
                 else:
-                    result["failures"].append({"route": f"GET {route.path}", "status": resp.status_code,
+                    result["failures"].append({"route": f"GET {chemin}", "status": resp.status_code,
                                                "error": body})
             else:
-                result["tested"].append(f"GET {route.path} → {resp.status_code}")
+                result["tested"].append(f"GET {chemin} → {resp.status_code}")
 
     result["ok"] = not result["failures"] and result["error"] is None
     return result
