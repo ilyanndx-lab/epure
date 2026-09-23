@@ -21,6 +21,14 @@ Trois incidents mesurés dictent sa forme ; les rejouer coûte cher, donc ils so
    quel qu'il soit — le reproche même fait à ``start.ps1``. Un port n'est libéré
    que si son occupant a été identifié comme un reste d'Épure.
 
+4. **Un redémarrage qui laisse le port pris.** Le processus qui ÉCOUTE sur
+   8000 n'est jamais celui que ``Popen`` a lancé : ``.venv/Scripts/python.exe``
+   est un redirecteur qui démarre le vrai interpréteur en processus enfant
+   (mesuré le 2026-09-23 : PID lancé ≠ PID à l'écoute, à chaque fois).
+   ``terminate()`` sur le ``Popen`` laisserait l'enfant vivant, port tenu.
+   D'où ``lanceur.tuer_arbre`` (``taskkill /T``) partout où l'on arrête
+   uvicorn — mesuré sur 3 cycles : port libre en ~0,5 s, aucun orphelin.
+
 **Le journal est le seul canal de diagnostic.** Sous ``pythonw`` (Epure.bat) il
 n'y a pas de console, donc pas de stderr : une traceback n'existe nulle part.
 Tout ce qui rate passe par :func:`_log`, et tout ce qui dégrade le service
@@ -52,6 +60,14 @@ LOG_FILE = ROOT / "epure_tray.log"
 ETAT = lanceur.EtatLanceur()
 
 _processes: list[subprocess.Popen] = []
+#: Sérialise redémarrage complet (menu), redémarrage du backend seul
+#: (sentinelle) et arrêt : deux d'entre eux en même temps lanceraient deux
+#: uvicorn sur le même port.
+_verrou_cycle = threading.Lock()
+#: Posé par « Quitter » : la surveillance de la sentinelle ne relance plus rien.
+_arret = threading.Event()
+#: Chemin que le backend écrit pour demander son redémarrage (core/redemarrage.py).
+SENTINELLE = lanceur.sentinelle_redemarrage(ROOT)
 _log_handle = None
 _icon = None
 #: Handle du mutex d'instance unique — gardé en vie pour la durée du process.
@@ -254,6 +270,69 @@ def _liberer_port_backend() -> bool:
     return False
 
 
+def _start_uvicorn(fh, masque) -> bool:
+    """Lance uvicorn dans le venv dédié. True s'il a été lancé.
+
+    Seul endroit où la ligne de commande d'uvicorn est construite : le démarrage
+    complet et le redémarrage du backend seul l'appellent tous les deux. Une
+    seconde construction divergerait de la première — et les choix commentés
+    ci-dessous (``--no-access-log``, ``EPURE_RELOAD``, ``_bind_host()``) sont
+    précisément ceux qu'on oublie de recopier.
+    """
+    python_backend = lanceur.assurer_venv_backend(log=_log)
+    if python_backend is None:
+        _incident("environnement Python dédié introuvable (.venv) et impossible à créer — backend non lancé")
+    elif not lanceur.python_backend_verifie(python_backend, log=_log):
+        _incident(f"interpréteur backend sans fastapi/uvicorn ({python_backend}) — backend non lancé")
+    else:
+        _log(f"Lancement uvicorn ({python_backend})")
+        # Interface d'écoute : LOOPBACK par défaut. Écouter sur 0.0.0.0 rendait le
+        # port 8000 visible de tout le réseau (wifi de la prépa) alors que l'API
+        # n'est protégée que par un token et expose l'exécution de commandes.
+        # EPURE_BIND=0.0.0.0 rouvre au LAN — penser alors à compléter
+        # EPURE_ALLOWED_HOSTS, sinon le middleware Host rejettera les requêtes.
+        _bind = _bind_host()
+        uvicorn_cmd = [
+            str(python_backend), "-m", "uvicorn", "main:app",
+            "--host", _bind, "--port", str(PORT_BACKEND),
+            # Le token WebSocket voyage en query param (les navigateurs interdisent
+            # les en-têtes sur `new WebSocket()`), donc l'access-log recopierait
+            # « ?token=… » en clair dans epure_tray.log, non chiffré et conservé.
+            # Le tray a déjà son propre journal applicatif ; l'access-log uvicorn
+            # n'apporte rien de plus ici.
+            "--no-access-log",
+        ]
+        if _bind != "127.0.0.1":
+            _log(f"uvicorn : ATTENTION, écoute sur {_bind} — API exposée au-delà de la machine locale")
+        # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
+        # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
+        # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur
+        # non valide » → backend qui crashe/devient « injoignable ». Quand activé, on
+        # surveille UNIQUEMENT core/ (écrire un router.py dans modules/ lors d'une
+        # approbation atelier ne doit pas relancer le backend dans le dos de
+        # l'utilisateur : le redémarrage se DEMANDE depuis l'interface, qui
+        # prévient d'abord si une génération est en cours — cf. core/redemarrage.py).
+        if os.environ.get("EPURE_RELOAD", "0").strip().lower() in ("1", "true", "yes"):
+            uvicorn_cmd += ["--reload", "--reload-dir", "core"]
+            _log("uvicorn : rechargement auto activé sur core/ (instable sous Windows ; EPURE_RELOAD=0 pour désactiver)")
+        else:
+            _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
+        # La sentinelle : son chemin est TRANSMIS au backend, qui ne le devine
+        # pas (cf. lanceur.sentinelle_redemarrage). Sa présence dans
+        # l'environnement est aussi ce qui dit au backend qu'un tray l'écoute.
+        env_uvicorn = os.environ.copy()
+        env_uvicorn[lanceur.ENV_SENTINELLE] = str(SENTINELLE)
+        if _lancer(
+            "uvicorn", uvicorn_cmd,
+            cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
+            encoding="utf-8", errors="ignore", env=env_uvicorn,
+        ) is None:
+            _incident(f"interpréteur introuvable ({python_backend}) — backend non lancé")
+        else:
+            return True
+    return False
+
+
 def _start_processes():
     """Démarre les services. Ne lève jamais : tout échec finit dans le journal.
 
@@ -341,51 +420,7 @@ def _demarrer():
         if not lanceur.venv_python().exists() and not os.environ.get("EPURE_PYTHON", "").strip():
             _log("venv dedie absent -- premier lancement, preparation de l'environnement Python")
             _notifier("Épure", "Premier lancement : préparation de l'environnement Python (quelques minutes)…")
-        python_backend = lanceur.assurer_venv_backend(log=_log)
-        if python_backend is None:
-            _incident("environnement Python dédié introuvable (.venv) et impossible à créer — backend non lancé")
-        elif not lanceur.python_backend_verifie(python_backend, log=_log):
-            _incident(f"interpréteur backend sans fastapi/uvicorn ({python_backend}) — backend non lancé")
-        else:
-            _log(f"Lancement uvicorn ({python_backend})")
-            # Interface d'écoute : LOOPBACK par défaut. Écouter sur 0.0.0.0 rendait le
-            # port 8000 visible de tout le réseau (wifi de la prépa) alors que l'API
-            # n'est protégée que par un token et expose l'exécution de commandes.
-            # EPURE_BIND=0.0.0.0 rouvre au LAN — penser alors à compléter
-            # EPURE_ALLOWED_HOSTS, sinon le middleware Host rejettera les requêtes.
-            _bind = _bind_host()
-            uvicorn_cmd = [
-                str(python_backend), "-m", "uvicorn", "main:app",
-                "--host", _bind, "--port", str(PORT_BACKEND),
-                # Le token WebSocket voyage en query param (les navigateurs interdisent
-                # les en-têtes sur `new WebSocket()`), donc l'access-log recopierait
-                # « ?token=… » en clair dans epure_tray.log, non chiffré et conservé.
-                # Le tray a déjà son propre journal applicatif ; l'access-log uvicorn
-                # n'apporte rien de plus ici.
-                "--no-access-log",
-            ]
-            if _bind != "127.0.0.1":
-                _log(f"uvicorn : ATTENTION, écoute sur {_bind} — API exposée au-delà de la machine locale")
-            # Rechargement auto : DÉSACTIVÉ par défaut (EPURE_RELOAD=1 pour l'activer en
-            # dev). Le reloader uvicorn est instable sous Windows : à chaque restart il
-            # fait `os.kill(pid, CTRL_C_EVENT)` qui lève « OSError [WinError 6] Descripteur
-            # non valide » → backend qui crashe/devient « injoignable ». Quand activé, on
-            # surveille UNIQUEMENT core/ (écrire un router.py dans modules/ lors d'une
-            # approbation atelier ne doit pas relancer le backend, qui monte déjà les
-            # routes à chaud).
-            if os.environ.get("EPURE_RELOAD", "0").strip().lower() in ("1", "true", "yes"):
-                uvicorn_cmd += ["--reload", "--reload-dir", "core"]
-                _log("uvicorn : rechargement auto activé sur core/ (instable sous Windows ; EPURE_RELOAD=0 pour désactiver)")
-            else:
-                _log("uvicorn : rechargement auto désactivé (EPURE_RELOAD=1 pour l'activer en dev)")
-            if _lancer(
-                "uvicorn", uvicorn_cmd,
-                cwd=str(BACKEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
-                encoding="utf-8", errors="ignore",
-            ) is None:
-                _incident(f"interpréteur introuvable ({python_backend}) — backend non lancé")
-            else:
-                backend_lance = True
+        backend_lance = _start_uvicorn(fh, masque)
 
     time.sleep(6)
     _elaguer_processus()
@@ -481,14 +516,80 @@ def _on_restart(icon, item):
     threading.Thread(target=_do_restart, daemon=True).start()
 
 
+def _demarrage_initial():
+    """Premier démarrage, sous le même verrou que les redémarrages : une
+    sentinelle lue pendant ces ~12 s ne doit pas lancer un second uvicorn."""
+    with _verrou_cycle:
+        _start_processes()
+
+
 def _do_restart():
-    _stop_processes()
-    time.sleep(2)
-    _start_processes()
+    with _verrou_cycle:
+        _stop_processes()
+        time.sleep(2)
+        _start_processes()
+
+
+# ── Redémarrage du backend seul, à la demande du backend ─────────────────────
+
+def _restart_backend(raison: str):
+    """Arrête l'arbre d'uvicorn et le relance — ni Ollama, ni flm, ni Vite.
+
+    Demandé par le backend lui-même (sentinelle, cf. ``core/redemarrage.py``)
+    après un changement de module : les modules ne se chargent qu'au démarrage.
+    Redémarrer toute la pile pour ça couperait Vite, relancerait notre
+    ``ollama serve`` (modèle déchargé de la VRAM) et rouvrirait un onglet.
+
+    ``tuer_arbre`` et non ``terminate()`` : cf. l'incident 4 de l'en-tête.
+    ``_liberer_port_backend`` passe ENSUITE, pour le cas où le port serait tenu
+    par un backend Épure que ce tray n'a pas lancé (il ne tue que ce qu'il a
+    identifié comme tel).
+    """
+    with _verrou_cycle:
+        if _arret.is_set():
+            return
+        _log(f"Redémarrage du backend demandé par le backend : {raison}")
+        for p in [p for p in _processes if getattr(p, "_epure_nom", "") == "uvicorn"]:
+            if p.poll() is None:
+                lanceur.tuer_arbre(p.pid)
+                try:
+                    p.wait(timeout=10)
+                except Exception:
+                    _log(f"uvicorn (PID {p.pid}) : arrêt non confirmé")
+            _processes.remove(p)
+        if not _liberer_port_backend():
+            _notifier("Épure", f"Redémarrage impossible : le port {PORT_BACKEND} est pris. Voir epure_tray.log.")
+            return
+        if not _start_uvicorn(_open_log(), lanceur.fenetre_masquee()):
+            _notifier("Épure", "Le backend n'a pas pu être relancé. Voir epure_tray.log.")
+            return
+        if lanceur.attendre_backend(PORT_BACKEND):
+            _log("Backend redémarré")
+        else:
+            _incident(f"le backend redémarré n'a pas répondu sur {PORT_BACKEND} — voir epure_tray.log")
+        _maj_infobulle()
+
+
+def _surveiller_sentinelle():
+    """Thread démon : sonde la sentinelle toutes les 2 s. Ne meurt jamais en silence.
+
+    Sondage et non notification de système de fichiers : un fichier par
+    redémarrage, une fois de temps en temps — 2 s de latence ne coûtent rien,
+    et ``ReadDirectoryChangesW`` ajouterait une dépendance pour rien.
+    """
+    while not _arret.is_set():
+        try:
+            raison = lanceur.consommer_sentinelle(SENTINELLE)
+            if raison is not None:
+                _restart_backend(raison)
+        except Exception as exc:
+            _log(f"surveillance de la sentinelle : {type(exc).__name__} — {exc}")
+        _arret.wait(2)
 
 
 def _on_quit(icon, item):
     _log("Arrêt demandé")
+    _arret.set()
     _stop_processes()
     icon.stop()
     if _log_handle and not _log_handle.closed:
@@ -518,7 +619,12 @@ def main():
     # L'icône est créée AVANT le thread de démarrage : _incident() doit pouvoir
     # écrire dans l'infobulle dès la première seconde, y compris pour un
     # incident survenu avant que icon.run() ne prenne la main.
-    threading.Thread(target=_start_processes, daemon=True).start()
+    # Une sentinelle restée d'une session précédente (tray tué avant de l'avoir
+    # lue) ne doit pas redémarrer le backend qu'on s'apprête à lancer.
+    if lanceur.consommer_sentinelle(SENTINELLE) is not None:
+        _log("Sentinelle de redémarrage résiduelle effacée au démarrage")
+    threading.Thread(target=_demarrage_initial, daemon=True).start()
+    threading.Thread(target=_surveiller_sentinelle, daemon=True).start()
     _icon.run()
 
 

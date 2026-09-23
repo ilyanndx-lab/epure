@@ -176,6 +176,58 @@ def tuer_arbre(pid: int) -> None:
         pass
 
 
+# ── Redémarrage du backend seul (sentinelle) ─────────────────────────────────
+
+#: Variable par laquelle le tray donne au backend le chemin de la sentinelle —
+#: même nom que ``core.redemarrage.ENV_SENTINELLE``, recopié parce que ce
+#: fichier n'importe pas ``core`` (cf. l'en-tête). ``test_lanceur.py`` vérifie
+#: que les deux restent égaux.
+ENV_SENTINELLE = "EPURE_SENTINELLE_REDEMARRAGE"
+
+
+def sentinelle_redemarrage(racine: Path | None = None) -> Path:
+    """Chemin de la sentinelle : à côté du tray, dans un fichier ignoré par git.
+
+    Pas sous ``resolve_data_dir()`` : c'est le TRAY qui choisit ce chemin et le
+    transmet au backend (``ENV_SENTINELLE``), et le tray ne sait pas résoudre
+    un ``EPURE_DATA_DIR`` posé dans ``backend/.env``. Cf. ``core/redemarrage.py``.
+    """
+    return (racine or RACINE) / ".epure-redemarrage"
+
+
+def consommer_sentinelle(chemin: Path) -> str | None:
+    """Lit puis EFFACE la sentinelle. Rend son contenu (pour le journal), ou None.
+
+    Effacée AVANT que le tray ne redémarre quoi que ce soit : un backend neuf
+    qui trouverait le fichier encore là ne le lit pas (seul le tray le lit),
+    mais un second tour de sondage, lui, relancerait un redémarrage — la boucle
+    que ``docs/demontage-option-d.md`` §2 demande d'exclure.
+
+    Si l'effacement échoue (fichier verrouillé par l'antivirus, droits), rend
+    None : pas de redémarrage ce tour-ci, nouvel essai au suivant. Redémarrer
+    sans pouvoir effacer, c'est redémarrer toutes les 2 s.
+    """
+    try:
+        contenu = chemin.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        contenu = ""
+    try:
+        chemin.unlink()
+    except FileNotFoundError:
+        pass  # effacé entre-temps : la demande a bien existé
+    except OSError:
+        return None
+    # Le backend y écrit un JSON sur plusieurs lignes ; le journal du tray veut
+    # une ligne lisible — la raison seule, le contenu brut en repli.
+    try:
+        raison = json.loads(contenu).get("raison")
+    except (ValueError, AttributeError):
+        raison = None
+    return (str(raison) if raison else contenu.strip())[:500] or "(sans raison)"
+
+
 # ── Identification par le comportement ───────────────────────────────────────
 
 def http_json(url: str, timeout: float = 5.0):
