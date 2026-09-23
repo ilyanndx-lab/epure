@@ -590,7 +590,16 @@ def _surveiller_sentinelle():
 def _on_quit(icon, item):
     _log("Arrêt demandé")
     _arret.set()
-    _stop_processes()
+    # Sous le verrou : un « Quitter » pendant _restart_backend arrêterait les
+    # processus AVANT que le nouvel uvicorn soit ajouté à la liste, et le tray
+    # sortirait en le laissant orphelin, port tenu. Borné : un redémarrage dure
+    # ~10 s ; au-delà, on arrête ce qu'on connaît plutôt que de figer le menu.
+    pris = _verrou_cycle.acquire(timeout=30)
+    try:
+        _stop_processes()
+    finally:
+        if pris:
+            _verrou_cycle.release()
     icon.stop()
     if _log_handle and not _log_handle.closed:
         _log_handle.close()
