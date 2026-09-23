@@ -85,6 +85,13 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
   const derniere = [...etapes].reverse().find(
     e => e.etape === 'recherche_resultats' || e.etape === 'recherche_erreur'
   )
+  // Appel d'outil abandonné SANS aucune recherche aboutie : « Recherche web… »
+  // annoncerait une recherche en cours qui n'a jamais eu lieu — et qui n'aura
+  // jamais lieu. Même règle que plus haut : ne pas prétendre.
+  if (!derniere && aUneRechercheAbandonnee(etapes)) return 'Recherche abandonnée'
+  // Même raisonnement pour le plafond d'allers-retours (`tool_call_plafond_atteint`,
+  // `core/llm.py::_schemas_du_round`) : le tour s'est conclu SANS outil.
+  if (!derniere && aAtteintLimiteRecherches(etapes)) return 'Limite de recherches atteinte'
   if (!derniere) return 'Recherche web…'
   if (derniere.etape === 'recherche_erreur') return 'Recherche web : échec'
   const nombre = Number(derniere.nombre) || 0
@@ -92,6 +99,48 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
   const ms = Number(derniere.ms) || 0
   const secondes = (ms / 1000).toFixed(1).replace('.', ',')
   return `Recherche web : ${nombre} résultat${nombre > 1 ? 's' : ''} en ${secondes} s`
+}
+
+/**
+ * Le modèle a-t-il tenté un appel de recherche que le serveur a ABANDONNÉ ?
+ * (`tool_call_abandonne`, émise par `core/llm.py::_stream_openai` quand les
+ * arguments de l'appel sont illisibles ou que le flux s'est coupé en plein
+ * appel.) La réponse est alors donnée sans ce résultat web — c'est ce que
+ * l'utilisateur doit voir, sans avoir à déplier la trace.
+ */
+export function aUneRechercheAbandonnee(etapes: EtapeTrace[]): boolean {
+  return etapes.some(e => e.etape === 'tool_call_abandonne')
+}
+
+/**
+ * Badge « recherche abandonnée », affiché dans l'en-tête REPLIÉ, ou `null`.
+ *
+ * Seulement quand le résumé ne le dit pas déjà (`resumeTrace` rend
+ * « Recherche abandonnée » s'il n'y a eu AUCUNE recherche aboutie) : le cas
+ * restant est un tour où une première recherche a réussi puis une seconde
+ * tentative a été abandonnée — le résumé parle alors des résultats, et le
+ * badge dit qu'il en manque.
+ */
+export function libelleBadgeAbandon(etapes: EtapeTrace[]): string | null {
+  if (!aUneRechercheAbandonnee(etapes)) return null
+  return resumeTrace(etapes) === 'Recherche abandonnée' ? null : 'recherche abandonnée'
+}
+
+/**
+ * Le tour a-t-il atteint le plafond d'allers-retours avec le modèle
+ * (`tool_call_plafond_atteint`, `core/llm.py::_schemas_du_round`) ? Les
+ * outils lui ont alors été retirés et il a conclu sans eux — typiquement un
+ * petit modèle qui réclamait en boucle un outil qui n'existe pas.
+ */
+export function aAtteintLimiteRecherches(etapes: EtapeTrace[]): boolean {
+  return etapes.some(e => e.etape === 'tool_call_plafond_atteint')
+}
+
+/** Pendant de `libelleBadgeAbandon` pour le plafond : badge seulement quand le
+ * résumé ne le dit pas déjà (une autre recherche du tour a abouti). */
+export function libelleBadgeLimite(etapes: EtapeTrace[]): string | null {
+  if (!aAtteintLimiteRecherches(etapes)) return null
+  return resumeTrace(etapes) === 'Limite de recherches atteinte' ? null : 'limite de recherches atteinte'
 }
 
 /**

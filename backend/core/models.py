@@ -772,6 +772,77 @@ def lmstudio_chargement_en_cours(model_id: str) -> Optional[bool]:
     return etat != "loaded"
 
 
+def capacites_outils_lmstudio() -> Optional[dict[str, bool]]:
+    """``{clé du modèle: entraîné au tool-calling ?}`` via ``GET /api/v1/models``.
+
+    ``None`` si LM Studio ne répond pas — même contrat que
+    ``core.ollama_memoire.capacites_installees``, dont c'est le pendant : le
+    tool-calling natif (``core/llm.py``, ``_stream_openai``) n'expose JAMAIS un
+    outil à un modèle sans savoir qu'il le supporte.
+
+    **Mesuré le 2026-09-22 sur ce poste (LM Studio, serveur local port 1234),
+    pas lu dans une doc** — deux sources existent, et elles CONCORDENT modèle
+    par modèle sur les sept du catalogue installé :
+
+    * ``/api/v0/models`` : ``capabilities: ["tool_use"]``, et le champ
+      **absent** sinon (``mistral-7b-instruct-v0.2``,
+      ``huihui-qwen3.5-9b-abliterated``) ;
+    * ``/api/v1/models`` : ``capabilities.trained_for_tool_use`` —
+      **``true`` OU ``false`` explicite** pour chaque LLM, ``{}`` pour un
+      modèle d'embedding.
+
+    C'est ``/api/v1`` qui est lu, pour cette seule raison : v0 dit « non » par
+    ABSENCE, ce qui confond « pas entraîné » et « champ que cette version ne
+    publie pas ». v1 répond « non » explicitement. L'autre piège de v1
+    (``loaded_instances`` rempli dès le DÉBUT d'un chargement, cf.
+    ``etat_modele_lmstudio``) ne concerne pas ce champ-ci, qui décrit le
+    modèle sur disque et non une instance.
+
+    **Seul ``True`` compte ; tout le reste vaut « non ».** LM Studio a un mode
+    d'outils « par défaut » pour les modèles NON entraînés (documenté,
+    lmstudio.ai/docs/developer/openai-compat/tools) : il injecte un prompt
+    système maison et tente de parser un ``[TOOL_REQUEST]{json}
+    [END_TOOL_REQUEST]`` dans la sortie, avec l'avertissement explicite que
+    « les résultats varient selon le modèle » et que les petits modèles non
+    entraînés produisent des appels mal formés. Ce mode est donc FILTRÉ ici :
+    un ``trained_for_tool_use: false`` ne reçoit aucun outil, plutôt qu'un
+    appel qui peut finir en marqueurs bruts dans la bulle du chat. Non
+    rejoué sur un vrai modèle : le seul non entraîné utilisable de ce poste
+    (``mistral-7b-instruct-v0.2``) n'est présent que sur un appareil distant,
+    et le 9B gèle la machine (CLAUDE.md §8).
+
+    Les clés sont celles de ``/v1/models`` (format OpenAI) — vérifié : ce sont
+    les identifiants que le chat envoie (``get_lmstudio_installed``). Les
+    ``variants`` (``qwen/qwen3.8-27b@q4_k_m``) reçoivent la valeur de leur
+    modèle, pour qu'un identifiant de variante ne tombe pas en « inconnu ».
+    """
+    try:
+        req = urllib.request.Request(f"{_lmstudio_host}/api/v1/models")
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SONDE_LMSTUDIO_S) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        # Même silence que `etat_modele_lmstudio` : sondé à chaque tour de chat
+        # sur LM Studio (à travers le cache de `core/llm.py`), un warning ici
+        # noierait les logs à chaque LM Studio éteint.
+        return None
+    entrees = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(entrees, list):
+        return {}
+    out: dict[str, bool] = {}
+    for e in entrees:
+        if not isinstance(e, dict) or not e.get("key"):
+            continue
+        caps = e.get("capabilities")
+        # `is True` et non `bool(...)` : une valeur autre qu'un vrai booléen
+        # (chaîne, objet) n'est pas une preuve.
+        entraine = isinstance(caps, dict) and caps.get("trained_for_tool_use") is True
+        out[e["key"]] = entraine
+        for variante in e.get("variants") or []:
+            if isinstance(variante, str) and variante:
+                out.setdefault(variante, entraine)
+    return out
+
+
 def _ollama_vision_model() -> str:
     """``vision.ollama_model`` de config.yaml, même registre que ``model.name``.
 
