@@ -256,7 +256,7 @@ class FluxApprobationTest(_BaseModule):
         client, auth = _client(), _auth()
         self._stager("A")
 
-        r = client.post(f"/workshop/{self.ID}/approve?force=true", headers=auth)
+        r = client.post(f"/workshop/{self.ID}/approve", headers=auth)
         self.assertEqual(r.status_code, 200, r.text)
         corps = r.json()
         self.assertNotIn("remounted", corps)
@@ -305,11 +305,11 @@ class FluxApprobationTest(_BaseModule):
         réapprobation ne tombe pas dans la même seconde que la précédente.
         """
         self._stager("A")
-        module_workshop.approve(self.ID, force=True)
+        module_workshop.approve(self.ID)
         premiere = _demarrer(self.ID)
 
         self._stager("B-2")
-        module_workshop.approve(self.ID, force=True)
+        module_workshop.approve(self.ID)
         self.assertIn({"id": self.ID, "changement": "modifié"},
                       module_registry.ecart_redemarrage(premiere)["écarts"])
         with TestClient(premiere) as c:  # l'ancien code sert jusqu'au redémarrage
