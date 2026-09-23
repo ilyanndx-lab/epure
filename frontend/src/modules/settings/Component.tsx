@@ -93,7 +93,10 @@ const TOOL_CALLING_DEFAULT: ToolCallingSettings = {
   skills: {
     web_search: { enabled: true },
     history_search: { enabled: true },
-    recherche_approfondie: { enabled: true, budget: 4 },
+    // Désactivée par défaut, comme `core.memory._CONTEXT_DEFAULT` — cf. le
+    // commentaire là-bas (proposée à chaque tour, elle coûtait jusqu'à 4
+    // recherches de plus sans qu'on l'ait demandée).
+    recherche_approfondie: { enabled: false, budget: 4 },
   },
 }
 

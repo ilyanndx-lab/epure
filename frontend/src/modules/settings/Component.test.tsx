@@ -274,8 +274,28 @@ describe('Réglages — Tool calling', () => {
     expect(screen.getByText('Désactivé — cliquer pour réactiver.')).toBeTruthy()
   })
 
-  it('le curseur de budget est visible pour recherche_approfondie activée', async () => {
+  it('recherche_approfondie désactivée par défaut : pas de curseur de budget', async () => {
     poserFetch(tableSaine())
+    await rendre()
+    await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
+
+    expect(screen.queryByRole('slider')).toBeNull()
+  })
+
+  it('le curseur de budget est visible pour recherche_approfondie activée', async () => {
+    poserFetch({
+      ...tableSaine(),
+      // Activée EXPLICITEMENT : elle est désactivée par défaut depuis le
+      // 2026-09-23, et ces tests portent sur le curseur, pas sur le défaut.
+      '/context': { corps: { tool_calling: {
+        enabled: true,
+        skills: {
+          web_search: { enabled: true },
+          history_search: { enabled: true },
+          recherche_approfondie: { enabled: true, budget: 4 },
+        },
+      } } },
+    })
     await rendre()
     await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
 
@@ -285,7 +305,19 @@ describe('Réglages — Tool calling', () => {
   })
 
   it('changer le curseur envoie le nouveau budget au backend', async () => {
-    const fetchMock = poserFetch(tableSaine())
+    const fetchMock = poserFetch({
+      ...tableSaine(),
+      // Activée EXPLICITEMENT : elle est désactivée par défaut depuis le
+      // 2026-09-23, et ces tests portent sur le curseur, pas sur le défaut.
+      '/context': { corps: { tool_calling: {
+        enabled: true,
+        skills: {
+          web_search: { enabled: true },
+          history_search: { enabled: true },
+          recherche_approfondie: { enabled: true, budget: 4 },
+        },
+      } } },
+    })
     await rendre()
     await act(async () => { screen.getByRole('button', { name: 'Tool calling' }).click() })
 

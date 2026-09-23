@@ -68,12 +68,22 @@ _CONTEXT_DEFAULT = {
     # valeur que `core.llm._MAX_APPELS_RECHERCHE_APPROFONDIE` (non importé ici
     # pour éviter un cycle `memory` → `llm` → `memory` via `core.runtime` ;
     # l'accord entre les deux est verrouillé par `test_tool_calling_reglages.py`).
+    #
+    # `recherche_approfondie` est DÉSACTIVÉE par défaut depuis le 2026-09-23 :
+    # activée, elle était proposée au modèle à CHAQUE tour direct, jusqu'à 4
+    # recherches de plus EN PLUS des 2 de `web_search` — le coût d'une
+    # recherche approfondie payé sur des questions qui n'en demandaient pas.
+    # Le bouton « Recherche approfondie » du chat la force pour un message,
+    # INCHANGÉ (`deep_search_override`, modules/chat/router.py). Un
+    # `context_session.json` qui porte déjà `"enabled": true` le garde : la
+    # fusion de `normaliser_tool_calling` ne réécrit jamais une valeur
+    # présente sur le disque, seules les clés absentes prennent ce défaut.
     "tool_calling": {
         "enabled": True,
         "skills": {
             "web_search": {"enabled": True},
             "history_search": {"enabled": True},
-            "recherche_approfondie": {"enabled": True, "budget": 4},
+            "recherche_approfondie": {"enabled": False, "budget": 4},
         },
     },
     # Chantier « préfixes/skills personnalisés », phase A (fondations backend

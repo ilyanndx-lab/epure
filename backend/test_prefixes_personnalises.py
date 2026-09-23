@@ -534,8 +534,10 @@ class NonRegressionDefautTest(_ClientChatWS):
         conv = history_engine.create_conversation()
         with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
             self._envoyer(ws, "question normale", conv["id"])
-        # Seuls les 3 skills natifs, tous activés par défaut — rien de plus.
-        self.assertEqual(set(appels[0]["outils"]), {"web_search", "history_search", "recherche_approfondie"})
+        # Seuls les skills natifs ACTIVÉS par défaut — rien de plus.
+        # `recherche_approfondie` n'en fait plus partie depuis le 2026-09-23
+        # (cf. `core.memory._CONTEXT_DEFAULT`, test_tool_calling_defauts.py).
+        self.assertEqual(set(appels[0]["outils"]), {"web_search", "history_search"})
 
 
 if __name__ == "__main__":
