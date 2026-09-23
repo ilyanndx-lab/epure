@@ -20,6 +20,18 @@ import { defineConfig } from 'vitest/config'
  * `environment: 'jsdom'` : `src/api.ts` lit `localStorage` à l'import et
  * `window.location` pour l'URL WebSocket. Sans DOM, l'import échoue avant le
  * premier test.
+ *
+ * `--no-experimental-webstorage` : depuis Node 25, Node expose son PROPRE
+ * `localStorage` global (Web Storage activé par défaut). Sans
+ * `--localstorage-file` c'est un objet sans méthodes, et il masque celui de
+ * jsdom : `TypeError: localStorage.getItem is not a function` à l'import de
+ * `src/api.ts`, 13 fichiers de test sur 17 en échec. On coupe la fonction à
+ * la source, dans le process des workers, plutôt que de réaffecter le global
+ * dans un setup : l'environnement jsdom s'installe alors sans concurrent,
+ * quelle que soit la façon dont vitest peuple les globaux. Le drapeau est
+ * accepté de Node 22 à 25 (vérifié), sans effet là où la fonction est déjà
+ * désactivée. Node est par ailleurs épinglé par `.nvmrc` ; ceci protège un
+ * poste qui ne le respecte pas. Verrouillé par `src/webstorage.test.ts`.
  */
 export default defineConfig({
   plugins: [react()],
@@ -29,5 +41,6 @@ export default defineConfig({
     // Chaque test repose son propre `fetch` : sans restauration, l'ordre
     // d'exécution deviendrait significatif.
     restoreMocks: true,
+    execArgv: ['--no-experimental-webstorage'],
   },
 })
