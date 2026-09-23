@@ -79,19 +79,23 @@ class NormaliserToolCallingTest(unittest.TestCase):
         resultat = normaliser_tool_calling({"skills": {"web_search": {"enabled": False}}})
         self.assertFalse(resultat["skills"]["web_search"]["enabled"])
         self.assertTrue(resultat["skills"]["history_search"]["enabled"])
-        self.assertTrue(resultat["skills"]["recherche_approfondie"]["enabled"])
+        # Présente, avec SA valeur par défaut (désactivée depuis le 2026-09-23,
+        # cf. `core.memory._CONTEXT_DEFAULT` et test_tool_calling_defauts.py).
+        self.assertIs(resultat["skills"]["recherche_approfondie"]["enabled"],
+                      _CONTEXT_DEFAULT["tool_calling"]["skills"]["recherche_approfondie"]["enabled"])
         self.assertEqual(resultat["skills"]["recherche_approfondie"]["budget"], 4)
 
     def test_skill_manquante_sur_disque_reapparait_au_defaut(self):
         """Simule un `context_session.json` écrit AVANT que `recherche_approfondie`
-        n'existe : la clé est absente de `skills`, elle doit réapparaître,
-        activée, plutôt que de rester manquante pour toujours."""
+        n'existe : la clé est absente de `skills`, elle doit réapparaître —
+        avec son défaut (désactivée depuis le 2026-09-23) — plutôt que de
+        rester manquante pour toujours."""
         resultat = normaliser_tool_calling({
             "enabled": True,
             "skills": {"web_search": {"enabled": False}, "history_search": {"enabled": True}},
         })
         self.assertIn("recherche_approfondie", resultat["skills"])
-        self.assertTrue(resultat["skills"]["recherche_approfondie"]["enabled"])
+        self.assertFalse(resultat["skills"]["recherche_approfondie"]["enabled"])
 
     def test_skill_inconnue_est_ignoree(self):
         resultat = normaliser_tool_calling({"skills": {"invente": {"enabled": True}}})

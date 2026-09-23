@@ -57,6 +57,7 @@ reste donc résoluble.
 | Un nouveau chemin de fichier/dossier, ou `_test_env.py` | `docs/claude/chemins.md` |
 | `/ws/chat`, SSE, le streaming du LLM, le raisonnement | `docs/claude/sse-websocket.md` |
 | L'Atelier : exigences par moteur, effet des interrupteurs de paquet | `docs/claude/atelier-detail.md` |
+| Le tool-calling natif (outils du chat, budgets, capacités, LM Studio) | `docs/claude/tool-calling.md` |
 | N'importe quoi — avant de conclure qu'un bug est nouveau | `docs/claude/pieges-connus.md` |
 | Le pourquoi historique derrière une règle de ce noyau | `docs/claude/contexte-historique.md` |
 
@@ -268,6 +269,39 @@ sinon la collecte de tout test qui importe `main` échoue en CI.
 Mesures et détail : `docs/claude/hmer-transcription.md`. Ingestion de
 documents et vision (RAG vs module Docs, import vs chat) : deux chemins
 distincts, journal complet dans `docs/claude/ingestion-documents.md`.
+
+### 3.9 Tool-calling natif — le modèle appelle des outils pendant le tour
+
+Registre `_SKILLS` (`core/llm.py`) : `web_search` et `recherche_approfondie`
+(DuckDuckGo + lecture de pages, **réseau**), `history_search` (store
+vectoriel, local), plus les skills personnalisés agentiques (renvoient un
+texte, rien d'autre). Budgets par tour : 2 / 4 / 2 / 4 par skill.
+**`recherche_approfondie` est désactivée par défaut** : seul le bouton du chat
+la force, pour un message. Seul le tour de chat direct passe des outils.
+
+- **Fournisseurs : Ollama et LM Studio seuls.** Les six autres de
+  `_stream_openai` et Gemini envoient le corps d'avant à l'octet (verrouillé
+  par `test_tool_calling_lmstudio.py`).
+- **IMPÉRATIF — capacité jamais supposée.** Ollama : `tools` dans
+  `/api/tags` ; LM Studio : `trained_for_tool_use is True` dans
+  `/api/v1/models` (son mode « par défaut » par prompt est filtré). Inconnu =
+  aucun outil.
+- **Plafond d'allers-retours** : somme des budgets + 1
+  (`_plafond_rounds_outils`, +1 round de grâce sur Ollama) — un outil inconnu
+  ne décrémente aucun budget. Pire cas : 9 allers-retours (10 sur Ollama) et
+  6 recherches web (+1 du classificateur) avec la recherche approfondie ;
+  ≈ 22 s par recherche ; chaque aller-retour renvoie tout le prompt.
+- **Coexiste avec le classificateur heuristique** (`@web`), sans le
+  remplacer : `rang_web_existant` renumérote les résultats pour que deux
+  sources ne partagent jamais un rang `[n]`.
+- LM Studio, appel d'outil au JSON cassé : réponse **continuée** sans outil
+  (`_continuer_sans_outil`) — **mesuré sur un seul modèle**
+  (`ministral-3-3b`), à re-mesurer avant d'en supposer un autre.
+- `history_search` (et le reclassement web) peut déclencher le
+  **téléchargement automatique du modèle d'embedding (~90 Mo)** s'il est
+  absent (`EPURE_EMBEDDING_AUTOINSTALL=0` pour l'interdire).
+
+Détail, chiffres, mesures : `docs/claude/tool-calling.md`.
 
 ---
 
