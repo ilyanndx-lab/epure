@@ -31,6 +31,7 @@ import _test_env  # noqa: F401  — isole les arbres AVANT tout import de core.*
 os.environ["EPURE_ALLOWED_HOSTS"] = "localhost,127.0.0.1,::1"
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402
@@ -48,6 +49,27 @@ IDS_INVALIDES = (
 
 def _client() -> TestClient:
     return TestClient(main.app, base_url="http://localhost", client=("127.0.0.1", 54321))
+
+
+def _demarrer(*ids: str) -> TestClient:
+    """Ce que fait le redémarrage du backend, pour les modules ``ids``.
+
+    Les modules ne se montent plus à chaud (``core/module_registry.py``) : un
+    changement ne se voit qu'au démarrage suivant. Un vrai démarrage est un
+    processus neuf, donc sans les entrées ``sys.modules`` des modules touchés —
+    d'où leur purge avant ``register_routers`` sur une app neuve. Sans elle,
+    ``import_module`` rendrait l'objet déjà chargé et le test mesurerait un
+    cache, pas le disque. Le vrai processus : ``integration_redemarrage.py``.
+    """
+    import importlib
+    for mid in ids:
+        for nom in [n for n in list(sys.modules)
+                    if n == f"modules.{mid}" or n.startswith(f"modules.{mid}.")]:
+            del sys.modules[nom]
+    importlib.invalidate_caches()
+    app = FastAPI()
+    module_registry.register_routers(app)
+    return TestClient(app)
 
 
 def _manifeste(mid: str, **surcharges) -> dict:
@@ -182,23 +204,15 @@ class SuppressionOrdreTest(BaseCatalogue):
     def test_hello_ne_repond_plus_apres_suppression(self):
         """Une API fantôme est pire qu'une panne : elle sert en silence.
 
-        Mesuré avant d'écrire ce test : sans `_drop_module_routes`, la route
-        continue de répondre **200 avec sa réponse normale** après effacement du
-        module. Le handler est un objet en mémoire ; supprimer le fichier ne le
-        touche pas. Le module disparaît de `GET /modules` et son API reste
-        servie — incohérence silencieuse, pas erreur visible.
+        RÉÉCRIT le 2026-09-23, pas supprimé : ce qui doit rester vrai (« un
+        module supprimé ne répond plus ») n'a pas changé ; c'est le MOMENT qui a
+        changé. Le démontage à chaud filtrait `app.router.routes`, interne que
+        fastapi 0.137 a changé (`docs/limite-demontage.md`) ; il est remplacé
+        par un redémarrage (`docs/demontage-option-d.md`). Donc :
 
-        Le retrait repose sur `_drop_module_routes`, qui filtre
-        `app.router.routes` : ce n'est PAS une API publique (ni FastAPI ni
-        Starlette n'offrent de méthode de démontage). Ce test convertit cette
-        dépendance implicite en invariant tenu : le jour où ces internes
-        changent, il échoue bruyamment ici plutôt que de laisser une API
-        fantôme. Même geste que `test_ce_module_est_bien_le_dernier_decouvert`.
-
-        C'est déjà arrivé, et ce test l'a bien attrapé : **fastapi ≥ 0.137**
-        casse le démontage (cf. `docs/limite-demontage.md`). D'où l'épinglage de
-        `requirements.txt` en 0.136.3 et `test_versions_epinglees.py`. Si ce test
-        échoue, regarder la version de fastapi AVANT de suspecter le catalogue.
+        - dans l'app EN COURS, la route répond encore — c'est assumé, et c'est
+          DIT : l'écart « à décharger » est ce que l'interface affiche ;
+        - au démarrage suivant, elle répond 404.
         """
         client = _client()
         headers = {"Authorization": f"Bearer {get_api_token()}"}
@@ -206,18 +220,19 @@ class SuppressionOrdreTest(BaseCatalogue):
         avant = client.get("/hello/ping", headers=headers)
         self.assertEqual(avant.status_code, 200, "prérequis : hello répond avant suppression")
 
-        catalogue.uninstall("hello", app=main.app)
+        catalogue.uninstall("hello")
         self.addCleanup(self._reinstaller_hello)
 
-        apres = client.get("/hello/ping", headers=headers)
-        self.assertEqual(
-            apres.status_code, 404,
-            "la route de hello répond encore après suppression du module — "
-            "API fantôme. `_drop_module_routes` ne retire plus rien de "
-            "app.router.routes. Vérifier fastapi.__version__ d'abord : au-delà "
-            "de 0.136, include_router n'aplatit plus les routes "
-            "(docs/limite-demontage.md).",
-        )
+        self.assertIn({"id": "hello", "changement": "à décharger"},
+                      module_registry.ecart_redemarrage(main.app)["écarts"],
+                      "la suppression ne réclame pas de redémarrage : l'API resterait "
+                      "servie sans que rien ne le dise")
+        with _demarrer("hello") as neuf:
+            self.assertEqual(
+                neuf.get("/hello/ping").status_code, 404,
+                "la route de hello répond encore au démarrage qui suit sa "
+                "suppression — register_routers a monté un module effacé",
+            )
 
     def _reinstaller_hello(self):
         """Remet hello dans l'arbre temporaire, pour les tests suivants."""
@@ -306,15 +321,24 @@ class InstallationTest(BaseCatalogue):
             with self.subTest(mid=mid), self.assertRaises((SecurityError, catalogue.CatalogueError)):
                 catalogue.install(mid)
 
-    def test_install_monte_le_routeur_a_chaud(self):
-        """Ne vaut que parce que modules.__path__ pointe l'arbre temporaire."""
+    def test_install_charge_le_routeur_au_redemarrage(self):
+        """Ne vaut que parce que modules.__path__ pointe l'arbre temporaire.
+
+        Ex-« monte le routeur à chaud » : l'installation ne touche plus à l'app
+        en cours, elle demande un redémarrage (`ecart_redemarrage`).
+        """
         client = _client()
         headers = {"Authorization": f"Bearer {get_api_token()}"}
-        catalogue.install("flashcards", app=main.app)
+        catalogue.install("flashcards")
         self.addCleanup(shutil.rmtree, self.modules / "flashcards", True)
         self.addCleanup(shutil.rmtree, self.generated / "flashcards", True)
-        res = client.get("/flashcards/decks", headers=headers)
-        self.assertNotEqual(res.status_code, 404, "le routeur n'a pas été monté")
+        self.assertEqual(client.get("/flashcards/decks", headers=headers).status_code, 404,
+                         "un routeur a été monté dans l'app en cours")
+        self.assertIn({"id": "flashcards", "changement": "à charger"},
+                      module_registry.ecart_redemarrage(main.app)["écarts"])
+        with _demarrer("flashcards") as neuf:
+            self.assertNotEqual(neuf.get("/flashcards/decks").status_code, 404,
+                                "le routeur n'est pas chargé au démarrage")
 
 
 class CycleReinstallationTest(BaseCatalogue):
@@ -354,33 +378,42 @@ class CycleReinstallationTest(BaseCatalogue):
         (d / "Component.tsx").write_text("export default function C(){return null}\n", encoding="utf-8")
 
     def test_apres_reinstallation_c_est_la_nouvelle_version_qui_sert(self):
+        """Chaque étape est suivie d'un démarrage : c'est là que le code change.
+
+        « A » puis « B-2 » (tailles différentes) : deux `router.py` de même
+        taille écrits dans la même seconde sont indiscernables pour le cache de
+        bytecode (mtime + taille) — le test mesurerait ce cache.
+        """
         self._ecrire_source("A")
-        catalogue.install(self.ID, app=main.app)
-        r = self.client.get(f"/{self.ID}/ping", headers=self.headers)
+        catalogue.install(self.ID)
+        with _demarrer(self.ID) as c:
+            r = c.get(f"/{self.ID}/ping")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["version"], "A", "prérequis : la version A sert")
 
-        catalogue.uninstall(self.ID, app=main.app)
-        self.assertEqual(self.client.get(f"/{self.ID}/ping", headers=self.headers).status_code, 404)
+        catalogue.uninstall(self.ID)
+        with _demarrer(self.ID) as c:
+            self.assertEqual(c.get(f"/{self.ID}/ping").status_code, 404)
 
         # La SOURCE change entre les deux : sans ça, A et B seraient
         # indistinguables et ce test passerait sans rien vérifier.
-        self._ecrire_source("B")
-        catalogue.install(self.ID, app=main.app)
+        self._ecrire_source("B-2")
+        catalogue.install(self.ID)
 
-        r = self.client.get(f"/{self.ID}/ping", headers=self.headers)
-        self.assertEqual(r.status_code, 200, "le routeur n'a pas été remonté")
+        with _demarrer(self.ID) as c:
+            r = c.get(f"/{self.ID}/ping")
+        self.assertEqual(r.status_code, 200, "le routeur n'est pas chargé au démarrage")
         self.assertEqual(
-            r.json()["version"], "B",
-            "c'est l'ancien objet de sys.modules qui sert, pas le fichier "
-            "fraîchement copié — `_remount` ne fait plus son importlib.reload().",
+            r.json()["version"], "B-2",
+            "c'est l'ancienne version qui sert après réinstallation et redémarrage",
         )
 
     def test_la_suppression_ne_laisse_rien_dans_sys_modules(self):
         self._ecrire_source("A")
-        catalogue.install(self.ID, app=main.app)
+        catalogue.install(self.ID)
+        _demarrer(self.ID)  # charge modules.<id>.router, comme un démarrage
         self.assertIn(f"modules.{self.ID}.router", sys.modules)
-        catalogue.uninstall(self.ID, app=main.app)
+        catalogue.uninstall(self.ID)
         restants = [n for n in sys.modules if n.startswith(f"modules.{self.ID}")]
         self.assertEqual(restants, [], f"entrées fantômes dans sys.modules : {restants}")
 

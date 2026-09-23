@@ -1571,57 +1571,17 @@ def _backup_existing(module_id: str) -> Optional[str]:
     return str(dest)
 
 
-def _drop_module_routes(app, module_id: str) -> None:
-    """Retire les routes d'un module de l'app vivante.
+def approve(module_id: str, force: bool = False) -> dict:
+    """Active le module après revue : backup → déplacement → activation.
 
-    ⚠️ MUTATION EN PLACE (``[:] =``) et NON réaffectation. Réaffecter
-    ``app.router.routes`` crée une NOUVELLE liste : tout ce qui détient une
-    référence à l'ancienne continue de router vers les routes supprimées.
-
-    ⚠️ NE FONCTIONNE QU'EN FASTAPI ≤ 0.136 — et c'est pour ça que
-    ``requirements.txt`` y est épinglé. À partir de **fastapi 0.137.0**,
-    ``include_router`` n'aplatit plus les routes dans ``app.router.routes`` : il
-    y ajoute une seule entrée ``_IncludedRouter``, sans ``endpoint``, derrière
-    laquelle les routes vivent (``original_router``) et sont servies via un
-    cache invalidé par un compteur de version. Le filtre ci-dessous ne trouve
-    alors plus rien à retirer (mesuré : la liste passe de 5 à 5) et la route
-    d'un module supprimé répond encore 200.
-
-    La cause est côté **fastapi**, pas Starlette : 0.136.3 + starlette 1.6.0
-    passe la suite complète. Le bug n'est PAS corrigé ; la frontière est tenue
-    par ``test_versions_epinglees.py``. Design, mesures et options :
-    ``docs/limite-demontage.md``.
-
-    Il n'existe pas d'API publique de démontage, ni dans FastAPI ni dans
-    Starlette ; ce filtrage est le seul moyen. C'est précisément pourquoi
-    ``test_hello_ne_repond_plus_apres_suppression`` existe : il transforme cette
-    dépendance aux internes en invariant qui échoue bruyamment.
-    """
-    modname = f"modules.{module_id}.router"
-    app.router.routes[:] = [
-        r for r in app.router.routes
-        if getattr(getattr(r, "endpoint", None), "__module__", None) != modname
-    ]
-
-
-def _remount(app, module_id: str) -> None:
-    """(Re)monte le router du module dans l'app en cours (sans redémarrage)."""
-    import importlib
-    modname = f"modules.{module_id}.router"
-    _drop_module_routes(app, module_id)
-    mod = importlib.import_module(modname)
-    mod = importlib.reload(mod)
-    router = getattr(mod, "router", None)
-    if router is None:
-        raise RuntimeError(f"{modname} ne définit pas 'router'")
-    manifest = module_registry.get_module(module_id) or {}
-    prefix = (manifest.get("backend") or {}).get("prefix", "")
-    app.include_router(router, prefix=prefix)
-    app.openapi_schema = None  # invalide le schéma OpenAPI mis en cache
-
-
-def approve(module_id: str, app=None, force: bool = False) -> dict:
-    """Active le module après revue : backup → déplacement → reload → activation.
+    **Rien n'est monté dans l'app en cours.** Le module est chargé au prochain
+    démarrage du backend (``module_registry.register_routers``), que l'interface
+    propose aussitôt (``core/redemarrage.py``). L'ancien remontage à chaud
+    filtrait ``app.router.routes`` pour retirer la version précédente — un
+    interne de fastapi qui a changé en 0.137 et gelait la dépendance
+    (``docs/limite-demontage.md``). Une réapprobation sert donc l'ANCIEN code
+    jusqu'au redémarrage : c'est ce que ``module_registry.ecart_redemarrage``
+    rapporte comme ``modifié``.
 
     Refuse si la validation n'est pas passée (status != pending_review), SAUF si
     force=True (activation manuelle explicite par l'utilisateur, malgré des
@@ -1684,24 +1644,11 @@ def approve(module_id: str, app=None, force: bool = False) -> dict:
         shutil.copy2(comp_src, comp_dest)
 
     # (l'ajout à modules_activés est fait par set_status ci-dessus)
-    remounted = False
-    remount_error = None
-    if app is not None:
-        try:
-            _remount(app, module_id)
-            remounted = True
-        except Exception as exc:
-            logger.exception("Remontage du module %s échoué", module_id)
-            remount_error = str(exc)
 
     # Nettoyage du staging.
     shutil.rmtree(sdir, ignore_errors=True)
 
-    return {
-        "ok": True, "module_id": module_id, "backup": backup,
-        "remounted": remounted, "remount_error": remount_error,
-        "restart_required": not remounted,
-    }
+    return {"ok": True, "module_id": module_id, "backup": backup}
 
 
 def reject(module_id: str) -> dict:

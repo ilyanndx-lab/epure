@@ -45,6 +45,7 @@ from core.flashcards import FlashcardsEngine
 from core.history import HistoryEngine
 from core.llm import LLMEngine
 from core import module_workshop
+from core import redemarrage
 from core.instance import (
     est_modele_cloud as _est_modele_cloud,
     fiches_root, fiches_watch_paths, instance_config,
@@ -709,6 +710,9 @@ class ModuleStatusRequest(BaseModel):
 
 @app.put("/modules/{module_id}/status")
 async def module_set_status(module_id: str, req: ModuleStatusRequest):
+    """Active/désactive. N'agit que sur l'état VOULU : le routeur est chargé ou
+    ne l'est plus au redémarrage (``GET /instance/redemarrage`` dit s'il en faut
+    un). Réponse inchangée — le manifeste à jour — pour ses lecteurs actuels."""
     updated = _set_module_status(module_id, req.status)
     if updated is None:
         raise HTTPException(
@@ -716,6 +720,29 @@ async def module_set_status(module_id: str, req: ModuleStatusRequest):
             detail="Module inconnu, status invalide (active|disabled), ou action interdite",
         )
     return updated
+
+
+# ── Redémarrage du backend (changements de modules) ────────────────────────
+# Les modules ne se montent qu'au démarrage (core/module_registry.py, en-tête).
+# Ces deux routes disent s'il faut redémarrer, et le demandent au tray
+# (core/redemarrage.py). Derrière le token comme tout le reste : demander un
+# redémarrage coupe les flux en cours, ce n'est pas une action anonyme.
+
+@app.get("/instance/redemarrage")
+async def instance_redemarrage_etat():
+    """Écart entre les modules chargés au démarrage et l'état voulu sur disque."""
+    return redemarrage.etat(app)
+
+
+class RedemarrageRequest(BaseModel):
+    raison: str = "changement de modules"
+
+
+@app.post("/instance/redemarrage")
+async def instance_redemarrage_demander(req: RedemarrageRequest | None = None):
+    """Demande au tray de redémarrer le backend seul. Sans tray : dit qu'il faut
+    le faire à la main (``automatique: false``), sans jamais échouer."""
+    return redemarrage.demander((req.raison if req else "") or "changement de modules")
 
 
 # ---------------------------------------------------------------------------
@@ -815,18 +842,21 @@ async def workshop_validate(module_id: str):
 
 @app.post("/workshop/{module_id}/approve")
 async def workshop_approve(module_id: str, force: bool = False):
-    """Activation manuelle : backup + déplacement + remontage + modules_activés.
+    """Activation manuelle : backup + déplacement + modules_activés.
+
+    Le module est chargé au prochain redémarrage : la réponse porte l'état de
+    redémarrage (``redémarrage``), que l'Atelier affiche.
 
     force=true active malgré une validation échouée (choix explicite de l'utilisateur).
     """
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, module_workshop.approve, module_id, app, force)
+        result = await loop.run_in_executor(None, module_workshop.approve, module_id, force)
     except (ValueError, module_workshop.SecurityError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not result.get("ok"):
         raise HTTPException(status_code=422, detail=result)
-    return result
+    return {**result, "redémarrage": redemarrage.etat(app)}
 
 
 @app.post("/workshop/{module_id}/reject")
@@ -1153,6 +1183,10 @@ async def health():
     return {
         "ollama": ollama_ok, "model": active_model, "models": models,
         "flm": flm_ok, "lmstudio": lmstudio_ok,
+        # Identifie CE processus : c'est son changement, et non une simple
+        # réponse, qui prouve à l'interface qu'un redémarrage a eu lieu
+        # (core/redemarrage.py). Pas un secret : /health est public.
+        "boot_id": redemarrage.BOOT_ID,
     }
 
 
@@ -1195,13 +1229,12 @@ def _register_web(app) -> dict:
     **IMPÉRATIF — pas de catch-all, et surtout pas un mount sur ``/``.** Deux
     raisons, dans cet ordre d'importance :
 
-    1. ``module_workshop._remount`` fait un ``app.include_router`` qui **ajoute
-       en fin** de ``app.router.routes``. Starlette prend la première route qui
-       correspond : un catch-all posé au démarrage serait donc devant les routes
-       de tout module installé **ensuite**, et ``index.html`` répondrait à la
-       place du module. Or installer un module depuis le catalogue est
-       précisément la fonction que le destinataire du paquet garde
-       (``POST /settings/catalogue/{id}/install``).
+    1. Starlette prend la première route qui correspond. Les modules sont
+       montés AVANT ce service (``_register_routers`` plus haut) et plus jamais
+       ensuite — le montage à chaud a disparu le 2026-09-23. Un catch-all ne
+       masquerait donc aucun module aujourd'hui ; il en masquerait un le jour
+       où cet ordre changerait, sans rien signaler. ``PasDeCatchAllTest``
+       garde cette propriété indépendamment de l'ordre.
     2. Il n'y en a pas besoin. Le frontend n'a aucun routeur client (pas de
        ``react-router``, pas de ``history.pushState``) : la navigation est l'état
        React ``activeModule`` persisté dans localStorage. Il n'existe qu'une
