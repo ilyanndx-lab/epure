@@ -213,6 +213,33 @@ une seconde fois). Les modules restent dans `sys.modules` : le « redémarrage �
 servirait l'ancien code des modules modifiés, et un module supprimé resterait
 importable — le démontage fantôme, sous une autre forme.
 
+**À traiter avec ce ticket — le message « redémarrage manuel » parle de Ctrl+C.**
+`core/redemarrage.py::MESSAGE_MANUEL` dit « arrêtez le backend (Ctrl+C dans son
+terminal) ». C'est juste pour un backend lancé à la main, et n'a aucun sens pour
+un destinataire du paquet, qui n'a pas de terminal. Le superviseur ci-dessus
+fera disparaître le cas le plus courant ; le message doit de toute façon savoir
+dans quel contexte il est lu (paquet ou poste de dev).
+
+### Trou ouvert, priorité HAUTE : `modules.*` importé depuis le dossier courant
+
+Constaté le 2026-09-23, **non traité**. Même famille que `config.yaml` lu en
+relatif (corrigé le même jour, `test_config_hors_cwd.py`).
+
+`core/module_registry.register_routers` fait `importlib.import_module(f"modules.{mid}.router")` :
+`modules` est un paquet d'espace de noms, résolu par `sys.path`, donc depuis le
+**dossier courant** d'uvicorn (`backend/`) — et non depuis
+`resolve_modules_dir()`, qui honore `$EPURE_MODULES_DIR`. Les manifestes, eux,
+sont lus dans `resolve_modules_dir()`. Si les deux divergent (variable posée,
+backend lancé d'ailleurs), le registre voit les modules d'un arbre et en importe
+le code d'un autre, sans rien signaler. Les tests ne le voient pas parce que
+`_test_env` rebranche `modules.__path__` sur l'arbre temporaire — ce que la
+production ne fait pas. `integration_redemarrage.py` a dû travailler sur une
+copie de `backend/` pour cette raison.
+
+Correctif attendu : faire pointer `modules.__path__` sur `resolve_modules_dir()`
+au démarrage (comme `_test_env`, mais en production), avec un test qui lance le
+backend depuis un autre dossier que `backend/` et `EPURE_MODULES_DIR` posé.
+
 ---
 
 ## 5 — Isolation worker
