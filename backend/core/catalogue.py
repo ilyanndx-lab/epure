@@ -13,10 +13,14 @@ chargé peut lire `localStorage['epure.apiToken']`. Cf. docs/catalogue-modules.m
 RIEN N'EST RÉÉCRIT ICI de ce que `module_workshop` sait déjà faire : la
 sauvegarde horodatée (`_backup_existing`), le confinement d'identifiant
 (`_check_module_id`), la résolution du composant frontend
-(`_frontend_component_path`) et le (re)montage à chaud (`_remount`) sont
-importés. Une seconde implémentation de la copie divergerait de la première —
-c'est exactement le mécanisme qui avait produit deux stockages d'état
-divergents (cf. CLAUDE.md §3.3).
+(`_frontend_component_path`) sont importés. Une seconde implémentation de la
+copie divergerait de la première — c'est exactement le mécanisme qui avait
+produit deux stockages d'état divergents (cf. CLAUDE.md §3.3).
+
+**Aucune opération ne touche à l'app en cours.** Installer ou supprimer change
+le disque et `modules_activés` ; le routeur est chargé (ou ne l'est plus) au
+redémarrage suivant du backend, que l'interface propose — cf.
+`core/module_registry.py` (en-tête) et `core/redemarrage.py`.
 """
 
 import importlib
@@ -33,9 +37,7 @@ from core.module_workshop import (
     _FILES,
     _backup_existing,
     _check_module_id,
-    _drop_module_routes,
     _frontend_component_path,
-    _remount,
     modules_dir,
 )
 from core.paths import REPO_ROOT, resolve_generated_dir
@@ -91,7 +93,7 @@ def list_catalogue() -> list[dict]:
     return out
 
 
-def install(module_id: str, app=None) -> dict:
+def install(module_id: str) -> dict:
     """Copie les trois fichiers vers les emplacements d'exécution, puis active.
 
     Pas de `tsc` : les modules du catalogue sont VERSIONNÉS et vérifiés en CI par
@@ -126,20 +128,11 @@ def install(module_id: str, app=None) -> dict:
 
     module_registry.set_status(mid, "active")
 
-    monte, erreur = False, None
-    if app is not None:
-        try:
-            _remount(app, mid)
-            monte = True
-        except Exception as exc:  # montage à chaud best-effort
-            logger.exception("Montage à chaud du module %s échoué", mid)
-            erreur = str(exc)
-
-    logger.info("Module %s installé depuis le catalogue", mid)
-    return {"ok": True, "id": mid, "monté": monte, "erreur_montage": erreur}
+    logger.info("Module %s installé depuis le catalogue (chargé au redémarrage)", mid)
+    return {"ok": True, "id": mid}
 
 
-def uninstall(module_id: str, app=None) -> dict:
+def uninstall(module_id: str) -> dict:
     """Sauvegarde horodatée PUIS suppression des deux dossiers, PUIS désactivation.
 
     L'ordre n'est pas cosmétique : la sauvegarde doit exister avant que quoi que
@@ -162,12 +155,9 @@ def uninstall(module_id: str, app=None) -> dict:
     if not sauvegarde:
         raise CatalogueError(f"Sauvegarde impossible, suppression annulée : {mid}")
 
-    # Les routes d'abord : une fois les fichiers effacés, plus rien ne permet de
-    # retrouver le nom de module d'un endpoint pour filtrer.
-    if app is not None:
-        _drop_module_routes(app, mid)
-        app.openapi_schema = None
-
+    # La route du module RÉPOND ENCORE jusqu'au redémarrage : rien n'est démonté
+    # de l'app en cours (cf. l'en-tête). `ecart_redemarrage` le rapporte comme
+    # « à décharger », et l'interface propose le redémarrage.
     dossier = modules_dir() / mid
     if dossier.is_dir():
         shutil.rmtree(dossier)
@@ -176,12 +166,11 @@ def uninstall(module_id: str, app=None) -> dict:
         shutil.rmtree(comp.parent, ignore_errors=True)
 
     # Purge de sys.modules : sans elle, `modules.<id>.router` reste un objet
-    # vivant après la suppression des fichiers (mesuré). Les routes, elles, sont
-    # bien retirées — donc rien ne casse aujourd'hui, parce que `_remount` fait
-    # `import_module` PUIS `reload()` et relit le disque à la réinstallation.
-    # Mais `register_routers` fait un `import_module` NU : le jour où un module
-    # supprimé serait recréé autrement qu'en passant par ici, il servirait
-    # l'ancien objet. Une désinstallation ne doit rien laisser derrière elle.
+    # vivant après la suppression des fichiers (mesuré). Un redémarrage la rend
+    # redondante — un process neuf n'a pas de cache — mais pas inutile : tant
+    # qu'il n'a pas eu lieu, un `import_module` du même id (smoke test isolé
+    # mis à part) servirait l'ancien objet. Une désinstallation ne doit rien
+    # laisser derrière elle.
     for nom in [n for n in list(sys.modules) if n == f"modules.{mid}" or n.startswith(f"modules.{mid}.")]:
         del sys.modules[nom]
     importlib.invalidate_caches()  # le FileFinder cache le contenu des dossiers

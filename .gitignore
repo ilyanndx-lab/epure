@@ -151,6 +151,9 @@ frontend/src/modules/generated/*/
 *.log
 *.err
 epure_tray.log
+# Sentinelle de redémarrage du backend (epure_tray.py, core/redemarrage.py) :
+# écrite par le backend, effacée par le tray dans les 2 s.
+.epure-redemarrage
 
 # Node
 # Sans ancrage : `node_modules/` est ignore A TOUTE PROFONDEUR, pas seulement

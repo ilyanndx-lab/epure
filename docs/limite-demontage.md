@@ -1,9 +1,24 @@
 # Limite du démontage de routes — fastapi ≥ 0.137
 
-**État : bug ouvert, non corrigé.** Ce document n'annonce pas une solution. Il
-consigne ce qui a été mesuré, pour que la prochaine personne à vouloir monter
-fastapi — moi compris, dans six mois — ne recommence pas l'enquête à zéro et ne
-cherche pas la cause au mauvais endroit.
+**État au 2026-09-23 : résolu — par suppression du démontage, pas par un
+démontage qui marche.** Plus aucun code ne filtre `app.router.routes` : les
+modules ne se chargent qu'au démarrage du backend, et tout changement de module
+(installation, approbation Atelier, suppression, activation) prend effet au
+redémarrage, demandé depuis l'interface et exécuté par le tray. C'est l'option D
+du §7, exécutée et étendue à l'installation : `docs/demontage-option-d.md`
+(en-tête) dit par quoi chaque pièce est remplacée. Le garde-fou est
+`backend/test_redemarrage_modules.py`, qui échoue si du code réécrit les routes
+d'une app ou touche aux internes de routage.
+
+La suite de ce document est gardée telle quelle : la mesure, la bissection et
+les tentatives B/C restent la référence si quelqu'un veut un jour du démontage
+à chaud. Les §1, §7 (option A « état actuel ») et §8 décrivent l'état d'AVANT
+le 2026-09-23.
+
+*Texte d'origine :* « **bug ouvert, non corrigé.** Ce document n'annonce pas une
+solution. Il consigne ce qui a été mesuré, pour que la prochaine personne à
+vouloir monter fastapi — moi compris, dans six mois — ne recommence pas
+l'enquête à zéro et ne cherche pas la cause au mauvais endroit. »
 
 **Antériorité, à lire d'abord : ce bug est plus vieux que le catalogue.** Il ne
 vient ni de `core/catalogue.py`, ni de l'UI des réglages, ni des endpoints
@@ -331,7 +346,11 @@ repose sur `endpoint.__module__`. Un module qui enregistre une route dont la
 fonction est définie ailleurs (un helper de `core`) sort du filtre. Ce défaut
 est antérieur et indépendant de 0.137.
 
-## 8. Ce qui tient la frontière aujourd'hui
+## 8. Ce qui tenait la frontière avant le 2026-09-23
+
+> Ces garde-fous gardaient une version de fastapi, faute de mieux. Depuis
+> l'option D, la frontière est `test_redemarrage_modules.py` (plus aucun
+> démontage) ; l'épinglage de version est levé dans un commit séparé.
 
 Rien dans le code ne corrige le démontage. Ce qui empêche l'oubli :
 

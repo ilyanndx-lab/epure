@@ -1,14 +1,13 @@
-fastapi==0.136.3
-# Épinglée bien que fastapi la tire déjà : fastapi 0.136.3 déclare
-# `starlette>=0.46.0` SANS borne haute, donc `pip install -r requirements.txt`
-# résout aujourd'hui starlette 1.6.0 et non la 1.2.0 du poste de dev — une
-# version subie, pas choisie. Or on dépend directement de ses internes :
-# `_drop_module_routes` filtre `app.router.routes` à la main, faute d'API
-# publique de démontage (cf. docs/limite-demontage.md).
-# Mesuré avant de l'épingler : 0.136.3 + starlette 1.6.0 passe les 207 tests.
-# L'épinglage sert donc la reproductibilité, pas une correction — c'est
-# `fastapi` qui porte la limite, pas `starlette`.
-starlette==1.2.0
+# Épinglée EXACTEMENT, et en accord avec ci.yml (test_versions_epinglees.py).
+# Gelée en 0.136.3 jusqu'au 2026-09-23 : le démontage de routes à chaud filtrait
+# app.router.routes, interne que fastapi 0.137 a changé. Le démontage n'existe
+# plus (modules chargés au démarrage, docs/demontage-option-d.md) ; le gel est
+# levé. Monter la version reste une décision : changer ce fichier ET ci.yml.
+fastapi==0.141.1
+# Épinglée bien que fastapi la tire déjà : fastapi déclare `starlette>=0.46.0`
+# SANS borne haute, donc sans cette ligne sa version serait subie, pas choisie.
+# 1.7.0 = la dernière publiée au dégel, dans la plage que 0.141.1 déclare.
+starlette==1.7.0
 uvicorn==0.48.0
 # Implémentation WebSocket d'uvicorn — sans elle, TOUT `/ws/*` est mort.
 # `uvicorn` seul ne sait pas parler WebSocket : il ne le sait que si `websockets`

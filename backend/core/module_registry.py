@@ -23,8 +23,24 @@ modules supprimés, 4 des 12 entrées de ``modules_activés`` aussi, et ``revise
 mentionnait pas). Le champ ``status: "active"|"disabled"`` reste exposé par
 ``GET /modules`` — il est désormais DÉRIVÉ de l'appartenance à la liste, et le
 frontend n'a pas à savoir que le stockage a changé.
+
+CHARGÉ AU DÉMARRAGE, ET SEULEMENT LÀ (2026-09-23). ``register_routers`` est le
+seul endroit où un routeur de module entre dans l'app, et il n'est appelé qu'à
+l'import de ``main.py``. Installer, réapprouver, supprimer, activer ou
+désactiver un module change l'état VOULU sur disque ; l'état CHARGÉ ne change
+qu'au redémarrage suivant. Le démontage à chaud manipulait ``app.router.routes``
+— un interne que fastapi 0.137 a changé, ce qui gelait fastapi en 0.136
+(``docs/limite-demontage.md``, ``docs/demontage-option-d.md``).
+
+« Redémarrage requis » n'est donc pas un drapeau qu'on pose : c'est l'ÉCART
+entre ce que ``register_routers`` a trouvé au démarrage (photographié dans
+``app.state``) et ce que le disque demande maintenant
+(:func:`ecart_redemarrage`). Calculé à chaque lecture, il reste juste quand le
+disque change hors de l'Atelier (fichier copié à la main, ``instance_config``
+édité) et il s'efface de lui-même au redémarrage, puisque la photo est refaite.
 """
 
+import hashlib
 import importlib
 import json
 import logging
@@ -134,6 +150,75 @@ def get_module(module_id: str) -> Optional[dict]:
     return next((m for m in list_modules() if m.get("id") == module_id), None)
 
 
+def _signature(module_id: str) -> str:
+    """Empreinte de ce qui décide du routeur servi : ``manifest.json`` + ``router.py``.
+
+    Le contenu et non le seul champ ``version`` du manifeste : une
+    réapprobation dans l'Atelier réécrit ``router.py`` sans que le LLM ait
+    forcément touché à la version, et c'est précisément le cas qui doit
+    réclamer un redémarrage (le code en mémoire est l'ancien).
+    """
+    h = hashlib.sha256()
+    for nom in ("manifest.json", "router.py"):
+        f = _modules_dir() / module_id / nom
+        h.update(nom.encode("ascii") + b"\0")
+        try:
+            h.update(f.read_bytes())
+        except OSError:
+            h.update(b"\0absent")
+    return h.hexdigest()[:16]
+
+
+def modules_a_charger() -> dict[str, str]:
+    """État VOULU : ``id → signature`` des modules actifs qui ont un ``router.py``.
+
+    Même sélection que :func:`register_routers` — c'est ce qui rend l'écart
+    comparable à la photo du démarrage.
+    """
+    voulu: dict[str, str] = {}
+    for m in list_modules():
+        mid = str(m.get("id"))
+        if m.get("status") == "active" and (_modules_dir() / mid / "router.py").is_file():
+            voulu[mid] = _signature(mid)
+    return voulu
+
+
+def ecart_redemarrage(app) -> dict:
+    """Écart entre les modules chargés au démarrage de ``app`` et l'état voulu.
+
+    Trois sortes de changement, par id :
+
+    - ``à charger`` : voulu, absent de la photo (installé, approuvé, activé) ;
+    - ``à décharger`` : dans la photo, plus voulu (supprimé, désactivé) — sa
+      route RÉPOND ENCORE jusqu'au redémarrage, c'est le prix assumé de
+      l'absence de démontage ;
+    - ``modifié`` : les deux, signatures différentes (réapprobation, mise à jour).
+
+    Un module qui a ÉCHOUÉ à l'import au démarrage est dans la photo avec la
+    signature tentée : tant que ses fichiers ne changent pas, un redémarrage
+    rejouerait le même échec, donc il n'est pas un écart. Il est listé à part
+    (``échecs``).
+
+    Sur une app où :func:`register_routers` n'a jamais tourné, il n'y a rien à
+    comparer : aucun écart.
+    """
+    etat = getattr(app, "state", None)
+    photo = getattr(etat, "modules_au_demarrage", None)
+    echecs = dict(getattr(etat, "modules_en_echec", None) or {})
+    if photo is None:
+        return {"requis": False, "écarts": [], "échecs": echecs}
+    voulu = modules_a_charger()
+    ecarts = []
+    for mid in sorted(set(photo) | set(voulu)):
+        if mid not in photo:
+            ecarts.append({"id": mid, "changement": "à charger"})
+        elif mid not in voulu:
+            ecarts.append({"id": mid, "changement": "à décharger"})
+        elif photo[mid] != voulu[mid]:
+            ecarts.append({"id": mid, "changement": "modifié"})
+    return {"requis": bool(ecarts), "écarts": ecarts, "échecs": echecs}
+
+
 def register_routers(app) -> None:
     """Monte les routeurs des modules non-core actifs sur ``app``.
 
@@ -154,7 +239,22 @@ def register_routers(app) -> None:
     donc l'ordre décide qui gagne en cas de collision de chemin. Le laisser
     dépendre d'un glisser-déposer dans la barre ferait dépendre le routage de
     l'ordre d'affichage — deux choses qui n'ont rien à voir.
+
+    **Appelé une seule fois, au démarrage** (cf. l'en-tête du module). Photographie
+    dans ``app.state`` ce qu'il a tenté de charger, pour :func:`ecart_redemarrage`.
+
+    **Un module cassé ne doit pas empêcher le backend de démarrer.** Chaque
+    étape est gardée, et ``SystemExit`` l'est explicitement : un ``router.py``
+    qui appelle ``sys.exit()`` à l'import n'est pas une ``Exception`` et
+    remontait jusqu'à uvicorn, qui s'arrêtait. ``KeyboardInterrupt`` n'est PAS
+    avalé : Ctrl+C pendant le démarrage doit continuer d'arrêter le process.
     """
+    voulu = modules_a_charger()
+    echecs: dict[str, str] = {}
+    etat = getattr(app, "state", None)
+    if etat is not None:
+        etat.modules_au_demarrage = dict(voulu)
+        etat.modules_en_echec = echecs
     for m in list_modules():
         if m.get("status") != "active":
             continue
@@ -163,19 +263,22 @@ def register_routers(app) -> None:
             continue  # pas de backend pour ce module (ou core non migré)
         try:
             mod = importlib.import_module(f"modules.{mid}.router")
-        except Exception:
+        except (Exception, SystemExit) as exc:
             logger.exception("Module %s : import de modules.%s.router échoué", mid, mid)
+            echecs[str(mid)] = f"import : {type(exc).__name__}: {exc}"
             continue
         router = getattr(mod, "router", None)
         if router is None:
             logger.warning("Module %s : router.py ne définit pas 'router'", mid)
+            echecs[str(mid)] = "router.py ne définit pas 'router'"
             continue
         prefix = (m.get("backend") or {}).get("prefix", "")
         try:
             app.include_router(router, prefix=prefix)
             logger.info("Module %s : routeur monté sur %s", mid, prefix or "/")
-        except Exception:
+        except Exception as exc:
             logger.exception("Module %s : include_router a échoué", mid)
+            echecs[str(mid)] = f"montage : {type(exc).__name__}: {exc}"
 
 
 def set_status(module_id: str, status: str) -> Optional[dict]:

@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from core import catalogue as _catalogue
+from core import redemarrage as _redemarrage
 from core.codeagent import SecurityError
 from core.embedding_install import declencher_installation, etat_installation
 from core.instance import fiches_root, instance_config, modele_local_defaut
@@ -1046,9 +1047,11 @@ async def catalogue_list():
 
 @router.post("/settings/catalogue/{module_id}/install")
 async def catalogue_install(module_id: str, request: Request):
-    """Installe un module du catalogue : copie, activation, montage à chaud."""
+    """Installe un module du catalogue : copie, activation. Chargé au redémarrage :
+    la réponse porte l'état de redémarrage (``redémarrage``)."""
     try:
-        return _catalogue.install(module_id, app=request.app)
+        return {**_catalogue.install(module_id),
+                "redémarrage": _redemarrage.etat(request.app)}
     except SecurityError as exc:
         logger.warning("SECURITY: installation refusée — %r", module_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1064,7 +1067,8 @@ async def module_delete(module_id: str, request: Request):
     supprimable, et un id inconnu.
     """
     try:
-        return _catalogue.uninstall(module_id, app=request.app)
+        return {**_catalogue.uninstall(module_id),
+                "redémarrage": _redemarrage.etat(request.app)}
     except SecurityError as exc:
         logger.warning("SECURITY: suppression refusée — %r", module_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc

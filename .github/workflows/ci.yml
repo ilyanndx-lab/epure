@@ -28,11 +28,11 @@
 #              bump silencieux à chaque push. Ce fichier a d'ailleurs déjà
 #              résolu du fastapi ≥ 0.137 et fait échouer les deux tests de route
 #              fantôme (`AssertionError: 200 != 404`) là où le poste de dev, en
-#              0.136.3, passait : le démontage de routes ne fonctionne plus
-#              au-delà de 0.136 et le bug n'est PAS corrigé
-#              (docs/limite-demontage.md). `test_versions_epinglees.py` tient la
-#              frontière et vérifie que ces deux épinglages-ci ne divergent pas
-#              de requirements.txt.
+#              0.136.3, passait (docs/limite-demontage.md). Ce démontage à chaud
+#              a disparu le 2026-09-23 — les modules se chargent au démarrage
+#              (docs/demontage-option-d.md) — et le gel en 0.136 avec lui ;
+#              l'épinglage EXACT reste. `test_versions_epinglees.py` vérifie que
+#              ces deux épinglages-ci ne divergent pas de requirements.txt.
 #              Le RESTE de la liste flotte, délibérément : rien n'y dépend d'un
 #              interne de version, et recopier tout requirements.txt ici en
 #              dupliquerait la maintenance.
@@ -79,7 +79,7 @@ permissions:
 # Le nombre ne peut que BAISSER. Quiconque ajoute un avertissement casse la CI ;
 # quiconque en resorbe descend le plafond dans le meme commit.
 env:
-  ESLINT_MAX_WARNINGS: "61"
+  ESLINT_MAX_WARNINGS: "59"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -97,7 +97,7 @@ jobs:
           python-version: '3.12'
       # fastapi/starlette épinglés sur requirements.txt — voir en-tête. Ne pas
       # « rafraîchir » ces deux versions ici : elles ne se montent qu'avec
-      # requirements.txt, et seulement après docs/limite-demontage.md.
+      # requirements.txt, dans le même commit.
       # `wsproto` sort du périmètre « imports de niveau module de main.py » : ce
       # n'en est pas un, et rien ici ne l'importe. Il est là pour que
       # `test_websocket_dependance.py` VÉRIFIE au lieu de se sauter — c'est
@@ -165,7 +165,7 @@ jobs:
       # pile au lieu de l'installer.
       - name: Dépendances (pas de deps ML — voir en-tête)
         run: >
-          pip install fastapi==0.136.3 starlette==1.2.0
+          pip install fastapi==0.141.1 starlette==1.7.0
           pydantic pyyaml python-dotenv
           httpx python-multipart numpy ollama openai pypdf watchdog uvicorn wsproto
           python-docx python-pptx openpyxl onnxruntime readability-lxml Pillow

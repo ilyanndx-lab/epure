@@ -1,5 +1,36 @@
 # Démontage — option D : redémarrer plutôt que démonter
 
+> **État au 2026-09-23 : exécuté, étendu à TOUS les changements de modules.**
+> Aucun routeur de module n'entre plus dans l'app en cours : ni à la
+> désinstallation (le plan d'origine), ni à l'installation, ni à l'approbation
+> Atelier, ni à l'activation (décision d'Ilyann, qui supprime l'asymétrie du
+> §4). `_drop_module_routes` et `_remount` n'existent plus. Ce qui les remplace :
+>
+> - **montage** : `core/module_registry.register_routers`, appelé une seule
+>   fois, à l'import de `main.py` ;
+> - **« redémarrage requis »** : `module_registry.ecart_redemarrage(app)`, un
+>   écart CALCULÉ entre la photo prise au démarrage (`app.state`, signature
+>   sha256 de `manifest.json` + `router.py`) et l'état voulu sur disque — pas un
+>   drapeau, donc juste même si le disque change hors de l'Atelier, et effacé
+>   de lui-même au redémarrage ;
+> - **canal** : `core/redemarrage.py` (`GET`/`POST /instance/redemarrage`,
+>   `boot_id` dans `/health`) et, côté tray, `_restart_backend` +
+>   `_surveiller_sentinelle` dans `epure_tray.py`, `consommer_sentinelle` dans
+>   `lanceur.py` ;
+> - **interface** : `frontend/src/components/RedemarrageRequis.tsx` (Atelier et
+>   Réglages) — prévient si une génération est en cours, attend un autre
+>   `boot_id`, recharge la page ;
+> - **garde-fous** : `backend/test_redemarrage_modules.py` (aucune écriture de
+>   `.routes` ni interne de routage, `include_router` hors démarrage interdit,
+>   flux approuver → redémarrer → chargé) et `backend/integration_redemarrage.py`
+>   (vrai processus : supprimer, redémarrer, 404).
+>
+> Les sections ci-dessous gardent le raisonnement d'origine ; trois points y
+> étaient faux ou périmés à l'exécution, corrigés en place et marqués
+> **[corrigé 2026-09-23]** : l'arrêt d'uvicorn (§2), l'état du tray (§1) et
+> l'asymétrie d'installation (§4). Le dégel de fastapi est l'étape suivante,
+> dans un commit séparé.
+
 **Contexte.** `docs/limite-demontage.md` établit qu'à partir de fastapi 0.137.0,
 `_drop_module_routes` ne retire plus rien et la route d'un module supprimé
 continue de répondre 200. Cinq options y sont listées ; ce document exécute
@@ -42,6 +73,15 @@ Ils sont indépendants.
 
 Lecture de `epure_tray.py` au 2026-08-09.
 
+> **[corrigé 2026-09-23] Ce tableau est périmé.** `_kill_existing()` et le
+> `taskkill /F /IM ollama.exe` n'existent plus : le tray RÉUTILISE un Ollama
+> déjà en service et n'arrête que les processus qu'il a lui-même lancés
+> (`_stop_processes`, par PID, avec `lanceur.tuer_arbre`). La conclusion tient
+> pour d'autres raisons : le redémarrage complet relance Vite et NOTRE
+> `ollama serve` s'il en avait lancé un (modèle déchargé de la VRAM), rouvre un
+> onglet et attend 4 + 6 s de `sleep`. D'où, toujours, le redémarrage du
+> backend seul.
+
 **Ce qui existe** : `_do_restart()` = `_stop_processes()` + `sleep(2)` +
 `_start_processes()`, câblé sur l'entrée de menu « Redémarrer ».
 
@@ -82,6 +122,24 @@ thread du tray, sondage 2 s
         ▼
 efface la sentinelle, terminate() du seul p_uvicorn, relance uvicorn seul
 ```
+
+> **[corrigé 2026-09-23] `terminate()` aurait laissé un orphelin sur le port.**
+> Mesuré : le processus qui ÉCOUTE sur 8000 n'est jamais celui que `Popen` a
+> lancé — `.venv\Scripts\python.exe` est un redirecteur qui démarre le vrai
+> interpréteur en processus ENFANT (PID lancé ≠ PID à l'écoute, à chaque
+> essai). `terminate()` tue le redirecteur, l'enfant garde le port. Le tray
+> arrête donc l'ARBRE : `lanceur.tuer_arbre` (`taskkill /F /T`), puis
+> `_liberer_port_backend` en filet. Mesuré sur 3 cycles par mode : port libre
+> en ~0,5 s, uvicorn prêt en ~6 s (~10 s avec `--reload`), aucun orphelin ; sur
+> le vrai code du tray, `boot_id` neuf 10,3 s après la demande.
+>
+> **Deux autres écarts assumés.** La sentinelle n'est pas sous
+> `resolve_data_dir()` mais à côté du tray (`<racine>/.epure-redemarrage`) : le
+> tray choisit le chemin et le TRANSMET au backend par
+> `EPURE_SENTINELLE_REDEMARRAGE`, parce qu'il ne sait pas résoudre un
+> `EPURE_DATA_DIR` posé dans `backend/.env` — il aurait surveillé un autre
+> fichier que celui écrit. Et cette même variable remplace `EPURE_TRAY=1` :
+> sa présence dit qu'un tray écoute.
 
 Points de conception :
 
@@ -210,16 +268,27 @@ Commit : `chore(deps): dépinglage de fastapi après suppression du démontage �
 
 ## §4 — Ce que l'option D ne change pas
 
-- **Le montage à chaud continue de fonctionner.** `include_router` marche sur
+- ~~**Le montage à chaud continue de fonctionner.** `include_router` marche sur
   toutes les versions ; seul le *démontage* était cassé. `catalogue.install()`
   garde son `_remount` et l'installation reste instantanée. **L'asymétrie est
   voulue : installer est fréquent et rapide, désinstaller est rare et coûte un
-  redémarrage.**
+  redémarrage.**~~
+
+  **[corrigé 2026-09-23] Asymétrie supprimée.** Installer passe aussi par le
+  redémarrage. Raison : `_remount` démontait d'abord (réinstallation,
+  réapprobation) — garder le montage à chaud gardait donc le filtrage de
+  `app.router.routes`, c'est-à-dire exactement la dépendance à l'interne que ce
+  chantier retire. Coût : quelques secondes après une installation, au moment
+  choisi par l'utilisateur (bouton, avertissement si une génération est en
+  cours).
 - **La réapprobation d'un module dans l'Atelier**, en revanche, passe par le même
   `_remount`, donc par le même démontage. Elle doit vraisemblablement emprunter
   le chemin sentinelle elle aussi. **Vraisemblablement** : `limite-demontage.md`
   §9 signale que ce chemin n'a jamais été exercé en ≥ 0.137 et que c'est une
-  déduction, pas une mesure. **À mesurer avant l'étape D**, pas à supposer — si
+  déduction, pas une mesure. **[2026-09-23]** Sans objet désormais : la
+  réapprobation n'a plus de chemin à chaud. Ce qui est mesuré à la place
+  (`test_reapprobation_sert_la_nouvelle_version_apres_redemarrage`) : l'ancien
+  code sert jusqu'au redémarrage, qui charge la nouvelle version. **À mesurer avant l'étape D**, pas à supposer — si
   la réapprobation reste cassée après dépinglage, le dépinglage est prématuré.
 
 ---

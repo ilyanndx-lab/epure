@@ -5,14 +5,13 @@ Dans le paquet envoyé à un proche, il n'y a plus de serveur Vite : FastAPI ser
 lui-même ``frontend/dist``. Ce fichier verrouille les trois choses qui rendent ce
 service correct, et dont deux sont contre-intuitives.
 
-  1. **Pas de catch-all.** ``module_workshop._remount`` fait un
-     ``app.include_router`` qui AJOUTE EN FIN de ``app.router.routes``, et
-     Starlette sert la première route qui correspond. Un mount sur ``/`` posé au
-     démarrage passerait donc devant les routes de tout module installé ensuite,
-     et ``index.html`` répondrait à la place du module. Or l'installation depuis
-     le catalogue est justement ce que le proche garde. C'est l'objet de
-     :class:`PasDeCatchAllTest`, qui installe une route APRÈS le montage statique
-     et vérifie qu'elle répond encore.
+  1. **Pas de catch-all.** Starlette sert la première route qui correspond. Les
+     modules sont montés au démarrage AVANT le service statique, et plus jamais
+     ensuite (le montage à chaud a disparu le 2026-09-23) : un mount sur ``/``
+     ne masquerait donc rien aujourd'hui — il masquerait tout module monté
+     après lui le jour où cet ordre changerait. :class:`PasDeCatchAllTest`
+     garde la propriété indépendamment de l'ordre : il ajoute une route APRÈS
+     le montage statique et vérifie qu'elle répond encore.
   2. **La page est publique, l'API non.** Le middleware exige un token partout
      sauf ``/health`` et ``/pair`` ; la page HTML doit pourtant se charger avant
      que son JavaScript ait pu s'appairer. L'exemption est donc élargie aux
@@ -160,8 +159,10 @@ class PasDeCatchAllTest(_BaseWeb):
 
     ``include_router`` ajoute en fin de liste et Starlette sert la première route
     qui correspond. Ce test reproduit la séquence réelle d'une installation
-    depuis le catalogue (montage statique au démarrage, puis ``_remount``) et
-    échoue si le service statique passe devant.
+    depuis le catalogue telle qu'elle était avant le 2026-09-23 (montage
+    statique, puis un module ajouté) et échoue si le service statique passe
+    devant. Les modules se montent désormais avant lui ; le test reste le
+    garde-fou du jour où l'ordre de ``main.py`` changerait.
     """
 
     def test_une_route_ajoutee_apres_le_montage_repond_encore(self):
@@ -174,7 +175,7 @@ class PasDeCatchAllTest(_BaseWeb):
         async def _ping():
             return {"ok": True}
 
-        app.include_router(router, prefix="")  # comme module_workshop._remount
+        app.include_router(router, prefix="")  # un module monté APRÈS le statique
 
         with TestClient(app) as c:
             r = c.get("/nouveau/ping")
