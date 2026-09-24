@@ -712,6 +712,150 @@ class BuildCroiseTest(unittest.TestCase):
             self.assertIs(manifeste["voix"], False)
 
 
+class OutillagePipTest(unittest.TestCase):
+    """`pip` ET `setuptools` partent dans le paquet — installés, puis contrôlés.
+
+    Incident du 2026-09-24 : `get-pip.py` a cessé d'amener `setuptools`, et le
+    paquet construit ce jour-là en était dépourvu sans qu'aucune étape n'échoue.
+    Deux gestes y répondent, et chacun est éprouvé : l'installation explicite
+    dans `preparer_python`, et un contrôle bloquant en fin de construction qui
+    refuse un runtime où l'un des deux manque — ou n'est trouvé qu'ailleurs.
+    """
+
+    def _avec_executer(self, reponse):
+        """Remplace `_executer` ; `reponse(cmd)` rend la sortie capturée."""
+        appels = []
+        ancien = paquet._executer
+
+        def faux(cmd, quoi, journal=print, capturer=False):
+            appels.append(cmd)
+            return reponse(cmd) if capturer else ""
+
+        paquet._executer = faux
+        self.addCleanup(setattr, paquet, "_executer", ancien)
+        return appels
+
+    @staticmethod
+    def _dans(racine: Path, *noms: str) -> str:
+        sp = racine / "Lib" / "site-packages"
+        return json.dumps({n: str(sp / n / "__init__.py") for n in noms})
+
+    def test_le_controle_passe_quand_les_deux_viennent_du_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            racine = Path(tmp)
+            self._avec_executer(lambda cmd: self._dans(racine, *paquet.OUTILLAGE_PIP))
+            paquet.verifier_outillage_pip(racine, journal=lambda *_: None)
+
+    def test_setuptools_absent_fait_echouer_la_construction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            racine = Path(tmp)
+            sortie = json.loads(self._dans(racine, "pip"))
+            sortie["setuptools"] = None
+            self._avec_executer(lambda cmd: json.dumps(sortie))
+            with self.assertRaises(paquet.ErreurPaquet) as ctx:
+                paquet.verifier_outillage_pip(racine, journal=lambda *_: None)
+        self.assertIn("n'importe pas setuptools depuis", str(ctx.exception))
+
+    def test_un_setuptools_trouve_hors_du_runtime_ne_compte_pas(self):
+        """Celui de l'hôte, atteint par une variable d'environnement, rendrait le
+        contrôle vert pour une mauvaise raison."""
+        with tempfile.TemporaryDirectory() as tmp, \
+             tempfile.TemporaryDirectory() as ailleurs:
+            racine = Path(tmp)
+            sortie = json.loads(self._dans(racine, "pip"))
+            sortie["setuptools"] = str(Path(ailleurs) / "setuptools" / "__init__.py")
+            self._avec_executer(lambda cmd: json.dumps(sortie))
+            with self.assertRaises(paquet.ErreurPaquet) as ctx:
+                paquet.verifier_outillage_pip(racine, journal=lambda *_: None)
+        self.assertIn("n'importe pas setuptools depuis", str(ctx.exception))
+
+    def test_la_sonde_tourne_en_mode_isole(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            racine = Path(tmp)
+            appels = self._avec_executer(
+                lambda cmd: self._dans(racine, *paquet.OUTILLAGE_PIP))
+            paquet.verifier_outillage_pip(racine, journal=lambda *_: None)
+        self.assertEqual(appels[0][:2], [str(racine / "python.exe"), "-I"])
+
+    def test_preparer_python_installe_setuptools_puis_controle(self):
+        """Le chemin réel, interpréteur simulé : `setuptools` est demandé
+        nommément juste après `get-pip.py`, sous les contraintes, et le contrôle
+        est la dernière exécution."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            embed = tmp / "embed.zip"
+            with zipfile.ZipFile(embed, "w") as z:
+                z.writestr("python312._pth", "python312.zip\n.\n#import site\n")
+            contraintes = tmp / "c.txt"
+            contraintes.write_text("setuptools==1\n", encoding="utf-8")
+            dest = tmp / "python"
+            ancien = paquet._telecharger
+            paquet._telecharger = lambda url, cible, journal=print: cible
+            self.addCleanup(setattr, paquet, "_telecharger", ancien)
+            appels = self._avec_executer(
+                lambda cmd: self._dans(dest, *paquet.OUTILLAGE_PIP) if "-I" in cmd else "")
+            paquet.preparer_python(dest, embed, contraintes, journal=lambda *_: None,
+                                   arch=paquet.arch_hote())
+        i_getpip = next(i for i, c in enumerate(appels) if c[1].endswith("get-pip.py"))
+        self.assertEqual(appels[i_getpip + 1][-3:], ["setuptools", "-c", str(contraintes)])
+        self.assertIn("-I", appels[-1], "le contrôle doit être la dernière exécution")
+
+
+class ContraintesCouvrentExigencesTest(unittest.TestCase):
+    """Chaque exigence réellement installée dans le paquet figure dans les contraintes.
+
+    `readability-lxml` a été ajoutée à `requirements.txt` sans passer par
+    `contraintes-paquet.txt` : un fichier de contraintes n'installe rien, donc
+    le build restait vert, et elle — avec sa grappe (`lxml-html-clean`,
+    `cssselect`, `chardet`) — se résolvait librement. Le gel n'en était plus un.
+
+    La liste comparée est celle que `faire_paquet` installe VRAIMENT
+    (`_exigences_du_paquet`), pas `requirements.txt` relu ici : les exclusions
+    (`HORS_PAQUET_PIP`) ne s'écrivent qu'à un endroit. Et la version doit
+    concorder : un épinglage direct contredit par les contraintes fait échouer
+    `pip install -c` avant la première wheel (incident du 2026-08-26, en-tête de
+    `contraintes-paquet.txt`).
+    """
+
+    @staticmethod
+    def _lire(chemin: Path) -> dict[str, str | None]:
+        """Nom normalisé (PEP 503) → version épinglée par `==`, ou None.
+
+        Le nom s'arrête au premier caractère qui n'en fait pas partie, quel que
+        soit l'opérateur qui suit (`==`, `<`, `[extra]`, `;` marqueur) :
+        `PyYAML`/`pyyaml` et `Pillow`/`pillow` diffèrent entre les deux fichiers.
+        """
+        import re
+        d = {}
+        for ligne in chemin.read_text(encoding="utf-8").splitlines():
+            if not ligne.strip() or ligne.lstrip().startswith("#"):
+                continue
+            m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", ligne)
+            if not m:
+                continue
+            v = re.search(r"==\s*([^\s;#,]+)", ligne)
+            d[re.sub(r"[-_.]+", "-", m.group(1)).lower()] = v.group(1) if v else None
+        return d
+
+    def test_aucune_exigence_du_paquet_hors_des_contraintes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exigences = self._lire(paquet._exigences_du_paquet(Path(tmp) / "r.txt"))
+        contraintes = self._lire(paquet.CONTRAINTES_DEFAUT)
+        self.assertTrue(exigences and contraintes)
+        absentes = sorted(n for n in exigences if n not in contraintes)
+        self.assertEqual(absentes, [], "exigences directes absentes de "
+                         "tools/contraintes-paquet.txt — le régénérer "
+                         "(faire_paquet.py --sans-contraintes, puis python.gel)")
+        divergentes = {n: (v, contraintes[n]) for n, v in exigences.items()
+                       if v and contraintes.get(n) and v != contraintes[n]}
+        self.assertEqual(divergentes, {})
+
+    def test_setuptools_est_gele_aussi(self):
+        """Installé nommément par `preparer_python` : il doit l'être à la
+        version mesurée, pas à la dernière publiée."""
+        self.assertIn("setuptools", self._lire(paquet.CONTRAINTES_DEFAUT))
+
+
 class PurgeSitePackagesTest(unittest.TestCase):
     """Le seul mécanisme de purge qui subsiste : par nom de dossier — et il ne
     vise plus rien.

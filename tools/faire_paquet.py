@@ -724,6 +724,19 @@ def preparer_python(destination: Path, embeddable: Path | None,
         get_pip = _telecharger(URL_GET_PIP, Path(tmp) / "get-pip.py", journal)
         _executer([str(python), str(get_pip), "--no-warn-script-location"],
                   "get-pip.py", journal)
+        # `setuptools` EXPLICITEMENT, et pas « amené par get-pip.py » : il l'a
+        # été, puis a cessé de l'être (get-pip.py n'installe plus que `pip`).
+        # Constaté le 2026-09-24 : le paquet du jour avait `pip` sans
+        # `setuptools`, alors que le gel du 2026-08-26 portait
+        # `setuptools==84.0.0` — rien n'avait échoué, rien ne l'avait signalé.
+        # Or un paquet doit rester réparable (`PURGE_SITE_PACKAGES`), et une
+        # sdist sans wheel ne s'installe pas sans lui. Les contraintes, quand il
+        # y en a, en fixent la version comme pour le reste.
+        cmd_st = [str(python), "-m", "pip", "install", "--no-warn-script-location",
+                  "--disable-pip-version-check", "setuptools"]
+        if contraintes and Path(contraintes).is_file():
+            cmd_st += ["-c", str(contraintes)]
+        _executer(cmd_st, "pip install setuptools", journal)
 
         exigences = _exigences_du_paquet(Path(tmp) / "requirements-paquet.txt", arch)
         if arch == "arm64":
@@ -742,6 +755,7 @@ def preparer_python(destination: Path, embeddable: Path | None,
                         capturer=True)
 
     purges = purger_site_packages(destination, journal)
+    verifier_outillage_pip(destination, journal)
     return {"version_python": VERSION_PYTHON, "arch": arch, "purges": purges,
             # Ce que le destinataire N'A PAS, écrit noir sur blanc dans PAQUET.json.
             # Un paquet sans voix doit se reconnaître à son manifeste : sinon le
@@ -825,6 +839,52 @@ def purger_site_packages(racine_python: Path, journal=print) -> dict[str, float]
     for cache in list(racine_python.rglob("__pycache__")):
         shutil.rmtree(cache, ignore_errors=True)
     return gagne
+
+
+#: Ce que le Python du paquet doit savoir importer, faute de quoi il n'est plus
+#: réparable chez le destinataire (cf. :data:`PURGE_SITE_PACKAGES`).
+OUTILLAGE_PIP = ("pip", "setuptools")
+
+
+def verifier_outillage_pip(racine_python: Path, journal=print) -> None:
+    """Contrôle BLOQUANT : le `python.exe` du paquet importe `pip` et `setuptools`.
+
+    Existe parce que `setuptools` a disparu du paquet sans que rien n'échoue :
+    `get-pip.py` a cessé de l'amener, et la construction est restée verte. Un
+    contrôle placé après la dernière opération qui touche `site-packages`
+    (la purge) est le seul qui dise ce qui part vraiment.
+
+    L'import seul ne suffit pas : le module doit résoudre SOUS `racine_python`.
+    Un `pip` trouvé ailleurs (Python de l'hôte par une variable d'environnement)
+    rendrait le contrôle vert pour une mauvaise raison — d'où `-I` (mode isolé,
+    ni `PYTHONPATH` ni site utilisateur) et la comparaison des chemins.
+    """
+    python = racine_python / "python.exe"
+    sonde = ("import importlib, json\n"
+             "r = {}\n"
+             f"for n in {OUTILLAGE_PIP!r}:\n"
+             "    try:\n"
+             "        r[n] = importlib.import_module(n).__file__\n"
+             "    except Exception:\n"
+             "        r[n] = None\n"
+             "print(json.dumps(r))\n")
+    try:
+        sortie = _executer([str(python), "-I", "-c", sonde], "contrôle pip/setuptools",
+                           journal, capturer=True)
+        trouves = json.loads(sortie.strip().splitlines()[-1])
+    except (ErreurPaquet, OSError, ValueError, IndexError) as exc:
+        raise ErreurPaquet(
+            f"contrôle du runtime impossible ({python}) : {exc}") from exc
+    racine = racine_python.resolve()
+    manquants = [n for n in OUTILLAGE_PIP
+                 if not trouves.get(n)
+                 or not Path(trouves[n]).resolve().is_relative_to(racine)]
+    if manquants:
+        raise ErreurPaquet(
+            f"le Python du paquet n'importe pas {', '.join(manquants)} depuis "
+            f"{racine} (trouvé : {trouves}). Un paquet sans pip/setuptools ne "
+            f"se répare pas chez le destinataire — construction refusée.")
+    journal(f"  contrôle : {', '.join(OUTILLAGE_PIP)} importables depuis le runtime")
 
 
 def _executer(cmd: list[str], quoi: str, journal=print, capturer: bool = False) -> str:
