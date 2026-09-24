@@ -55,17 +55,21 @@
 # premier usage »), et ils ne partent toujours pas : `transformers`, revenu dans
 # `requirements.txt` pour `core/hmer.py`, est dans `HORS_PAQUET_PIP`. C'est
 # `onnxruntime` qui porte l'embedding, et il pèse **12,9 Mo dans l'archive**
-# (38,4 Mo décompressés) — mesuré sur l'archive elle-même.
+# (38,4 Mo décompressés) — mesuré sur l'archive du 2026-09-24 elle-même
+# (construite AVEC ce fichier), dossier + `.dist-info`, Mo décimaux. Inchangé
+# depuis la mesure du 2026-08-26 : même version, 1.26.0.
 #
 # `tokenizers` est encore là, et ce n'est PAS pour l'embedding : `faster-whisper`
 # le déclare. Le tokeniseur d'Épure est du Python pur (`core/wordpiece.py`),
 # précisément parce que le `.pyd` de `tokenizers` n'est pas signé — la catégorie
 # de binaire que Smart App Control bloque sur la machine ARM64 du destinataire.
 # Sur un paquet `--arch arm64`, la voix est retirée (`HORS_PAQUET_PIP_ARM64`) et
-# `tokenizers` disparaît donc avec elle, en même temps que 68,6 Mo d'archive
-# (`av`, `av.libs`, `ctranslate2`, `piper`, `faster-whisper`, `hf-xet`,
-# `huggingface-hub`) — mesuré sur ce paquet x64, donc un ordre de grandeur pour
-# l'ARM64, pas une mesure de l'ARM64.
+# `tokenizers` disparaît donc avec elle : **68,8 Mo d'archive** en tout
+# (178,1 Mo décompressés), dont 2,7 Mo pour `tokenizers` et 66,1 Mo pour `av`,
+# `av.libs`, `ctranslate2`, `piper`, `faster-whisper`, `hf-xet`,
+# `huggingface-hub` — mesuré le 2026-09-24 sur l'archive x64 (dossiers +
+# `.dist-info`, Mo décimaux ; 68,6 Mo annoncés au 2026-08-26). Un ordre de grandeur pour l'ARM64,
+# pas une mesure de l'ARM64.
 #
 # ── Pourquoi ce fichier existe ────────────────────────────────────────────────
 #
