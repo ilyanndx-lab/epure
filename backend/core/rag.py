@@ -13,7 +13,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from core.models import premier_modele_vision_disponible
-from core.paths import resolve_vector_dir
+from core.paths import BACKEND_DIR, resolve_vector_dir
 from core.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
@@ -124,9 +124,11 @@ class RAGEngine:
       écrit dans l'index réel de l'utilisateur (cf. ``core/paths.py``).
     """
 
-    def __init__(self, config_path: str = "config.yaml", store: VectorStore | None = None,
+    def __init__(self, config_path: str | Path | None = None, store: VectorStore | None = None,
                  llm=None):
-        with open(config_path) as f:
+        # Ancré sur BACKEND_DIR, jamais relatif au dossier courant
+        # (test_config_hors_cwd.py).
+        with open(config_path or BACKEND_DIR / "config.yaml") as f:
             cfg = yaml.safe_load(f)
         rag_cfg = cfg.get("rag", {})
         self._chunk_size = rag_cfg.get("chunk_size", 500)

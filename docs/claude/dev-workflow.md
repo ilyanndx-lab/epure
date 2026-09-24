@@ -90,7 +90,9 @@ si le Node du poste n'a pas la même version majeure. Incident à l'origine
 (2026-09-22) : CI figée sur 22 depuis sa création, poste et `install.ps1` en 24 ;
 9 tests du module Image verts ici, rouges là-bas (l'undici de Node 22 appelle
 `Blob.stream()`, absent du `Blob` de jsdom). Changer de version = changer ce
-fichier, jamais `ci.yml`.
+fichier, jamais `ci.yml`. `engines.node` de `frontend/package.json` (`24.x`,
+2026-09-23) en est le MIROIR, pour qu'npm avertisse (`EBADENGINE`) — le changer
+en même temps : rien ne vérifie encore que les deux restent alignés.
 
 **IMPÉRATIF — `npm run lint` et la suite backend lancés à la main ne mesurent
 PAS ce que mesure la CI.** Deux fois le 2026-09-05, un « vert en local » est
