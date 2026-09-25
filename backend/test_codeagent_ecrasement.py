@@ -733,6 +733,93 @@ def carre(x):
 '''
 
 
+class MemeHorodatageTest(_SauvegardesTest):
+    """Deux sauvegardes au MÊME horodatage ne s'écrasent pas — correctif du 2026-09-25.
+
+    L'unicité du nom reposait sur l'horloge murale (`datetime.now()` à la
+    microseconde). Sous Windows avant Python 3.13 — le 3.12 du paquet livré —
+    elle n'avance que par pas d'environ 15,6 ms : mesuré, 1 146 valeurs
+    distinctes sur 200 000 appels en 3.12.10, contre 200 000 en 3.14. Deux
+    écritures du même fichier dans le même pas donnaient le même nom, et
+    `copy2` écrasait la première copie : une sauvegarde perdue, en silence.
+    Vu sur le runner Windows (job `paquet-voix`) : les tests de rétention y
+    comptaient 9 copies au lieu de 10, un run sur deux.
+
+    L'horloge est FIGÉE ici : le test est rouge avant le correctif sur n'importe
+    quelle machine, au lieu de dépendre de la résolution de la sienne.
+    """
+
+    _FIGE = __import__("datetime").datetime(2026, 9, 25, 20, 0, 0, 123456)
+
+    def _figer(self):
+        p = mock.patch.object(codeagent, "datetime")
+        horloge = p.start()
+        self.addCleanup(p.stop)
+        horloge.now.return_value = self._FIGE
+
+    def test_deux_sauvegardes_au_meme_horodatage_sont_toutes_gardees(self):
+        nom = self._ecrire("calculs.py", "v1\n")
+        self._figer()
+
+        codeagent.create_file(nom, "v2\n", origine=codeagent.ORIGINE_MODELE)
+        codeagent.create_file(nom, "v3\n", origine=codeagent.ORIGINE_MODELE)
+
+        copies = self._sauvegardes(nom, codeagent.ORIGINE_MODELE)
+        self.assertEqual([c.read_text(encoding="utf-8") for c in copies], ["v1\n", "v2\n"])
+
+    def test_la_premiere_copie_garde_le_format_d_avant(self):
+        """Pas de collision, pas de suffixe : le nom reste celui que les copies
+        déjà sur le disque portent."""
+        nom = self._ecrire("calculs.py", "v1\n")
+        self._figer()
+
+        codeagent.create_file(nom, "v2\n", origine=codeagent.ORIGINE_MODELE)
+
+        [copie] = self._sauvegardes(nom, codeagent.ORIGINE_MODELE)
+        self.assertEqual(copie.name, "calculs.py.20260925-200000-123456.modele.bak")
+
+    def test_la_purge_garde_les_plus_recentes_au_meme_horodatage(self):
+        nom = self._ecrire("calculs.py", "v0\n")
+        self._figer()
+
+        for i in range(codeagent.RETENTION_EDITEUR + 5):
+            codeagent.create_file(nom, f"editeur {i}\n", origine=codeagent.ORIGINE_EDITEUR)
+
+        contenus = [c.read_text(encoding="utf-8")
+                    for c in self._sauvegardes(nom, codeagent.ORIGINE_EDITEUR)]
+        n = codeagent.RETENTION_EDITEUR + 5
+        attendu = [f"editeur {i}\n" for i in range(n - codeagent.RETENTION_EDITEUR - 1, n - 1)]
+        self.assertEqual(contenus, attendu)
+
+    def test_les_sauvegardes_au_format_actuel_restent_triees(self):
+        """Compatibilité ascendante : des copies déjà sur le disque (sans suffixe)
+        se trient avec les nouvelles sur (horodatage, suffixe), et la purge
+        emporte bien les plus ANCIENNES. Les très anciennes, sans origine, ne
+        sont jamais touchées."""
+        nom = self._ecrire("calculs.py", "courant\n")
+        dossier = self._bak
+        anciennes = []
+        for i in range(codeagent.RETENTION_EDITEUR):
+            c = dossier / f"calculs.py.20260101-0000{i:02d}-000000.editeur.bak"
+            c.write_text(f"ancienne {i}\n", encoding="utf-8")
+            anciennes.append(c)
+        sans_origine = dossier / "calculs.py.20250101-000000-000000.bak"
+        sans_origine.write_text("historique\n", encoding="utf-8")
+        self._figer()
+
+        codeagent.create_file(nom, "n1\n", origine=codeagent.ORIGINE_EDITEUR)
+        codeagent.create_file(nom, "n2\n", origine=codeagent.ORIGINE_EDITEUR)
+
+        gardees = self._sauvegardes(nom, codeagent.ORIGINE_EDITEUR)
+        self.assertEqual(len(gardees), codeagent.RETENTION_EDITEUR)
+        self.assertFalse(anciennes[0].exists(), "la plus ancienne aurait dû partir")
+        self.assertFalse(anciennes[1].exists())
+        self.assertTrue(anciennes[2].exists())
+        self.assertEqual([c.read_text(encoding="utf-8") for c in gardees[-2:]],
+                         ["courant\n", "n1\n"])
+        self.assertTrue(sans_origine.exists())
+
+
 class MarkdownEditFileTest(_WorkspaceTest):
     """`**edit_file**` en markdown ne se convertit plus en écrasement complet.
 
