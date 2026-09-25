@@ -45,8 +45,11 @@ from core.instance import instance_config
 from core.paths import (
     BACKEND_DIR,
     REPO_ROOT,
+    resolve_data_dir,
     resolve_generated_dir,
+    resolve_history_dir,
     resolve_modules_dir,
+    resolve_vector_dir,
 )
 from core.module_validate import (
     validate_component_tsx, validate_router_py, ui_component_exports,
@@ -122,11 +125,70 @@ def _write_module_index() -> Path:
     return p
 
 # Fichiers/dossiers JAMAIS exposés en lecture (fuite de secrets / données perso).
+# Motifs appliqués au chemin RÉSOLU (noms longs, casse réelle), jamais à la
+# chaîne reçue. Ils restent pour les noms qu'on ne peut pas énumérer
+# (`credential`, `secret`, `.key` n'importe où) ; les emplacements connus sont,
+# eux, comparés par IDENTITÉ (cf. `_read_is_safe`).
 _READ_DENY = ("\\.env", "credential", "secret", "/memory/", "/chroma_db/", "/history/", "\\.key")
 
+
+def _emplacements_sensibles() -> tuple[list[Path], list[Path]]:
+    """(fichiers, dossiers) jamais lisibles, recalculés à chaque appel.
+
+    À l'appel et non figés : les dossiers de données suivent ``$EPURE_*_DIR``
+    (``resolve_data_dir`` et consorts, CLAUDE.md §3.5). ``REPO_ROOT / "backend"``
+    ET ``BACKEND_DIR`` : identiques en production, le premier est celui qu'un
+    test rebranche sur un arbre temporaire.
+    """
+    backends = {REPO_ROOT / "backend", BACKEND_DIR}
+    fichiers = [REPO_ROOT / ".env", *(b / ".env" for b in backends)]
+    dossiers = [b / n for b in backends for n in ("memory", "history", "chroma_db", "vector_db")]
+    dossiers += [resolve_data_dir(), resolve_history_dir(), resolve_vector_dir()]
+    return fichiers, dossiers
+
+
+def _meme(a, b) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:  # l'un des deux n'existe pas : ce n'est pas le même fichier
+        return False
+
+
 def _read_is_safe(path: Path) -> bool:
-    s = str(path).replace("\\", "/").lower()
-    return not any(re.search(d, s) for d in _READ_DENY)
+    """Le chemin peut-il partir à aider en ``--read`` ?
+
+    **On ne décide plus sur la chaîne reçue.** L'ancienne version cherchait ses
+    motifs dans ``str(path)`` sans le résoudre : ``backend\\ENV~1`` — le nom
+    court 8.3 de ``.env`` — passait, et le fichier partait dans le contexte du
+    moteur de l'Atelier, cloud compris ; de même ``CHROMA~1`` (dont ``rglob``
+    garde l'alias dans chaque chemin produit), une jonction vers ``backend/``,
+    ou ``…/memory`` écrit sans barre finale (``test_atelier_lecture_sensible.py``).
+    Un chemin a trop d'écritures sous Windows (8.3, casse, point final, flux
+    ADS, ``\\\\?\\``, UNC, jonction) pour qu'une liste de motifs les couvre.
+
+    Donc : résolution stricte (un chemin qui ne se résout pas est refusé), puis
+    IDENTITÉ du fichier (``samefile`` compare volume et numéro de fichier,
+    indifférent à l'écriture) avec les fichiers sensibles, et appartenance par
+    identité de chaque ancêtre aux dossiers sensibles. Les motifs restent,
+    appliqués au chemin résolu, pour les noms qu'on ne peut pas énumérer.
+
+    Ce n'est pas la frontière de sécurité de l'Atelier (CLAUDE.md §5 et §7 :
+    l'isolation worker) ; c'est le garde-fou qui empêche l'UI d'envoyer un
+    secret au modèle par accident. Il doit au moins ne pas se contourner par
+    une simple écriture de chemin.
+    """
+    try:
+        r = Path(path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    s = str(r).replace("\\", "/").lower()
+    if any(re.search(d, s) for d in _READ_DENY):
+        return False
+    fichiers, dossiers = _emplacements_sensibles()
+    if any(_meme(r, f) for f in fichiers):
+        return False
+    ancetres = (r, *r.parents)
+    return not any(_meme(a, d) for d in dossiers for a in ancetres)
 
 def _atelier_read_files(extra: Optional[list[str]] = None, minimal: bool = False) -> list[str]:
     """Chemins --read (lecture seule) : conventions + index + exemple hello + extras autorisés.
