@@ -1,0 +1,57 @@
+# actionlint sur les workflows — un fichier de workflow invalide ne démarre pas.
+#
+# L'INCIDENT (2026-09-25). `paquet-voix.yml` posait `HF_HOME: ${{ runner.temp }}`
+# dans le `env:` du JOB, où le contexte `runner` n'existe pas. GitHub rejette
+# alors le fichier entier : aucun job ne tourne, et la PR n'affiche AUCUN check
+# à son nom — seuls les autres workflows, verts, apparaissent. Le run en échec
+# n'était visible que dans l'onglet Actions (run 36175135588, « workflow file
+# issue », 0 job). verif-ci ne pouvait pas le voir : il ne lit que ci.yml.
+# actionlint le signale ligne 50, colonne 20 — vérifié sur la version fautive.
+#
+# VERSION ÉPINGLÉE, avec les empreintes des deux archives. C'est ici, et nulle
+# part ailleurs : `tools/verif-ci.ps1` LIT ces trois valeurs dans ce fichier au
+# lieu de les recopier (même principe que le cliquet eslint de ci.yml).
+#
+# SHELLCHECK ET PYFLAKES COUPÉS (`-shellcheck= -pyflakes=`), des deux côtés.
+# actionlint les appelle s'il les trouve sur le PATH : ubuntu-latest a
+# shellcheck, le poste de dev ne l'a pas. Les laisser actifs ferait mesurer au
+# même outil deux choses différentes en CI et en local — l'écart que verif-ci
+# existe pour supprimer. Ce qui est vérifié, c'est la validité des workflows
+# (syntaxe, contextes, expressions, entrées d'actions), pas le style des scripts.
+
+name: Workflows — actionlint
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256_LINUX: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+  ACTIONLINT_SHA256_WINDOWS: "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9"
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint (workflows)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint épinglé, empreinte vérifiée
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$archive" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256_LINUX}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" actionlint
+      - name: actionlint
+        run: ./actionlint -color -shellcheck= -pyflakes=

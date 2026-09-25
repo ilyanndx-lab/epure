@@ -177,7 +177,9 @@ class ResolutionTest(_DossierModeles):
              _piper_installe(), \
              mock.patch.object(PiperEngine, "_load", lambda self: object()):
             moteur = PiperEngine(voice=VOIX)
-        self.assertEqual(moteur._models_dir, self.tmp)
+        # Les deux RÉSOLUS : sur le runner Windows, TEMP est un nom court 8.3
+        # (`RUNNER~1`) que `resolve()` étend — même dossier, deux écritures.
+        self.assertEqual(Path(moteur._models_dir).resolve(), self.tmp.resolve())
         self.assertTrue((self.tmp / f"{VOIX}.onnx").is_file())
         self.assertTrue((self.tmp / f"{VOIX}.onnx.json").is_file())
 

@@ -1,0 +1,126 @@
+# Voix du paquet, éprouvée avec les versions du PAQUET — et non du venv de dev.
+#
+# POURQUOI UN JOB À PART. Le job `backend` de ci.yml n'installe ni
+# `faster-whisper` ni `huggingface_hub` : le téléchargement et le chargement de
+# Whisper, et le passage hors ligne de `_hf_offline_if_cached`, n'y sont jamais
+# exécutés. Le venv de dev les a, mais `transformers` (pile de `core/hmer.py`,
+# hors paquet) y retient `huggingface_hub` en 0.x (`<1.0`), alors que le paquet
+# livré embarque la 1.x épinglée dans `tools/contraintes-paquet.txt` — mesuré le
+# 2026-09-24 : 0.36.2 d'un côté, 1.33.0 de l'autre. Une rupture de la 1.x sur
+# ces chemins n'était visible que chez le destinataire.
+#
+# ENVIRONNEMENT = celui d'un paquet x64 : `faire_paquet._exigences_du_paquet`
+# (requirements.txt moins `HORS_PAQUET_PIP`, donc sans `transformers`) installé
+# sous `-c tools/contraintes-paquet.txt`. Windows, parce que c'est la plateforme
+# livrée ET celle où le gel a été produit : certaines lignes pourraient ne pas
+# se résoudre sous Linux, et ce serait un faux rouge.
+#
+# DÉCLENCHEMENT. Bloquant sur les PR qui touchent ce qui décide des versions
+# livrées ; manuel ailleurs. Coût : une installation complète (~2-3 min) et
+# ~75 Mo de poids Whisper `tiny`, mis en cache.
+
+name: Paquet — voix
+
+on:
+  pull_request:
+    paths:
+      - 'backend/requirements*.txt'
+      - 'tools/contraintes-paquet.txt'
+      - '.github/workflows/paquet-voix.yml'
+      - 'backend/integration_voix_paquet.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paquet-voix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  voix:
+    name: Voix — versions du paquet (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      # Cache HF hors du profil, pour qu'actions/cache le vise sans ambiguïté.
+      # Posé par une ÉTAPE et non dans `env:` du job : le contexte `runner`
+      # n'y est pas disponible, et l'y écrire invalidait tout le fichier — le
+      # workflow ne démarrait pas du tout (run 36175135588, 0 job). Même
+      # dossier que le `path:` d'actions/cache plus bas (`runner.temp` y est
+      # autorisé) : `$env:RUNNER_TEMP` en est la valeur — l'étape « Versions
+      # installées » le vérifie. UTF-8 explicite plutôt que l'encodage par défaut
+      # de la console.
+      - name: HF_HOME dans le temporaire du runner
+        run: '"HF_HOME=$env:RUNNER_TEMP\hf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8'
+
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          # Le paquet embarque Python 3.12 embeddable (tools/faire_paquet.py).
+          python-version: '3.12'
+
+      - name: Exigences du paquet x64 (tools/faire_paquet.py)
+        run: >
+          python -c "import sys; sys.path.insert(0, 'tools'); from pathlib import Path;
+          import faire_paquet;
+          print(faire_paquet._exigences_du_paquet(Path('requirements-paquet.txt')))"
+
+      # Si une ligne des contraintes ne se résout pas, c'est ICI que ça casse,
+      # et c'est voulu : un gel qui ne s'installe pas est un paquet qui ne se
+      # construit pas.
+      - name: Installation sous contraintes du paquet
+        run: python -m pip install -r requirements-paquet.txt -c tools/contraintes-paquet.txt
+
+      - name: Versions installées (transformers doit être absent)
+        run: |
+          python -m pip show huggingface_hub filelock faster-whisper ctranslate2 | Select-String '^(Name|Version):'
+          if ($env:HF_HOME -ne (Join-Path $env:RUNNER_TEMP 'hf')) { throw "HF_HOME='$env:HF_HOME' n'est pas le dossier mis en cache" }
+          "HF_HOME=$env:HF_HOME"
+          python -c "import importlib.util as u, sys; sys.exit('transformers installé : ce n est plus l environnement du paquet' if u.find_spec('transformers') else 0)"
+
+      - name: Cache du modèle Whisper tiny
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}\hf
+          key: hf-whisper-tiny-${{ hashFiles('tools/contraintes-paquet.txt') }}
+          restore-keys: hf-whisper-tiny-
+
+      # `_hf_offline_if_cached` cherche le cache du modèle de config.yaml
+      # (`small` par défaut, ~480 Mo). Le job le règle sur `tiny` : même code
+      # parcouru, poids six fois plus légers. Modifié dans le runner seulement.
+      - name: config.yaml — whisper_model tiny (runner seulement)
+        working-directory: backend
+        run: |
+          $c = Get-Content config.yaml -Raw
+          $n = $c -replace '(?m)^(\s*whisper_model:\s*)\S+', '${1}tiny'
+          if ($n -eq $c) { throw 'whisper_model introuvable dans config.yaml' }
+          [IO.File]::WriteAllText("$PWD\config.yaml", $n)
+
+      - name: Whisper — téléchargement puis chargement (en ligne)
+        working-directory: backend
+        run: python integration_voix_paquet.py en-ligne
+
+      - name: Whisper — relance hors ligne via _hf_offline_if_cached
+        working-directory: backend
+        run: python integration_voix_paquet.py hors-ligne
+
+      - name: config.yaml restauré avant la suite
+        run: git checkout -- backend/config.yaml
+
+      # Garde-fou de la restauration : la suite ne doit JAMAIS tourner sur une
+      # config réécrite. `git checkout` ci-dessus peut être sauté (étape retirée,
+      # `if:` ajouté) sans que rien d'autre ne le dise.
+      - name: config.yaml identique au dépôt
+        run: git diff --exit-code -- backend/config.yaml
+
+      # La suite complète, dans l'environnement du paquet. Ce qui dépend de la
+      # pile hors paquet (hmer : optimum-onnx, transformers) doit se SAUTER.
+      - name: Suite backend dans l'environnement du paquet
+        working-directory: backend
+        run: python -m unittest discover -s . -p 'test_*.py' -v
