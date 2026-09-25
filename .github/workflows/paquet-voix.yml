@@ -46,10 +46,19 @@ jobs:
       run:
         shell: pwsh
     env:
-      # Cache HF hors du profil, pour qu'actions/cache le vise sans ambiguïté.
-      HF_HOME: ${{ runner.temp }}\hf
       PYTHONUTF8: '1'
     steps:
+      # Cache HF hors du profil, pour qu'actions/cache le vise sans ambiguïté.
+      # Posé par une ÉTAPE et non dans `env:` du job : le contexte `runner`
+      # n'y est pas disponible, et l'y écrire invalidait tout le fichier — le
+      # workflow ne démarrait pas du tout (run 36175135588, 0 job). Même
+      # dossier que le `path:` d'actions/cache plus bas (`runner.temp` y est
+      # autorisé) : `$env:RUNNER_TEMP` en est la valeur — l'étape « Versions
+      # installées » le vérifie. UTF-8 explicite plutôt que l'encodage par défaut
+      # de la console.
+      - name: HF_HOME dans le temporaire du runner
+        run: '"HF_HOME=$env:RUNNER_TEMP\hf" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8'
+
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
@@ -71,6 +80,8 @@ jobs:
       - name: Versions installées (transformers doit être absent)
         run: |
           python -m pip show huggingface_hub filelock faster-whisper ctranslate2 | Select-String '^(Name|Version):'
+          if ($env:HF_HOME -ne (Join-Path $env:RUNNER_TEMP 'hf')) { throw "HF_HOME='$env:HF_HOME' n'est pas le dossier mis en cache" }
+          "HF_HOME=$env:HF_HOME"
           python -c "import importlib.util as u, sys; sys.exit('transformers installé : ce n est plus l environnement du paquet' if u.find_spec('transformers') else 0)"
 
       - name: Cache du modèle Whisper tiny
