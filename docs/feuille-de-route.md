@@ -246,6 +246,25 @@ Correctif : `core.paths.brancher_paquet_modules()`, appelé en tête de
 `test_modules_hors_depot.py` rejoue le démarrage dans un sous-process sans
 `_test_env` (rouge avant le correctif, vert après).
 
+### Trou ouvert, priorité MOYENNE : le RAG ne résout pas ses chemins de fiches
+
+Constaté le 2026-09-25 (audit des noms courts 8.3), **non traité, non reproduit**
+— lu dans le code. `core.paths.resolve_fiches_dir()` (donc `FICHES_DIR`) et
+`core.instance.fiches_watch_paths()` ne résolvent pas le chemin, contrairement
+aux autres `resolve_*()`. Le RAG indexe donc les fichiers sous leur écriture
+brute (`rag.get_indexed_files()`, scan du watcher), alors que les pièces jointes
+du chat passent par `resolve_user_path` (écriture résolue, noms longs), et
+`history.cle_chemin` ne fait que `normcase` + `normpath`, qui n'étend ni un nom
+court 8.3 ni une jonction.
+
+Conséquence attendue si `EPURE_FICHES_DIR` ou un dossier surveillé est écrit en
+nom court (ou traverse une jonction) : un fichier pourtant indexé est refusé à
+l'attachement (400 « Fichiers non indexés ») ou affiché `présent: False` ; et le
+même fichier peut être indexé deux fois, sous ses deux écritures
+(`/files/load` indexe l'écriture résolue). Pas d'enjeu de sécurité : ce sont des
+refus à tort, pas des acceptations. À corriger avec un test qui tourne dans le
+job Windows (`paquet-voix`), `TEMP` du runner étant lui-même un nom court.
+
 ---
 
 ## 5 — Isolation worker
@@ -271,6 +290,15 @@ le montage de tous les modules.
 > et ce que devient `_remount` dans ce modèle.
 >
 > N'écris aucun code. Le plan d'abord, je le relis, on exécute ensuite.
+
+**À corriger au moment de brancher le worker** (constaté le 2026-09-25) :
+`core/module_worker.py:177-180` retire `backend/` de `sys.path` par simple
+comparaison de CHAÎNES (`p not in banned`) — seul `backend/core` est aussi
+comparé résolu. Une écriture en nom court 8.3, en casse ou en séparateurs
+différents de `backend/` survivrait, et le worker garderait l'accès aux imports
+du process principal. Sans effet aujourd'hui (le worker n'est pas câblé) ; même
+règle que `_read_is_safe` (`docs/claude/pieges-connus.md`) : comparer résolu,
+ou par identité.
 
 ---
 
