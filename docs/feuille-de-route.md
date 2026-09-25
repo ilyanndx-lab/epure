@@ -220,25 +220,31 @@ un destinataire du paquet, qui n'a pas de terminal. Le superviseur ci-dessus
 fera disparaître le cas le plus courant ; le message doit de toute façon savoir
 dans quel contexte il est lu (paquet ou poste de dev).
 
-### Trou ouvert, priorité HAUTE : `modules.*` importé depuis le dossier courant
+### Corrigé le 2026-09-25, priorité MOYENNE : `modules.*` importé hors de `EPURE_MODULES_DIR`
 
-Constaté le 2026-09-23, **non traité**. Même famille que `config.yaml` lu en
-relatif (corrigé le même jour, `test_config_hors_cwd.py`).
+Constaté le 2026-09-23. Même famille que `config.yaml` lu en relatif (corrigé
+le même jour, `test_config_hors_cwd.py`).
 
 `core/module_registry.register_routers` fait `importlib.import_module(f"modules.{mid}.router")` :
-`modules` est un paquet d'espace de noms, résolu par `sys.path`, donc depuis le
-**dossier courant** d'uvicorn (`backend/`) — et non depuis
-`resolve_modules_dir()`, qui honore `$EPURE_MODULES_DIR`. Les manifestes, eux,
-sont lus dans `resolve_modules_dir()`. Si les deux divergent (variable posée,
-backend lancé d'ailleurs), le registre voit les modules d'un arbre et en importe
-le code d'un autre, sans rien signaler. Les tests ne le voient pas parce que
-`_test_env` rebranche `modules.__path__` sur l'arbre temporaire — ce que la
-production ne fait pas. `integration_redemarrage.py` a dû travailler sur une
-copie de `backend/` pour cette raison.
+`modules` est un paquet d'espace de noms, résolu par **`sys.path`** — le
+`backend/` que le lanceur y place (`demarrer.py` : `sys.path.insert(0, BACKEND)`),
+et non le dossier courant comme cette entrée le disait d'abord (vérifié en
+lançant depuis un autre dossier) — et non depuis `resolve_modules_dir()`, qui
+honore `$EPURE_MODULES_DIR`. Les manifestes, eux, sont lus dans
+`resolve_modules_dir()`. Variable posée, le registre voyait les modules d'un
+arbre et en importait le code d'un autre, sans rien signaler.
 
-Correctif attendu : faire pointer `modules.__path__` sur `resolve_modules_dir()`
-au démarrage (comme `_test_env`, mais en production), avec un test qui lance le
-backend depuis un autre dossier que `backend/` et `EPURE_MODULES_DIR` posé.
+**Le paquet distribué n'est pas touché** : ni son `.env` ni son installeur ne
+posent `EPURE_MODULES_DIR`, les deux arbres coïncident. Le risque était un
+**faux vert en intégration** : un script qui pointe la variable sur une copie
+pour l'éprouver éprouvait en fait le dépôt (`integration_redemarrage.py` a dû
+travailler sur une copie de `backend/` pour cette raison). La suite ne le
+voyait pas parce que `_test_env` rebranche `modules.__path__` lui-même.
+
+Correctif : `core.paths.brancher_paquet_modules()`, appelé en tête de
+`register_routers`, fait pointer `modules.__path__` sur `resolve_modules_dir()`.
+`test_modules_hors_depot.py` rejoue le démarrage dans un sous-process sans
+`_test_env` (rouge avant le correctif, vert après).
 
 ---
 
