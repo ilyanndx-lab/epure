@@ -229,6 +229,58 @@ function Verifier-VersionNode([string]$fichier) {
     $script:Resultats += [pscustomobject]@{ Nom = $nom; Ok = $ok; Duree = 0 }
 }
 
+# -- actionlint ---------------------------------------------------------------
+
+function Obtenir-Actionlint {
+    <#
+        Chemin d'un actionlint.exe a la version et a l'empreinte que la CI
+        epingle dans `.github/workflows/actionlint.yml` -- LUES dans ce fichier,
+        jamais recopiees ici. Telecharge une fois dans %LOCALAPPDATA%, pas
+        d'installation systeme.
+
+        POURQUOI. Un workflow invalide ne demarre pas, et la PR n'affiche alors
+        aucun check a son nom : `paquet-voix.yml` l'a fait le 2026-09-25 (un
+        `runner.temp` dans le `env:` du job), et ce script etait vert, parce
+        qu'il ne lisait que ci.yml.
+    #>
+    $yml = Join-Path $REPO ".github\workflows\actionlint.yml"
+    if (-not (Test-Path $yml)) { Arreter "actionlint.yml introuvable : $yml" }
+    $texte = Get-Content $yml -Raw
+    $v = [regex]::Match($texte, '(?m)^\s*ACTIONLINT_VERSION:\s*"?(?<v>[0-9.]+)"?\s*$')
+    $h = [regex]::Match($texte, '(?m)^\s*ACTIONLINT_SHA256_WINDOWS:\s*"?(?<h>[0-9a-f]{64})"?\s*$')
+    if (-not $v.Success -or -not $h.Success) {
+        Arreter "impossible de lire ACTIONLINT_VERSION / ACTIONLINT_SHA256_WINDOWS dans actionlint.yml"
+    }
+    $version = $v.Groups['v'].Value
+    $empreinte = $h.Groups['h'].Value
+    $dossier = Join-Path $env:LOCALAPPDATA "epure-outils\actionlint-$version"
+    $exe = Join-Path $dossier "actionlint.exe"
+    if (Test-Path $exe) { return $exe }
+
+    $archive = "actionlint_${version}_windows_amd64.zip"
+    $url = "https://github.com/rhysd/actionlint/releases/download/v$version/$archive"
+    $tmp = Join-Path $env:TEMP ("epure-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + "-" + $archive)
+    Ecrire-Info "telechargement de $url"
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tmp
+        $vue = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
+        if ($vue -ne $empreinte) { Arreter "empreinte d'actionlint inattendue" "attendue $empreinte, obtenue $vue" }
+        New-Item -ItemType Directory -Path $dossier -Force | Out-Null
+        # ZipFile et non Expand-Archive : l'extraction d'un seul membre, a un
+        # niveau connu (cf. docs/claude/pieges-connus.md, Expand-Archive).
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($tmp)
+        try {
+            $membre = $zip.Entries | Where-Object { $_.Name -eq 'actionlint.exe' } | Select-Object -First 1
+            if (-not $membre) { Arreter "actionlint.exe absent de $archive" }
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($membre, $exe, $true)
+        } finally { $zip.Dispose() }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+    return $exe
+}
+
 # -- Replique temporaire du frontend ------------------------------------------
 
 function Copier-Suivis([string]$sous_dossier, [string]$racine) {
@@ -339,6 +391,12 @@ Write-Host ("Cliquet eslint lu dans ci.yml : {0}" -f $ci.Cliquet) -ForegroundCol
 
 $replique = $null
 try {
+    # Dans les deux modes : quelques dixiemes de seconde, et c'est ce qui dit
+    # si les AUTRES workflows que ci.yml demarreront seulement. Memes options
+    # que le job de actionlint.yml (shellcheck/pyflakes coupes -- cf. son en-tete).
+    $actionlint = Obtenir-Actionlint
+    $null = Etape "actionlint (.github/workflows)" $REPO $actionlint @('-no-color', '-shellcheck=', '-pyflakes=')
+
     if ($Frontend) {
         Verifier-VersionNode $ci.FichierNode
 
