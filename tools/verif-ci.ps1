@@ -28,8 +28,10 @@
     * il travaille dans un arbre TEMPORAIRE. La CI, elle, installe le catalogue
       dans `frontend/src/modules/generated/` puis fait `rm -rf` dessus -- sur ce
       poste, ce `rm -rf` emporterait les modules reellement installes par
-      l'utilisateur. `frontend/` est donc recopie (sans `node_modules`, jointe
-      par une JONCTION) et rien n'est ecrit dans l'arbre de travail.
+      l'utilisateur. Les fichiers SUIVIS de `frontend/` sont donc recopies
+      (`git ls-files` : ni `node_modules`, jointe par une JONCTION, ni les
+      modules installes, ignores par git) et rien n'est ecrit dans l'arbre de
+      travail.
 
     USAGE
 
@@ -229,11 +231,50 @@ function Verifier-VersionNode([string]$fichier) {
 
 # -- Replique temporaire du frontend ------------------------------------------
 
+function Copier-Suivis([string]$sous_dossier, [string]$racine) {
+    <#
+        Copie sous `$racine` les seuls fichiers de `$sous_dossier` que git SUIT
+        (`git ls-files`), contenu de l'arbre de travail compris.
+
+        POURQUOI. La replique copiait tout `frontend/` sauf `node_modules`,
+        `dist` et `.vite`, donc aussi les modules que l'Atelier installe dans
+        `src/modules/generated/<id>/` -- ignores par git, absents du clone de la
+        CI. Mesure le 2026-09-25 : 60 avertissements ici contre 59 en CI, le
+        60e dans `generated/slides/`, et un verif-ci rouge sur un commit que la
+        CI aurait passe.
+
+        POURQUOI PAS eslint QUI RESPECTE `.gitignore`. La CI installe le
+        catalogue dans ces memes dossiers ignores et DOIT les linter : un
+        eslint qui les ecarterait sortirait le catalogue du perimetre, en CI
+        comme ici, et le cliquet mesurerait moins de code sans rien dire. C'est
+        la COPIE qui doit ressembler au clone ; l'installation simulee du
+        catalogue vient ensuite, a l'identique de ci.yml.
+
+        Consequence assumee : un fichier neuf pas encore `git add` n'est pas vu.
+        C'est aussi le cas de la CI.
+    #>
+    $sortie = & git -C $REPO -c core.quotepath=off ls-files -- $sous_dossier
+    if ($LASTEXITCODE -ne 0) { Arreter "git ls-files a echoue sur $sous_dossier" "Lancer ce script depuis un checkout git." }
+    $n = 0
+    foreach ($relatif in $sortie) {
+        $source = Join-Path $REPO $relatif
+        # Suivi mais supprime dans l'arbre de travail : absent, comme apres commit.
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+        $cible = Join-Path $racine $relatif
+        $parent = Split-Path -Parent $cible
+        if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Copy-Item -LiteralPath $source -Destination $cible -Force
+        $n++
+    }
+    if ($n -eq 0) { Arreter "aucun fichier suivi sous $sous_dossier" "La replique serait vide : verif-ci ne mesurerait rien." }
+}
+
 function Construire-Replique {
     <#
-        Copie `frontend/` dans un temporaire, SANS `node_modules` (jointe par une
-        jonction) ni `dist`, puis y installe le catalogue comme le font les deux
-        etapes "installation simulee" de ci.yml.
+        Copie les fichiers suivis de `frontend/` dans un temporaire
+        (`Copier-Suivis` : ni `node_modules`, joint par une jonction, ni `dist`,
+        ni les modules installes sur ce poste), puis y installe le catalogue
+        comme le font les deux etapes "installation simulee" de ci.yml.
 
         POURQUOI UN TEMPORAIRE, et c'est le coeur du script. La CI copie les
         composants du catalogue dans `frontend/src/modules/generated/<id>/` puis
@@ -251,10 +292,7 @@ function Construire-Replique {
     $front = Join-Path $racine "frontend"
     New-Item -ItemType Directory -Path $front -Force | Out-Null
 
-    $exclus = @('node_modules', 'dist', '.vite')
-    Get-ChildItem -LiteralPath $DOSSIER_FRONTEND -Force |
-        Where-Object { $exclus -notcontains $_.Name } |
-        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $front -Recurse -Force }
+    Copier-Suivis "frontend" $racine
 
     $modules = Join-Path $DOSSIER_FRONTEND "node_modules"
     if (-not (Test-Path $modules)) {
@@ -264,7 +302,7 @@ function Construire-Replique {
 
     # Le catalogue est lu en `../modules-catalogue/*/` par les etapes de ci.yml :
     # il doit donc etre a cote de la replique, pas a cote de l'original.
-    Copy-Item -LiteralPath $DOSSIER_CATALOGUE -Destination (Join-Path $racine "modules-catalogue") -Recurse -Force
+    Copier-Suivis "modules-catalogue" $racine
 
     # Les deux etapes "installation simulee" (type-check/build et eslint) font
     # exactement cette copie. Une seule fois ici : elles sont identiques, et rien
