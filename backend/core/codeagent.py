@@ -224,12 +224,22 @@ def sauvegarder_version(path: str, origine: str) -> Optional[Path]:
     à migrer, et l'origine reste lisible à l'œil dans le dossier. C'est aussi ce
     qui rend la purge sélective — elle ne matche qu'un motif.
 
-    Horodatage à la microseconde : deux écritures successives sur le même
-    fichier dans la même seconde ne doivent pas faire perdre la première
+    **L'unicité du nom est garantie par CONSTRUCTION, pas par l'horloge.** Deux
+    écritures du même fichier ne doivent jamais faire perdre la première
     sauvegarde en écrasant la seconde — soit exactement le problème qu'on
-    cherche à empêcher, rejoué un cran plus bas. C'est aussi ce qui fait que
-    l'ordre lexicographique des noms EST l'ordre chronologique (largeur fixe),
-    dont dépend la purge pour savoir lesquelles sont les plus récentes.
+    cherche à empêcher, rejoué un cran plus bas. L'horodatage à la microseconde
+    ne le garantissait pas : sous Windows avant Python 3.13 (le 3.12 du paquet
+    livré), l'horloge murale n'avance que par pas d'environ 15,6 ms — mesuré,
+    1 146 valeurs distinctes sur 200 000 appels —, et `copy2` écrasait la copie
+    du même pas (`MemeHorodatageTest`). `time.time_ns()` n'y change rien : même
+    horloge. La copie est donc créée en mode EXCLUSIF (`'xb'`) ; si le nom est
+    pris, un suffixe `_01`, `_02`… est essayé.
+
+    Format : `<nom>.<horodatage>.<origine>.bak`, inchangé pour la première copie
+    d'un horodatage (les copies déjà sur le disque restent lisibles), puis
+    `<nom>.<horodatage>_NN.<origine>.bak`. `_` trie APRÈS `.` et le suffixe est
+    de largeur fixe : l'ordre lexicographique reste l'ordre chronologique. La
+    purge ne s'y fie pas pour autant et trie sur (horodatage, suffixe).
     """
     if origine not in _ORIGINES:
         raise ValueError(f"Origine de sauvegarde inconnue : {origine!r}")
@@ -238,12 +248,45 @@ def sauvegarder_version(path: str, origine: str) -> Optional[Path]:
         return None
     horodatage = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     relatif = target.relative_to(WORKSPACE)
-    copie = (_dossier_sauvegardes() / relatif.parent
-             / f"{target.name}.{horodatage}.{origine}.bak")
-    copie.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(target, copie)
-    logger.info("sauvegarde avant écriture (%s) : %s → %s", origine, target, copie)
-    return copie
+    dossier = _dossier_sauvegardes() / relatif.parent
+    dossier.mkdir(parents=True, exist_ok=True)
+    # Au-delà du plus grand suffixe DÉJÀ pris à cet horodatage, et non au premier
+    # nom libre : la purge libère les plus anciens, et une copie neuve qui
+    # reprendrait leur nom passerait pour la plus ancienne — donc purgée à son
+    # tour, au prochain pas (vu en écrivant `MemeHorodatageTest`).
+    pris = [_cle_sauvegarde(c)[1]
+            for c in dossier.glob(f"{target.name}.{horodatage}*.{origine}.bak")]
+    for n in range(max(pris) + 1 if pris else 0, _SUFFIXES_MAX):
+        suffixe = f"_{n:02d}" if n else ""
+        copie = dossier / f"{target.name}.{horodatage}{suffixe}.{origine}.bak"
+        try:
+            with open(target, "rb") as source, open(copie, "xb") as dest:
+                shutil.copyfileobj(source, dest)
+        except FileExistsError:
+            continue
+        shutil.copystat(target, copie)  # ce que `copy2` ajoutait à la copie
+        logger.info("sauvegarde avant écriture (%s) : %s → %s", origine, target, copie)
+        return copie
+    raise OSError(f"{_SUFFIXES_MAX} sauvegardes de {target.name} au même horodatage")
+
+
+#: Au-delà, `sauvegarder_version` lève (donc l'écriture est refusée, fail-closed)
+#: plutôt que d'écraser. Cent copies du même fichier dans le même pas d'horloge
+#: (~15,6 ms) n'arrivent pas par l'usage : ce serait une boucle.
+_SUFFIXES_MAX = 100
+
+_RE_SAUVEGARDE = re.compile(r"\.(\d{8}-\d{6}-\d{6})(?:_(\d{2}))?\.[a-z]+\.bak$")
+
+
+def _cle_sauvegarde(copie: Path) -> tuple:
+    """(horodatage, suffixe) d'une copie — l'ordre chronologique, explicite.
+
+    Un nom qui ne suit pas le format trie EN TÊTE (``""``), donc parmi les
+    premières candidates à la purge : il porte l'origine éditeur (le glob l'a
+    retenu), c'est un pas d'auto-save comme les autres.
+    """
+    m = _RE_SAUVEGARDE.search(copie.name)
+    return (m.group(1), int(m.group(2) or 0)) if m else ("", 0)
 
 
 def _purger_sauvegardes_editeur(target: Path) -> None:
@@ -264,7 +307,8 @@ def _purger_sauvegardes_editeur(target: Path) -> None:
     try:
         relatif = target.relative_to(WORKSPACE)
         dossier = _dossier_sauvegardes() / relatif.parent
-        copies = sorted(dossier.glob(f"{target.name}.*.{ORIGINE_EDITEUR}.bak"))
+        copies = sorted(dossier.glob(f"{target.name}.*.{ORIGINE_EDITEUR}.bak"),
+                        key=_cle_sauvegarde)
     except (OSError, ValueError):
         logger.warning("purge des sauvegardes : listage impossible — %s", target)
         return
