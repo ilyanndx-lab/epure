@@ -79,6 +79,27 @@ def resolve_modules_dir() -> Path:
     return base.resolve()
 
 
+def brancher_paquet_modules() -> None:
+    """Fait importer ``modules.<id>`` depuis :func:`resolve_modules_dir`.
+
+    Les manifestes sont lus dans ``resolve_modules_dir()``, mais le code l'était
+    par ``import modules.<id>.router`` — résolu par ``sys.path``, donc dans le
+    ``backend/`` que le lanceur y a mis, même ``$EPURE_MODULES_DIR`` posée. Le
+    registre voyait un arbre et importait l'autre, sans rien signaler
+    (``test_modules_hors_depot.py``). Même famille que ``config.yaml`` lu en
+    relatif au dossier courant (``test_config_hors_cwd.py``).
+
+    ``modules`` est un paquet d'espace de noms : on REMPLACE son ``__path__``, un
+    ajout à ``sys.path`` cumulerait les portions et laisserait le dépôt visible
+    (cf. ``_test_env._rebrancher_package_modules``, qui faisait déjà ceci pour les tests).
+    À appeler avant le premier import d'un ``modules.<id>`` : un sous-module déjà
+    dans ``sys.modules`` ne serait pas réimporté.
+    """
+    import modules  # noqa: PLC0415 — dépend de sys.path, résolu à l'appel
+
+    modules.__path__ = [str(resolve_modules_dir())]
+
+
 def resolve_generated_dir() -> Path:
     """Dossier des composants générés (``frontend/src/modules/generated``).
 

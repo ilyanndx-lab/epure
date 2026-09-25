@@ -50,7 +50,7 @@ from typing import Optional
 
 from core.instance import instance_config
 from core.jsonstore import read_json
-from core.paths import resolve_data_dir, resolve_modules_dir
+from core.paths import brancher_paquet_modules, resolve_data_dir, resolve_modules_dir
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,12 @@ def register_routers(app) -> None:
     qui appelle ``sys.exit()`` à l'import n'est pas une ``Exception`` et
     remontait jusqu'à uvicorn, qui s'arrêtait. ``KeyboardInterrupt`` n'est PAS
     avalé : Ctrl+C pendant le démarrage doit continuer d'arrêter le process.
+
+    Le code s'importe depuis le même arbre que les manifestes
+    (:func:`core.paths.brancher_paquet_modules`) : sans ça, ``$EPURE_MODULES_DIR``
+    ne valait que pour les manifestes.
     """
+    brancher_paquet_modules()
     voulu = modules_a_charger()
     echecs: dict[str, str] = {}
     etat = getattr(app, "state", None)
