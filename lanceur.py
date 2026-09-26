@@ -163,8 +163,9 @@ def nom_processus(pid: int) -> str:
 def tuer_arbre(pid: int) -> None:
     """``taskkill /T`` : le process ET ses descendants.
 
-    ``/T`` est indispensable pour npm, lancé derrière un shell : terminer le
-    shell seul laissait ``node`` vivant et le port de Vite pris. À n'appeler que
+    ``/T`` est indispensable pour npm : même sans ``shell=True``, Windows lance
+    ``npm.cmd`` via ``cmd.exe``, et terminer ce ``cmd`` seul laissait ``node``
+    vivant et le port de Vite pris. À n'appeler que
     sur un PID dont on a établi qu'il est le nôtre.
     """
     try:
