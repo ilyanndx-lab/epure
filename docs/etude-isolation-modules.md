@@ -267,6 +267,17 @@ dédié demande l'admin à la création et un mot de passe stocké : non retenu
 | **c3. Token à portée limitée par module** | seulement avec c2 : sans iframe, le composant lit le token principal dans `localStorage` et la portée ne sert à rien | — | +1 session, ≈ 150 lignes (émission, vérification dans le middleware) |
 | **c4. Cookie HttpOnly** à la place de `localStorage` | le vol du token par lecture JS | l'**usage** du token : le cookie part avec chaque `fetch` même origine, donc un composant hostile appelle quand même `/code/execute`. Il faudrait en plus un jeton anti-CSRF. Et le WebSocket `?token=` casse | 1 à 2 sessions ; faible valeur sans c2 |
 
+**Portée de la CSP (c1), à ne pas surestimer.** Une CSP limite
+l'**exfiltration vers l'extérieur** : elle empêche un composant d'envoyer
+quelque chose à un hôte tiers par `fetch`, WebSocket ou image. Elle ne fait
+**rien contre l'abus local**. Un composant rendu sur la même origine garde le
+token (`localStorage`, `getToken()`, `/pair`) et l'accès à tous les endpoints
+autorisés par `connect-src 'self'`, dont `/code/execute` et
+`/workshop/<id>/approve?force=true`. Par ces voies, il fait exécuter du code
+côté backend, qui n'est pas soumis à la CSP du navigateur. **Seule une iframe
+sandboxée sans `allow-same-origin`, qui ne reçoit pas le token (c2),
+couvre ce second cas.**
+
 - **Modules existants** : c1 peut casser Monaco (CDN, à autoriser) et toute
   image distante affichée dans le chat. **[?]** Test : une CSP en mode
   `Content-Security-Policy-Report-Only` pendant une semaine d'usage normal,
@@ -349,7 +360,7 @@ réservée au jour où a) existe.
 | b1) Job | non | non | non | **oui** | 1-2 | moyen (lanceur venv) |
 | b2) intégrité basse | **oui** (écriture) | non | partiel (persistance) | non | 2 | moyen |
 | b3) AppContainer | **oui** | **oui** | **oui côté backend** | non | 5-8 | **fort** (loopback, ACL) |
-| c1) CSP | non | ~ | partiel (fetch) | non | 0,5-1 | faible |
+| c1) CSP | non | ~ | partiel : exfiltration vers l'extérieur seulement, rien contre l'abus local | non | 0,5-1 | faible |
 | c2) iframe (+c3) | non | non | **oui côté navigateur** | non | 5-8 | moyen |
 | d) relecture renforcée | **oui** | **oui** | ~ (dépend de ta lecture) | non | 1,5-2,5 | faible |
 | e) sans Python | **oui** (classe) | **oui** (classe) | non (frontend) | **oui** (classe) | 2-3 | faible |

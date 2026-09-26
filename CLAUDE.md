@@ -425,17 +425,28 @@ Règles :
 
 ## 7. Chantier en cours — isolation des modules générés
 
-`docs/isolation_modules.md` décrit le design. `core/module_worker.py` et
-`test_module_isolation.py` existent (untracked à ce jour) mais **ne sont pas
-câblés** : `module_registry.py:95` importe encore tous les routers dans le process
-principal. Aucune route `/capabilities/*` n'existe.
+`docs/isolation_modules.md` décrit le design ; `docs/etude-isolation-modules.md`
+chiffre les options et fixe la politique en vigueur. `core/module_worker.py` et
+`test_module_isolation.py` sont suivis et le test passe en CI (découverte
+automatique), mais le worker **n'est pas câblé** : `register_routers`
+(`core/module_registry.py`) importe encore tous les routers dans le process
+principal, `spawn_worker` n'est appelé que par les tests, et aucune route
+`/capabilities/*` ni aucun proxy `/<id>/*` n'existe. **`slides`, seul module
+`origin: workshop` installé, ne démarrerait pas dans le worker actuel** : il
+importe `core.instance`, `core.jsonstore` et `core.paths`, que le garde
+d'import refuse.
 
 Conséquence à garder en tête : **aujourd'hui, un module généré tourne avec
 `os.environ` (clés API), l'accès à `core.instance` (token) et l'objet `app`.**
+Côté navigateur, son composant a les droits de toute l'interface (token,
+`/code/execute`).
 
 Ne pas déclarer l'isolation faite tant que : le proxy `/<id>/*` existe dans
 `main.py`, les routes `/capabilities/*` existent, `spawn_worker` est appelé en
-production, et `test_module_isolation.py` tourne en CI.
+production, et les modules générés réels (`slides`) démarrent dans le worker.
+
+Déclencheurs de l'isolation complète (worker, AppContainer, iframe) et
+politique d'ici là : `docs/feuille-de-route.md` §5.
 
 ---
 

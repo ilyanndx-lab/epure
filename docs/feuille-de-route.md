@@ -269,6 +269,21 @@ job Windows (`paquet-voix`), `TEMP` du runner étant lui-même un nom court.
 
 ## 5 — Isolation worker
 
+**Déclencheurs de l'isolation complète** (décision d'Ilyann, 2026-09-26, sur
+`docs/etude-isolation-modules.md`). Le worker, l'AppContainer et l'iframe
+sandboxée ne se lancent que si l'un des deux cas suivants arrive :
+
+1. installer un module qu'Ilyann n'a pas généré lui-même (partagé, téléchargé,
+   produit par quelqu'un d'autre) ;
+2. activer l'Atelier dans le paquet distribué (`EPURE_ATELIER`/`VITE_ATELIER`).
+
+Tant qu'aucun n'est atteint, **la politique d) renforcée suffit** : pas
+d'exécution avant relecture (smoke test sur « j'ai lu »), empreinte du code
+approuvé vérifiée au démarrage, CSP en observation. Si l'un des deux arrive,
+la **première étape est l'option e)** de l'étude : modules générés sans Python,
+via des endpoints génériques du cœur, qui préfigurent les capabilities du
+worker. Le plan de câblage ci-dessous vient ensuite.
+
 Ce chantier n'a pas de plan. Il en faut un avant tout code, parce qu'il touche
 le montage de tous les modules.
 
