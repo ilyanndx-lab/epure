@@ -322,6 +322,8 @@ Exploitation soumise au token. Le vérifier au moment de l'ouverture supposerait
 de maîtriser l'ouverture elle-même — c'est-à-dire l'isolation du processus
 (`module_worker`), pas un contrôle de plus en amont.
 
+**Priorité basse** (constaté le 2026-09-26) : la meta de l'Atelier (`_staging/<id>/.workshop.json`) s'écrit par `write_text` direct dans `module_workshop._write_meta`, sans `core/jsonstore.py` : ni écriture atomique ni verrou, et une lecture concurrente peut voir un fichier tronqué (« Meta workshop illisible », vu en test). Sans conséquence de sécurité : la confirmation « j'ai lu » compare l'empreinte des FICHIERS, pas la meta, et une meta illisible fait échouer du côté sûr (rien n'est exécuté ni approuvé). À passer par `jsonstore` à l'occasion.
+
 ---
 
 ## 6 — Registre, étapes B à E

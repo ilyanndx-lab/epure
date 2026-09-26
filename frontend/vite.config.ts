@@ -30,13 +30,26 @@ const CSP_DEV = [
   `report-uri ${CSP_RAPPORT}`,
 ].join('; ')
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   // loadEnv et non process.env : c'est ce que verra le SOURCE via
   // import.meta.env (fichiers .env compris). Lire process.env ici et .env
   // là-bas ferait diverger le drapeau du code et le drapeau du bundler — et la
   // divergence serait silencieuse, l'Atelier restant dans le paquet.
   const env = loadEnv(mode, process.cwd(), '')
   const atelier = env.VITE_ATELIER !== '0'
+
+  // Écoute LOCALE par défaut, tray compris. `host: true` (toutes les
+  // interfaces) rendait le serveur de dev joignable depuis tout le réseau
+  // local — le wifi de la prépa, menace n°3 de CLAUDE.md §6 — alors que le
+  // backend, lui, reste sur 127.0.0.1 (EPURE_BIND). Ouverture au LAN sur
+  // demande EXPLICITE seulement : EPURE_DEV_LAN=1.
+  const lan = env.EPURE_DEV_LAN === '1'
+  if (lan && command === 'serve') {
+    console.warn(
+      '\n⚠️  EPURE_DEV_LAN=1 : le serveur de dev écoute sur TOUTES les interfaces — '
+      + 'joignable depuis le réseau local. Retirer la variable pour revenir à 127.0.0.1.\n',
+    )
+  }
 
   return {
     plugins: [react()],
@@ -74,7 +87,7 @@ export default defineConfig(({ mode }) => {
       assetsDir: '_assets',
     },
     server: {
-      host: true,
+      host: lan ? true : '127.0.0.1',
       port: 5173,
       headers: { 'Content-Security-Policy-Report-Only': CSP_DEV },
     },
