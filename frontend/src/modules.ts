@@ -21,6 +21,9 @@ export interface ModuleManifest {
   origin: string
   status: 'active' | 'disabled'
   removable: boolean
+  /** Modules de l'Atelier seulement (`core/module_registry.etat_approbation`) :
+   *  hors 'approuvé', ni monté côté backend ni rendu ici. */
+  approbation?: 'approuvé' | 'non_approuvé' | 'modifié'
 }
 
 /** Résout une icône lucide-react par son nom (fallback : Box). */

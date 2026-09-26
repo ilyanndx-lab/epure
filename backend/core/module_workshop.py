@@ -1736,7 +1736,12 @@ def approve(module_id: str, force: bool = False) -> dict:
         comp_dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(comp_src, comp_dest)
 
-    # (l'ajout à modules_activés est fait par set_status ci-dessus)
+    # Empreinte approuvée (module de l'Atelier seulement) : APRÈS la copie des
+    # trois fichiers, c'est exactement ce que la revue a montré. Un module du
+    # cœur réédité ici n'y est pas soumis — une mise à jour du dépôt le
+    # déclarerait « modifié » et ne le chargerait plus.
+    if norm.origin == "workshop" and not norm.core_module:
+        module_registry.enregistrer_approbation(module_id)
 
     # Nettoyage du staging.
     shutil.rmtree(sdir, ignore_errors=True)

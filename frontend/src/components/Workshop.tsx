@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Hammer, AlertTriangle, Check, X, RefreshCw, Loader2, Play, Terminal,
-  ShieldCheck, FilePlus2, FilePen, Bug, Cpu,
+  ShieldCheck, FilePlus2, FilePen, FileSearch, Bug, Cpu,
 } from 'lucide-react'
 import { Badge, Button, Card, Input, Select, Textarea } from './ui'
 import { API, apiFetch, wsUrl } from '../api'
@@ -427,6 +427,37 @@ export default function Workshop() {
     }
   }, [staging, bindSocket, setSmoke])
 
+  // Relire le module installé TEL QUEL puis l'approuver, sans passer par un
+  // moteur : c'est la voie de ré-approbation d'un module « modifié depuis
+  // l'approbation » ou jamais approuvé (core/module_registry.py, EMPREINTE
+  // APPROUVÉE). La copie en staging est ce que la revue affiche et ce
+  // qu'approve() empreinte.
+  const reviewWithoutGenerating = useCallback(async () => {
+    const id = targetId
+    if (!id) return
+    setError(null); setSessionLocked(null); setApproveResult(null); setLog(''); setSmoke(null)
+    setPhase('validating')
+    try {
+      const res = await apiFetch(`${API}/workshop/${id}/edit`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine, mode }),
+      })
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }))
+        const msg = typeof e.detail === 'string' ? e.detail : JSON.stringify(e.detail)
+        if (res.status === 409) setSessionLocked(msg); else setError(msg)
+        setPhase('idle'); return
+      }
+      const vr = await apiFetch(`${API}/workshop/${id}/validate`, { method: 'POST' })
+      const vd = await vr.json().catch(() => null)
+      if (vr.ok && vd?.report) setReport(vd.report)
+      await refreshStaging(id)
+      setPhase('review')
+    } catch {
+      setError('Backend injoignable.'); setPhase('idle')
+    }
+  }, [targetId, engine, mode, refreshStaging, setSmoke, setLog, setPhase, setReport])
+
   // Renvoie le contenu du champ éditable (erreurs de validation pré-remplies, ou
   // erreur d'exécution collée par l'utilisateur) à l'IA. Le staging actuel est
   // CONSERVÉ → reprise, pas de régénération depuis zéro.
@@ -569,6 +600,11 @@ export default function Workshop() {
                 <option key={m.id} value={m.id}>{m.id}{m.core_module ? ' (core)' : ''}</option>
               ))}
             </Select>
+            <Button variant="ghost" size="sm" className="mt-2" icon={<FileSearch size={13} />}
+              onClick={reviewWithoutGenerating}
+              disabled={!targetId || phase === 'generating' || phase === 'validating'}>
+              Relire sans générer
+            </Button>
           </div>
         )}
 

@@ -113,6 +113,10 @@ class _BaseModule(unittest.TestCase):
         (d / "manifest.json").write_text(json.dumps(_manifeste(self.ID)), encoding="utf-8")
         (d / "router.py").write_text(router_src or _router_py(self.ID, reponse), encoding="utf-8")
         module_registry.set_status(self.ID, "active")
+        # Posé à la main mais `origin: workshop` : sans empreinte approuvée, il
+        # ne serait pas chargé (test_empreinte_approbation.py). On approuve ce
+        # qu'on vient d'écrire, comme le ferait `approve()`.
+        module_registry.enregistrer_approbation(self.ID)
         return d
 
     def _retirer(self):
@@ -120,6 +124,7 @@ class _BaseModule(unittest.TestCase):
             module_registry.set_status(self.ID, "disabled")
         except Exception:
             pass
+        module_registry.oublier_approbation(self.ID)
         shutil.rmtree(resolve_modules_dir() / self.ID, ignore_errors=True)
         shutil.rmtree(resolve_generated_dir() / self.ID, ignore_errors=True)
         shutil.rmtree(module_workshop._staging_dir(self.ID), ignore_errors=True)
@@ -346,11 +351,14 @@ class EcartCalculeTest(_BaseModule):
         app = _demarrer(self.ID)
         self.assertEqual(module_registry.ecart_redemarrage(app)["écarts"], [])
 
-        # Modifié hors de l'Atelier (fichier réécrit à la main).
+        # Modifié hors de l'Atelier (fichier réécrit à la main). Module de
+        # l'Atelier : son empreinte ne correspond plus à l'approbation, il ne
+        # sera PAS rechargé — donc « à décharger », pas « modifié ».
         (resolve_modules_dir() / self.ID / "router.py").write_text(
             _router_py(self.ID, "B"), encoding="utf-8")
         self.assertEqual(module_registry.ecart_redemarrage(app)["écarts"],
-                         [{"id": self.ID, "changement": "modifié"}])
+                         [{"id": self.ID, "changement": "à décharger"}])
+        self.assertEqual(module_registry.get_module(self.ID)["approbation"], "modifié")
 
         module_registry.set_status(self.ID, "disabled")
         self.assertEqual(module_registry.ecart_redemarrage(app)["écarts"],

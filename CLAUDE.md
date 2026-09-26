@@ -183,6 +183,14 @@ route doit être écrite préfixée à la main : `@router.get("/<id>/ping")`. Sa
 
 Il n'y a **pas** d'état « monté mais invisible ». Actif = les deux à la fois.
 
+**Exception voulue — module de l'Atelier non approuvé** (`origin: workshop`) :
+actif mais dont l'empreinte (manifest + router + composant) diffère de celle
+enregistrée par `approve()` dans `memory/modules_approuves.json`, ou qui n'en a
+jamais eu. Il n'est **ni monté ni rendu** (encart à la place du composant) tant
+qu'il n'est pas ré-approuvé ; `GET /modules` le dit (`approbation`). Ce n'est
+pas un second état « actif » : c'est un contrôle de contenu, calculé à chaque
+lecture (`etat_approbation`). Verrouillé par `test_empreinte_approbation.py`.
+
 **IMPÉRATIF : `backend/memory/modules_state.json` a été supprimé et ne doit
 pas être recréé** — deux fichiers pour un même état divergent mécaniquement
 (mesuré avant migration : `docs/claude/contexte-historique.md` §3.3). Un
