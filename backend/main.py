@@ -22,7 +22,7 @@ from dotenv import load_dotenv, set_key as dotenv_set_key
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -98,8 +98,11 @@ app = FastAPI(title="Épure", version="1.0.0")
 # Enregistré AVANT CORSMiddleware (donc couche plus interne) : les préflights
 # OPTIONS sont servis par CORS sans token, et les 401 gardent les en-têtes CORS.
 from core.auth import get_api_token, is_local_client, token_ok, ws_require_token
+from core import csp as _csp
 
-_AUTH_EXEMPT_PATHS = {"/health", "/pair"}
+#: ``/csp/report`` : le navigateur envoie ses rapports de CSP sans en-tête
+#: ``Authorization`` (core/csp.py, en-tête — ce qu'on y accepte est borné).
+_AUTH_EXEMPT_PATHS = {"/health", "/pair", _csp.CHEMIN_RAPPORT}
 
 #: Préfixe des assets du frontend construit, exempté d'authentification quand le
 #: service statique est monté (cf. :func:`_register_web`). Rempli à
@@ -152,8 +155,9 @@ def _atelier_refuse(chemin: str) -> bool:
 def _est_public(chemin: str, methode: str) -> bool:
     """Requête servie sans token d'API.
 
-    Trois familles, et rien d'autre : les deux exemptions historiques
-    (``/health``, ``/pair``), les préflights CORS, et — seulement si le frontend
+    Trois familles, et rien d'autre : les exemptions nommées (``/health``,
+    ``/pair``, et le point de collecte des rapports CSP, que le navigateur
+    appelle sans token), les préflights CORS, et — seulement si le frontend
     construit est servi (mode paquet) — les fichiers statiques de l'interface.
 
     L'exemption statique est nécessaire : la page HTML doit se charger AVANT que
@@ -723,6 +727,40 @@ async def module_set_status(module_id: str, req: ModuleStatusRequest):
     return updated
 
 
+# ── CSP en observation (Report-Only) ─────────────────────────────────────────
+# Politique et journal : core/csp.py. Report-Only tant qu'Ilyann n'a pas
+# tranché après une semaine d'usage (2026-09-26) — rien n'est bloqué.
+
+@app.post(_csp.CHEMIN_RAPPORT, include_in_schema=False)
+async def csp_rapport(request: Request):
+    """Point de collecte des rapports du navigateur (``report-uri`` ET
+    ``report-to``). Sans token ; corps borné, contenu agrégé, jamais exécuté."""
+    corps = b""
+    async for morceau in request.stream():
+        corps += morceau
+        if len(corps) > _csp.TAILLE_MAX:
+            return Response(status_code=413)
+    try:
+        brut = json.loads(corps.decode("utf-8")) if corps else None
+    except ValueError:
+        return Response(status_code=400)
+    await asyncio.get_running_loop().run_in_executor(None, _csp.enregistrer, brut)
+    return Response(status_code=204)
+
+
+@app.get("/instance/csp")
+async def instance_csp():
+    """Journal des violations (Réglages › Sécurité). Derrière le token."""
+    entrees = await asyncio.get_running_loop().run_in_executor(None, _csp.lire)
+    return {"mode": "report-only", "politique": _csp.politique(), "entrées": entrees}
+
+
+@app.delete("/instance/csp")
+async def instance_csp_vider():
+    await asyncio.get_running_loop().run_in_executor(None, _csp.vider)
+    return {"ok": True}
+
+
 # ── Redémarrage du backend (changements de modules) ────────────────────────
 # Les modules ne se montent qu'au démarrage (core/module_registry.py, en-tête).
 # Ces deux routes disent s'il faut redémarrer, et le demandent au tray
@@ -1233,8 +1271,12 @@ def _servir_fichier(fichier: Path):
     existent.
     """
 
+    # CSP en observation sur la page seule : c'est le document qui porte la
+    # politique, les assets n'en ont pas besoin (core/csp.py).
+    entetes = _csp.entetes() if fichier.suffix == ".html" else None
+
     async def _endpoint() -> FileResponse:
-        return FileResponse(fichier)
+        return FileResponse(fichier, headers=entetes)
 
     return _endpoint
 
