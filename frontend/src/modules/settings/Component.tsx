@@ -13,6 +13,7 @@ import { API, apiFetch } from '../../api'
 import { ATELIER_PRESENT } from '../../atelier'
 import { signalerChangementModules } from '../../redemarrage'
 import RedemarrageRequis from '../../components/RedemarrageRequis'
+import JournalCsp from '../../components/JournalCsp'
 import { modelesDisponibles, type ModeleDisponible } from '../../normaliser'
 
 interface EngineStatus { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
@@ -2200,6 +2201,9 @@ export default function Settings() {
         </Card>
         )
       })()}
+
+      {/* ── Sécurité : journal de la CSP en observation (core/csp.py) ── */}
+      <JournalCsp />
     </main>
   )
 }

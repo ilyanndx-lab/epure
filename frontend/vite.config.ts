@@ -15,6 +15,21 @@ const ATELIER_ABSENT = fileURLToPath(
   new URL('./src/components/AtelierAbsent.tsx', import.meta.url),
 ).replace(/\\/g, '/')
 
+// CSP en OBSERVATION (Report-Only) du serveur de dev — celui que lance le tray.
+// COPIE de backend/core/csp.py (politique(ORIGINES_BACKEND_DEV, rapport=…)),
+// comparée par backend/test_csp_observation.py : la définition est là-bas, ceci
+// n'en est que la version « backend sur une autre origine » (:8000 et non
+// 'self'). Report-Only : rien n'est bloqué, le navigateur signale seulement
+// (décision du 2026-09-26, une semaine d'observation avant de trancher).
+const CSP_RAPPORT = 'http://localhost:8000/csp/report'
+const CSP_DEV = [
+  "connect-src 'self' http://localhost:8000 ws://localhost:8000 http://127.0.0.1:8000 ws://127.0.0.1:8000 https://cdn.jsdelivr.net",
+  "img-src 'self' data: blob:",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  `report-uri ${CSP_RAPPORT}`,
+].join('; ')
+
 export default defineConfig(({ mode }) => {
   // loadEnv et non process.env : c'est ce que verra le SOURCE via
   // import.meta.env (fichiers .env compris). Lire process.env ici et .env
@@ -61,6 +76,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: 5173,
+      headers: { 'Content-Security-Policy-Report-Only': CSP_DEV },
     },
   }
 })
