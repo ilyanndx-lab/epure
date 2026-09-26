@@ -38,19 +38,37 @@ entre ce que ``register_routers`` a trouvé au démarrage (photographié dans
 (:func:`ecart_redemarrage`). Calculé à chaque lecture, il reste juste quand le
 disque change hors de l'Atelier (fichier copié à la main, ``instance_config``
 édité) et il s'efface de lui-même au redémarrage, puisque la photo est refaite.
+
+EMPREINTE APPROUVÉE (2026-09-26, ``docs/etude-isolation-modules.md`` §3 d).
+Un module de l'Atelier (``origin: workshop``) n'est chargé que si ses trois
+fichiers (manifest, router, composant) sont ceux qu'Ilyann a approuvés :
+``approve()`` enregistre leur empreinte dans ``modules_approuves.json``, et un
+module dont l'empreinte a changé — ou qui n'en a jamais eu — n'est ni monté ni
+rendu (``approbation`` dans :func:`list_modules`). Sans ça, tout ``router.py``
+présent sur disque tournait au redémarrage suivant, relu ou non : un outil,
+un agent ou une passe mal confinée pouvait le réécrire après l'approbation.
+Garde-fou anti-modification silencieuse, pas une frontière : le fichier
+d'empreintes est écrit par le même utilisateur que les modules. Les modules du
+cœur et du catalogue, relus comme du code du dépôt, n'y sont pas soumis.
 """
 
 import hashlib
 import importlib
 import json
 import logging
+import time
 from pathlib import Path
 from threading import RLock
 from typing import Optional
 
 from core.instance import instance_config
-from core.jsonstore import read_json
-from core.paths import brancher_paquet_modules, resolve_data_dir, resolve_modules_dir
+from core.jsonstore import read_json, transaction
+from core.paths import (
+    brancher_paquet_modules,
+    resolve_data_dir,
+    resolve_generated_dir,
+    resolve_modules_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +146,78 @@ def active_ids() -> list[str]:
     return actifs
 
 
+def _approbations_file() -> Path:
+    """Empreintes approuvées, ``{id: {"empreinte", "ts"}}``. Fonction et non
+    constante : cf. core.paths.resolve_data_dir."""
+    return resolve_data_dir() / "modules_approuves.json"
+
+
+def _sha256_fichiers(fichiers: list[tuple[str, Path]]) -> str:
+    """sha256 de ``(nom, contenu)`` en séquence ; un fichier absent compte
+    comme tel, pour qu'une suppression change l'empreinte."""
+    h = hashlib.sha256()
+    for nom, f in fichiers:
+        h.update(nom.encode("ascii") + b"\0")
+        try:
+            h.update(f.read_bytes())
+        except OSError:
+            h.update(b"\0absent")
+    return h.hexdigest()
+
+
+def empreinte_approbation(module_id: str) -> str:
+    """Empreinte des trois fichiers qu'on relit avant d'approuver.
+
+    Le composant compte autant que le router : Vite le sert sans redémarrage,
+    un ``Component.tsx`` réécrit s'exécuterait dans le navigateur.
+    """
+    base = _modules_dir() / module_id
+    return _sha256_fichiers([
+        ("manifest.json", base / "manifest.json"),
+        ("router.py", base / "router.py"),
+        ("Component.tsx", resolve_generated_dir() / module_id / "Component.tsx"),
+    ])
+
+
+def enregistrer_approbation(module_id: str) -> str:
+    """Pose l'empreinte ACTUELLE comme approuvée (appelé par ``approve()``,
+    après la copie des fichiers). Retourne l'empreinte."""
+    empreinte = empreinte_approbation(module_id)
+    with transaction(_approbations_file(), {}) as doc:
+        doc[module_id] = {"empreinte": empreinte, "ts": int(time.time())}
+    return empreinte
+
+
+def oublier_approbation(module_id: str) -> None:
+    """Retire l'empreinte d'un id qui quitte l'Atelier (désinstallé, ou remplacé
+    par un module du catalogue) : une approbation vaut pour un code, pas pour
+    un nom. Sans ça, l'empreinte orpheline soumettrait le nouveau module au
+    contrôle, qui le déclarerait « modifié »."""
+    with transaction(_approbations_file(), {}) as doc:
+        doc.pop(module_id, None)
+
+
+def etat_approbation(manifest: dict, approbations: Optional[dict] = None) -> Optional[str]:
+    """``None`` si le module n'est pas soumis, sinon ``"approuvé"``,
+    ``"non_approuvé"`` (jamais approuvé) ou ``"modifié"`` (depuis l'approbation).
+
+    Soumis = ``origin: workshop`` hors cœur, OU une empreinte enregistrée : sans
+    le second critère, réécrire ``origin`` dans le manifeste suffirait à sortir
+    du contrôle.
+    """
+    mid = str(manifest.get("id"))
+    if approbations is None:
+        approbations = read_json(_approbations_file(), {})
+    entree = approbations.get(mid) if isinstance(approbations, dict) else None
+    soumis = ((manifest.get("origin") == "workshop" and not manifest.get("core_module"))
+              or isinstance(entree, dict))
+    if not soumis:
+        return None
+    if not isinstance(entree, dict) or not entree.get("empreinte"):
+        return "non_approuvé"
+    return "approuvé" if entree["empreinte"] == empreinte_approbation(mid) else "modifié"
+
+
 def list_modules() -> list[dict]:
     """Manifestes enrichis du ``status`` dérivé de l'appartenance à la liste.
 
@@ -138,10 +228,17 @@ def list_modules() -> list[dict]:
     côté frontend.
     """
     actifs = set(active_ids())
+    approbations = read_json(_approbations_file(), {})
     out: list[dict] = []
     for mf in discover_manifests():
         m = dict(mf)
         m["status"] = "active" if m["id"] in actifs else "disabled"
+        # Champ additionnel, absent pour un module non soumis. Un module
+        # « modifié »/« non_approuvé » reste ACTIF (l'état voulu ne change pas)
+        # mais n'est ni monté ni rendu tant qu'il n'est pas ré-approuvé.
+        etat = etat_approbation(m, approbations)
+        if etat is not None:
+            m["approbation"] = etat
         out.append(m)
     return out
 
@@ -158,15 +255,8 @@ def _signature(module_id: str) -> str:
     forcément touché à la version, et c'est précisément le cas qui doit
     réclamer un redémarrage (le code en mémoire est l'ancien).
     """
-    h = hashlib.sha256()
-    for nom in ("manifest.json", "router.py"):
-        f = _modules_dir() / module_id / nom
-        h.update(nom.encode("ascii") + b"\0")
-        try:
-            h.update(f.read_bytes())
-        except OSError:
-            h.update(b"\0absent")
-    return h.hexdigest()[:16]
+    base = _modules_dir() / module_id
+    return _sha256_fichiers([(nom, base / nom) for nom in ("manifest.json", "router.py")])[:16]
 
 
 def modules_a_charger() -> dict[str, str]:
@@ -174,10 +264,16 @@ def modules_a_charger() -> dict[str, str]:
 
     Même sélection que :func:`register_routers` — c'est ce qui rend l'écart
     comparable à la photo du démarrage.
+
+    Un module soumis à approbation dont l'empreinte ne correspond pas n'est PAS
+    voulu : le redémarrage ne le chargerait pas, le réclamer serait mentir. Sa
+    ré-approbation le fait apparaître « à charger ».
     """
     voulu: dict[str, str] = {}
     for m in list_modules():
         mid = str(m.get("id"))
+        if m.get("approbation") in ("non_approuvé", "modifié"):
+            continue
         if m.get("status") == "active" and (_modules_dir() / mid / "router.py").is_file():
             voulu[mid] = _signature(mid)
     return voulu
@@ -266,6 +362,11 @@ def register_routers(app) -> None:
         mid = m.get("id")
         if not (_modules_dir() / str(mid) / "router.py").is_file():
             continue  # pas de backend pour ce module (ou core non migré)
+        if m.get("approbation") in ("non_approuvé", "modifié"):
+            logger.warning("Module %s : %s — non chargé (à ré-approuver dans l'Atelier)",
+                           mid, "jamais approuvé" if m["approbation"] == "non_approuvé"
+                           else "modifié depuis l'approbation")
+            continue
         try:
             mod = importlib.import_module(f"modules.{mid}.router")
         except (Exception, SystemExit) as exc:

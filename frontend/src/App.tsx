@@ -318,6 +318,14 @@ export default function App() {
           const C = def.component
           const isActive = id === activeModule
           const z = zoomByModule[id] ?? 1
+          // Un composant GÉNÉRÉ n'est rendu — donc exécuté — qu'une fois son
+          // état d'approbation connu : `modules` est vide le temps que
+          // GET /modules réponde, et un module « modifié depuis l'approbation »
+          // (ou jamais approuvé) ne doit pas tourner du tout (cf.
+          // core/module_registry.py, EMPREINTE APPROUVÉE).
+          const approbation = modules.find(m => m.id === id)?.approbation
+          const bloque = !def.core && (modules.length === 0
+            || approbation === 'modifié' || approbation === 'non_approuvé')
           return (
             <div
               key={id}
@@ -334,12 +342,30 @@ export default function App() {
                 >
                   {/* Conteneur de zoom : `overflow-auto` pour scroller quand le
                       contenu agrandi dépasse ; zoom omis à 1 pour ne rien changer. */}
-                  <div
-                    className="flex flex-col flex-1 min-h-0 overflow-auto"
-                    style={z !== 1 ? { zoom: z } : undefined}
-                  >
-                    <C {...sharedProps} />
-                  </div>
+                  {bloque ? (
+                    modules.length === 0 ? (
+                      <div className="flex flex-1 items-center justify-center text-muted">
+                        <Loader2 size={18} className="animate-spin" />
+                      </div>
+                    ) : (
+                      <div className="flex flex-1 items-center justify-center px-8">
+                        <p className="max-w-md text-sm text-secondary text-center">
+                          Module « {id} » {approbation === 'modifié'
+                            ? 'modifié depuis son approbation'
+                            : 'jamais approuvé'} : il n'est ni chargé ni affiché.
+                          Pour le réactiver, ouvrez l'Atelier, « Modifier » ce module,
+                          « Relire sans générer », puis approuvez.
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    <div
+                      className="flex flex-col flex-1 min-h-0 overflow-auto"
+                      style={z !== 1 ? { zoom: z } : undefined}
+                    >
+                      <C {...sharedProps} />
+                    </div>
+                  )}
                 </Suspense>
               </ModuleErrorBoundary>
             </div>

@@ -126,6 +126,7 @@ def install(module_id: str) -> dict:
         dest_comp.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(comp, dest_comp)
 
+    module_registry.oublier_approbation(mid)  # code du dépôt, de confiance
     module_registry.set_status(mid, "active")
 
     logger.info("Module %s installé depuis le catalogue (chargé au redémarrage)", mid)
@@ -164,6 +165,7 @@ def uninstall(module_id: str) -> dict:
     comp = _frontend_component_path(mid, must_exist=True)
     if comp and comp.is_file():
         shutil.rmtree(comp.parent, ignore_errors=True)
+    module_registry.oublier_approbation(mid)
 
     # Purge de sys.modules : sans elle, `modules.<id>.router` reste un objet
     # vivant après la suppression des fichiers (mesuré). Un redémarrage la rend
