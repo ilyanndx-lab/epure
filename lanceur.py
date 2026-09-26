@@ -294,7 +294,11 @@ def attendre_backend(port: int = PORT_BACKEND, timeout: float = 45.0,
 
 # ── Port réellement retenu par Vite ──────────────────────────────────────────
 
-_RE_VITE_URL = re.compile(r"http://localhost:(\d+)/")
+#: ``localhost`` ET ``127.0.0.1`` : Vite écrit l'adresse d'écoute, et il écoute
+#: sur 127.0.0.1 depuis le 2026-09-26 (vite.config.ts, ``server.host``). Avec
+#: ``localhost`` seul, le motif ne trouvait plus rien : 25 s d'attente pour
+#: retomber sur 5173, et un port décalé (5174) redevenait invisible.
+_RE_VITE_URL = re.compile(r"http://(?:localhost|127\.0\.0\.1):(\d+)/")
 
 
 def lire_port_vite(journal, offset: int = 0, timeout: float = 25.0,

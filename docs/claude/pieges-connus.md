@@ -11,6 +11,7 @@
 | Piège | Règle |
 |---|---|
 | BOM UTF-8 dans les JSON de runtime | Toujours `core/jsonstore.py`. Lecture `utf-8-sig`. |
+| Serveur de dev Vite joignable depuis le **réseau local** (wifi de la prépa — menace n°3 de CLAUDE.md §6) | `vite.config.ts` avait `server.host: true` : le frontend du tray écoutait sur toutes les interfaces (`Network: http://10.x.x.x:5173/` au lancement) alors que le backend restait sur 127.0.0.1. Depuis le 2026-09-26 : `127.0.0.1` par défaut, toutes les interfaces seulement avec `EPURE_DEV_LAN=1` (avertissement dans la console Vite). Vite écrit alors `http://127.0.0.1:PORT/` et non plus `localhost` : `lanceur._RE_VITE_URL` accepte les deux, sinon le tray attendait 25 s et ne voyait plus un port décalé (`test_lanceur.py`). Le tray ouvre toujours `http://localhost:PORT` — ne pas changer l'origine, le token et l'état persisté vivent dans son `localStorage`. |
 | `OLLAMA_HOST=0.0.0.0` | Casse le client Python Ollama. Toujours une URL complète `http://hôte:11434`. `core/llm.py` normalise ; `core/admin.py` ne le fait pas encore. |
 | Démarrage bloqué plusieurs minutes | HF valide son cache au boot. Voir `_hf_offline_if_cached()`, §3.2. |
 | `uvicorn --reload` sous Windows | Instable. Restreint à `--reload-dir core` dans `epure_tray.py`, désactivable par `EPURE_RELOAD=0`. |

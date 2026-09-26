@@ -337,6 +337,15 @@ class TestLirePortVite(unittest.TestCase):
             lanceur.lire_port_vite(journal, offset=0, timeout=0.3, pause=0.05), 5174
         )
 
+    def test_lit_le_port_en_ecoute_locale(self):
+        """Sortie réelle de Vite depuis ``server.host: '127.0.0.1'`` (2026-09-26) :
+        plus de ``localhost`` dans l'URL. 5174 et non 5173, pour ne pas
+        confondre une lecture réussie avec le repli par défaut."""
+        journal = self._journal("  ➜  Local:   http://127.0.0.1:5174/\n")
+        self.assertEqual(
+            lanceur.lire_port_vite(journal, offset=0, timeout=0.3, pause=0.05), 5174
+        )
+
     def test_lit_le_port_nominal(self):
         journal = self._journal("  ➜  Local:   http://localhost:5173/\n")
         self.assertEqual(
