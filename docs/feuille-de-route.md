@@ -300,6 +300,13 @@ du process principal. Sans effet aujourd'hui (le worker n'est pas câblé) ; mê
 règle que `_read_is_safe` (`docs/claude/pieges-connus.md`) : comparer résolu,
 ou par identité.
 
+**Priorité basse, à traiter avec l'isolation des modules générés** (constaté le
+2026-09-26) : `_read_is_safe` vérifie le chemin avant qu'aider l'ouvre
+(`--read`) ; une jonction redirigée entre les deux contournerait le contrôle.
+Exploitation soumise au token. Le vérifier au moment de l'ouverture supposerait
+de maîtriser l'ouverture elle-même — c'est-à-dire l'isolation du processus
+(`module_worker`), pas un contrôle de plus en amont.
+
 ---
 
 ## 6 — Registre, étapes B à E
