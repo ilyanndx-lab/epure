@@ -38,6 +38,7 @@ tourne est le pire état possible.
 
 import ctypes
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -435,13 +436,20 @@ def _demarrer():
             f"(PID {occupant}) — Vite prendra un autre port, lu dans sa sortie"
         )
     offset = lanceur.taille_journal(LOG_FILE)
-    _log("Lancement npm run dev")
+    # Sans shell (CLAUDE.md §6) : `shell=True` n'était là que pour que Windows
+    # trouve `npm`, qui est un `npm.cmd`. `shutil.which` le résout via PATHEXT,
+    # et CreateProcess sait lancer un .cmd donné par son chemin. Arguments fixes.
+    npm = shutil.which("npm") or "npm.cmd"
+    _log(f"Lancement npm run dev ({npm})")
     if _lancer(
-        "npm", ["npm", "run", "dev"],
+        "npm", [npm, "run", "dev"],
         cwd=str(FRONTEND_DIR), stdout=fh, stderr=fh, startupinfo=masque,
-        shell=True, encoding="utf-8", errors="ignore",
+        encoding="utf-8", errors="ignore",
     ) is None:
-        _incident("npm introuvable — l'interface ne démarrera pas")
+        _incident(
+            "npm introuvable (ni « npm » ni « npm.cmd » dans le PATH) — installez "
+            "Node.js, ou ajoutez son dossier au PATH ; l'interface ne démarrera pas"
+        )
         _maj_infobulle()
         return
 
