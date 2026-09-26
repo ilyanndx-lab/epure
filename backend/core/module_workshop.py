@@ -21,6 +21,7 @@ vers une passerelle locale). Modes claude_* : "headless" (subprocess streamé) o
 "terminal" (session pilotée par l'utilisateur, re-scan au retour).
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -1473,7 +1474,26 @@ def read_staging(module_id: str) -> dict:
             ))
             diffs[name] = d
     return {"id": module_id, "files": staged, "diff": diffs, "meta": meta,
-            "is_core": is_core(module_id)}
+            "is_core": is_core(module_id), "empreinte": staging_fingerprint(module_id)}
+
+
+def staging_fingerprint(module_id: str) -> str:
+    """Empreinte des 3 fichiers stagés, telle que la revue les affiche.
+
+    « J'ai lu » ne vaut que pour la version lue : la confirmation qui déclenche
+    le smoke test renvoie cette empreinte, et le backend refuse d'exécuter si
+    le staging a changé entre-temps (réparation, moteur encore actif, édition
+    à la main). Sans ça, confirmer une version pouvait en exécuter une autre.
+    """
+    sdir = _staging_dir(module_id)
+    h = hashlib.sha256()
+    for name in _FILES:
+        h.update(name.encode("ascii") + b"\0")
+        try:
+            h.update((sdir / name).read_bytes())
+        except OSError:
+            h.update(b"\0absent")
+    return h.hexdigest()
 
 
 # ── Validation du staging ────────────────────────────────────────────────────
