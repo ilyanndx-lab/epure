@@ -207,13 +207,21 @@ def _atelier_read_files(extra: Optional[list[str]] = None, minimal: bool = False
         p = Path(e).expanduser()
         if not p.is_absolute():
             p = (REPO_ROOT / e).resolve()  # racine projet (anchor statique, pas modules_dir)
-        if p.exists() and _read_is_safe(p):
+        # Pas de `p.exists()` avant : `_read_is_safe` exige déjà l'existence
+        # (résolution stricte), et `exists()` LÈVE sous Python 3.12 sur un chemin
+        # interdit au lieu de rendre False. Un extra illisible est omis, jamais
+        # une exception (`RefusParDefautTest`).
+        if not _read_is_safe(p):
+            continue
+        try:
             if p.is_dir():
                 for sub in list(p.rglob("*.py"))[:20] + list(p.rglob("*.tsx"))[:20] + list(p.rglob("*.md"))[:10]:
                     if _read_is_safe(sub):
                         out.append(str(sub))
             else:
                 out.append(str(p))
+        except OSError:
+            logger.warning("Atelier : lecture de %s impossible — ignoré", p)
     return out
 
 
@@ -223,7 +231,10 @@ def grant_read(module_id: str, path: str) -> bool:
     p = Path(path).expanduser()
     if not p.is_absolute():
         p = (REPO_ROOT / path).resolve()
-    if not (p.exists() and _read_is_safe(p)):
+    # `_read_is_safe` seul : il refuse déjà l'inexistant, et un `p.exists()` en
+    # amont LÈVE sous Python 3.12 sur un chemin interdit — l'exception remontait
+    # au WebSocket, qui répondait une erreur au lieu de `ok: False`.
+    if not _read_is_safe(p):
         return False
     meta = _read_meta(module_id) or {}
     a = meta.setdefault("aider", {})

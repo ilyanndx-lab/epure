@@ -56,7 +56,8 @@ def _nom_court(chemin: Path):
     return court if court and court.lower() != str(chemin).lower() else None
 
 
-class LectureSensibleTest(unittest.TestCase):
+class _ArbreTest(unittest.TestCase):
+    """Arbre temporaire et outillage communs — aucun test ici."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="epure-lecture-")
@@ -104,6 +105,9 @@ class LectureSensibleTest(unittest.TestCase):
         sortis = module_workshop._atelier_read_files(extra=[variante], minimal=True)
         fuites = [s for s in sortis if self._sensible(s)]
         self.assertEqual(fuites, [], f"_atelier_read_files laisse passer {fuites} via {variante!r}")
+
+
+class LectureSensibleTest(_ArbreTest):
 
     # -- témoin ------------------------------------------------------------
 
@@ -189,6 +193,78 @@ class LectureSensibleTest(unittest.TestCase):
         if not court:
             self.skipTest("ce volume ne génère pas de noms courts 8.3")
         self._refuse_partout(court)
+
+
+class RefusParDefautTest(_ArbreTest):
+    """Un chemin qu'on ne peut pas examiner est REFUSÉ — jamais une exception.
+
+    Une exception qui sortirait de ``grant_read`` remonterait jusqu'au handler
+    de ``/ws/workshop``, qui l'attrape et renvoie une ERREUR : l'UI verrait une
+    panne là où la réponse attendue est ``read_granted ok=False``. Et une porte
+    qui lève au lieu de répondre est une porte dont on ne sait plus si elle a
+    dit non.
+
+    Trois causes d'échec du ``resolve(strict=True)`` : chemin absent, lien
+    cassé, accès refusé. Plus une quatrième, en amont : ``Path.exists()`` lève
+    ``PermissionError`` sous Python 3.12 (le Python du paquet) sur un chemin
+    dont l'ACL refuse l'accès, là où 3.14 rend ``False``.
+    """
+
+    def _refuse_sans_lever(self, variante: str):
+        try:
+            self._refuse_partout(variante)
+        except AssertionError:
+            raise
+        except Exception as exc:  # c'est exactement ce que ce test interdit
+            self.fail(f"{type(exc).__name__} au lieu d'un refus pour {variante!r} : {exc}")
+
+    def test_chemin_inexistant(self):
+        self._refuse_sans_lever(str(self.backend / "n_existe_pas.py"))
+        self._refuse_sans_lever("backend/n_existe_pas.py")
+
+    def test_lien_casse(self):
+        cible = self.racine / "cible_disparue"
+        cible.mkdir()
+        lien = self.racine / "lien_casse"
+        if WINDOWS:
+            import _winapi
+
+            _winapi.CreateJunction(str(cible), str(lien))
+            self.addCleanup(lambda: os.path.lexists(lien) and os.rmdir(lien))
+        else:
+            lien.symlink_to(cible, target_is_directory=True)
+        cible.rmdir()
+        self._refuse_sans_lever(str(lien))
+        self._refuse_sans_lever(str(lien / "outil.py"))
+
+    def test_permission_refusee_au_resolve(self):
+        original = Path.resolve
+
+        def _resolve(chemin, strict=False):
+            if strict:
+                raise PermissionError(13, "Accès refusé", str(chemin))
+            return original(chemin, strict=strict)
+
+        with mock.patch.object(Path, "resolve", _resolve):
+            self._refuse_sans_lever(str(self.anodin))
+
+    def test_permission_refusee_des_l_existence(self):
+        """Un chemin dont l'ACL refuse l'accès, tel que Python 3.12 le voit :
+        ``Path.exists()`` lève au lieu de rendre ``False``, et la résolution
+        stricte échoue aussi."""
+        original = Path.resolve
+
+        def _exists(chemin, *a, **kw):
+            raise PermissionError(13, "Accès refusé", str(chemin))
+
+        def _resolve(chemin, strict=False):
+            if strict:
+                raise PermissionError(13, "Accès refusé", str(chemin))
+            return original(chemin, strict=strict)
+
+        with mock.patch.object(Path, "exists", _exists), \
+             mock.patch.object(Path, "resolve", _resolve):
+            self._refuse_sans_lever(str(self.anodin))
 
 
 if __name__ == "__main__":
