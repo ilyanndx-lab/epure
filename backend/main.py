@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import html as _htmllib
 import io
 import json
@@ -942,17 +943,19 @@ async def ws_workshop(websocket: WebSocket):
         except Exception:
             logger.exception("Type-check atelier (tâche de fond) %s", mid)
 
-    _SMOKE_REPAIR_MAX = 2
-
     async def _background_smoke(mid: str, gen_msg: dict):
-        """Smoke test du router stagé (sous-processus isolé) en tâche de fond,
-        même pattern que _background_typecheck : la revue s'affiche d'abord,
-        le résultat arrive en {type:"smoke"}. En cas d'échec, le traceback est
-        renvoyé au moteur de génération actif (même canal que le feedback du
-        validateur) pour une passe de correction — max _SMOKE_REPAIR_MAX —
-        puis le verdict final (ok / repaired / failed) est émis et persisté
-        en meta. Ne tourne qu'après un gate AST réussi ; jamais de réparation
-        auto en mode terminal (session pilotée par l'utilisateur)."""
+        """Smoke test du router stagé (sous-processus isolé), sur CONFIRMATION.
+
+        Il ne part plus après la génération : il EXÉCUTE le router, et le code
+        tournait alors avant que quiconque l'ait lu (docs/etude-isolation-modules.md
+        §1.1) — le principe « relu avant exécution » de la politique d) était
+        annulé. Il n'est lancé que par ``smoke_confirm`` (« j'ai lu, tester »).
+
+        Même raison pour la réparation : le code réparé est neuf, donc NON LU.
+        Un échec déclenche UNE passe de correction (génération seule, rien
+        n'est exécuté), la revalidation AST, puis s'arrête sur ``repaired_unread``
+        — re-tester demande un nouveau « j'ai lu ». Jamais de réparation auto en
+        mode terminal (session pilotée par l'utilisateur)."""
         try:
             meta = module_workshop._read_meta(mid) or {}
             if not ((meta.get("report") or {}).get("ok")):
@@ -966,17 +969,15 @@ async def ws_workshop(websocket: WebSocket):
                              or aider_meta.get("architect"))
             can_repair = (engine in ("ollama", "aider", "claude_sub", "claude_gateway")
                           and (gen_msg.get("mode") or meta.get("mode")) != "terminal")
-            if spec:
-                await loop.run_in_executor(None, module_workshop.remember_spec, mid, spec)
 
             await _emit({"type": "smoke", "phase": "running"})
             res = await loop.run_in_executor(None, module_workshop.smoke_test_staging, mid)
             attempts = 0
-            while not res.get("ok") and can_repair and attempts < _SMOKE_REPAIR_MAX:
-                attempts += 1
+            if not res.get("ok") and can_repair:
+                attempts = 1
                 fb = module_workshop.smoke_feedback(res)
                 await _emit({"type": "smoke", "phase": "repairing",
-                             "attempt": attempts, "max": _SMOKE_REPAIR_MAX, "traceback": fb})
+                             "attempt": 1, "max": 1, "traceback": fb})
                 if engine == "ollama":
                     gen = module_workshop.generate_ollama(mid, spec, kind, model=model, feedback=fb)
                 elif engine == "aider":
@@ -988,18 +989,10 @@ async def ws_workshop(websocket: WebSocket):
                     eff = f"{spec}\n\n[Corrige ces erreurs d'exécution]\n{fb}"
                     gen = module_workshop.generate_claude_headless(mid, eff, kind, engine)
                 st = await _stream_generator(gen)
-                if st["paused"]:
-                    break  # timeout aider : travail conservé, l'utilisateur reprendra
-                # La réparation a réécrit le staging : re-gate AST puis re-smoke.
-                vres = await loop.run_in_executor(None, module_workshop.validate_staging, mid, False)
-                await _emit({"type": "validated", "status": vres["status"], "report": vres["report"]})
-                if not vres["report"]["ok"]:
-                    res = {"ok": False, "tested": [], "failures": [], "skipped": [],
-                           "error": ("La passe de réparation a produit un code rejeté par le "
-                                     "validateur :\n" + "\n".join(vres["report"]["errors"]))}
-                    continue
-                res = await loop.run_in_executor(None, module_workshop.smoke_test_staging, mid)
-            status = "ok" if res.get("ok") and attempts == 0 else ("repaired" if res.get("ok") else "failed")
+                if not st["paused"]:  # timeout aider : travail conservé, reprise manuelle
+                    vres = await loop.run_in_executor(None, module_workshop.validate_staging, mid, False)
+                    await _emit({"type": "validated", "status": vres["status"], "report": vres["report"]})
+            status = "ok" if res.get("ok") else ("repaired_unread" if attempts else "failed")
             final = {"status": status, "attempts": attempts,
                      **{k: res.get(k) for k in ("ok", "tested", "failures", "skipped", "error")}}
             await loop.run_in_executor(None, module_workshop.record_smoke, mid, final)
@@ -1029,6 +1022,28 @@ async def ws_workshop(websocket: WebSocket):
                     logger.exception("Ouverture terminal atelier")
                     await _emit_error(exc)
                     await _emit({"type": "done"})
+                continue
+
+            # « J'ai lu, tester » : seule porte d'entrée du smoke test. L'empreinte
+            # envoyée est celle de la version affichée ; si le staging a changé
+            # depuis, on refuse plutôt que d'exécuter une version non lue.
+            if mtype == "smoke_confirm":
+                mid = msg.get("id", "")
+                try:
+                    actuelle = await loop.run_in_executor(
+                        None, module_workshop.staging_fingerprint, mid)
+                except Exception as exc:
+                    await _emit_error(exc)
+                    continue
+                if not hmac.compare_digest(str(msg.get("empreinte") or ""), actuelle):
+                    await _emit({"type": "error", "code": "stale_review",
+                                 "content": "Le code a changé depuis votre lecture : "
+                                            "relisez la version affichée avant de tester."})
+                    continue
+                if msg.get("description"):
+                    await loop.run_in_executor(None, module_workshop.remember_spec,
+                                               mid, msg["description"])
+                asyncio.create_task(_background_smoke(mid, msg))
                 continue
 
             # Messages produisant une revue : on émet TOUJOURS "done" (finally),
@@ -1100,14 +1115,20 @@ async def ws_workshop(websocket: WebSocket):
                 logger.exception("Atelier ws : traitement du message %s", mtype)
                 await _emit_error(exc)
             finally:
+                # La réparation (après « j'ai lu ») relit la spec en meta. Écrite
+                # AVANT "done" : le client relit la meta dès qu'il le reçoit.
+                spec = msg.get("description") or msg.get("message") or ""
+                if bg_mid and spec:
+                    try:
+                        await loop.run_in_executor(None, module_workshop.remember_spec, bg_mid, spec)
+                    except Exception:
+                        logger.exception("Atelier : mémorisation de la spec %s", bg_mid)
                 await _emit({"type": "done"})
 
             if bg_mid:
+                # tsc seul : il LIT le composant sans l'exécuter. Le smoke test,
+                # qui exécute le router, attend « smoke_confirm ».
                 asyncio.create_task(_background_typecheck(bg_mid))
-                # msg passé tel quel : _background_smoke y lit engine/spec/model
-                # quand ils existent (generate, workshop_chat) et retombe sur la
-                # meta du staging sinon (resume, terminal_done).
-                asyncio.create_task(_background_smoke(bg_mid, msg))
 
     except WebSocketDisconnect:
         pass

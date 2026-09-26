@@ -18,10 +18,14 @@ type Phase = 'idle' | 'generating' | 'validating' | 'terminal' | 'review' | 'pau
 interface EngineInfo { disponible: boolean; raison: string; base_url?: string; model?: string; bin?: string }
 interface ModuleRow { id: string; nom: string; core_module?: boolean; status?: string }
 interface Report { ok: boolean; errors: string[]; warnings: string[] }
-// Résultat du smoke test d'exécution (sous-processus isolé, tâche de fond).
+// Résultat du smoke test d'exécution (sous-processus isolé). Il EXÉCUTE le
+// router : il ne part que sur « j'ai lu, tester » (smoke_confirm), jamais après
+// une génération. 'repaired_unread' : une passe de correction a réécrit le code,
+// non testé puisque non relu. 'repaired' ne vient que d'un verdict persisté
+// avant ce changement.
 interface SmokeInfo {
   phase: 'running' | 'repairing' | 'done'
-  status?: 'ok' | 'repaired' | 'failed'
+  status?: 'ok' | 'repaired' | 'repaired_unread' | 'failed'
   attempt?: number      // passe de réparation en cours (phase 'repairing')
   attempts?: number     // passes de réparation consommées (phase 'done')
   tested?: string[]
@@ -35,6 +39,9 @@ interface Staging {
   diff: Record<string, string>
   meta: { kind?: Kind; engine?: Engine; status?: string; smoke?: Omit<SmokeInfo, 'phase'> }
   is_core: boolean
+  /** Empreinte des 3 fichiers affichés : « j'ai lu » la renvoie, le backend
+   *  refuse d'exécuter une autre version. */
+  empreinte?: string
 }
 
 const FILE_TABS = ['router.py', 'Component.tsx', 'manifest.json'] as const
@@ -231,6 +238,8 @@ export default function Workshop() {
         setLog(prev => prev + `\n✓ ${data.path}\n`)
       } else if (data.type === 'error') {
         setError(data.content ?? 'Erreur de génération')
+        // Test refusé (version relue périmée) : ne pas laisser « en cours » affiché.
+        if (data.code === 'stale_review') setSmoke(null)
       } else if (data.type === 'validating') {
         setPhase('validating')
       } else if (data.type === 'validated') {
@@ -398,6 +407,25 @@ export default function Workshop() {
     }
     setGrantPath('')
   }, [currentId, grantPath, bindSocket])
+
+  // « J'ai lu le code, tester » : seul déclencheur du smoke test. L'empreinte de
+  // la version affichée part avec la demande (refus backend si elle a changé).
+  const confirmSmoke = useCallback(() => {
+    if (!staging?.empreinte) return
+    const id = staging.id
+    setError(null)
+    setSmoke({ phase: 'running' })
+    const payload = JSON.stringify({ type: 'smoke_confirm', id, empreinte: staging.empreinte })
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(payload)
+    } else {
+      const nws = new WebSocket(wsUrl('/ws/workshop'))
+      wsRef.current = nws
+      nws.onopen = () => nws.send(payload)
+      bindSocket(nws, id)
+    }
+  }, [staging, bindSocket, setSmoke])
 
   // Renvoie le contenu du champ éditable (erreurs de validation pré-remplies, ou
   // erreur d'exécution collée par l'utilisateur) à l'IA. Le staging actuel est
@@ -818,7 +846,16 @@ export default function Workshop() {
           )}
 
           {/* Smoke test d'exécution (sous-processus isolé) — best-effort comme tsc,
-              ne bloque jamais l'approbation. */}
+              ne bloque jamais l'approbation. Il exécute le router : jamais avant
+              que le code affiché ait été lu (docs/etude-isolation-modules.md). */}
+          {report?.ok && staging.empreinte && (!smoke || smoke.phase === 'done') && (
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" icon={<Play size={14} />} onClick={confirmSmoke}>
+                J'ai lu le code — lancer le test d'exécution
+              </Button>
+              <span className="text-xs text-muted">Exécute router.py dans un sous-processus.</span>
+            </div>
+          )}
           {smoke && (
             <div className="space-y-1">
               {smoke.phase === 'running' && (
@@ -830,7 +867,7 @@ export default function Workshop() {
               {smoke.phase === 'repairing' && (
                 <p className="text-xs text-warning flex items-center gap-1.5">
                   <Loader2 size={12} className="animate-spin shrink-0" />
-                  Test d'exécution échoué — réparation automatique en cours (tentative {smoke.attempt}/2)…
+                  Test d'exécution échoué — une passe de correction automatique en cours (le code réparé ne sera pas exécuté)…
                 </p>
               )}
               {smoke.phase === 'done' && smoke.status === 'ok' && (
@@ -843,6 +880,12 @@ export default function Workshop() {
                 <p className="text-xs text-success flex items-start gap-1.5">
                   <Check size={12} className="shrink-0 mt-0.5" />
                   Test d'exécution réussi après réparation automatique ({smoke.attempts} passe{(smoke.attempts ?? 0) > 1 ? 's' : ''} de correction — relisez le diff).
+                </p>
+              )}
+              {smoke.phase === 'done' && smoke.status === 'repaired_unread' && (
+                <p className="text-xs text-warning flex items-start gap-1.5">
+                  <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                  Test d'exécution échoué, correction proposée. Relisez le code ci-dessous, puis relancez le test.
                 </p>
               )}
               {smoke.phase === 'done' && smoke.status === 'failed' && (
