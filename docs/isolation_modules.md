@@ -18,10 +18,18 @@ dédié. À confirmer que ce résiduel est acceptable pour v1.
 
 ## Périmètre
 
-- **Isolés** : les 10 modules workshop actuels — astral, clicker, dinosaure,
-  emojis, minecraft, minuteur, pong, rangement, snake, vroom. Survey : seuls
-  pong et rangement utilisent `core.runtime.llm` (generate + stream/SSE) ;
-  aucun n'utilise de WebSocket ; rangement écrit `memory/rangement_history.json`.
+- **Isolés** : les modules `origin="workshop"` + `core_module=false`. Au
+  2026-09-26, il n'en reste **qu'un** : `slides`. Les dix du survey
+  d'origine (astral, clicker, dinosaure, emojis, minecraft, minuteur, pong,
+  rangement, snake, vroom) ont été retirés (sauvegardes dans
+  `modules/_backups/`), et `rangement` vit désormais dans
+  `modules-catalogue/` (de confiance, in-process). `slides` utilise
+  `core.runtime.llm` (generate), `SSE_HEADERS`, **et aussi** `core.instance`
+  (`modele_local_defaut`, `est_modele_cloud`), `core.jsonstore` et
+  `core.paths` (un fichier `slides_decks.json`) : en l'état, le garde d'import
+  du worker le tue au démarrage. Il faut un storage JSON à sémantique
+  `transaction` et une résolution de modèle côté capabilities, puis migrer
+  `slides` (`docs/etude-isolation-modules.md` §1.3-1.4).
 - **In-process inchangés** : modules core (chat, code, docs…) et `hello`
   (origin builtin). Échappatoire config : `atelier.modules_in_process: [ids]`
   force un module en mode legacy (débogage, compat).
