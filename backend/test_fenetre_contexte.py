@@ -55,6 +55,9 @@ class _SondeBouchonnee(unittest.TestCase):
         self.http = mock.patch.object(fenetre_contexte, "_http_json")
         self.requete = self.http.start()
         self.addCleanup(self.http.stop)
+        self.lmstudio = mock.patch.object(fenetre_contexte, "_modeles_lmstudio", return_value=None)
+        self.modeles_lmstudio = self.lmstudio.start()
+        self.addCleanup(self.lmstudio.stop)
 
 
 class DecoupageTest(unittest.TestCase):
@@ -119,6 +122,52 @@ class OllamaTest(_SondeBouchonnee):
         self.assertEqual(fenetre_contexte.fenetre_de("m")[0], 8192)
 
 
+#: Extrait RÉEL de `GET /api/v1/models` (LM Studio, ce poste, 2026-10-18), le
+#: 9B chargé par `lms load … --context-length 8192`. Les deux nombres
+#: coexistent dans la même réponse, et c'est tout l'enjeu du test : 262 144 est
+#: ce que le modèle SAIT tenir, 8 192 ce que LM Studio a ALLOUÉ.
+_LMSTUDIO_V1_MODELS = {"models": [
+    {"type": "llm", "key": "huihui-qwen3.5-9b-abliterated", "max_context_length": 262144,
+     "loaded_instances": [{"id": "huihui-qwen3.5-9b-abliterated",
+                           "config": {"context_length": 8192, "parallel": 4}}]},
+    {"type": "llm", "key": "qwen/qwen3.8-27b", "max_context_length": 262144,
+     "loaded_instances": [], "variants": ["qwen/qwen3.8-27b@q4_k_m"]},
+]}
+
+
+class LMStudioTest(_SondeBouchonnee):
+    """Mesuré le 2026-10-18 : `loaded_instances[].config.context_length` de
+    `/api/v1/models` porte la fenêtre ALLOUÉE au chargement (aussi exposée en
+    `loaded_context_length` par `/api/v0/models`). `max_context_length` est le
+    maximum du modèle : la source écartée, comme `/api/show` pour Ollama."""
+
+    def test_modele_charge_rend_le_contexte_alloue_pas_le_maximum(self):
+        self.modeles_lmstudio.return_value = _LMSTUDIO_V1_MODELS
+        self.assertEqual(
+            fenetre_contexte.fenetre_de("lmstudio:huihui-qwen3.5-9b-abliterated"),
+            (8192, "lmstudio /api/v1/models"))
+
+    def test_modele_non_charge_rend_none(self):
+        """Pas d'instance = pas de fenêtre allouée. Surtout pas le maximum."""
+        self.modeles_lmstudio.return_value = _LMSTUDIO_V1_MODELS
+        self.assertEqual(fenetre_contexte.fenetre_de("lmstudio:qwen/qwen3.8-27b"), (None, None))
+
+    def test_lmstudio_injoignable_rend_none(self):
+        self.modeles_lmstudio.return_value = None
+        self.assertEqual(
+            fenetre_contexte.fenetre_de("lmstudio:huihui-qwen3.5-9b-abliterated"), (None, None))
+
+    def test_la_fenetre_lmstudio_n_est_pas_memoisee(self):
+        """Même raison qu'Ollama : recharger avec un autre contexte la change."""
+        self.modeles_lmstudio.return_value = _LMSTUDIO_V1_MODELS
+        fenetre_contexte.fenetre_de("lmstudio:huihui-qwen3.5-9b-abliterated")
+        autre = {"models": [{"key": "huihui-qwen3.5-9b-abliterated", "loaded_instances": [
+            {"id": "huihui-qwen3.5-9b-abliterated", "config": {"context_length": 4096}}]}]}
+        self.modeles_lmstudio.return_value = autre
+        self.assertEqual(
+            fenetre_contexte.fenetre_de("lmstudio:huihui-qwen3.5-9b-abliterated")[0], 4096)
+
+
 class FournisseursMuctsTest(_SondeBouchonnee):
     """Cerebras, NVIDIA et DeepSeek ont été MESURÉS le 2026-09-20 : leurs items
     de `/v1/models` ne portent que `id`, `object`, `owned_by` (et `created` pour
@@ -141,10 +190,8 @@ class FournisseursMuctsTest(_SondeBouchonnee):
             fenetre_contexte.fenetre_de("groq:openai/gpt-oss-120b"), (None, None))
         self.requete.assert_not_called()
 
-    def test_lmstudio_et_flm_rendent_none(self):
-        for modele in ("lmstudio:qwen2.5:7b", "flm:qwen3:4b"):
-            with self.subTest(modele=modele):
-                self.assertEqual(fenetre_contexte.fenetre_de(modele), (None, None))
+    def test_flm_rend_none(self):
+        self.assertEqual(fenetre_contexte.fenetre_de("flm:qwen3:4b"), (None, None))
         self.requete.assert_not_called()
 
 

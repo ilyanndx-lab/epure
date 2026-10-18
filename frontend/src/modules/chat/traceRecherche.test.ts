@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -241,5 +241,46 @@ describe('libelleRetraitOutils — la raison du retrait dite telle quelle', () =
   it('raison inconnue (trace future) : libellé générique, jamais vide', () => {
     expect(libelleRetraitOutils({ etape: 'outils_retires' }))
       .toBe('Outils du modèle retirés pour ce tour (aucun).')
+  })
+})
+
+describe('detailBudgetLecture', () => {
+  // Une page lue dit COMBIEN elle a pris, sur QUEL budget, et d'où vient ce
+  // budget — sans quoi « 3 passages retenus » ne permet pas de savoir si la
+  // réponse a pu tomber sous la coupe.
+  it('contexte chargé connu : taille, budget, contexte et sa source', () => {
+    expect(detailBudgetLecture({
+      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 6950,
+      budget_page: 7168, budget_caracteres: 7168, contexte_charge: 8192,
+      source_contexte: 'lmstudio /api/v1/models',
+    })).toBe('6950 car. sur 7168 — contexte chargé 8192 tokens (lmstudio /api/v1/models)')
+  })
+
+  it('budget partagé entre plusieurs pages : la part de la page et le total', () => {
+    expect(detailBudgetLecture({
+      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 3500,
+      budget_page: 3584, budget_caracteres: 7168, contexte_charge: 8192,
+      source_contexte: 'ollama /api/ps',
+    })).toBe('3500 car. sur 3584 (total 7168) — contexte chargé 8192 tokens (ollama /api/ps)')
+  })
+
+  it('contexte inconnu : le plancher est dit comme tel', () => {
+    expect(detailBudgetLecture({
+      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 3900,
+      budget_page: 4000, budget_caracteres: 4000, contexte_charge: null, source_contexte: null,
+    })).toBe('3900 car. sur 4000 — contexte chargé inconnu, plancher')
+  })
+
+  it("repli sur l'ordre de la page : dit, pas tu", () => {
+    expect(detailBudgetLecture({
+      etape: 'lecture_url', statut: 'succès', selection: 'ordre_page', caracteres: 3900,
+      budget_page: 4000, budget_caracteres: 4000, contexte_charge: null, source_contexte: null,
+    })).toBe('3900 car. sur 4000 — contexte chargé inconnu, plancher — début de page, sans reclassement')
+  })
+
+  it("trace d'avant ce budget (historique) : rien à ajouter", () => {
+    expect(detailBudgetLecture({
+      etape: 'lecture_url', statut: 'succès', passages_retenus: 3, ms: 900,
+    })).toBeNull()
   })
 })
