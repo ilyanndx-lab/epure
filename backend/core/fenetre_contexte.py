@@ -172,6 +172,11 @@ def _fenetre_lmstudio(modele_id: str) -> Optional[int]:
     modèle avec un autre contexte change la valeur. Le modèle est reconnu
     par sa clé, une de ses variantes (``qwen/qwen3.8-27b@q4_k_m``) ou l'id
     d'une de ses instances.
+
+    Toutes les entrées sont parcourues, pas seulement la première qui porte
+    ce nom : la même clé peut apparaître deux fois (catalogue de ce poste et
+    celui d'un appareil relié, mesuré le 2026-10-19), et l'entrée sans
+    instance peut venir d'abord.
     """
     for item in ((_modeles_lmstudio() or {}).get("models") or []):
         instances = item.get("loaded_instances") or []
@@ -182,7 +187,6 @@ def _fenetre_lmstudio(modele_id: str) -> Optional[int]:
             valeur = (instance.get("config") or {}).get("context_length")
             if isinstance(valeur, int) and valeur > 0:
                 return valeur
-        return None
     return None
 
 

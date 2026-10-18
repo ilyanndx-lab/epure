@@ -152,6 +152,20 @@ class LMStudioTest(_SondeBouchonnee):
         self.modeles_lmstudio.return_value = _LMSTUDIO_V1_MODELS
         self.assertEqual(fenetre_contexte.fenetre_de("lmstudio:qwen/qwen3.8-27b"), (None, None))
 
+    def test_cle_listee_deux_fois_l_instance_chargee_gagne(self):
+        """Mesuré le 2026-10-19 : `/api/v1/models` liste la MÊME clé deux fois
+        (le catalogue de ce poste et celui d'un appareil relié), et l'entrée
+        sans instance venait d'abord. S'arrêter à la première rendait `None`
+        pour un modèle bel et bien chargé à 8 192 — le budget de lecture
+        retombait au plancher sans que rien ne le signale."""
+        sans_instance = {"type": "llm", "key": "huihui-qwen3.5-9b-abliterated",
+                         "max_context_length": 262144, "loaded_instances": []}
+        self.modeles_lmstudio.return_value = {
+            "models": [sans_instance, *_LMSTUDIO_V1_MODELS["models"]]}
+        self.assertEqual(
+            fenetre_contexte.fenetre_de("lmstudio:huihui-qwen3.5-9b-abliterated"),
+            (8192, "lmstudio /api/v1/models"))
+
     def test_lmstudio_injoignable_rend_none(self):
         self.modeles_lmstudio.return_value = None
         self.assertEqual(
