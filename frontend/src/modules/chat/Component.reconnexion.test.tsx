@@ -49,7 +49,9 @@ class FakeWebSocket {
   onclose: (() => void) | null = null
   onmessage: ((ev: { data: string }) => void) | null = null
   fermé = false
-  constructor(readonly url: string) {
+  readonly url: string
+  constructor(url: string) {
+    this.url = url
     FakeWebSocket.instances.push(this)
   }
   send() { /* sans objet ici */ }
