@@ -19,14 +19,23 @@ const ATELIER_ABSENT = fileURLToPath(
 // COPIE de backend/core/csp.py (politique(ORIGINES_BACKEND_DEV, rapport=…)),
 // comparée par backend/test_csp_observation.py : la définition est là-bas, ceci
 // n'en est que la version « backend sur une autre origine » (:8000 et non
-// 'self'). Report-Only : rien n'est bloqué, le navigateur signale seulement
-// (décision du 2026-09-26, une semaine d'observation avant de trancher).
+// 'self'). Report-Only pour la politique complète (décision du 2026-09-26) ;
+// `img-src` seul est BLOQUANT depuis le 2026-10-18 (CSP_DEV_BLOQUANTE, même
+// raison que côté backend : une page web lue peut faire écrire au modèle une
+// image distante qui exfiltre la conversation).
 const CSP_RAPPORT = 'http://localhost:8000/csp/report'
 const CSP_DEV = [
   "connect-src 'self' http://localhost:8000 ws://localhost:8000 http://127.0.0.1:8000 ws://127.0.0.1:8000 https://cdn.jsdelivr.net",
   "img-src 'self' data: blob:",
   "object-src 'none'",
   "frame-ancestors 'none'",
+  `report-uri ${CSP_RAPPORT}`,
+].join('; ')
+// COPIE de backend/core/csp.py (politique_bloquante(rapport=…)), comparée par
+// backend/test_csp_observation.py. Pas d'origine backend ici : les images de
+// l'interface passent toutes par `blob:` (module image, aperçus).
+const CSP_DEV_BLOQUANTE = [
+  "img-src 'self' data: blob:",
   `report-uri ${CSP_RAPPORT}`,
 ].join('; ')
 
@@ -89,7 +98,10 @@ export default defineConfig(({ mode, command }) => {
     server: {
       host: lan ? true : '127.0.0.1',
       port: 5173,
-      headers: { 'Content-Security-Policy-Report-Only': CSP_DEV },
+      headers: {
+        'Content-Security-Policy-Report-Only': CSP_DEV,
+        'Content-Security-Policy': CSP_DEV_BLOQUANTE,
+      },
     },
   }
 })
