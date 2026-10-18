@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react'
+import { useContext, useState, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 import { Copy, Check } from 'lucide-react'
+import { ImagesAutoriseesContext } from './imagesAutorisees'
 
 function PreBlock({ children }: { children: React.ReactNode }) {
   const [copied, setCopied] = useState(false)
@@ -55,7 +56,26 @@ interface RichMessageProps {
   streaming?: boolean
 }
 
+/**
+ * Image refusée : son URL en lien TEXTE, cliquable mais jamais chargée
+ * d'office — cf. `ImagesAutoriseesContext` pour la menace. Le lien reste
+ * visible plutôt que d'effacer l'image : l'utilisateur voit ce que le modèle
+ * a tenté d'afficher, et peut l'ouvrir lui-même s'il le juge sûr.
+ */
+function ImageNonChargee({ src, alt }: { src: string; alt: string }) {
+  return (
+    <span className="text-muted text-xs">
+      [image non chargée{alt ? ` « ${alt} »` : ''} :{' '}
+      <a href={src} target="_blank" rel="noreferrer" className="text-accent2 underline break-all">{src}</a>]
+    </span>
+  )
+}
+
 export default function RichMessage({ content, streaming = false }: RichMessageProps) {
+  // `undefined` : aucune restriction (tour sans lecture d'URL). Une liste,
+  // même VIDE, restreint : « rien d'autorisé » n'est pas « tout autorisé ».
+  const imagesAutorisees = useContext(ImagesAutoriseesContext)
+  const imageAutorisee = (src: string) => imagesAutorisees === undefined || imagesAutorisees.includes(src)
   return (
     <div className="text-sm text-secondary leading-relaxed">
       <ReactMarkdown
@@ -147,6 +167,14 @@ export default function RichMessage({ content, streaming = false }: RichMessageP
           },
           hr() {
             return <hr className="border-line my-3" />
+          },
+          // Couvre AUSSI `\includegraphics{https://…}` de KaTeX (`trust: true`
+          // ci-dessus) : `rehype-katex` produit des éléments HAST, qui passent
+          // par ce même `img` — vérifié par RichMessage.test.tsx.
+          img({ src, alt }) {
+            const url = typeof src === 'string' ? src : ''
+            if (!imageAutorisee(url)) return <ImageNonChargee src={url} alt={alt ?? ''} />
+            return <img src={url} alt={alt ?? ''} className="max-w-full" />
           },
           a({ href, children }) {
             return (

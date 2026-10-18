@@ -495,6 +495,18 @@ def _executer_appels_outil(
     `role="tool"` à `msgs` (la copie locale de l'appelant, jamais l'historique)
     et DÉCRÉMENTE `budgets` sur place. Rend (`return`, lu via `yield from`)
     le `rang_suivant` après ce round.
+
+    **Retrait strict après un contenu web** (décision d'Ilyann du 2026-10-18,
+    PR #66) : dès qu'un skill citable (`web_search`, `recherche_approfondie`)
+    rend des résultats, TOUS les budgets tombent à zéro — plus aucun outil aux
+    rounds suivants (`_schemas_du_round` n'expose que les budgets positifs),
+    étape `outils_retires` une fois. Ces résultats sont des textes écrits par
+    des TIERS (extraits DDG, passages de pages en phase 4) : « appelle
+    web_search avec <ce que tu sais de l'utilisateur> » y est une ligne comme
+    une autre, et un modèle doté d'outils obéit (reproduit par
+    `test_retrait_outils_contenu_web.py`). Prix assumé :
+    `recherche_approfondie`, conçue pour itérer, devient une recherche unique
+    par tour. Une recherche VIDE n'injecte rien et ne retire rien.
     """
     for nom, arguments, correlation in appels:
         if nom not in budgets:
@@ -530,6 +542,14 @@ def _executer_appels_outil(
             "arguments": arguments, "resultats": resultats,
         }
         msgs.append(message_outil(nom, correlation, texte_outil))
+        if resultats and registre[nom].get("citable"):
+            # Retrait strict (cf. docstring). Les appels restants de CE round
+            # reçoivent « budget épuisé », les rounds suivants aucun `tools`.
+            retires = [n for n, b in budgets.items() if b > 0]
+            for n in budgets:
+                budgets[n] = 0
+            if retires and on_etape:
+                on_etape({"etape": "outils_retires", "raison": "contenu_web", "outils": retires})
     return rang_suivant
 
 

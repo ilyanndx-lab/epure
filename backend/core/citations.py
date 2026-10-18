@@ -72,7 +72,25 @@ def extraire_urls(texte: str) -> set[str]:
     message utilisateur, cf. `construire_reference`) et, en interne, à
     détecter les URLs écrites en dur dans une réponse.
     """
-    return {m.rstrip(_PONCTUATION_FINALE) for m in _URL_RE.findall(texte)}
+    return set(extraire_urls_ordonnees(texte))
+
+
+def extraire_urls_ordonnees(texte: str) -> list[str]:
+    """Mêmes URLs qu'`extraire_urls`, dans leur ordre d'apparition, sans doublon.
+
+    Existe pour la lecture directe d'URL (`core.webcontent.lire_urls`) : les
+    pages lues y reçoivent un rang `[n]`, et ce rang doit suivre l'ordre dans
+    lequel l'utilisateur les a écrites — un `set` le rendrait arbitraire d'un
+    tour à l'autre. Une seule regex pour les deux fonctions : une URL que la
+    lecture récupère est exactement celle que la validation des citations
+    reconnaîtra ensuite comme fournie par l'utilisateur.
+    """
+    vues: list[str] = []
+    for m in _URL_RE.findall(texte or ""):
+        url = m.rstrip(_PONCTUATION_FINALE)
+        if url not in vues:
+            vues.append(url)
+    return vues
 
 
 def extraire_rangs_cites(reponse: str, rangs_valides: Iterable[int]) -> list[int]:

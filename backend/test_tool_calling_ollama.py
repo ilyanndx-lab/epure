@@ -364,11 +364,14 @@ class PlafondAppelsTest(unittest.TestCase):
     """`_MAX_APPELS_OUTIL_WEB` (2) compte des INVOCATIONS, pas des rounds."""
 
     def test_un_troisieme_round_ne_reexpose_plus_l_outil(self):
+        # Recherches VIDES : elles n'injectent aucun contenu web, donc ne
+        # déclenchent pas le retrait strict (PR #66) — ce test garde sa cible,
+        # le décompte des budgets.
         with _Rejoueur(rounds=[
             [_chunk(tool_calls=[_tool_call(requete="un")], done=True)],
             [_chunk(tool_calls=[_tool_call(requete="deux")], done=True)],
             [_chunk(content="Conclusion.", done=True)],
-        ]) as r:
+        ], resultats_par_recherche=[[], []]) as r:
             sortie, _ = _stream(r, outils=["web_search"])
         self.assertEqual(len(r.appels), 3)
         self.assertIn("tools", r.appels[0])
@@ -383,7 +386,10 @@ class PlafondAppelsTest(unittest.TestCase):
                 _tool_call(requete="un"), _tool_call(requete="deux"), _tool_call(requete="trois"),
             ], done=True)],
             [_chunk(content="Conclusion.", done=True)],
-        ]) as r:
+        ], resultats_par_recherche=[[], []]) as r:
+            # Recherches VIDES : elles n'injectent aucun contenu web, donc ne
+            # déclenchent pas le retrait strict (PR #66) — ce test garde sa cible,
+            # le décompte des budgets.
             sortie, _ = _stream(r, outils=["web_search"])
         self.assertEqual(r.appels_recherche, ["un", "deux"], "le 3e ne doit pas chercher")
         self.assertEqual(len(_appels_outil(sortie)), 2)
@@ -397,20 +403,23 @@ class PlafondAppelsTest(unittest.TestCase):
 class RenumerotationRangTest(unittest.TestCase):
     """Deux recherches dans le même tour ne doivent jamais partager un rang."""
 
-    def test_deuxieme_appel_intra_tour_est_decale(self):
+    def test_deuxieme_appel_intra_tour_n_a_plus_lieu(self):
+        """Depuis le retrait strict (PR #66), un premier résultat web retire
+        les outils : un second appel du même tour — donc une collision de
+        rangs entre deux lots — ne peut plus se produire. Le décalage reste
+        verrouillé par `test_rang_web_existant_decale_le_premier_appel`."""
         with _Rejoueur(
             rounds=[
                 [_chunk(tool_calls=[_tool_call(requete="un")], done=True)],
-                [_chunk(tool_calls=[_tool_call(requete="deux")], done=True)],
                 [_chunk(content="Fini.", done=True)],
             ],
-            resultats_par_recherche=[[_resultat(1), _resultat(2)], [_resultat(1)]],
+            resultats_par_recherche=[[_resultat(1), _resultat(2)]],
         ) as r:
             sortie, _ = _stream(r, outils=["web_search"])
         appels_outil = _appels_outil(sortie)
+        self.assertEqual(len(appels_outil), 1)
         self.assertEqual([x.rang for x in appels_outil[0]["resultats"]], [1, 2])
-        # Décalé de 2 (len du premier lot) : le rang 1 d'origine devient 3.
-        self.assertEqual([x.rang for x in appels_outil[1]["resultats"]], [3])
+        self.assertNotIn("tools", r.appels[1])
 
     def test_rang_web_existant_decale_le_premier_appel(self):
         """Le classifieur heuristique a déjà 5 résultats ce tour — le premier
