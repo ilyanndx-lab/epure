@@ -14,35 +14,39 @@
  * http://localhost:8000/pair ouvert sur la machine qui héberge Épure
  * (via `setToken`, cf. écran d'appairage dans App.tsx).
  *
- * ── Deux modes de déploiement, un seul réglage ────────────────────────────────
+ * ── Deux modes de déploiement ─────────────────────────────────────────────────
  *
- * 1. **Développement** — `VITE_API_URL` non définie. Vite sert le front sur
- *    :5173, uvicorn l'API sur :8000 : deux origines, donc URL absolue.
- * 2. **Paquet distribué** — le front construit est servi par FastAPI lui-même,
- *    une seule origine. `API` doit alors être vide pour que les appels soient
- *    relatifs, sinon `http://localhost:8000` en dur casse dès que le
- *    destinataire ouvre `http://127.0.0.1:8000` : l'appel devient cross-origin
- *    et EPURE_CORS_ORIGINS ne liste que les origines :5173 (main.py).
+ * 1. **Développement** (`import.meta.env.DEV`) — Vite sert le front sur :5173,
+ *    uvicorn l'API sur :8000 : deux origines, donc URL absolue,
+ *    `http://localhost:8000` par défaut ou `VITE_API_URL`.
+ * 2. **Tout build** (`npm run build` : paquet, `tools/dev-epure.ps1`) — le
+ *    front construit est servi par FastAPI lui-même, une seule origine. `API`
+ *    est alors TOUJOURS vide (appels relatifs) et `VITE_API_URL` ignorée.
+ *    Mesuré le 2026-10-18 (#72, Edge + CDP) : le build de `dev-epure.ps1`,
+ *    construit sans `VITE_API_URL` et ouvert par `http://127.0.0.1:8000/`,
+ *    appelait `http://localhost:8000` — autre origine, 14 violations de
+ *    `connect-src 'self'` (core/csp.py), et un appel cross-origin que
+ *    EPURE_CORS_ORIGINS (origines :5173) ne couvre pas. Seule la même origine
+ *    est juste, quel que soit l'hôte tapé dans la barre d'adresse.
  *
- * Le test distingue `undefined` de la chaîne vide — et NON par coquetterie :
- * l'ancien `VITE_API_URL?.replace(…) || 'http://localhost:8000'` ne permettait
- * pas d'exprimer le mode 2. Une chaîne vide est falsy, donc `|| ` retombait sur
- * le défaut : construire avec une valeur vide donnait quand même du localhost:8000.
- *
- * **Sous Windows, `VITE_API_URL=''` est inexprimable** : `$env:VAR = ''`
- * SUPPRIME la variable (mesuré — l'enfant voit « non définie »), et Windows est
- * la plateforme primaire du projet. Le réglage du mode 2 est donc
- * `VITE_API_URL=/`, que le `replace` ci-dessous normalise en chaîne vide. La
- * chaîne vide reste acceptée pour un build POSIX.
+ * En dev, `undefined` et la chaîne vide restent distincts : `VITE_API_URL=/`
+ * (ou `''` en POSIX — sous Windows `$env:VAR = ''` SUPPRIME la variable,
+ * mesuré) donne une base relative, utile derrière un proxy. `tools/faire_paquet.py`
+ * pose encore `VITE_API_URL=/` au build : sans effet désormais, inoffensif.
  */
 
-const _API_URL = import.meta.env.VITE_API_URL as string | undefined
+/** Base HTTP : `''` (même origine) dans un build ; en dev, `VITE_API_URL`
+ * ou le backend :8000. Fonction pure, exportée pour `api.base.test.ts`. */
+export function baseApi(dev: boolean, url: string | undefined): string {
+  if (!dev) return ''
+  return url === undefined ? 'http://localhost:8000' : url.replace(/\/+$/, '')
+}
 
-export const API: string =
-  _API_URL === undefined ? 'http://localhost:8000' : _API_URL.replace(/\/+$/, '')
+export const API: string = baseApi(
+  import.meta.env.DEV, import.meta.env.VITE_API_URL as string | undefined)
 
 /**
- * En mode 2, `API` est vide : on ne peut pas en dériver le schéma ws. On le
+ * Dans un build, `API` est vide : on ne peut pas en dériver le schéma ws. On le
  * prend sur la page, qui EST le backend. Résolu explicitement plutôt que de
  * confier `/ws/chat` au constructeur WebSocket : la résolution d'une URL
  * relative y est bien spécifiée, mais un `ws://` complet reste lisible dans les
