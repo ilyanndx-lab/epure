@@ -75,8 +75,10 @@ export function verifieeContreRecherche(etape: EtapeTrace): boolean {
  * trace existe pour éliminer.
  */
 export function resumeTrace(etapes: EtapeTrace[]): string {
-  const aUneEtapeDeRecherche = etapes.some(e => e.etape !== 'citations_invalides')
+  const aUneEtapeDeRecherche = etapes.some(e => !ETAPES_HORS_RECHERCHE.has(e.etape))
   if (!aUneEtapeDeRecherche) {
+    const lectures = etapes.filter(e => e.etape === 'lecture_url')
+    if (lectures.length > 0) return resumeLectures(lectures)
     const citations = etapes.find(e => e.etape === 'citations_invalides')
     if (!citations) return ''  // ne devrait pas arriver : trace vide → pas de panneau
     return verifieeContreRecherche(citations) ? 'Citation hors sources' : 'Lien non vérifié'
@@ -99,6 +101,52 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
   const ms = Number(derniere.ms) || 0
   const secondes = (ms / 1000).toFixed(1).replace('.', ',')
   return `Recherche web : ${nombre} résultat${nombre > 1 ? 's' : ''} en ${secondes} s`
+}
+
+/**
+ * Étapes qui ne sont PAS une recherche web : un tour qui n'a que celles-là
+ * ne doit jamais être résumé « Recherche web… ».
+ *
+ * `lecture_url` : lecture DIRECTE d'une URL collée dans le message
+ * (`core/webcontent.py::lire_urls`), sans moteur de recherche — l'annoncer
+ * comme une recherche ferait croire que l'URL est partie vers DuckDuckGo,
+ * ce que ce chemin existe justement pour éviter. `reclassement_indisponible`
+ * et `outils_retires` (outils du modèle retirés parce qu'une page a été lue,
+ * `modules/chat/router.py`) accompagnent une lecture seule ; avec une vraie
+ * recherche, d'autres étapes portent déjà le résumé.
+ */
+const ETAPES_HORS_RECHERCHE = new Set([
+  'citations_invalides', 'lecture_url', 'reclassement_indisponible', 'outils_retires',
+])
+
+/** Une lecture d'URL a-t-elle échoué (ou été refusée) ? Tout statut autre
+ * que « succès » en est un : une trace abîmée ne doit pas passer pour lue. */
+function lectureEnEchec(e: EtapeTrace): boolean {
+  return e.etape === 'lecture_url' && texte(e.statut) !== 'succès'
+}
+
+/**
+ * Résumé d'un tour fait de lectures d'URL seules. Un échec l'emporte et porte
+ * sa RAISON dans l'en-tête replié : « page protégée par une connexion »
+ * doit se lire sans déplier, sinon la réponse du modèle à côté peut passer
+ * pour une lecture réelle.
+ */
+function resumeLectures(lectures: EtapeTrace[]): string {
+  const echec = lectures.find(lectureEnEchec)
+  if (echec) {
+    const raison = texte(echec.raison)
+    return raison ? `Page non lue : ${raison}` : 'Page non lue'
+  }
+  if (lectures.length > 1) return `${lectures.length} pages lues`
+  const passages = Number(lectures[0].passages_retenus) || 0
+  return `Page lue : ${passages} passage${passages > 1 ? 's' : ''}`
+}
+
+/** Badge « page non lue » à côté d'un résumé de RECHERCHE — quand le résumé
+ * parle des lectures, il le dit déjà (même règle que les autres badges). */
+export function libelleBadgeLecture(etapes: EtapeTrace[]): string | null {
+  if (!etapes.some(lectureEnEchec)) return null
+  return resumeTrace(etapes).startsWith('Page non lue') ? null : 'page non lue'
 }
 
 /**

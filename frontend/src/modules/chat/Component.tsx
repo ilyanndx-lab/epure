@@ -16,7 +16,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -478,6 +478,31 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
     }
     case 'recherche_erreur':
       return <p className="m-0 text-error">Échec : {texte(etape.message)}</p>
+    case 'lecture_url': {
+      // Lecture DIRECTE d'une URL du message (core/webcontent.py::lire_urls),
+      // sans moteur de recherche — dit tel quel, pour que l'utilisateur sache
+      // que son lien n'est parti vers aucun tiers.
+      const url = texte(etape.url)
+      const lien = (
+        <a href={url} target="_blank" rel="noreferrer" className="text-accent2 hover:underline break-all">
+          {url}
+        </a>
+      )
+      if (texte(etape.statut) !== 'succès') {
+        return (
+          <p className="m-0 text-error">
+            Page non lue : {lien} — {texte(etape.raison) || 'raison inconnue'}.
+            La réponse ne s’appuie pas sur son contenu.
+          </p>
+        )
+      }
+      const passages = Number(etape.passages_retenus) || 0
+      return (
+        <p className="m-0">
+          Page lue directement (sans moteur de recherche) : {lien} — {passages} passage{passages > 1 ? 's' : ''} retenu{passages > 1 ? 's' : ''} en {Number(etape.ms) || 0} ms
+        </p>
+      )
+    }
     case 'citations_invalides': {
       const rangs = liste<number>(etape.rangs)
       const urls = liste<string>(etape.urls)
@@ -496,6 +521,16 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
         </p>
       )
     }
+    case 'outils_retires':
+      // Seule raison émise aujourd'hui : `lecture_url` (modules/chat/router.py).
+      // Dit pourquoi le modèle n'a pas pu chercher ce tour-ci — sinon
+      // l'absence de recherche ressemblerait à un oubli.
+      return (
+        <p className="m-0">
+          Outils du modèle retirés pour ce tour ({liste<string>(etape.outils).join(', ') || 'aucun'}) :
+          une page web a été lue, et son texte ne doit pas pouvoir déclencher de recherche.
+        </p>
+      )
     case 'tool_call_abandonne':
       // Formulation NON technique : l'utilisateur n'a pas à savoir ce qu'est
       // un JSON d'arguments — seulement que la recherche n'a pas eu lieu et
@@ -542,6 +577,7 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
   // qui distingue une réponse sourcée d'une réponse donnée de mémoire.
   const libelleAbandon = libelleBadgeAbandon(etapes)
   const libelleLimite = libelleBadgeLimite(etapes)
+  const libelleLecture = libelleBadgeLecture(etapes)
   return (
     <Card accent="secondary" padded={false} className="mt-2 mb-1 overflow-hidden">
       <button
@@ -564,6 +600,11 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
           {libelleLimite && (
             <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
               {libelleLimite}
+            </span>
+          )}
+          {libelleLecture && (
+            <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-error/15 text-error">
+              {libelleLecture}
             </span>
           )}
         </span>

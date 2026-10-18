@@ -32,22 +32,56 @@ ne dépend que de `lxml` (déjà présent dans l'arbre — `python-docx` le tire
 depuis le lot bureautique du 2026-08-24), `cssselect` et `chardet`, tous deux
 purs Python. Aucun binaire nouveau. Vérifié par installation réelle sur ce
 poste (Windows), pas supposé depuis la liste de dépendances publiée.
+
+── Lecture directe d'une URL collée dans le message (`lire_urls`) ──────────
+
+Avant elle, une URL dans le message n'était jamais lue : le modèle répondait
+« sur la page » de mémoire, sans le dire — ou, si un motif du classifieur
+matchait par accident (une date `/2024/` dans le chemin), le message ENTIER,
+URL comprise, partait vers DuckDuckGo. `lire_urls` va chercher la page
+elle-même, sans moteur tiers, avec les MÊMES budgets que la phase 4 (temps
+par page, temps de l'étape, caractères par page, nombre de pages) — mêmes
+constantes, pas une seconde série à faire diverger.
+
+Deux différences assumées avec `recuperer_contenu` :
+
+  - **un échec est NOMMÉ** (connexion requise, 403, paywall, délai…) au lieu
+    de retomber sur un extrait DDG — il n'y a pas d'extrait de repli ici, et
+    un repli silencieux sur les connaissances du modèle est précisément le
+    défaut corrigé ;
+  - **les adresses locales et privées sont refusées** (`adresse_refusee`),
+    y compris après résolution DNS et à chaque redirection : l'URL vient d'un
+    texte que l'utilisateur a pu copier d'une page hostile, et sans ce refus
+    coller un lien suffirait à faire interroger par Épure le backend lui-même
+    (`127.0.0.1:8000`) ou la box du réseau local (CLAUDE.md §6, menace 1).
+
+Limite connue et acceptée : la vérification DNS précède la connexion, qui
+résout à nouveau — un domaine contrôlé par un attaquant peut répondre une
+adresse publique à la première résolution et privée à la seconde (DNS
+rebinding). Fermer cette fenêtre demande d'épingler l'adresse vérifiée dans
+la connexion HTTPS (SNI, certificat), hors de portée de `urllib` sans
+réécrire son transport ; le refus couvre l'accident et le lien piégé
+ordinaire, pas un attaquant qui contrôle un serveur DNS.
 """
 
 import concurrent.futures
 import html as _htmllib
+import ipaddress
 import logging
 import re
+import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
 from readability import Document
 
 from core.embedding_install import EmbeddingIndisponible
-from core.websearch import ResultatWeb, _UA_PRINCIPAL, _emettre, tronquer_champ
+from core.websearch import ResultatWeb, _UA_PRINCIPAL, _domaine, _emettre, tronquer_champ
 
 logger = logging.getLogger(__name__)
 
@@ -334,3 +368,372 @@ def recuperer_contenu(
             )
 
     return [par_rang[r.rang] for r in resultats]
+
+
+# ── Lecture directe d'une URL fournie par l'utilisateur ─────────────────────
+#
+# Cf. la dernière section de la docstring de module pour le pourquoi.
+
+class _AdresseRefusee(Exception):
+    """Adresse locale ou privée rencontrée en cours de route — levée depuis
+    `_RedirectionVerifiee` pour interrompre `urllib` avant qu'il ne suive le
+    saut. Porte la raison lisible, qui part telle quelle dans la trace."""
+
+
+#: Préfixe commun des raisons de refus — c'est ce que l'utilisateur lit dans
+#: le panneau de trace, et ce que les tests vérifient.
+_RAISON_ADRESSE_PRIVEE = "adresse locale ou privée refusée"
+
+
+#: Espace d'adressage partagé (CGNAT, RFC 6598). Nommé à part parce
+#: qu'AUCUNE des propriétés d'`ipaddress` ci-dessous ne le couvre (mesuré sur
+#: 3.11 et 3.14 : `is_private` faux, seul `is_global` est faux) — c'est
+#: pourtant le réseau interne d'un opérateur, jamais une page publique.
+_ESPACE_PARTAGE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _ip_interdite(ip) -> bool:
+    """L'adresse est-elle locale, privée ou non routable ?
+
+    Par les PROPRIÉTÉS d'`ipaddress`, jamais par une liste de plages écrite à
+    la main : bouclage (127/8, ::1), privées (10/8, 172.16/12, 192.168/16,
+    fc00::/7), lien local (169.254/16 — dont le service de métadonnées des
+    hébergeurs —, fe80::/10), réservées, multicast, non spécifiée (0.0.0.0,
+    ::). Pas `not is_global` seul : il est VRAI pour 224.0.0.1 (multicast),
+    d'où `is_multicast` nommé explicitement.
+
+    Une IPv4 encapsulée dans une IPv6 (`::ffff:10.0.0.1`) est jugée sur
+    l'IPv4 qu'elle porte : avant Python 3.13, `::ffff:0:0/96` entier est
+    « privé/réservé » quelle que soit l'IPv4 dedans (mesuré sur 3.11), donc
+    sans ce déballage le verdict changerait avec la version de Python.
+    """
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        or ip.is_multicast or ip.is_unspecified
+        or (ip.version == 4 and ip in _ESPACE_PARTAGE_CGNAT)
+    )
+
+
+def _ip_litterale(hote: str):
+    """IP écrite en clair dans l'URL, sous TOUTES ses formes, sans DNS.
+
+    `ipaddress` n'accepte que la forme canonique ; mais `urllib` passe l'hôte
+    au résolveur système, qui accepte aussi `2130706433` (décimal),
+    `0x7f000001` (hexadécimal), `0177.0.0.1` (octal) ou `127.1` (forme
+    courte) — toutes `127.0.0.1`. Sans ce second essai, ces formes ne
+    seraient refusées que si la résolution DNS, plus bas, les ramène à
+    l'adresse qu'elles désignent : un comportement de résolveur, pas une
+    garantie. `inet_aton` est exactement l'analyseur de ces formes
+    historiques (sans réseau), et se comporte de même sous Windows.
+    """
+    try:
+        return ipaddress.ip_address(hote)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(hote))
+    except (OSError, ValueError):
+        return None
+
+
+def adresse_refusee(url: str) -> Optional[str]:
+    """Raison du refus de contacter `url`, ou `None` si elle est autorisée.
+
+    Le nom d'hôte est RÉSOLU avant d'être jugé : `piege.example` peut pointer
+    vers `192.168.1.1` aussi bien qu'une IP écrite en clair, et une forme
+    exotique (`127.1`, décimal) est ramenée par la résolution à l'adresse
+    qu'elle désigne. Un échec de résolution n'est pas un refus : l'ouverture
+    échouera ensuite d'elle-même, avec sa propre raison (« site injoignable »).
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"schéma « {parsed.scheme or '?'} » non pris en charge (http ou https seulement)"
+    hote = (parsed.hostname or "").rstrip(".").lower()
+    if not hote:
+        return "adresse invalide (aucun hôte)"
+    if hote == "localhost" or hote.endswith(".localhost"):
+        return f"{_RAISON_ADRESSE_PRIVEE} ({hote})"
+    litterale = _ip_litterale(hote)
+    if litterale is not None:
+        return f"{_RAISON_ADRESSE_PRIVEE} ({hote})" if _ip_interdite(litterale) else None
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return "adresse invalide (port)"
+    try:
+        infos = socket.getaddrinfo(hote, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return None
+    for info in infos:
+        adresse = str(info[4][0]).split("%", 1)[0]  # zone IPv6 (`fe80::1%eth0`)
+        try:
+            ip = ipaddress.ip_address(adresse)
+        except ValueError:
+            continue
+        if _ip_interdite(ip):
+            return f"{_RAISON_ADRESSE_PRIVEE} ({hote} → {adresse})"
+    return None
+
+
+class _RedirectionVerifiee(urllib.request.HTTPRedirectHandler):
+    """`urllib` suit les redirections tout seul : sans ce contrôle à CHAQUE
+    saut, une page publique pourrait renvoyer `302 → http://127.0.0.1:8000/`
+    et contourner la vérification faite sur l'URL de départ."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raison = adresse_refusee(newurl)
+        if raison:
+            raise _AdresseRefusee(raison)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OUVREUR = urllib.request.build_opener(_RedirectionVerifiee)
+
+
+def _ouvrir(req: urllib.request.Request, timeout: float):
+    """Seul point d'appel réseau de la lecture directe — remplacé par les
+    tests (`test_lecture_url.py`), jamais contourné par le reste du module."""
+    return _OUVREUR.open(req, timeout=timeout)
+
+
+#: Borne de lecture du corps : une URL collée peut désigner un fichier de
+#: plusieurs centaines de Mo servi en `text/html` par erreur ; le budget de
+#: caractères final (800) ne justifie jamais d'en lire davantage.
+_TAILLE_MAX_OCTETS = 5 * 1024 * 1024
+
+#: En dessous de ce nombre de caractères extraits, une page qui porte un champ
+#: de mot de passe est traitée comme une page de connexion. Au-dessus, le
+#: champ est vraisemblablement le formulaire « se connecter » d'un en-tête de
+#: site, à côté d'un vrai contenu lisible — refuser l'article pour ça serait
+#: un faux positif sur la moitié du web.
+_TEXTE_MIN_HORS_CONNEXION = 500
+
+_MOTIF_MOT_DE_PASSE = re.compile(r"<input\b[^>]*\btype\s*=\s*['\"]?password", re.IGNORECASE)
+
+#: Marqueur schema.org standard des articles payants (`isAccessibleForFree:
+#: false`), posé par les sites de presse justement pour que les robots
+#: sachent que le texte servi n'est qu'un chapeau. Le texte extrait serait
+#: une amorce présentée au modèle comme l'article entier.
+_MOTIF_PAYWALL = re.compile(r"[\"']isAccessibleForFree[\"']\s*:\s*[\"']?false", re.IGNORECASE)
+
+#: Chemin ou hôte d'une page de connexion, pour reconnaître une redirection
+#: « vous devez être connecté » servie en 200 après un 302.
+_MOTIF_CHEMIN_CONNEXION = re.compile(
+    r"(?:^|[/._-])(?:log-?in|sign-?in|connexion|se-connecter|auth|authentication|sso)(?:$|[/._-])",
+    re.IGNORECASE,
+)
+_PREFIXES_HOTE_CONNEXION = ("login.", "accounts.", "auth.", "sso.", "signin.", "connexion.")
+
+
+def _ressemble_a_une_page_de_connexion(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    hote = (parsed.hostname or "").lower()
+    return hote.startswith(_PREFIXES_HOTE_CONNEXION) or bool(_MOTIF_CHEMIN_CONNEXION.search(parsed.path))
+
+
+def _raison_delai() -> str:
+    return f"délai dépassé ({_TIMEOUT_PAGE_S:g} s)"
+
+
+def _raison_http(code: int) -> str:
+    if code in (401, 407):
+        return f"page protégée par une connexion (HTTP {code})"
+    if code == 402:
+        return f"contenu réservé aux abonnés (HTTP {code})"
+    if code == 403:
+        return ("accès refusé par le site (HTTP 403) — protection anti-robot, "
+                "connexion ou abonnement requis")
+    if code in (404, 410):
+        return f"page introuvable (HTTP {code})"
+    if code == 429:
+        return "le site limite le nombre de requêtes (HTTP 429)"
+    if code >= 500:
+        return f"erreur du site (HTTP {code})"
+    return f"réponse inattendue du site (HTTP {code})"
+
+
+def _recuperer_page_detaillee(url: str) -> tuple[Optional[str], str, str]:
+    """Comme `_recuperer_page`, mais rend AUSSI pourquoi ça a échoué et où
+    l'on a atterri : ``(html | None, raison, url_finale)``.
+
+    `_recuperer_page` (phase 4) peut se contenter de `None` — l'extrait DDG
+    prend le relais. Ici rien ne prend le relais : la raison est tout ce que
+    l'utilisateur saura. Même timeout par page, même User-Agent unique.
+
+    Lève `_AdresseRefusee` si une redirection vise une adresse interdite —
+    l'appelant en fait un statut « refusée », distinct d'un échec réseau.
+    """
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _UA_PRINCIPAL, "Accept": "text/html,application/xhtml+xml",
+    })
+    try:
+        with _ouvrir(req, _TIMEOUT_PAGE_S) as resp:
+            url_finale = resp.geturl() or url
+            statut = getattr(resp, "status", 200)
+            if statut != 200:
+                return None, _raison_http(statut), url_finale
+            type_contenu = resp.headers.get("Content-Type", "") or ""
+            if type_contenu and "html" not in type_contenu.lower():
+                type_court = type_contenu.split(";", 1)[0].strip()
+                return None, f"type de contenu non pris en charge ({type_court})", url_finale
+            return resp.read(_TAILLE_MAX_OCTETS).decode("utf-8", errors="replace"), "", url_finale
+    except urllib.error.HTTPError as exc:
+        exc.close()  # porte la réponse, donc la socket : ne pas attendre le GC
+        return None, _raison_http(exc.code), url
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            return None, _raison_delai(), url
+        return None, tronquer_champ(f"site injoignable ({exc.reason})"), url
+    except TimeoutError:
+        return None, _raison_delai(), url
+    except OSError as exc:
+        return None, tronquer_champ(f"site injoignable ({exc})"), url
+
+
+def _titre_de_page(html: str) -> str:
+    try:
+        return (Document(html).short_title() or "").strip()
+    except Exception:
+        return ""
+
+
+def _lire_une_url(url: str) -> tuple[list[str], str, str, float, str]:
+    """Refus, fetch, contrôles, extraction pour UNE URL, dans un thread du
+    pool. Rend ``(chunks, statut, raison, ms, titre)`` — `statut` ∈
+    {"succès", "échec", "refusée"}. Ne lève jamais : une exception imprévue
+    devient un échec nommé, pas une lecture qui disparaît de la trace."""
+    t0 = time.time()
+
+    def fin(statut: str, raison: str, chunks: Optional[list[str]] = None, titre: str = ""):
+        return chunks or [], statut, raison, round((time.time() - t0) * 1000), titre
+
+    try:
+        raison = adresse_refusee(url)
+        if raison:
+            return fin("refusée", raison)
+        try:
+            html, raison, url_finale = _recuperer_page_detaillee(url)
+        except _AdresseRefusee as exc:
+            return fin("refusée", f"redirection refusée : {exc}")
+        if html is None:
+            return fin("échec", raison)
+        if url_finale != url and _ressemble_a_une_page_de_connexion(url_finale):
+            return fin("échec", "redirigé vers une page de connexion — page protégée par une connexion")
+        if _MOTIF_PAYWALL.search(html):
+            return fin("échec", "contenu réservé aux abonnés (paywall)")
+        texte = _extraire_texte_principal(html)
+        if _MOTIF_MOT_DE_PASSE.search(html) and len(texte) < _TEXTE_MIN_HORS_CONNEXION:
+            return fin("échec", "page protégée par une connexion (formulaire de mot de passe, aucun contenu lisible)")
+        if not texte:
+            return fin("échec", "aucun texte exploitable dans la page (contenu généré en JavaScript ?)")
+        return fin("succès", "", _decouper_en_chunks(texte), _titre_de_page(html))
+    except Exception:
+        logger.exception("Erreur inattendue en lisant %s", url)
+        return fin("échec", "erreur inattendue pendant la lecture")
+
+
+@dataclass(frozen=True)
+class LectureUrl:
+    """Issue de la lecture d'UNE URL. `resultat` n'existe qu'en cas de
+    succès : c'est la source citable `[n]` qui rejoint `web_resultats`
+    (modules/chat/router.py) ; un échec n'a que sa `raison`."""
+    url: str
+    statut: str  # "succès" | "échec" | "refusée"
+    raison: str  # vide en cas de succès
+    passages: int
+    resultat: Optional[ResultatWeb]
+
+
+def _passages_pour_question(
+    question: str, chunks_par_index: dict[int, list[str]],
+    on_etape: Optional[Callable[[dict], None]],
+) -> dict[int, list[str]]:
+    """Passages retenus par page : reclassés par la question comme en phase 4,
+    ou le DÉBUT de la page quand il n'y a rien à quoi comparer (message réduit
+    à l'URL : « lis ça » demande l'essentiel, pas un passage précis) ou que
+    l'embedding manque. À la différence de `recuperer_contenu`, pas de repli
+    « extrait DDG » possible : le début de page est le seul repli honnête."""
+    if not chunks_par_index:
+        return {}
+    if question.strip():
+        retenus, reclassement_effectue = _reclasser_par_similarite(question, chunks_par_index)
+        if reclassement_effectue:
+            return retenus
+        _emettre(on_etape, {"etape": "reclassement_indisponible", "raison": "embedding indisponible"})
+    return {i: chunks[:_MAX_PASSAGES_PAR_PAGE] for i, chunks in chunks_par_index.items()}
+
+
+def lire_urls(
+    urls: list[str],
+    question: str,
+    rang_de_depart: int = 0,
+    on_etape: Optional[Callable[[dict], None]] = None,
+) -> list[LectureUrl]:
+    """Lit directement chaque URL fournie par l'utilisateur, SANS moteur de
+    recherche. Une `LectureUrl` par URL lue, dans l'ordre de `urls`.
+
+    `question` (le message sans ses URLs) sert au reclassement des passages ;
+    elle ne quitte jamais la machine — seule l'URL est contactée.
+
+    Une étape `lecture_url` par URL part dans `on_etape` (url, statut, ms,
+    `passages_retenus`, et `raison` si échec ou refus) : c'est ce qui rend un
+    échec visible dans le panneau de trace ET dans l'historique persisté.
+
+    Mêmes bornes que `recuperer_contenu` : au plus `_MAX_PAGES_ENRICHIES`
+    URLs, `_TIMEOUT_PAGE_S` par page, `_TIMEOUT_ETAPE_S` pour l'étape (pages
+    en parallèle, plafonds jamais additionnés), `_BUDGET_CARACTERES_PAR_PAGE`
+    par extrait. Les pages lues reçoivent des rangs contigus à partir de
+    `rang_de_depart + 1` — ceux des résultats @web déjà attribués ce tour
+    restent intacts. Ne lève jamais.
+    """
+    a_lire = list(dict.fromkeys(urls))[:_MAX_PAGES_ENRICHIES]
+    if not a_lire:
+        return []
+
+    # Même compromis que `recuperer_contenu` : on cesse d'ATTENDRE un thread
+    # trop lent, on ne le tue pas (cf. son commentaire sur `shutdown`).
+    executeur = concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(a_lire), thread_name_prefix="lecture-url",
+    )
+    try:
+        futurs = {executeur.submit(_lire_une_url, url): i for i, url in enumerate(a_lire)}
+        termines, _en_cours = concurrent.futures.wait(futurs, timeout=_TIMEOUT_ETAPE_S)
+    finally:
+        executeur.shutdown(wait=False, cancel_futures=True)
+
+    issues = {futurs[f]: f.result() for f in termines}
+    for i in range(len(a_lire)):
+        if i not in issues:
+            issues[i] = ([], "échec", f"délai dépassé (budget de {_TIMEOUT_ETAPE_S:g} s pour l'étape)",
+                         round(_TIMEOUT_ETAPE_S * 1000), "")
+
+    chunks_par_index = {i: issue[0] for i, issue in issues.items() if issue[0]}
+    passages_par_index = _passages_pour_question(question, chunks_par_index, on_etape)
+
+    lectures: list[LectureUrl] = []
+    rang = rang_de_depart
+    for i, url in enumerate(a_lire):
+        _chunks, statut, raison, ms, titre = issues[i]
+        passages = passages_par_index.get(i, []) if statut == "succès" else []
+        resultat = None
+        if passages:
+            rang += 1
+            resultat = ResultatWeb(
+                rang=rang, titre=tronquer_champ(titre or _domaine(url)), url=url,
+                extrait=tronquer_champ(" […] ".join(passages), _BUDGET_CARACTERES_PAR_PAGE),
+                moteur="lecture-directe",
+            )
+        elif statut == "succès":
+            statut, raison = "échec", "aucun passage exploitable dans la page"
+        etape = {
+            "etape": "lecture_url", "url": tronquer_champ(url), "statut": statut,
+            "ms": ms, "passages_retenus": len(passages),
+        }
+        if raison:
+            etape["raison"] = tronquer_champ(raison)
+        _emettre(on_etape, etape)
+        lectures.append(LectureUrl(url=url, statut=statut, raison=raison,
+                                   passages=len(passages), resultat=resultat))
+    return lectures

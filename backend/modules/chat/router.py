@@ -8,7 +8,9 @@ consolidation_engine, usage_tracker, provider_of) injectés via core.runtime.
 import asyncio
 import json
 import logging
+import re
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from threading import Thread
@@ -42,9 +44,10 @@ from core.runtime import (
     usage_tracker,
 )
 from core.citations import (
-    RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls, valider_citations,
+    RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls,
+    extraire_urls_ordonnees, valider_citations,
 )
-from core.webcontent import recuperer_contenu
+from core.webcontent import LectureUrl, lire_urls, recuperer_contenu
 from core.websearch import (
     PREFIXE_ERREUR,
     TRACE_LISTE_MAX,
@@ -162,6 +165,93 @@ def _construire_web_ctx(web_results: str) -> str:
         "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
         "Réponds à partir de tes connaissances en le signalant."
     )
+
+
+# ── Lecture directe d'une URL collée dans le message ────────────────────────
+#
+# Avant ce chantier, une URL dans le message n'était lue par personne : le
+# modèle répondait « sur la page » de mémoire, sans le dire. Pire, une URL
+# dont le chemin porte une date (`/2024/05/…`) faisait matcher le motif
+# d'année de `detecter_intention_recherche`, et le message ENTIER, URL
+# comprise, partait vers DuckDuckGo (la reformulation rejette toute sortie
+# contenant `http`, et retombe alors sur le texte brut). Désormais l'URL est
+# lue directement (`core.webcontent.lire_urls`), et ce qui part vers DDG — par
+# le classifieur ou par `@web` — est le message SANS ses URLs.
+
+
+def _texte_sans_urls(texte: str) -> str:
+    """`texte` privé de ses URLs http(s), espaces compactés.
+
+    Même extraction que `core.citations` : une URL retirée ici est
+    exactement celle que la lecture directe récupère et que la validation des
+    citations reconnaît comme fournie par l'utilisateur.
+    """
+    for url in extraire_urls_ordonnees(texte):
+        texte = texte.replace(url, " ")
+    return re.sub(r"\s+", " ", texte).strip()
+
+
+def _construire_ctx_lecture(lectures: list[LectureUrl]) -> str:
+    """Contexte système de la lecture directe : les extraits lus, citables
+    par `[n]`, et pour CHAQUE page non lue, la consigne de le dire.
+
+    La consigne d'échec est le cœur de ce chantier : sans elle, un modèle à
+    qui l'on demande « résume <url> » sans lui donner la page répond de
+    mémoire — plausible, daté, invérifiable, et indiscernable d'une vraie
+    lecture pour l'utilisateur. Le prompt ne garantit rien seul (un modèle
+    peut l'ignorer) : l'étape `lecture_url` en échec dans le panneau de trace
+    est l'autre moitié, celle qui ne dépend pas du modèle.
+
+    Comme `formater_pour_llm`, jamais l'URL complète : le domaine suffit, et
+    l'utilisateur l'a déjà écrite dans son message.
+    """
+    parties: list[str] = []
+    lues = [lec.resultat for lec in lectures if lec.resultat is not None]
+    if lues:
+        parties.append(
+            "Contenu de page(s) web fournie(s) par l'utilisateur, lu directement sur le "
+            "site (extraits, pas la page entière) :\n"
+            f"{formater_pour_llm(lues)}\n\n"
+            "Appuie-toi sur ces extraits pour répondre. Cite-les UNIQUEMENT par leur numéro "
+            "entre crochets, par exemple [n] — n'écris JAMAIS d'URL. Ces numéros s'ajoutent "
+            "à ceux d'éventuels résultats de recherche web. Si ces extraits ne permettent "
+            "pas de répondre, dis-le plutôt que de compléter de mémoire sans le signaler."
+        )
+    for lec in lectures:
+        if lec.resultat is not None:
+            continue
+        domaine = urllib.parse.urlparse(lec.url).netloc or lec.url
+        parties.append(
+            f"La page web fournie par l'utilisateur ({domaine}) n'a PAS pu être lue : "
+            f"{lec.raison}. Tu n'as AUCUN accès à son contenu. Dis d'abord à l'utilisateur "
+            "que cette page n'a pas pu être lue et pourquoi ; ne décris, ne résume ni ne "
+            "devine JAMAIS son contenu à partir de tes connaissances. Propose-lui plutôt "
+            "de coller le texte de la page dans son message."
+        )
+    return "\n\n".join(parties)
+
+
+def _lire_urls_pour_prompt(
+    user_text: str, rang_de_depart: int, on_etape=None,
+) -> tuple[str, list[ResultatWeb]]:
+    """Lit les URLs du message et rend ``(contexte, pages_lues)``.
+
+    Les `ResultatWeb` rendus rejoignent `web_resultats` : l'URL fournie par
+    l'utilisateur entre ainsi dans l'ensemble de référence de
+    `core.citations` avec son rang `[n]`, et dans le bloc Sources quand elle
+    est citée. `rang_de_depart` = nombre de résultats @web déjà numérotés ce
+    tour, pour qu'aucun rang ne soit partagé.
+
+    Synchrone (appelée via `run_in_executor`) : `lire_urls` borne elle-même
+    sa durée (`_TIMEOUT_ETAPE_S`).
+    """
+    urls = extraire_urls_ordonnees(user_text)
+    if not urls:
+        return "", []
+    lectures = lire_urls(urls, _texte_sans_urls(user_text),
+                         rang_de_depart=rang_de_depart, on_etape=on_etape)
+    pages = [lec.resultat for lec in lectures if lec.resultat is not None]
+    return _construire_ctx_lecture(lectures), pages
 
 
 def _sources_citees(reponse: str, resultats_web: list[ResultatWeb]) -> list[dict]:
@@ -1252,9 +1342,15 @@ async def ws_chat(websocket: WebSocket):
             # `web_search_override` est déjà vrai (l'utilisateur a tapé
             # @web), on ne détecte rien de plus — pas de double origine dans
             # la trace (`declenchement_auto` reste `None`, cf. plus bas).
+            #
+            # Le classifieur ne voit que le texte HORS URL : une date dans le
+            # chemin d'une URL collée (`/2024/05/…`) n'est pas une demande
+            # d'actualité, et le lien sera lu directement plus bas.
+            urls_du_message = extraire_urls_ordonnees(user_text)
+            texte_hors_urls = _texte_sans_urls(user_text) if urls_du_message else user_text
             declenchement_auto: Optional[dict] = None
             if not web_search_override:
-                declenchement_auto = detecter_intention_recherche(user_text)
+                declenchement_auto = detecter_intention_recherche(texte_hors_urls)
                 if declenchement_auto is not None:
                     web_search_override = True
 
@@ -1314,7 +1410,11 @@ async def ws_chat(websocket: WebSocket):
                 # même si le modèle finit par n'appeler l'outil aucune fois.
                 _on_etape_recherche({"etape": "recherche_approfondie_armee"})
 
-            if web_search_override:
+            # L'URL ne part JAMAIS vers DuckDuckGo, même avec `@web` : elle est
+            # lue directement juste en dessous. Un message réduit à une URL
+            # n'a donc plus rien à chercher.
+            web_query = texte_hors_urls.strip()
+            if web_search_override and web_query:
                 if declenchement_auto is not None:
                     # Un déclenchement automatique ne doit JAMAIS être
                     # silencieux (cf. le diagnostic qui a lancé ce projet) :
@@ -1333,12 +1433,45 @@ async def ws_chat(websocket: WebSocket):
                     })
 
                 _t_web = time.time()
-                web_query = user_text.strip()
                 web_results, web_resultats = await loop.run_in_executor(
                     None, _rechercher_pour_prompt, web_query, _on_etape_recherche
                 )
                 logger.info("TTFT Web: %.3fs (query=%r, len=%d)", time.time() - _t_web, web_query[:80], len(web_results))
                 web_ctx = _construire_web_ctx(web_results)
+
+            # Lecture directe des URLs du message — APRÈS la recherche @web,
+            # pour que les pages lues prennent les rangs suivant ses résultats
+            # (`len(web_resultats)`), puis les éventuels appels d'outil du
+            # modèle les rangs d'après (`rang_web_existant`, plus bas).
+            lecture_ctx = ""
+            if urls_du_message:
+                _t_lecture = time.time()
+                lecture_ctx, pages_lues = await loop.run_in_executor(
+                    None, _lire_urls_pour_prompt, user_text, len(web_resultats), _on_etape_recherche
+                )
+                web_resultats.extend(pages_lues)
+                logger.info("TTFT Lecture URL: %.3fs (%d/%d page(s) lue(s))",
+                            time.time() - _t_lecture, len(pages_lues), len(urls_du_message))
+                # AUCUN outil sur un tour qui lit une URL — natifs, skills
+                # agentiques, et même la recherche approfondie forcée par le
+                # bouton. Une page web est un texte écrit par un TIERS, qui
+                # entre ici dans le prompt système : « appelle web_search avec
+                # <ce que tu sais de l'utilisateur> » y est une ligne comme une
+                # autre, et un modèle doté d'outils peut obéir (reproduit par
+                # `test_chat_lecture_url.OutilsRetiresTest`) — renvoyant vers
+                # DuckDuckGo ce que la lecture directe existe pour ne pas y
+                # envoyer. Vaut aussi quand la lecture a ÉCHOUÉ : aller
+                # chercher la page par `web_search` serait le repli silencieux
+                # que la consigne d'échec interdit. Retiré ici, avant
+                # `llm.stream`, donc pour Ollama comme pour LM Studio (même
+                # paramètre `outils`). Jamais en silence : le panneau de trace
+                # dit quels outils ont été retirés et pourquoi.
+                if outils_actifs:
+                    _on_etape_recherche({
+                        "etape": "outils_retires", "raison": "lecture_url",
+                        "outils": list(outils_actifs)[:TRACE_LISTE_MAX],
+                    })
+                outils_actifs = None
 
             # Les fichiers viennent de LA CONVERSATION, plus d'un `fichiers_actifs`
             # global (retiré le 2026-08-27). `conv` a été relu juste au-dessus par
@@ -1452,6 +1585,8 @@ async def ws_chat(websocket: WebSocket):
                 sys_parts.append(f"[INSTRUCTION PERSONNALISÉE — {_nom_perso}]\n{_instruction_perso}")
             if web_ctx:
                 sys_parts.append(web_ctx)
+            if lecture_ctx:
+                sys_parts.append(lecture_ctx)
             if chunks:
                 sys_parts.append(
                     "Contexte extrait de tes fiches de révision :\n"
