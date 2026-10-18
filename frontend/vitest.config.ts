@@ -32,6 +32,21 @@ import { defineConfig } from 'vitest/config'
  * accepté de Node 22 à 25 (vérifié), sans effet là où la fonction est déjà
  * désactivée. Node est par ailleurs épinglé par `.nvmrc` ; ceci protège un
  * poste qui ne le respecte pas. Verrouillé par `src/webstorage.test.ts`.
+ *
+ * `testTimeout: 20_000` (défaut vitest : 5 s) — issue #68. Les tests de
+ * composants du chat et des Réglages montent l'écran ENTIER et l'interrogent
+ * par `getAllByRole`, qui recalcule l'arbre d'accessibilité : du CPU pur, qui
+ * s'étire avec la charge de la machine. Mesuré le 2026-10-18 (Windows,
+ * 12 cœurs) : le premier test de `Component.comparaison.test.tsx` prend
+ * 1,5 s machine au repos, 0,4 s quand son fichier tourne presque seul — et
+ * dépasse 5 s dès que la machine est chargée (reproduit à coup sûr en lançant
+ * deux suites en parallèle : 1 échec par suite). Le premier test d'un
+ * fichier est le plus touché (≈ 2,5× les suivants : premier rendu complet).
+ * Ces tests sont déterministes (WebSocket factice, `fetch` stubé) : rien n'y
+ * attend le réseau ni une horloge, donc 5 s ne mesurait pas un blocage, juste
+ * la vitesse du poste. Avec 20 s, trois suites en parallèle passent 275/275 ;
+ * le test le plus lent y prend 8,9 s (2,3 s au repos) — marge ×2,2 sous
+ * charge triple. Un vrai blocage échoue toujours, 15 s plus tard.
  */
 export default defineConfig({
   plugins: [react()],
@@ -41,6 +56,7 @@ export default defineConfig({
     // Chaque test repose son propre `fetch` : sans restauration, l'ordre
     // d'exécution deviendrait significatif.
     restoreMocks: true,
+    testTimeout: 20_000,
     execArgv: ['--no-experimental-webstorage'],
   },
 })
