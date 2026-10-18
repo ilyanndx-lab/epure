@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -224,5 +224,22 @@ describe('lecture directe d’URL (lecture_url) — ni « Recherche web », ni �
 
   it('le badge citations reste dû quand la seule autre étape est une lecture', () => {
     expect(libelleBadgeCitations([LECTURE_OK, CITATIONS_AUCUNE_SOURCE])).toBe('lien non vérifié')
+  })
+})
+
+describe('libelleRetraitOutils — la raison du retrait dite telle quelle', () => {
+  it('lecture d’URL', () => {
+    expect(libelleRetraitOutils({ etape: 'outils_retires', raison: 'lecture_url', outils: ['web_search'] }))
+      .toBe('Outils du modèle retirés pour ce tour (web_search) : une page web a été lue, et son texte ne doit pas pouvoir déclencher de recherche.')
+  })
+
+  it('contenu web injecté (@web, déclenchement automatique, résultat d’outil)', () => {
+    expect(libelleRetraitOutils({ etape: 'outils_retires', raison: 'contenu_web', outils: ['web_search', 'history_search'] }))
+      .toBe('Outils du modèle retirés pour ce tour (web_search, history_search) : des résultats web ont été injectés, et leur texte ne doit pas pouvoir déclencher de recherche.')
+  })
+
+  it('raison inconnue (trace future) : libellé générique, jamais vide', () => {
+    expect(libelleRetraitOutils({ etape: 'outils_retires' }))
+      .toBe('Outils du modèle retirés pour ce tour (aucun).')
   })
 })

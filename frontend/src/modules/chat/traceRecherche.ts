@@ -142,6 +142,27 @@ function resumeLectures(lectures: EtapeTrace[]): string {
   return `Page lue : ${passages} passage${passages > 1 ? 's' : ''}`
 }
 
+/**
+ * Libellé de l'étape `outils_retires` : quels outils, et POURQUOI — sinon
+ * l'absence de recherche ressemblerait à un oubli du modèle. Deux raisons
+ * émises par le backend (modules/chat/router.py, core/llm.py) : une page lue
+ * (`lecture_url`), ou des résultats web injectés (`contenu_web` — @web,
+ * déclenchement automatique, résultat d'outil). Une raison inconnue (trace
+ * d'une version future) garde un libellé, sans en inventer le motif.
+ */
+export function libelleRetraitOutils(etape: EtapeTrace): string {
+  const outils = liste<string>(etape.outils).filter(o => typeof o === 'string').join(', ') || 'aucun'
+  const debut = `Outils du modèle retirés pour ce tour (${outils})`
+  const raison = texte(etape.raison)
+  if (raison === 'lecture_url') {
+    return `${debut} : une page web a été lue, et son texte ne doit pas pouvoir déclencher de recherche.`
+  }
+  if (raison === 'contenu_web') {
+    return `${debut} : des résultats web ont été injectés, et leur texte ne doit pas pouvoir déclencher de recherche.`
+  }
+  return `${debut}.`
+}
+
 /** Badge « page non lue » à côté d'un résumé de RECHERCHE — quand le résumé
  * parle des lectures, il le dit déjà (même règle que les autres badges). */
 export function libelleBadgeLecture(etapes: EtapeTrace[]): string | null {

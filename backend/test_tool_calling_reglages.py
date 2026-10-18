@@ -266,7 +266,11 @@ class BudgetsOverrideLLMTest(unittest.TestCase):
             for i in range(module_llm._MAX_APPELS_RECHERCHE_APPROFONDIE)
         ]
         rounds.append([_chunk(content="Conclusion.", done=True)])
-        with _Rejoueur(rounds=rounds) as r:
+        # Recherches VIDES : elles n'injectent aucun contenu web, donc ne
+        # déclenchent pas le retrait strict (PR #66) — ce test garde sa cible,
+        # le budget par défaut.
+        vides = [[] for _ in range(module_llm._MAX_APPELS_RECHERCHE_APPROFONDIE)]
+        with _Rejoueur(rounds=rounds, resultats_par_recherche=vides) as r:
             sortie, _ = _stream(r, outils=["recherche_approfondie"])
         for i in range(module_llm._MAX_APPELS_RECHERCHE_APPROFONDIE):
             self.assertIn("tools", r.appels[i], f"round {i} : budget pas encore épuisé")

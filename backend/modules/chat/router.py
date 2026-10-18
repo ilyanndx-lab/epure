@@ -1486,23 +1486,29 @@ async def ws_chat(websocket: WebSocket):
                 web_resultats.extend(pages_lues)
                 logger.info("TTFT Lecture URL: %.3fs (%d/%d page(s) lue(s))",
                             time.time() - _t_lecture, len(pages_lues), len(urls_du_message))
-                # AUCUN outil sur un tour qui lit une URL — natifs, skills
-                # agentiques, et même la recherche approfondie forcée par le
-                # bouton. Une page web est un texte écrit par un TIERS, qui
-                # entre ici dans le prompt système : « appelle web_search avec
-                # <ce que tu sais de l'utilisateur> » y est une ligne comme une
-                # autre, et un modèle doté d'outils peut obéir (reproduit par
-                # `test_chat_lecture_url.OutilsRetiresTest`) — renvoyant vers
-                # DuckDuckGo ce que la lecture directe existe pour ne pas y
-                # envoyer. Vaut aussi quand la lecture a ÉCHOUÉ : aller
-                # chercher la page par `web_search` serait le repli silencieux
-                # que la consigne d'échec interdit. Retiré ici, avant
-                # `llm.stream`, donc pour Ollama comme pour LM Studio (même
-                # paramètre `outils`). Jamais en silence : le panneau de trace
-                # dit quels outils ont été retirés et pourquoi.
+
+            # AUCUN outil sur un tour qui a injecté du contenu web — natifs,
+            # skills agentiques, et même la recherche approfondie forcée par le
+            # bouton. Deux raisons, une seule règle :
+            #   - `lecture_url` : une page lue (ou dont la lecture a ÉCHOUÉ —
+            #     aller la chercher par `web_search` serait le repli silencieux
+            #     que la consigne d'échec interdit) ;
+            #   - `contenu_web` : des résultats @web / déclenchement automatique
+            #     (extraits DDG, passages réels en phase 4) déjà dans le prompt.
+            # Un résultat web est un texte écrit par un TIERS : « appelle
+            # web_search avec <ce que tu sais de l'utilisateur> » y est une
+            # ligne comme une autre, et un modèle doté d'outils peut obéir
+            # (`test_chat_lecture_url.OutilsRetiresTest`). Décision « retrait
+            # strict » d'Ilyann du 2026-10-18 ; le pendant tool-calling est
+            # dans `core/llm.py::_executer_appels_outil`. Une recherche VIDE ou
+            # en échec n'injecte rien : les outils restent. Retiré avant
+            # `llm.stream`, donc pour Ollama comme pour LM Studio. Jamais en
+            # silence : la trace dit quels outils et pourquoi.
+            raison_retrait = "lecture_url" if urls_du_message else ("contenu_web" if web_resultats else None)
+            if raison_retrait is not None:
                 if outils_actifs:
                     _on_etape_recherche({
-                        "etape": "outils_retires", "raison": "lecture_url",
+                        "etape": "outils_retires", "raison": raison_retrait,
                         "outils": list(outils_actifs)[:TRACE_LISTE_MAX],
                     })
                 outils_actifs = None

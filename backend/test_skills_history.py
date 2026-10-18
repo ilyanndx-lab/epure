@@ -182,9 +182,12 @@ class DeuxSkillsMemeTourTest(unittest.TestCase):
 
     def test_les_deux_skills_sont_exposes_et_appelables(self):
         with _Rejoueur(rounds=[
+            # `history_search` AVANT `web_search` dans le round : l'inverse
+            # retirerait les outils dès le résultat web (retrait strict,
+            # PR #66) et `history_search` recevrait « budget épuisé ».
             [_chunk(tool_calls=[
-                _tool_call(nom="web_search", requete="météo"),
                 _tool_call(nom="history_search", requete="intégrales"),
+                _tool_call(nom="web_search", requete="météo"),
             ], done=True)],
             [_chunk(content="Fini.", done=True)],
         ]) as r, _HistoriqueMocke() as h:
@@ -208,7 +211,10 @@ class DeuxSkillsMemeTourTest(unittest.TestCase):
             [_chunk(tool_calls=[_tool_call(nom="web_search", requete="trois"),
                                  _tool_call(nom="history_search", requete="q")], done=True)],
             [_chunk(content="Fini.", done=True)],
-        ]) as r, _HistoriqueMocke() as h:
+        ], resultats_par_recherche=[[], []]) as r, _HistoriqueMocke() as h:
+            # Recherches VIDES : elles n'injectent aucun contenu web, donc ne
+            # déclenchent pas le retrait strict (PR #66) — ce test garde sa cible,
+            # l'indépendance des budgets.
             _stream(r, outils=["web_search", "history_search"])
 
         self.assertEqual(r.appels_recherche, ["un", "deux"], "le 3e web_search ne doit pas chercher")

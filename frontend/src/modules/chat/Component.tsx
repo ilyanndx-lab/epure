@@ -17,7 +17,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -533,15 +533,8 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
       )
     }
     case 'outils_retires':
-      // Seule raison émise aujourd'hui : `lecture_url` (modules/chat/router.py).
-      // Dit pourquoi le modèle n'a pas pu chercher ce tour-ci — sinon
-      // l'absence de recherche ressemblerait à un oubli.
-      return (
-        <p className="m-0">
-          Outils du modèle retirés pour ce tour ({liste<string>(etape.outils).join(', ') || 'aucun'}) :
-          une page web a été lue, et son texte ne doit pas pouvoir déclencher de recherche.
-        </p>
-      )
+      // Raison (`lecture_url` / `contenu_web`) dite par `libelleRetraitOutils`.
+      return <p className="m-0">{libelleRetraitOutils(etape)}</p>
     case 'tool_call_abandonne':
       // Formulation NON technique : l'utilisateur n'a pas à savoir ce qu'est
       // un JSON d'arguments — seulement que la recherche n'a pas eu lieu et
