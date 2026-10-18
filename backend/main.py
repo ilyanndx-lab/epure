@@ -728,13 +728,16 @@ async def module_set_status(module_id: str, req: ModuleStatusRequest):
 
 
 # ── CSP : observation (Report-Only) + img-src bloquant ──────────────────────
-# Politique et journal : core/csp.py. Politique complète en Report-Only
-# (2026-09-26) ; img-src seul bloquant depuis le 2026-10-18 (PR #66).
+# Politique et journal : core/csp.py. Report-Only depuis le 2026-09-26 ;
+# img-src seul bloquant (et retiré du Report-Only) depuis le 2026-10-18.
 
 @app.post(_csp.CHEMIN_RAPPORT, include_in_schema=False)
 async def csp_rapport(request: Request):
     """Point de collecte des rapports du navigateur (``report-uri`` ET
-    ``report-to``). Sans token ; corps borné, contenu agrégé, jamais exécuté."""
+    ``report-to``). Sans token ; types du navigateur seuls, corps borné,
+    contenu agrégé, jamais exécuté (bornes : core/csp.py)."""
+    if not _csp.type_accepte(request.headers.get("content-type")):
+        return Response(status_code=415)
     corps = b""
     async for morceau in request.stream():
         corps += morceau
@@ -750,9 +753,14 @@ async def csp_rapport(request: Request):
 
 @app.get("/instance/csp")
 async def instance_csp():
-    """Journal des violations (Réglages › Sécurité). Derrière le token."""
+    """Journal des violations (Réglages › Sécurité). Derrière le token.
+
+    ``directives`` : mode de chaque directive (``bloquant`` / ``report-only``),
+    dérivé des en-têtes réellement servis sur ``index.html`` — l'ancien
+    ``"mode": "report-only"`` global, codé en dur, était faux depuis que
+    ``img-src`` bloque."""
     entrees = await asyncio.get_running_loop().run_in_executor(None, _csp.lire)
-    return {"mode": "report-only", "politique": _csp.politique(), "entrées": entrees}
+    return {"directives": _csp.directives_servies(), "entrées": entrees}
 
 
 @app.delete("/instance/csp")

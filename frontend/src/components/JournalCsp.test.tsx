@@ -41,11 +41,38 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear() })
 
 describe('JournalCsp', () => {
   it('affiche les entrées agrégées', async () => {
-    poserFetch({ 'GET /instance/csp': { corps: { mode: 'report-only', entrées: [ENTREE] } } })
+    poserFetch({ 'GET /instance/csp': { corps: { entrées: [ENTREE] } } })
     render(<JournalCsp />)
     expect(await screen.findByText('https://exfil.example')).toBeTruthy()
     expect(screen.getByText('connect-src')).toBeTruthy()
     expect(screen.getByText('3')).toBeTruthy()
+  })
+
+  it('affiche la disposition de chaque entrée', async () => {
+    poserFetch({ 'GET /instance/csp': { corps: { entrées: [
+      { ...ENTREE, directive: 'img-src', bloqué: 'https://img.example', disposition: 'enforce' },
+      { ...ENTREE, disposition: 'report' },
+    ] } } })
+    render(<JournalCsp />)
+    await screen.findByText('https://img.example')
+    const lignes = screen.getAllByRole('row').slice(1).map(l => l.textContent ?? '')
+    expect(lignes[0]).toContain('enforce')
+    expect(lignes[1]).toContain('report')
+    expect(screen.getByRole('columnheader', { name: 'Disposition' })).toBeTruthy()
+  })
+
+  it('affiche le mode de chaque directive tel que le backend le sert', async () => {
+    poserFetch({ 'GET /instance/csp': { corps: { entrées: [], directives: [
+      { directive: 'connect-src', mode: 'report-only', valeur: "'self'" },
+      { directive: 'img-src', mode: 'bloquant', valeur: "'self' data: blob:" },
+    ] } } })
+    render(<JournalCsp />)
+    const modes = await screen.findByLabelText('Mode par directive')
+    expect(modes.textContent).toContain('img-src')
+    expect(modes.textContent).toMatch(/img-src.*bloquant/)
+    expect(modes.textContent).toMatch(/connect-src.*report-only/)
+    // L'ancien texte « rien n'est bloqué » était faux depuis img-src bloquant.
+    expect(screen.queryByText(/rien n'est bloqué/)).toBeNull()
   })
 
   it('journal vide : le dit, sans tableau', async () => {
