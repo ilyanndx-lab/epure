@@ -114,6 +114,21 @@ class CopieViteTest(unittest.TestCase):
         self.assertEqual(rapport, "http://localhost:8000" + csp.CHEMIN_RAPPORT)
         self.assertIn("'Content-Security-Policy-Report-Only': CSP_DEV", src)
 
+    def test_rapport_de_dev_vise_le_backend_en_absolu_sans_proxy(self):
+        """En dev, la page est servie par Vite (:5173) et le point de collecte
+        vit sur le backend (:8000). Vite n'a AUCUN proxy (`server.proxy`
+        absent) : le rapport n'arrive que parce que `report-uri` est ABSOLU
+        vers le backend. Un `report-uri /csp/report` relatif, « harmonisé »
+        avec la version servie par le backend, partirait vers Vite — 404, et
+        journal muet sans erreur visible. Mesuré le 2026-10-18 : 3 rapports
+        envoyés, 3 × 204 dans le journal d'accès du backend."""
+        src = _VITE.read_text(encoding="utf-8")
+        rapport = re.search(r"const CSP_RAPPORT = '([^']+)'", src).group(1)
+        origine, _, chemin = rapport.partition("//")[2].partition("/")
+        self.assertIn(f"http://{origine}", csp.ORIGINES_BACKEND_DEV)
+        self.assertEqual("/" + chemin, csp.CHEMIN_RAPPORT)
+        self.assertNotIn("proxy", src, "un proxy changerait le chemin du rapport : revoir ce test")
+
     def test_vite_img_src_bloquant_identique_au_backend(self):
         src = _VITE.read_text(encoding="utf-8")
         rapport = re.search(r"const CSP_RAPPORT = '([^']+)'", src).group(1)
@@ -149,6 +164,38 @@ class CollecteTest(unittest.TestCase):
         self.assertEqual((e["directive"], e["bloqué"], e["nombre"]),
                          ("connect-src", "https://exfil.example", 3))
         self.assertNotIn("secret", json.dumps(r.json()))
+
+    def test_rapport_reel_du_navigateur_ecrit_dans_le_journal(self):
+        """Corps EXACT capturé le 2026-10-18 depuis Edge 155 (CDP) sur le
+        serveur de dev : image distante bloquée par l'en-tête img-src. Envoyé
+        comme le navigateur l'envoie — `application/csp-report`, sans token,
+        depuis la page de dev (autre origine que :8000) — et vérifié jusqu'au
+        FICHIER journal, pas seulement au statut. C'est la chaîne prouvée de
+        bout en bout ce jour-là ; un 422 sur ce Content-Type, un middleware
+        qui exigerait le token ou un hôte refusé rendraient le journal muet
+        sans qu'aucun autre test ne le voie."""
+        corps = (
+            b'{"csp-report":{"document-uri":"http://127.0.0.1:5173/","referrer":"",'
+            b'"violated-directive":"img-src","effective-directive":"img-src",'
+            b'"original-policy":"img-src \'self\' data: blob:; report-uri http://localhost:8000/csp/report",'
+            b'"disposition":"enforce","blocked-uri":"https://exemple.invalid/sonde-img.png?q=secret",'
+            b'"status-code":200,"script-sample":""}}'
+        )
+        r = self.c.post(csp.CHEMIN_RAPPORT, content=corps, headers={
+            "Content-Type": "application/csp-report",
+            "Origin": "http://127.0.0.1:5173",
+        })
+        self.assertEqual(r.status_code, 204)
+
+        sur_disque = json.loads(csp._journal().read_text(encoding="utf-8"))
+        entrees = list(sur_disque["entrées"].values())
+        self.assertEqual(len(entrees), 1)
+        self.assertEqual(
+            (entrees[0]["directive"], entrees[0]["bloqué"], entrees[0]["document"], entrees[0]["nombre"]),
+            ("img-src", "https://exemple.invalid", "http://127.0.0.1:5173", 1),
+        )
+        # Réduit à l'origine : le paramètre de l'URL bloquée n'est pas conservé.
+        self.assertNotIn("secret", json.dumps(sur_disque))
 
     def test_corps_borne_et_json_invalide(self):
         self.assertEqual(self._poster(b"x" * (csp.TAILLE_MAX + 1)).status_code, 413)
