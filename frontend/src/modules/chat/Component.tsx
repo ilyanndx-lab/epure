@@ -3,6 +3,7 @@ import { usePersistentState } from '../../usePersistentState'
 import { ChevronDown, Brain, Check, X, Circle, Loader2, Sparkles, Send, Play, Square, Globe, Columns3, Settings, SearchCheck } from 'lucide-react'
 import { Button, Card, Textarea, Toggle } from '../../components/ui'
 import RichMessage from '../../components/RichMessage'
+import { ImagesAutoriseesContext } from '../../components/imagesAutorisees'
 import ModuleBar from '../../components/ModuleBar'
 import { EFFORT_LABELS } from '../../effort'
 import { EXTENSIONS_ACCEPTEES } from '../../fileTypes'
@@ -140,6 +141,16 @@ interface Message {
    * message plus ancien que ce champ (cf. CLAUDE.md, convention `sources`).
    */
   traceRecherche?: EtapeTrace[]
+  /**
+   * URLs d'images que la réponse a le droit de CHARGER — l'ensemble de
+   * référence des citations d'un tour qui a lu une URL (trame
+   * `images_autorisees`, persistée par modules/chat/router.py). Toute autre
+   * image est rendue en lien texte (`ImagesAutoriseesContext`).
+   *
+   * Absent : aucune restriction, le cas de tout tour sans lecture d'URL. Une
+   * liste VIDE, elle, restreint tout — ne jamais la confondre avec l'absence.
+   */
+  imagesAutorisees?: string[]
   /**
    * Tokens occupés dans la fenêtre de contexte par CE tour, tel que le
    * fournisseur l'a rapporté (`contexte_tokens` de la sentinelle `__stats__`).
@@ -788,6 +799,14 @@ export default function Chat({
    * assistant (cf. handler `trace_recherche_etape` et `done`).
    */
   const [traceEnCours, setTraceEnCours] = useState<EtapeTrace[]>([])
+  /**
+   * Restriction d'images du tour EN COURS (trame `images_autorisees`, reçue
+   * avant le premier token), ou `null` : aucune. Même durée de vie que
+   * `traceEnCours` — remise à zéro aux mêmes endroits —, fusionnée dans le
+   * message définitif à `done`. Sans elle, l'image piégée serait chargée
+   * pendant le flux, avant même que `done` n'apporte la version persistée.
+   */
+  const [imagesEnCours, setImagesEnCours] = useState<string[] | null>(null)
   const [traceEnCoursOuverte, setTraceEnCoursOuverte] = useState(false)
 
   /**
@@ -1091,6 +1110,11 @@ export default function Chat({
         const modele = texte(m['modèle'])
         const sources = sourcesDe(m['sources'])
         const traceRecherche = etapesDe(m['trace_recherche'])
+        // Liste VIDE conservée telle quelle : elle restreint tout, alors que
+        // l'absence du champ veut dire « aucune restriction ».
+        const imagesAutorisees = Array.isArray(m['images_autorisees'])
+          ? liste<string>(m['images_autorisees']).filter(u => typeof u === 'string')
+          : null
         // Entier STRICTEMENT positif, même règle que côté backend : un
         // `contexte_tokens: 0` persisté décrirait un tour vide, ce qui n'arrive
         // jamais — c'est une absence déguisée. Le test est numérique et non
@@ -1107,6 +1131,7 @@ export default function Chat({
           ...(modele ? { modele } : {}),
           ...(sources.length ? { sources } : {}),
           ...(traceRecherche.length ? { traceRecherche } : {}),
+          ...(imagesAutorisees ? { imagesAutorisees } : {}),
           ...(contexteTokens !== null ? { contexteTokens } : {}),
         }
       }))
@@ -1382,6 +1407,12 @@ export default function Chat({
           // à `done`, comme `sources`.
           setTraceEnCours(prev => [...prev, data.etape as EtapeTrace])
 
+        } else if (data.type === 'images_autorisees') {
+          // Tour qui a lu une URL : l'ensemble de référence arrive AVANT le
+          // premier token (modules/chat/router.py) — la restriction vaut donc
+          // dès le début du flux, pas seulement après `done`.
+          setImagesEnCours(liste<string>(data.urls).filter(u => typeof u === 'string'))
+
         } else if (data.type === 'stats') {
           pendingOllamaStatsRef.current = {
             promptTokens: data.prompt_tokens as number,
@@ -1594,7 +1625,10 @@ export default function Chat({
             // résultat de toute façon remplacé dès que la relecture répond.
             const sourcesRecues = sourcesDe(data.sources)
             const traceRecue = etapesDe(data.trace_recherche)
-            if (data.horodatage || data['modèle'] || sourcesRecues.length || traceRecue.length) {
+            const imagesRecues = Array.isArray(data.images_autorisees)
+              ? liste<string>(data.images_autorisees).filter(u => typeof u === 'string')
+              : null
+            if (data.horodatage || data['modèle'] || sourcesRecues.length || traceRecue.length || imagesRecues) {
               const h = data.horodatage as string | undefined
               const mo = data['modèle'] as string | undefined
               setMessages(prev => {
@@ -1607,6 +1641,7 @@ export default function Chat({
                   ...(mo ? { modele: mo } : {}),
                   ...(sourcesRecues.length ? { sources: sourcesRecues } : {}),
                   ...(traceRecue.length ? { traceRecherche: traceRecue } : {}),
+                  ...(imagesRecues ? { imagesAutorisees: imagesRecues } : {}),
                 }
                 return copie
               })
@@ -1616,6 +1651,7 @@ export default function Chat({
           // pendant la recherche) ; la trace définitive vit désormais sur le
           // message lui-même, fusionnée juste au-dessus.
           setTraceEnCours([])
+          setImagesEnCours(null)
           setTraceEnCoursOuverte(false)
           // `en_cours` disparait avec le curseur de frappe ; un `échec` RESTE
           // affiche — il dit que la reponse qu'on vient de lire a ete
@@ -1675,6 +1711,7 @@ export default function Chat({
           pendingOllamaStatsRef.current = null
           lastAssistantRef.current = ''
           setTraceEnCours([])
+          setImagesEnCours(null)
           setTraceEnCoursOuverte(false)
           setVisionAnalyse(v => (v && v.etat === 'échec' ? v : null))
         }
@@ -1747,6 +1784,7 @@ export default function Chat({
     pipelineUserMsgIdxRef.current = -1
     compareAccumRef.current = {}
     setTraceEnCours([])
+    setImagesEnCours(null)
     setTraceEnCoursOuverte(false)
     setVisionAnalyse(null)
   }, [conversationId, definirConversationAffichee])
@@ -1774,6 +1812,7 @@ export default function Chat({
       pipelineUserMsgIdxRef.current = -1
       compareAccumRef.current = {}
       setTraceEnCours([])
+      setImagesEnCours(null)
       setTraceEnCoursOuverte(false)
       setVisionAnalyse(null)
     } catch { /* le backend répondra au premier message : rien de bloquant */ }
@@ -2386,6 +2425,7 @@ export default function Chat({
     inPipelineRef.current = false
     pipelineUserMsgIdxRef.current = -1
     setTraceEnCours([])
+    setImagesEnCours(null)
     setTraceEnCoursOuverte(false)
     // Un echec d'analyse d'image survit a `done` (il parle de la reponse
     // precedente) ; il ne doit pas survivre a la question SUIVANTE, sinon il
@@ -2470,6 +2510,7 @@ export default function Chat({
           setStreamStats(null)
           inPipelineRef.current = false
           setTraceEnCours([])
+          setImagesEnCours(null)
           setTraceEnCoursOuverte(false)
           wsRef.current?.send(JSON.stringify({
             role: 'user', content: arg, effort: 'direct',
@@ -2580,6 +2621,10 @@ export default function Chat({
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
+
+  // Début du tour en cours, pour borner la restriction d'images reçue en
+  // direct (`imagesEnCours`) aux messages de CE tour.
+  const idxDernierUser = messages.map(m => m.role).lastIndexOf('user')
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -3024,7 +3069,15 @@ export default function Chat({
           </div>
         )}
         {messages.map((msg, i) => (
-          <div key={i} className={`flex group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+          // Un seul Provider couvre les trois rendus du texte du modèle dans
+          // ce message (bulle, étapes du pipeline, colonnes de comparaison).
+          // Tour en cours : la restriction reçue en direct vaut pour tout ce
+          // qui suit le dernier message de l'utilisateur.
+          <ImagesAutoriseesContext.Provider
+            key={i}
+            value={msg.imagesAutorisees ?? (imagesEnCours !== null && i >= idxDernierUser ? imagesEnCours : undefined)}
+          >
+          <div className={`flex group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
               className={`relative max-w-[78%] cursor-pointer ${
                 msg.role === 'user'
@@ -3178,6 +3231,7 @@ export default function Chat({
               )}
             </div>
           </div>
+          </ImagesAutoriseesContext.Provider>
         ))}
         {traceEnCours.length > 0 && (
           // Trace TRANSITOIRE du tour en cours — la recherche @web a lieu

