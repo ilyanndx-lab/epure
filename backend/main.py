@@ -727,9 +727,9 @@ async def module_set_status(module_id: str, req: ModuleStatusRequest):
     return updated
 
 
-# ── CSP en observation (Report-Only) ─────────────────────────────────────────
-# Politique et journal : core/csp.py. Report-Only tant qu'Ilyann n'a pas
-# tranché après une semaine d'usage (2026-09-26) — rien n'est bloqué.
+# ── CSP : observation (Report-Only) + img-src bloquant ──────────────────────
+# Politique et journal : core/csp.py. Politique complète en Report-Only
+# (2026-09-26) ; img-src seul bloquant depuis le 2026-10-18 (PR #66).
 
 @app.post(_csp.CHEMIN_RAPPORT, include_in_schema=False)
 async def csp_rapport(request: Request):

