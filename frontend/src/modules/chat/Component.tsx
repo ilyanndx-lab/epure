@@ -1137,10 +1137,27 @@ export default function Chat({
   }, [definirConversationAffichee])
 
   useEffect(() => {
+    /**
+     * Reconnexion bornée à la vie de CETTE exécution de l'effet (#70).
+     *
+     * Le nettoyage ferme le socket, ce qui déclenche `onclose` : sans ce
+     * drapeau, la reconnexion programmée là rouvrait `/ws/chat` deux secondes
+     * après un démontage — et après chaque nouvelle exécution de l'effet
+     * (`onAssistantDone` change avec la lecture vocale, double montage de
+     * StrictMode en dev), un socket de plus qui remplaçait `wsRef.current` en
+     * laissant l'autre ouvert. Le timer en attente est annulé pour la même raison.
+     */
+    let demonte = false
+    let timerReconnexion: ReturnType<typeof setTimeout> | null = null
     const connect = () => {
+      timerReconnexion = null
       const ws = new WebSocket(wsUrl('/ws/chat'))
       ws.onopen = () => setConnected(true)
-      ws.onclose = () => { setConnected(false); setTimeout(connect, 2000) }
+      ws.onclose = () => {
+        if (demonte) return
+        setConnected(false)
+        timerReconnexion = setTimeout(connect, 2000)
+      }
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
 
@@ -1712,7 +1729,11 @@ export default function Chat({
       wsRef.current = ws
     }
     connect()
-    return () => wsRef.current?.close()
+    return () => {
+      demonte = true
+      if (timerReconnexion !== null) clearTimeout(timerReconnexion)
+      wsRef.current?.close()
+    }
   }, [onAssistantDone])
 
   /**
