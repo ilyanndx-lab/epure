@@ -39,11 +39,18 @@ Avant elle, une URL dans le message n'était jamais lue : le modèle répondait
 « sur la page » de mémoire, sans le dire — ou, si un motif du classifieur
 matchait par accident (une date `/2024/` dans le chemin), le message ENTIER,
 URL comprise, partait vers DuckDuckGo. `lire_urls` va chercher la page
-elle-même, sans moteur tiers, avec les MÊMES budgets que la phase 4 (temps
-par page, temps de l'étape, caractères par page, nombre de pages) — mêmes
-constantes, pas une seconde série à faire diverger.
+elle-même, sans moteur tiers, avec les MÊMES budgets de temps et de nombre
+de pages que la phase 4 — mêmes constantes, pas une seconde série à faire
+diverger.
 
-Deux différences assumées avec `recuperer_contenu` :
+Trois différences assumées avec `recuperer_contenu` :
+
+  - **le budget de caractères suit le contexte CHARGÉ du modèle**
+    (`budget_lecture`), au lieu des 800 caractères fixes de la phase 4. Ces
+    800 caractères sont pensés pour cinq extraits @web à la fois ; pour UNE
+    page donnée explicitement, ils perdaient la réponse dès qu'elle se
+    trouvait au-delà des trois premiers passages retenus (cf.
+    `test_budget_lecture_url.py`) ;
 
   - **un échec est NOMMÉ** (connexion requise, 403, paywall, délai…) au lieu
     de retomber sur un extrait DDG — il n'y a pas d'extrait de repli ici, et
@@ -136,6 +143,45 @@ _MAX_PASSAGES_PAR_PAGE = 3
 #: (le plus petit modèle local courant) une fois le reste du prompt compté
 #: (historique, mémoire, consigne système).
 _BUDGET_CARACTERES_PAR_PAGE = 800
+
+# ── Budget de la lecture DIRECTE d'une URL (`lire_urls`) ───────────────────
+#
+# La phase 4 garde ses 800 caractères par page (ci-dessus). Une URL donnée
+# explicitement est un autre besoin : l'utilisateur pose une question précise
+# sur CETTE page, souvent sur un détail situé loin du début. Le budget suit
+# donc la fenêtre que le modèle a réellement allouée
+# (`core.fenetre_contexte.fenetre_de`, jamais le maximum qu'il saurait tenir),
+# et le reste du prompt (consigne système, mémoire, RAG, historique, réponse
+# et raisonnement) garde les trois quarts.
+
+#: Part du contexte chargé réservée aux pages lues, tous liens confondus.
+_PART_CONTEXTE_LECTURE = 0.25
+#: Conversion tokens → caractères. Une estimation, pas une mesure par
+#: tokeniseur : le français tourne autour de 3 à 4 caractères par token sur
+#: les tokeniseurs courants, 3,5 est le milieu.
+_CARACTERES_PAR_TOKEN = 3.5
+#: Plafond, quel que soit le contexte : au-delà, la lecture d'une page
+#: allonge le délai avant le premier token sans gain mesuré. PROVISOIRE, à
+#: fixer d'après la mini-évaluation (4 000 / 8 000 / 16 000 caractères).
+_BUDGET_LECTURE_MAX = 16000
+#: Plancher quand le contexte chargé est INCONNU (modèle pas encore chargé,
+#: fournisseur qui ne l'expose pas). Cinq fois le budget de la phase 4 : de
+#: quoi tenir une page courte, sans parier sur une fenêtre qu'on ne connaît pas.
+_BUDGET_LECTURE_PLANCHER = 4000
+
+
+def budget_lecture(contexte_charge: Optional[int]) -> int:
+    """Budget TOTAL, en caractères, des pages lues d'un même message.
+
+    25 % du contexte chargé × 3,5 caractères par token, plafonné à
+    `_BUDGET_LECTURE_MAX`. Le plancher ne s'applique qu'à un contexte
+    INCONNU : un contexte connu et petit donne un budget petit, c'est voulu —
+    le dépasser déborderait la fenêtre que le modèle a effectivement.
+    """
+    if not contexte_charge or contexte_charge <= 0:
+        return _BUDGET_LECTURE_PLANCHER
+    return min(_BUDGET_LECTURE_MAX,
+               int(contexte_charge * _PART_CONTEXTE_LECTURE * _CARACTERES_PAR_TOKEN))
 
 
 def _extraire_texte_principal(html: str) -> str:
@@ -250,40 +296,54 @@ def _reclasser_par_similarite(
     appel par chunk paierait le coût fixe de l'inférence ONNX une fois par
     chunk au lieu d'une fois pour tous.
     """
+    scores_par_rang = _scores_similarite(requete, chunks_par_rang)
+    if scores_par_rang is None:
+        return {}, False
+
+    retenus: dict[int, list[str]] = {}
+    for rang, scores in scores_par_rang.items():
+        chunks = chunks_par_rang[rang]
+        meilleurs = sorted(range(len(chunks)), key=lambda i: scores[i],
+                           reverse=True)[:_MAX_PASSAGES_PAR_PAGE]
+        # Ordre D'APPARITION dans la page, pas ordre de score : un passage
+        # retenu doit rester lisible dans son contexte naturel.
+        retenus[rang] = [chunks[i] for i in sorted(meilleurs)]
+    return retenus, True
+
+
+def _scores_similarite(
+    requete: str, chunks_par_cle: dict[int, list[str]],
+) -> Optional[dict[int, list[float]]]:
+    """Similarité de chaque passage avec `requete`, par page. ``None`` si
+    l'embedding manque (journalisé ici ; l'appelant le dit dans la trace).
+
+    Un seul appel d'embedding pour toutes les pages (cf.
+    `_reclasser_par_similarite`), sur le store vectoriel PARTAGÉ — local, la
+    requête ne quitte jamais la machine.
+    """
     tous_les_chunks: list[str] = []
-    bornes: list[tuple[int, int, int]] = []  # (rang, début, fin) dans tous_les_chunks
-    for rang, chunks in chunks_par_rang.items():
+    bornes: list[tuple[int, int, int]] = []  # (clé, début, fin) dans tous_les_chunks
+    for cle, chunks in chunks_par_cle.items():
         debut = len(tous_les_chunks)
         tous_les_chunks.extend(chunks)
-        bornes.append((rang, debut, len(tous_les_chunks)))
+        bornes.append((cle, debut, len(tous_les_chunks)))
 
     if not tous_les_chunks:
-        return {}, True
+        return {}
 
     try:
         vecteurs = _vecteurs_partages().embed_texts([requete] + tous_les_chunks)
     except EmbeddingIndisponible:
         logger.warning(
             "Reclassement des passages web ignoré : modèle d'embedding "
-            "indisponible (pile pas encore téléchargée) — extraits DuckDuckGo "
-            "conservés pour cette étape."
+            "indisponible (pile pas encore téléchargée)."
         )
-        return {}, False
+        return None
 
-    vecteur_requete = vecteurs[0]
-    vecteurs_chunks = vecteurs[1:]
     # Produit scalaire = cosinus : les vecteurs de `encoder` sont déjà
     # normalisés (norme 1), cf. sa docstring dans core/embedding.py.
-    scores = vecteurs_chunks @ vecteur_requete
-
-    retenus: dict[int, list[str]] = {}
-    for rang, debut, fin in bornes:
-        indices = list(range(debut, fin))
-        meilleurs = sorted(indices, key=lambda i: scores[i], reverse=True)[:_MAX_PASSAGES_PAR_PAGE]
-        # Ordre D'APPARITION dans la page, pas ordre de score : un passage
-        # retenu doit rester lisible dans son contexte naturel.
-        retenus[rang] = [tous_les_chunks[i] for i in sorted(meilleurs)]
-    return retenus, True
+    scores = vecteurs[1:] @ vecteurs[0]
+    return {cle: [float(scores[i]) for i in range(debut, fin)] for cle, debut, fin in bornes}
 
 
 def recuperer_contenu(
@@ -646,23 +706,79 @@ class LectureUrl:
     resultat: Optional[ResultatWeb]
 
 
-def _passages_pour_question(
+def _assembler(chunks: list[str], indices: list[int]) -> str:
+    """Les passages retenus dans l'ordre de la page. Deux passages voisins
+    sont recollés tels quels (c'est du texte continu) ; un saut est marqué
+    « […] », comme dans les extraits de la phase 4."""
+    morceaux: list[str] = []
+    precedent = None
+    for i in sorted(indices):
+        if precedent is not None and i == precedent + 1:
+            morceaux[-1] += " " + chunks[i]
+        else:
+            morceaux.append(chunks[i])
+        precedent = i
+    return " […] ".join(morceaux)
+
+
+def _couper_sur_un_mot(texte: str, limite: int) -> str:
+    """`texte` ramené à `limite` caractères, « … » compris, coupé avant un
+    mot plutôt qu'au milieu."""
+    if len(texte) <= limite:
+        return texte
+    coupe = texte[:max(0, limite - 1)]
+    if " " in coupe:
+        coupe = coupe[:coupe.rindex(" ")]
+    return coupe.rstrip() + "…"
+
+
+def _selectionner(chunks: list[str], priorite: list[int], budget: int) -> tuple[str, int]:
+    """Prend les passages par ordre de `priorite` tant qu'ils tiennent dans
+    `budget`, puis les remet dans l'ordre de la page. Rend ``(extrait,
+    nombre de passages)``.
+
+    La coupe tombe sur une FRONTIÈRE de passage : un passage qui ne tient pas
+    entier est sauté (un suivant, plus court, peut encore tenir), jamais
+    tronqué. Exception unique : quand même le premier ne tient pas (contexte
+    minuscule partagé entre plusieurs pages), il est coupé sur un mot —
+    mieux qu'une page déclarée « sans passage exploitable » alors qu'elle a
+    été lue.
+    """
+    retenus: list[int] = []
+    for i in priorite:
+        if len(_assembler(chunks, retenus + [i])) <= budget:
+            retenus.append(i)
+    if retenus:
+        return _assembler(chunks, retenus), len(retenus)
+    if not priorite or budget <= 1:
+        return "", 0
+    return _couper_sur_un_mot(chunks[priorite[0]], budget), 1
+
+
+def _priorites(
     question: str, chunks_par_index: dict[int, list[str]],
     on_etape: Optional[Callable[[dict], None]],
-) -> dict[int, list[str]]:
-    """Passages retenus par page : reclassés par la question comme en phase 4,
-    ou le DÉBUT de la page quand il n'y a rien à quoi comparer (message réduit
-    à l'URL : « lis ça » demande l'essentiel, pas un passage précis) ou que
-    l'embedding manque. À la différence de `recuperer_contenu`, pas de repli
-    « extrait DDG » possible : le début de page est le seul repli honnête."""
-    if not chunks_par_index:
-        return {}
-    if question.strip():
-        retenus, reclassement_effectue = _reclasser_par_similarite(question, chunks_par_index)
-        if reclassement_effectue:
-            return retenus
+) -> tuple[dict[int, list[int]], str]:
+    """Ordre de préférence des passages de chaque page, et le mode de
+    sélection pour la trace : ``"similarite"`` (avec la question, sans ses
+    URLs) ou ``"ordre_page"``.
+
+    L'ordre de la page sert quand il n'y a rien à quoi comparer (message
+    réduit à l'URL : « lis ça » demande l'essentiel, pas un passage précis)
+    ou que l'embedding manque. À la différence de `recuperer_contenu`, pas de
+    repli « extrait DDG » possible : le début de page est le seul repli
+    honnête — et la trace le dit.
+    """
+    ordre_page = {i: list(range(len(chunks))) for i, chunks in chunks_par_index.items()}
+    if not question.strip():
+        return ordre_page, "ordre_page"
+    scores = _scores_similarite(question, chunks_par_index)
+    if scores is None:
         _emettre(on_etape, {"etape": "reclassement_indisponible", "raison": "embedding indisponible"})
-    return {i: chunks[:_MAX_PASSAGES_PAR_PAGE] for i, chunks in chunks_par_index.items()}
+        return ordre_page, "ordre_page"
+    # `sorted` est stable : à score égal, le passage le plus tôt dans la page passe d'abord.
+    return {i: sorted(range(len(sc)), key=lambda k: sc[k], reverse=True)
+            for i, sc in scores.items()}, "similarite"
 
 
 def lire_urls(
@@ -670,6 +786,8 @@ def lire_urls(
     question: str,
     rang_de_depart: int = 0,
     on_etape: Optional[Callable[[dict], None]] = None,
+    contexte_charge: Optional[int] = None,
+    source_contexte: Optional[str] = None,
 ) -> list[LectureUrl]:
     """Lit directement chaque URL fournie par l'utilisateur, SANS moteur de
     recherche. Une `LectureUrl` par URL lue, dans l'ordre de `urls`.
@@ -681,12 +799,20 @@ def lire_urls(
     `passages_retenus`, et `raison` si échec ou refus) : c'est ce qui rend un
     échec visible dans le panneau de trace ET dans l'historique persisté.
 
-    Mêmes bornes que `recuperer_contenu` : au plus `_MAX_PAGES_ENRICHIES`
-    URLs, `_TIMEOUT_PAGE_S` par page, `_TIMEOUT_ETAPE_S` pour l'étape (pages
-    en parallèle, plafonds jamais additionnés), `_BUDGET_CARACTERES_PAR_PAGE`
-    par extrait. Les pages lues reçoivent des rangs contigus à partir de
+    Mêmes bornes de temps et de nombre que `recuperer_contenu` : au plus
+    `_MAX_PAGES_ENRICHIES` URLs, `_TIMEOUT_PAGE_S` par page,
+    `_TIMEOUT_ETAPE_S` pour l'étape (pages en parallèle, plafonds jamais
+    additionnés). Les pages lues reçoivent des rangs contigus à partir de
     `rang_de_depart + 1` — ceux des résultats @web déjà attribués ce tour
     restent intacts. Ne lève jamais.
+
+    Caractères : `budget_lecture(contexte_charge)` au total, partagé
+    également entre les pages LUES — une page en échec n'occupe rien dans le
+    prompt, lui garder sa part la perdrait. `contexte_charge` et
+    `source_contexte` (d'où vient ce chiffre) viennent de
+    `core.fenetre_contexte.fenetre_de` ; ``None`` = inconnu, donc plancher.
+    Chaque étape `lecture_url` les porte, avec le budget de la page, la
+    taille réelle de l'extrait et le mode de `selection`.
     """
     a_lire = list(dict.fromkeys(urls))[:_MAX_PAGES_ENRICHIES]
     if not a_lire:
@@ -709,31 +835,40 @@ def lire_urls(
             issues[i] = ([], "échec", f"délai dépassé (budget de {_TIMEOUT_ETAPE_S:g} s pour l'étape)",
                          round(_TIMEOUT_ETAPE_S * 1000), "")
 
-    chunks_par_index = {i: issue[0] for i, issue in issues.items() if issue[0]}
-    passages_par_index = _passages_pour_question(question, chunks_par_index, on_etape)
+    chunks_par_index = {i: issue[0] for i, issue in issues.items()
+                        if issue[0] and issue[1] == "succès"}
+    budget_total = budget_lecture(contexte_charge)
+    budget_page = budget_total // len(chunks_par_index) if chunks_par_index else 0
+    priorites, selection = (_priorites(question, chunks_par_index, on_etape)
+                            if chunks_par_index else ({}, ""))
 
     lectures: list[LectureUrl] = []
     rang = rang_de_depart
     for i, url in enumerate(a_lire):
-        _chunks, statut, raison, ms, titre = issues[i]
-        passages = passages_par_index.get(i, []) if statut == "succès" else []
+        chunks, statut, raison, ms, titre = issues[i]
+        extrait, nb_passages = "", 0
+        if i in chunks_par_index:
+            extrait, nb_passages = _selectionner(chunks, priorites[i], budget_page)
         resultat = None
-        if passages:
+        if nb_passages:
             rang += 1
             resultat = ResultatWeb(
                 rang=rang, titre=tronquer_champ(titre or _domaine(url)), url=url,
-                extrait=tronquer_champ(" […] ".join(passages), _BUDGET_CARACTERES_PAR_PAGE),
-                moteur="lecture-directe",
+                extrait=extrait, moteur="lecture-directe",
             )
         elif statut == "succès":
             statut, raison = "échec", "aucun passage exploitable dans la page"
         etape = {
             "etape": "lecture_url", "url": tronquer_champ(url), "statut": statut,
-            "ms": ms, "passages_retenus": len(passages),
+            "ms": ms, "passages_retenus": nb_passages,
+            "contexte_charge": contexte_charge, "source_contexte": source_contexte,
+            "budget_caracteres": budget_total,
         }
+        if resultat is not None:
+            etape.update(selection=selection, budget_page=budget_page, caracteres=len(extrait))
         if raison:
             etape["raison"] = tronquer_champ(raison)
         _emettre(on_etape, etape)
         lectures.append(LectureUrl(url=url, statut=statut, raison=raison,
-                                   passages=len(passages), resultat=resultat))
+                                   passages=nb_passages, resultat=resultat))
     return lectures

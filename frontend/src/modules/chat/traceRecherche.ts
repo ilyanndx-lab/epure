@@ -171,6 +171,29 @@ export function libelleBadgeLecture(etapes: EtapeTrace[]): string | null {
 }
 
 /**
+ * Budget d'une page lue directement (`core/webcontent.py::lire_urls`) : la
+ * taille de l'extrait, le budget de la page (et le total s'il est partagé),
+ * le contexte chargé qui l'a fixé et sa source — ou le plancher quand ce
+ * contexte est inconnu — et le repli sur l'ordre de la page. Sans ces
+ * chiffres, « 3 passages retenus » ne dit pas si la réponse a pu tomber sous
+ * la coupe. `null` pour une trace antérieure à ce budget (historique).
+ */
+export function detailBudgetLecture(etape: EtapeTrace): string | null {
+  if (etape.budget_page === undefined || etape.caracteres === undefined) return null
+  const page = Number(etape.budget_page) || 0
+  const total = Number(etape.budget_caracteres) || page
+  const contexte = Number(etape.contexte_charge) || 0
+  const parties = [
+    `${Number(etape.caracteres) || 0} car. sur ${page}${total !== page ? ` (total ${total})` : ''}`,
+    contexte > 0
+      ? `contexte chargé ${contexte} tokens (${texte(etape.source_contexte) || 'source inconnue'})`
+      : 'contexte chargé inconnu, plancher',
+  ]
+  if (texte(etape.selection) === 'ordre_page') parties.push('début de page, sans reclassement')
+  return parties.join(' — ')
+}
+
+/**
  * Le modèle a-t-il tenté un appel de recherche que le serveur a ABANDONNÉ ?
  * (`tool_call_abandonne`, émise par `core/llm.py::_stream_openai` quand les
  * arguments de l'appel sont illisibles ou que le flux s'est coupé en plein
