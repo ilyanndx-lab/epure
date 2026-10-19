@@ -1445,6 +1445,10 @@ async def ws_chat(websocket: WebSocket):
                 frontend pour ce nom d'étape : à vérifier avant de compter sur
                 un affichage visible dans le panneau de trace pour ce skill.
                 """
+                # Chronologie du tour : ms écoulées depuis la réception du
+                # message, sur CHAQUE étape (diagnostic d'un premier tour à
+                # 146 s dont rien ne disait où passait le temps).
+                etape.setdefault("t_ms", round((time.time() - _req_start) * 1000))
                 etapes_recherche.append(etape)
                 try:
                     asyncio.run_coroutine_threadsafe(
@@ -1887,6 +1891,7 @@ async def ws_chat(websocket: WebSocket):
             queue: asyncio.Queue = asyncio.Queue()
 
             def _stream(msgs, q, lp, model):
+                logger.info("Diag tour : génération lancée à %.3fs", time.time() - _req_start)
                 try:
                     for token in llm.stream(
                         msgs, model=model, raisonnement=raisonnement,
