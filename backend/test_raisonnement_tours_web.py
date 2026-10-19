@@ -269,5 +269,51 @@ class RaisonnementMalgreToutTest(_BaseTour):
         self.assertIn("raisonnement", erreurs[0]["content"])
 
 
+class RaisonnementJamaisReinjecteTest(_Base):
+    """Le raisonnement de LM Studio remonte depuis #76 : il ne doit ni être
+    persisté avec la réponse, ni revenir dans le prompt du tour suivant. Sinon
+    le modèle relirait sa réflexion comme s'il l'avait dite à l'utilisateur,
+    et le contexte gonflerait de centaines de tokens par tour.
+
+    Chaîne réelle : le vrai `LLMEngine.stream` et `_stream_openai`, seul le
+    client OpenAI est simulé, avec la forme mesurée du flux LM Studio."""
+
+    MARQUEUR = "PENSEE-SECRETE-7319"
+
+    def setUp(self):
+        super().setUp()
+        del routeur_chat.llm.stream  # retour à la vraie méthode (restaurée au cleanup)
+        chunk_raisonnement = FluxLMStudioReelTest._chunk_raisonnement
+        rounds = []
+        for reponse in ("Première réponse.", "Seconde réponse."):
+            rounds.append([chunk_raisonnement(None, f"Je réfléchis {self.MARQUEUR} ") for _ in range(3)]
+                          + [_chunk(content=reponse), _usage(10, 5)])
+        self.oai = _ClientFactice(rounds)
+        for cible, attribut, valeur in (
+            (routeur_chat.llm, "_openai_client", lambda provider: self.oai),
+            (routeur_chat, "fenetre_de", lambda *a, **k: (None, None)),
+        ):
+            patcher = mock.patch.object(cible, attribut, valeur)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        original = routeur_chat.memory.get_context
+        patcher = mock.patch.object(routeur_chat.memory, "get_context",
+                                    lambda: {**original(), "modèle_actif": "lmstudio:m"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_second_prompt_sans_raisonnement_du_premier(self):
+        trames, conv_id = self._envoyer("Bonjour, une question de cours.")
+        # Le raisonnement est bien parti vers l'interface au premier tour…
+        self.assertIn(self.MARQUEUR, "".join(t.get("content", "") for t in trames if t["type"] == "reasoning"))
+        self._envoyer("Et une seconde ?", conversation_id=conv_id)
+        second_prompt = repr(self.oai.appels[-1]["messages"])
+        self.assertIn("Première réponse.", second_prompt)
+        # … mais ni dans la réponse persistée, ni dans le prompt suivant.
+        self.assertNotIn(self.MARQUEUR, second_prompt)
+        persiste = repr(routeur_chat.history_engine.get_conversation(conv_id))
+        self.assertNotIn(self.MARQUEUR, persiste)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
