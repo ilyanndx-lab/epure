@@ -48,7 +48,7 @@ from core.citations import (
     RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls,
     extraire_urls_ordonnees, valider_citations,
 )
-from core.fenetre_contexte import fenetre_de
+from core import fenetre_contexte
 from core.webcontent import LectureUrl, lire_urls, recuperer_contenu
 from core.websearch import (
     PREFIXE_ERREUR,
@@ -264,7 +264,10 @@ def _lire_urls_pour_prompt(
     urls = extraire_urls_ordonnees(user_text)
     if not urls:
         return "", []
-    contexte_charge, source_contexte = fenetre_de(modele) if modele else (None, None)
+    # En cache pour le modèle actif (`core.fenetre_contexte.contexte_charge`) :
+    # la sonde coûtait un aller-retour vers le serveur à chaque tour d'URL.
+    contexte_charge, source_contexte = (fenetre_contexte.contexte_charge(modele)
+                                        if modele else (None, None))
     lectures = lire_urls(urls, _texte_sans_urls(user_text),
                          rang_de_depart=rang_de_depart, on_etape=on_etape,
                          contexte_charge=contexte_charge, source_contexte=source_contexte)
@@ -1957,6 +1960,10 @@ async def ws_chat(websocket: WebSocket):
                 if item is None:
                     break
                 if isinstance(item, dict) and "error" in item:
+                    # Requête en échec (débordement de contexte, modèle
+                    # rechargé…) : le contexte chargé gardé en cache est relu
+                    # au tour suivant.
+                    fenetre_contexte.oublier_contexte_charge()
                     await websocket.send_text(
                         json.dumps({"type": "error", "content": item["error"], "conversation_id": conv_id})
                     )

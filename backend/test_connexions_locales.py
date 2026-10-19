@@ -144,10 +144,12 @@ class ContexteChargeDansLeChatTest(_Base):
         def stream_en_echec(messages, model=None, raisonnement=True, **kw):
             raise RuntimeError("context length exceeded")
         routeur_chat.llm.stream = stream_en_echec
+        # Le tour en échec lit encore la valeur gardée…
+        self._envoyer(f"Résume {_URL}")
+        self.assertEqual(self.fenetre.call_count, 1)
+        # … et c'est le tour SUIVANT qui la relit.
         self._envoyer(f"Résume {_URL}")
         self.assertEqual(self.fenetre.call_count, 2)
-        self._envoyer(f"Résume {_URL}")
-        self.assertEqual(self.fenetre.call_count, 3)
 
 
 if __name__ == "__main__":

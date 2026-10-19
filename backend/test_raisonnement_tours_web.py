@@ -187,7 +187,7 @@ class _BaseTour(_Base):
             return iter(list(self.flux))
 
         routeur_chat.llm.stream = faux_stream
-        patcher = mock.patch.object(routeur_chat, "fenetre_de", return_value=(None, None))
+        patcher = mock.patch.object(routeur_chat.fenetre_contexte, "fenetre_de", return_value=(None, None))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -294,7 +294,7 @@ class RaisonnementJamaisReinjecteTest(_Base):
         self.oai = _ClientFactice(rounds)
         for cible, attribut, valeur in (
             (routeur_chat.llm, "_openai_client", lambda provider: self.oai),
-            (routeur_chat, "fenetre_de", lambda *a, **k: (None, None)),
+            (routeur_chat.fenetre_contexte, "fenetre_de", lambda *a, **k: (None, None)),
         ):
             patcher = mock.patch.object(cible, attribut, valeur)
             patcher.start()

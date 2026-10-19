@@ -101,6 +101,10 @@ class _Base(unittest.TestCase):
         cls.token = get_api_token()
 
     def setUp(self):
+        # Contexte chargé gardé en cache par le chat (`core.fenetre_contexte`) :
+        # vidé avant ET après, sinon la valeur d'un test fuirait dans le suivant.
+        routeur_chat.fenetre_contexte.oublier_contexte_charge()
+        self.addCleanup(routeur_chat.fenetre_contexte.oublier_contexte_charge)
         self.prompts: list[list[dict]] = []
         stream_original = routeur_chat.llm.stream
         self.addCleanup(setattr, routeur_chat.llm, "stream", stream_original)
@@ -475,7 +479,7 @@ class BudgetSelonLeContexteChargeTest(_Base):
     lequel et d'où il vient."""
 
     def test_contexte_du_modele_du_tour_dans_la_trace(self):
-        with mock.patch.object(routeur_chat, "fenetre_de",
+        with mock.patch.object(routeur_chat.fenetre_contexte, "fenetre_de",
                                return_value=(8192, "lmstudio /api/v1/models")) as fenetre:
             _trames, conv_id = self._envoyer(f"Que dit cette page sur la dérivée ? {_URL}")
         fenetre.assert_called_once()
@@ -486,7 +490,7 @@ class BudgetSelonLeContexteChargeTest(_Base):
         self.assertEqual(lecture["source_contexte"], "lmstudio /api/v1/models")
 
     def test_contexte_inconnu_plancher(self):
-        with mock.patch.object(routeur_chat, "fenetre_de", return_value=(None, None)):
+        with mock.patch.object(routeur_chat.fenetre_contexte, "fenetre_de", return_value=(None, None)):
             _trames, conv_id = self._envoyer(f"Résume {_URL}")
         lecture = next(e for e in self._trace(conv_id) if e["etape"] == "lecture_url")
         self.assertIsNone(lecture["contexte_charge"])

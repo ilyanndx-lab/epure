@@ -293,3 +293,38 @@ def fenetre_de(modele_id: str, provider: Optional[str] = None) -> tuple[Optional
         _MEMO[cle] = valeur
         return valeur, libelle
     return None, None
+
+
+# ── Contexte chargé gardé en cache pour le budget de lecture d'URL ──────────
+#
+# `fenetre_de` resonde à chaque appel, et c'est voulu pour l'indicateur de
+# contexte (il décrit un ÉTAT). Le budget de lecture d'URL (`core.webcontent.
+# budget_lecture`) la lisait pourtant à CHAQUE tour d'URL, au prix d'un
+# aller-retour vers LM Studio — ~2 s mesurées par `localhost` (#80). Ici, la
+# valeur est gardée pour le modèle actif et relue seulement :
+#   * quand le modèle actif change (autre clé) ;
+#   * après une requête de génération en échec (`oublier_contexte_charge`,
+#     appelé par le chat) — un débordement de contexte en est le cas typique ;
+#   * tant qu'elle est inconnue : un modèle pas encore chargé rend `None`, et
+#     le garder figerait le plancher alors qu'il sera chargé au tour suivant.
+# Limite assumée : recharger le MÊME modèle avec un autre contexte sans erreur
+# entre-temps garde l'ancienne valeur jusqu'au changement de modèle.
+
+_CONTEXTE_CHARGE: dict[str, tuple[int, str]] = {}
+
+
+def contexte_charge(modele_id: str) -> tuple[Optional[int], Optional[str]]:
+    """``(contexte, source)`` du modèle actif, depuis le cache si possible."""
+    if modele_id in _CONTEXTE_CHARGE:
+        return _CONTEXTE_CHARGE[modele_id]
+    valeur, source = fenetre_de(modele_id)
+    if valeur:
+        # Une seule entrée : un autre modèle actif invalide la précédente.
+        _CONTEXTE_CHARGE.clear()
+        _CONTEXTE_CHARGE[modele_id] = (valeur, source)
+    return valeur, source
+
+
+def oublier_contexte_charge() -> None:
+    """Force la relecture au prochain appel (requête en échec, tests)."""
+    _CONTEXTE_CHARGE.clear()
