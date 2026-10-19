@@ -1,0 +1,399 @@
+{
+ "budgets": [
+  4000,
+  8000,
+  16000
+ ],
+ "lignes": [
+  {
+   "page": "photosynthese",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "100 térawatts": true,
+    "10 fois plus élevé": true
+   },
+   "caracteres": 3714,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "photosynthese",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "100 térawatts": true,
+    "10 fois plus élevé": true
+   },
+   "caracteres": 7987,
+   "passages": 7,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "photosynthese",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "100 térawatts": true,
+    "10 fois plus élevé": true
+   },
+   "caracteres": 15955,
+   "passages": 14,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "relativite_restreinte",
+   "budget": 4000,
+   "present": false,
+   "fragments": {
+    "référentiel de Lorentz": false,
+    "référentiel inertiel": true
+   },
+   "caracteres": 3848,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "relativite_restreinte",
+   "budget": 8000,
+   "present": false,
+   "fragments": {
+    "référentiel de Lorentz": false,
+    "référentiel inertiel": true
+   },
+   "caracteres": 7239,
+   "passages": 6,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "relativite_restreinte",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "référentiel de Lorentz": true,
+    "référentiel inertiel": true
+   },
+   "caracteres": 15454,
+   "passages": 13,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "fourier",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "convergence dominée de Lebesgue": true,
+    "les deux définitions coïncident": true
+   },
+   "caracteres": 3810,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "fourier",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "convergence dominée de Lebesgue": true,
+    "les deux définitions coïncident": true
+   },
+   "caracteres": 7365,
+   "passages": 6,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "fourier",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "convergence dominée de Lebesgue": true,
+    "les deux définitions coïncident": true
+   },
+   "caracteres": 15629,
+   "passages": 13,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "turing",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "Marc Raynaud": true,
+    "fréquence de 1 Hertz": true
+   },
+   "caracteres": 3432,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "turing",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "Marc Raynaud": true,
+    "fréquence de 1 Hertz": true
+   },
+   "caracteres": 7869,
+   "passages": 7,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "turing",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "Marc Raynaud": true,
+    "fréquence de 1 Hertz": true
+   },
+   "caracteres": 15611,
+   "passages": 14,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "mitochondrie",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "29,85 ATP/glucose": true,
+    "36 ou 38 molécules": true
+   },
+   "caracteres": 3677,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "mitochondrie",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "29,85 ATP/glucose": true,
+    "36 ou 38 molécules": true
+   },
+   "caracteres": 7469,
+   "passages": 6,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "mitochondrie",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "29,85 ATP/glucose": true,
+    "36 ou 38 molécules": true
+   },
+   "caracteres": 15998,
+   "passages": 13,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 4000,
+   "present": false,
+   "fragments": {
+    "numéro atomique Z": false,
+    "varie de 4 à 5": false
+   },
+   "caracteres": 3354,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 8000,
+   "present": false,
+   "fragments": {
+    "numéro atomique Z": false,
+    "varie de 4 à 5": false
+   },
+   "caracteres": 7185,
+   "passages": 6,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "numéro atomique Z": true,
+    "varie de 4 à 5": true
+   },
+   "caracteres": 14984,
+   "passages": 13,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "nombre_premier",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "La Vallée Poussin démontre": true,
+    "indicatrice d'Euler": true
+   },
+   "caracteres": 3642,
+   "passages": 4,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "nombre_premier",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "La Vallée Poussin démontre": true,
+    "indicatrice d'Euler": true
+   },
+   "caracteres": 7995,
+   "passages": 7,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "nombre_premier",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "La Vallée Poussin démontre": true,
+    "indicatrice d'Euler": true
+   },
+   "caracteres": 15488,
+   "passages": 14,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "entropie",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "inaccessibles par voie adiabatique dans le voisinage": true,
+    "facteur intégrant 1/T": true
+   },
+   "caracteres": 3648,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "entropie",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "inaccessibles par voie adiabatique dans le voisinage": true,
+    "facteur intégrant 1/T": true
+   },
+   "caracteres": 7979,
+   "passages": 7,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "entropie",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "inaccessibles par voie adiabatique dans le voisinage": true,
+    "facteur intégrant 1/T": true
+   },
+   "caracteres": 15850,
+   "passages": 13,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "revolution_industrielle",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "Mitsui, Mitsubishi et Sumitomo": true,
+    "Banque centrale du Japon (1882)": true
+   },
+   "caracteres": 3718,
+   "passages": 3,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "revolution_industrielle",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "Mitsui, Mitsubishi et Sumitomo": true,
+    "Banque centrale du Japon (1882)": true
+   },
+   "caracteres": 7361,
+   "passages": 6,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "revolution_industrielle",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "Mitsui, Mitsubishi et Sumitomo": true,
+    "Banque centrale du Japon (1882)": true
+   },
+   "caracteres": 15908,
+   "passages": 13,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "trou_noir",
+   "budget": 4000,
+   "present": true,
+   "fragments": {
+    "21 juillet 2004": true,
+    "entièrement thermique": true
+   },
+   "caracteres": 3952,
+   "passages": 4,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "trou_noir",
+   "budget": 8000,
+   "present": true,
+   "fragments": {
+    "21 juillet 2004": true,
+    "entièrement thermique": true
+   },
+   "caracteres": 7616,
+   "passages": 7,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  },
+  {
+   "page": "trou_noir",
+   "budget": 16000,
+   "present": true,
+   "fragments": {
+    "21 juillet 2004": true,
+    "entièrement thermique": true
+   },
+   "caracteres": 15837,
+   "passages": 14,
+   "selection": "similarite",
+   "embedding_indisponible": false
+  }
+ ]
+}
