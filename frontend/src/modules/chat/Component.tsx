@@ -7,7 +7,7 @@ import { ImagesAutoriseesContext } from '../../components/imagesAutorisees'
 import ModuleBar from '../../components/ModuleBar'
 import { EFFORT_LABELS } from '../../effort'
 import { EXTENSIONS_ACCEPTEES } from '../../fileTypes'
-import { capacitesRaisonnement } from '../../raisonnement'
+import { capacitesRaisonnement, normaliserModeRaisonnement, type ModeRaisonnement } from '../../raisonnement'
 import type { EffortLevel, StepConfig } from '../../App'
 import { API, apiFetch, wsUrl } from '../../api'
 import { AT_COMMANDS, allSlashCommands, moduleCommands } from './commands'
@@ -922,7 +922,7 @@ export default function Chat({
   const [strictMode, setStrictMode] = useState(false)
   // Défaut `true` = comportement historique : si `/context` ne répond pas, on
   // n'éteint pas une capacité qu'on n'a pas pu lire.
-  const [raisonnement, setRaisonnement] = useState(true)
+  const [modeRaisonnement, setModeRaisonnement] = useState<ModeRaisonnement>('auto')
   const [sessionInstruction, setSessionInstruction] = useState('')
   const [instructionDraft, setInstructionDraft] = useState('')
   /**
@@ -1975,7 +1975,7 @@ export default function Chat({
         // `?? true` et non `?? false` : la clé est absente des
         // `context_session.json` écrits avant ce réglage, et son absence doit
         // valoir « activé », pas « désactivé ».
-        setRaisonnement((d['raisonnement'] as boolean) ?? true)
+        setModeRaisonnement(normaliserModeRaisonnement(d['raisonnement']))
         const instr = (d['instruction_générale'] as string) ?? ''
         setSessionInstruction(instr)
         setInstructionDraft(instr)
@@ -2050,11 +2050,10 @@ export default function Chat({
     pushContextSettings({ strict_mode: next })
   }, [strictMode, pushContextSettings])
 
-  const handleRaisonnementToggle = useCallback(() => {
-    const next = !raisonnement
-    setRaisonnement(next)
-    pushContextSettings({ raisonnement: next })
-  }, [raisonnement, pushContextSettings])
+  const choisirModeRaisonnement = useCallback((mode: ModeRaisonnement) => {
+    setModeRaisonnement(mode)
+    pushContextSettings({ raisonnement: mode })
+  }, [pushContextSettings])
 
   const handleInstructionSave = useCallback(() => {
     setSessionInstruction(instructionDraft)
@@ -2977,28 +2976,46 @@ export default function Chat({
                     </p>
                   ) : (
                     <>
-                      <div className="flex items-center gap-2">
-                        <Toggle checked={raisonnement} onChange={handleRaisonnementToggle}
-                                label={raisonnementBudgetSeul ? 'Budget de réflexion (tokens)' : 'Réflexion du modèle'} />
-                        <span className="text-xs text-secondary">
+                      {/* Trois états (#76) plutôt qu'un interrupteur : « activé »
+                          doit pouvoir primer sur la coupure par défaut des tours
+                          web, ce qu'un booléen ne sait pas dire. */}
+                      <div role="radiogroup"
+                           aria-label={raisonnementBudgetSeul ? 'Budget de réflexion (tokens)' : 'Réflexion du modèle'}
+                           className="flex items-center gap-1">
+                        {([['auto', 'Auto'], ['active', 'Activée'], ['desactive', 'Désactivée']] as const).map(([mode, libelle]) => (
+                          <button key={mode} type="button" role="radio" aria-checked={modeRaisonnement === mode}
+                                  onClick={() => choisirModeRaisonnement(mode)}
+                                  className={`px-2 py-0.5 rounded text-xs border transition-colors ${
+                                    modeRaisonnement === mode
+                                      ? 'border-accent2 text-primary bg-accent2/15'
+                                      : 'border-line text-secondary hover:text-primary'}`}>
+                            {libelle}
+                          </button>
+                        ))}
+                        <span className="text-xs text-secondary ml-1">
                           {raisonnementBudgetSeul ? 'budget de réflexion (tokens)' : 'réflexion du modèle'}
                         </span>
                       </div>
                       <p className="text-xs text-muted leading-relaxed">
                         {raisonnementBudgetSeul
-                          ? (raisonnement
-                              ? "Ce fournisseur n'affiche pas sa réflexion : ce réglage relève "
+                          ? (modeRaisonnement === 'desactive'
+                              ? 'Plafond de tokens standard. Aucun fournisseur cloud ne montre '
+                                + 'sa réflexion ici de toute façon.'
+                              : "Ce fournisseur n'affiche pas sa réflexion : ce réglage relève "
                                 + 'seulement le plafond de tokens de la réponse, au cas où le '
-                                + 'modèle réfléchit en interne sans le montrer.'
-                              : 'Plafond de tokens standard. Aucun fournisseur cloud (hors NPU '
-                                + 'local) ne montre sa réflexion ici de toute façon.')
-                          : (raisonnement
-                              ? 'Le modèle réfléchit avant de répondre : les réponses sont plus '
-                                + 'sûres sur les questions difficiles, mais arrivent beaucoup plus '
-                                + "tard. Sa réflexion s'affiche pendant l'attente."
+                                + 'modèle réfléchit en interne sans le montrer.')
+                          : modeRaisonnement === 'auto'
+                            ? 'Le modèle réfléchit avant de répondre, sauf quand il tourne sur '
+                              + 'cette machine : la réflexion est alors coupée sur les tours qui '
+                              + 'lisent une page ou cherchent sur le web, où elle vidait le budget '
+                              + 'de la réponse.'
+                            : modeRaisonnement === 'active'
+                              ? 'Le modèle réfléchit avant chaque réponse, même en lisant une page : '
+                                + 'plus sûr sur les questions difficiles, mais beaucoup plus lent. '
+                                + "Sa réflexion s'affiche pendant l'attente."
                               : 'Le modèle répond directement, sans réfléchir à voix haute : '
                                 + 'beaucoup plus rapide, mais moins fiable sur un calcul ou un '
-                                + 'raisonnement en plusieurs étapes.')}
+                                + 'raisonnement en plusieurs étapes.'}
                       </p>
                     </>
                   )}

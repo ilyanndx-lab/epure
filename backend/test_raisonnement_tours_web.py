@@ -383,6 +383,20 @@ class ModeRaisonnementTourTest(_BaseTour):
         self.assertFalse(self.appels_stream[-1]["raisonnement"])
         self.assertEqual(self._etapes(conv_id, "raisonnement_coupe"), [])
 
+    def test_desactive_raisonnement_recu_quand_meme_signale(self):
+        """La détection vaut pour toute coupure demandée, pas seulement celle
+        du défaut des tours web."""
+        self._modele(self.LMSTUDIO, "desactive")
+        self.flux = _raisonnement(4) + ["réponse"]
+        _trames, conv_id = self._envoyer("explique-moi le théorème de Rolle")
+        self.assertEqual(len(self._etapes(conv_id, "raisonnement_non_coupe")), 1)
+
+    def test_active_raisonnement_attendu_rien_a_signaler(self):
+        self._modele(self.LMSTUDIO, "active")
+        self.flux = _raisonnement(4) + ["réponse"]
+        _trames, conv_id = self._envoyer(f"Que dit cette page ? {_URL}")
+        self.assertEqual(self._etapes(conv_id, "raisonnement_non_coupe"), [])
+
     def test_auto_tour_ordinaire_raisonne(self):
         self._modele(self.LMSTUDIO, "auto")
         self._envoyer("explique-moi le théorème de Rolle")

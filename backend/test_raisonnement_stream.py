@@ -657,11 +657,11 @@ class ReglageDeSessionTest(unittest.TestCase):
         position d'avant au rechargement suivant.
         """
         r = self.client.patch("/context/settings", headers=self.entetes,
-                              json={"raisonnement": False})
+                              json={"raisonnement": "desactive"})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertIs(routeur_chat.memory.get_context()["raisonnement"], False)
-        self.assertIs(self.client.get("/context", headers=self.entetes)
-                      .json()["raisonnement"], False)
+        self.assertEqual(routeur_chat.memory.get_context()["raisonnement"], "desactive")
+        self.assertEqual(self.client.get("/context", headers=self.entetes)
+                         .json()["raisonnement"], "desactive")
 
     def test_une_cle_inconnue_reste_refusee(self):
         """La liste blanche s'est élargie d'une entrée, pas ouverte."""
@@ -689,10 +689,13 @@ class ReglageDeSessionTest(unittest.TestCase):
         `llm.stream`. Sans ce test, le toggle pourrait être purement décoratif —
         il écrirait un JSON que personne ne lit.
         """
-        routeur_chat.memory.update_context(raisonnement=False)
-        self.assertIs(self._envoyer_et_lire_le_flag(), False)
-        routeur_chat.memory.update_context(raisonnement=True)
-        self.assertIs(self._envoyer_et_lire_le_flag(), True)
+        # Trois états depuis #76 ; l'ancien booléen vaut `auto` (migration),
+        # qui raisonne sur un tour sans page lue ni recherche web.
+        for valeur, attendu in (("desactive", False), ("active", True), ("auto", True),
+                                (False, True), (True, True)):
+            with self.subTest(valeur=valeur):
+                routeur_chat.memory.update_context(raisonnement=valeur)
+                self.assertIs(self._envoyer_et_lire_le_flag(), attendu)
 
     def test_une_cle_absente_vaut_active(self):
         """Un `context_session.json` écrit avant ce réglage n'a pas la clé.

@@ -139,16 +139,16 @@ async function ouvrirParametres(table: Record<string, { status?: number; corps: 
   return rendu
 }
 
-describe('Chat — toggle de réflexion, honnête selon le provider (popover Paramètres)', () => {
-  it("masque le toggle et remplace par un texte explicite quand gemini est actif — aucun effet à annoncer", async () => {
+describe('Chat — réglage de réflexion à trois états, honnête selon le provider (popover Paramètres)', () => {
+  it("masque le réglage et remplace par un texte explicite quand gemini est actif — aucun effet à annoncer", async () => {
     await ouvrirParametres(tableSaine({
       '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'gemini:gemini-2.5-flash' } },
       '/models': { corps: MODELES_GEMINI },
     }))
     await waitFor(() => expect(screen.getByText(/non disponible sur Gemini/)).toBeTruthy())
     // Aucun contrôle qui accepterait une valeur sans effet, sous aucun libellé.
-    expect(screen.queryByRole('switch', { name: 'Réflexion du modèle' })).toBeNull()
-    expect(screen.queryByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Réflexion du modèle' })).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Budget de réflexion (tokens)' })).toBeNull()
   })
 
   it("relabellise en « budget de réflexion » sur un fournisseur cloud qui ne montre jamais sa pensée (groq)", async () => {
@@ -156,25 +156,47 @@ describe('Chat — toggle de réflexion, honnête selon le provider (popover Par
       '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'groq:openai/gpt-oss-20b' } },
       '/models': { corps: MODELES_GROQ },
     }))
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
     expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
-    expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
   })
 
-  it('garde le libellé et le texte actuels sur ollama — non-régression', async () => {
+  it('ollama : « Réflexion du modèle », trois choix, auto par défaut', async () => {
     await ouvrirParametres(tableSaine())
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Réflexion du modèle' })).toBeTruthy())
-    expect(screen.getByText(/Sa réflexion s'affiche pendant l'attente/)).toBeTruthy()
+    const groupe = await waitFor(() => screen.getByRole('radiogroup', { name: 'Réflexion du modèle' }))
+    expect(groupe).toBeTruthy()
+    expect(screen.getByRole('radio', { name: 'Auto' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('radio', { name: 'Activée' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('radio', { name: 'Désactivée' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByText(/coupée sur les tours qui lisent une page ou cherchent sur le web/)).toBeTruthy()
   })
 
-  it("relabellise en « budget de réflexion » sur LM Studio — aucun paramètre stable côté serveur", async () => {
+  it("LM Studio montre et coupe sa réflexion depuis #76 : plus de « budget de réflexion »", async () => {
     await ouvrirParametres(tableSaine({
       '/context': { corps: { ...CONTEXTE_OK, 'modèle_actif': 'lmstudio:llama-3.1-8b-instruct' } },
       '/models': { corps: MODELES_LMSTUDIO },
     }))
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Budget de réflexion (tokens)' })).toBeTruthy())
-    expect(screen.getByText(/relève seulement le plafond de tokens/)).toBeTruthy()
-    expect(screen.queryByText(/Sa réflexion s'affiche pendant l'attente/)).toBeNull()
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Réflexion du modèle' })).toBeTruthy())
+    expect(screen.queryByText(/relève seulement le plafond de tokens/)).toBeNull()
+  })
+
+  it('un ancien booléen lu dans le contexte vaut auto (migration)', async () => {
+    await ouvrirParametres(tableSaine({
+      '/context': { corps: { ...CONTEXTE_OK, raisonnement: false } },
+    }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Auto' }).getAttribute('aria-checked')).toBe('true'))
+  })
+
+  it("choisir « Désactivée » envoie l'état, pas un booléen", async () => {
+    const fetchMock = poserFetch(tableSaine())
+    await rendreEtConnecter()
+    await ouvrir('Paramètres de la conversation')
+    await act(async () => { fireEvent.click(await waitFor(() => screen.getByRole('radio', { name: 'Désactivée' }))) })
+    const appelPatch = fetchMock.mock.calls.find(([input, init]) => {
+      const url = typeof input === 'string' ? input : String(input)
+      return url.includes('/context/settings') && (init as RequestInit | undefined)?.method === 'PATCH'
+    })
+    expect(JSON.parse((appelPatch![1] as RequestInit).body as string).raisonnement).toBe('desactive')
+    expect(screen.getByRole('radio', { name: 'Désactivée' }).getAttribute('aria-checked')).toBe('true')
   })
 })
 
@@ -182,7 +204,7 @@ describe('Chat — popover Paramètres fusionné, aucun doublon avec ModuleBar',
   it('un seul popover réunit les 3 toggles, préfixes/commandes et les 2 consignes (effort a déménagé dans le composer, itération 3)', async () => {
     await ouvrirParametres(tableSaine())
     expect(screen.getByRole('switch', { name: 'Mode strict' })).toBeTruthy()
-    expect(screen.getByRole('switch', { name: 'Réflexion du modèle' })).toBeTruthy()
+    expect(screen.getByRole('radiogroup', { name: 'Réflexion du modèle' })).toBeTruthy()
     expect(screen.getByText('Préfixes @')).toBeTruthy()
     expect(screen.getByText('Commandes /')).toBeTruthy()
     expect(screen.getByText('Consigne générale')).toBeTruthy()

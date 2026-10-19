@@ -36,6 +36,7 @@ from core.runtime import (
     memory,
     models_registry,
     normaliser_prefixes,
+    normaliser_raisonnement,
     normaliser_tool_calling,
     orchestrator,
     provider_of as _provider_of,
@@ -1197,10 +1198,12 @@ async def ws_chat(websocket: WebSocket):
             # Réglage de session, comme `strict_mode` : lu ici plutôt que reçu
             # dans le message. Le client n'a donc rien à envoyer, et le réglage
             # vaut pour tous les chemins de ce tour (direct ET pipeline).
-            # `.get(..., True)` : un `context_session.json` déjà sur le disque
-            # n'a pas la clé, et son absence doit valoir « activé » — le
-            # comportement d'avant ce réglage.
-            raisonnement = bool(ctx.get("raisonnement", True))
+            # Trois états (#76) : `auto` (défaut), `active`, `desactive`.
+            # `normaliser_raisonnement` migre l'ancien booléen et une clé
+            # absente vers `auto`. Seul `desactive` coupe d'emblée ; `auto` ne
+            # coupe que les tours web d'un modèle local, plus bas.
+            mode_raisonnement = normaliser_raisonnement(ctx.get("raisonnement"))
+            raisonnement = mode_raisonnement != "desactive"
             # Réglage PERSISTANT (Réglages › Préfixes) : triggers des 5
             # commandes intégrées (renommables/désactivables, comportement
             # réel inchangé) + skills personnalisés — lu ici comme
@@ -1541,13 +1544,13 @@ async def ws_chat(websocket: WebSocket):
             # n'est pas garantie (réglage ignoré sur un appareil LM Link, #77) :
             # `reserve_reponse` garde au moins 512 tokens pour la réponse, et un
             # raisonnement reçu malgré tout est signalé plus bas.
-            _raisonnement_force_coupe = False
             _reserve_reponse = 0
             if raison_retrait is not None and not est_modele_cloud(model_override or llm._model or ""):
                 _reserve_reponse = _RESERVE_REPONSE_TOURS_WEB
-                if raisonnement:
+                # `active` prime sur ce défaut ; `desactive` a déjà coupé, et ce
+                # n'est pas la page lue qui l'a fait — pas d'étape à son nom.
+                if mode_raisonnement == "auto":
                     raisonnement = False
-                    _raisonnement_force_coupe = True
                     _on_etape_recherche({"etape": "raisonnement_coupe", "raison": raison_retrait})
 
             # Les fichiers viennent de LA CONVERSATION, plus d'un `fichiers_actifs`
@@ -1993,8 +1996,9 @@ async def ws_chat(websocket: WebSocket):
                     })
                     continue
                 if isinstance(item, dict) and item.get("__reasoning__"):
-                    if _raisonnement_force_coupe and not _raisonnement_signale:
-                        # Coupure demandée, raisonnement reçu quand même : le
+                    if not raisonnement and not _raisonnement_signale:
+                        # Coupure demandée (défaut des tours web ou réglage
+                        # `desactive`), raisonnement reçu quand même : le
                         # réglage a été ignoré par le serveur (vu sur un
                         # appareil LM Link distant, #77). Une fois par tour.
                         _raisonnement_signale = True

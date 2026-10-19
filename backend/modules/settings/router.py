@@ -43,6 +43,7 @@ from core.runtime import (
     memory,
     models_registry,
     normaliser_prefixes,
+    normaliser_raisonnement,
     normaliser_tool_calling,
     orchestrator,
     piper,
@@ -334,6 +335,9 @@ async def context_settings(request: Request):
         # même par-dessus le défaut, donc un corps partiel ou mal formé ne
         # casse pas l'écriture — il retombe sur le défaut clé par clé.
         filtered["tool_calling"] = normaliser_tool_calling(filtered["tool_calling"])
+    if "raisonnement" in filtered:
+        # Trois états ; l'ancien booléen (et toute valeur inconnue) → "auto".
+        filtered["raisonnement"] = normaliser_raisonnement(filtered["raisonnement"])
     if "prefixes" in filtered:
         # Même garantie, même raison — cf. `core.memory.normaliser_prefixes`.
         filtered["prefixes"] = normaliser_prefixes(filtered["prefixes"])
