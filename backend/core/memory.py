@@ -48,12 +48,15 @@ _CONTEXT_DEFAULT = {
     # la consigne de la conversation — de deux consignes qui se contredisent, la
     # plus spécifique doit être lue en dernier.
     "instruction_générale": "",
-    # Raisonnement du modele affiche/produit. `True` = comportement historique :
-    # les modeles qui pensent pensent. Toujours lu par `.get("raisonnement", True)`
-    # et jamais par indexation directe — un `context_session.json` deja sur le
-    # disque n'a pas cette cle, et `get_context` rend le fichier tel quel sans
-    # fusionner ce defaut.
-    "raisonnement": True,
+    # Raisonnement du modèle : TROIS états (#76), toujours lus à travers
+    # `normaliser_raisonnement` — jamais par indexation directe, un
+    # `context_session.json` déjà sur le disque peut porter l'ancien booléen.
+    #   "auto"      — le modèle raisonne, SAUF sur un tour de lecture d'URL ou
+    #                 de recherche web avec un modèle local, où la réflexion a
+    #                 vidé le plafond de sortie (mesuré, #75) ;
+    #   "active"    — raisonne partout, ce défaut compris ;
+    #   "desactive" — ne raisonne nulle part.
+    "raisonnement": "auto",
     # Pilotage du tool-calling natif (registre `core.llm._SKILLS`). PERSISTE
     # au redémarrage (cf. `_CLES_PERSISTANTES` juste en dessous) — à la
     # différence de `raisonnement`/`strict_mode`/`modèle_actif` ci-dessus, qui
@@ -159,6 +162,24 @@ _CLES_PERSISTANTES = ("instruction_générale", "tool_calling", "prefixes")
 #: QUE côté persistance, `core.llm.construire_skills_personnalises` reçoit
 #: toujours un budget déjà résolu.
 _BUDGET_SKILL_PERSONNALISE_DEFAUT = 4
+
+
+#: États du réglage `raisonnement` (cf. `_CONTEXT_DEFAULT`).
+MODES_RAISONNEMENT = ("auto", "active", "desactive")
+
+
+def normaliser_raisonnement(valeur) -> str:
+    """Un des trois états, ou ``"auto"``.
+
+    C'est aussi la MIGRATION de l'ancien booléen : ``True`` comme ``False``
+    deviennent ``"auto"`` (décision d'Ilyann, 2026-10-19). Un ``False``
+    choisi avant ce changement retrouve donc le raisonnement hors des tours
+    web ; le réglage étant de SÉANCE (réinitialisé à chaque démarrage), seule
+    une séance en cours au moment de la mise à jour est concernée. Toute autre
+    valeur inattendue retombe sur le défaut plutôt que de lever : c'est lu à
+    chaque message.
+    """
+    return valeur if isinstance(valeur, str) and valeur in MODES_RAISONNEMENT else "auto"
 
 
 def normaliser_tool_calling(valeur) -> dict:

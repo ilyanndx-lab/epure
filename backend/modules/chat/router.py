@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from core.auth import ws_require_token
 from core.embedding_install import EmbeddingIndisponible
-from core.instance import modele_local_defaut
+from core.instance import est_modele_cloud, modele_local_defaut
 from core.models import ids_disponibles, modele_vision_pour
 from core.paths import PathOutsideDataError, cle_chemin, resolve_user_path
 from core.rag import RAGEngine
@@ -36,6 +36,7 @@ from core.runtime import (
     memory,
     models_registry,
     normaliser_prefixes,
+    normaliser_raisonnement,
     normaliser_tool_calling,
     orchestrator,
     provider_of as _provider_of,
@@ -178,6 +179,15 @@ def _construire_web_ctx(web_results: str) -> str:
 # contenant `http`, et retombe alors sur le texte brut). Désormais l'URL est
 # lue directement (`core.webcontent.lire_urls`), et ce qui part vers DDG — par
 # le classifieur ou par `@web` — est le message SANS ses URLs.
+
+
+#: Tokens de sortie garantis à la réponse sur un tour de lecture d'URL ou de
+#: recherche web avec un modèle local (#76) : au-delà de `plafond − réserve`,
+#: le raisonnement est interrompu et la réponse relancée sans lui
+#: (`LLMEngine.stream`, ``reserve_reponse``). 512 : de quoi répondre en
+#: quelques paragraphes sourcés ; les réponses mesurées sur l'éval de #75,
+#: raisonnement coupé, ont pris 111 à 307 tokens.
+_RESERVE_REPONSE_TOURS_WEB = 512
 
 
 def _texte_sans_urls(texte: str) -> str:
@@ -1188,10 +1198,12 @@ async def ws_chat(websocket: WebSocket):
             # Réglage de session, comme `strict_mode` : lu ici plutôt que reçu
             # dans le message. Le client n'a donc rien à envoyer, et le réglage
             # vaut pour tous les chemins de ce tour (direct ET pipeline).
-            # `.get(..., True)` : un `context_session.json` déjà sur le disque
-            # n'a pas la clé, et son absence doit valoir « activé » — le
-            # comportement d'avant ce réglage.
-            raisonnement = bool(ctx.get("raisonnement", True))
+            # Trois états (#76) : `auto` (défaut), `active`, `desactive`.
+            # `normaliser_raisonnement` migre l'ancien booléen et une clé
+            # absente vers `auto`. Seul `desactive` coupe d'emblée ; `auto` ne
+            # coupe que les tours web d'un modèle local, plus bas.
+            mode_raisonnement = normaliser_raisonnement(ctx.get("raisonnement"))
+            raisonnement = mode_raisonnement != "desactive"
             # Réglage PERSISTANT (Réglages › Préfixes) : triggers des 5
             # commandes intégrées (renommables/désactivables, comportement
             # réel inchangé) + skills personnalisés — lu ici comme
@@ -1521,6 +1533,25 @@ async def ws_chat(websocket: WebSocket):
                         "outils": list(outils_actifs)[:TRACE_LISTE_MAX],
                     })
                 outils_actifs = None
+
+            # Même tours, même raison d'agir avant `llm.stream` : RAISONNEMENT
+            # coupé par défaut avec un modèle LOCAL (#76). Mesuré pendant #75 :
+            # sur une page lue, la réflexion d'un 9B local a pris 1 390 tokens
+            # sur 1 448 (réponse après 245 s), puis tout le plafond (4 096 sur
+            # 4 096, réponse vide) — réflexion et réponse puisent au même
+            # plafond. Un modèle cloud n'est pas concerné : rien ne tourne sur
+            # la machine, et son plafond n'a pas été pris en défaut. La coupure
+            # n'est pas garantie (réglage ignoré sur un appareil LM Link, #77) :
+            # `reserve_reponse` garde au moins 512 tokens pour la réponse, et un
+            # raisonnement reçu malgré tout est signalé plus bas.
+            _reserve_reponse = 0
+            if raison_retrait is not None and not est_modele_cloud(model_override or llm._model or ""):
+                _reserve_reponse = _RESERVE_REPONSE_TOURS_WEB
+                # `active` prime sur ce défaut ; `desactive` a déjà coupé, et ce
+                # n'est pas la page lue qui l'a fait — pas d'étape à son nom.
+                if mode_raisonnement == "auto":
+                    raisonnement = False
+                    _on_etape_recherche({"etape": "raisonnement_coupe", "raison": raison_retrait})
 
             # Les fichiers viennent de LA CONVERSATION, plus d'un `fichiers_actifs`
             # global (retiré le 2026-08-27). `conv` a été relu juste au-dessus par
@@ -1859,6 +1890,7 @@ async def ws_chat(websocket: WebSocket):
                 try:
                     for token in llm.stream(
                         msgs, model=model, raisonnement=raisonnement,
+                        reserve_reponse=_reserve_reponse,
                         # Tool-calling natif (core/llm.py, registre `_SKILLS`)
                         # — Ollama et LM Studio seuls, ignoré silencieusement
                         # pour les autres providers (cf. `_stream_openai`). `web_search`/`recherche_approfondie`
@@ -1910,6 +1942,10 @@ async def ws_chat(websocket: WebSocket):
             #: pour le dénominateur). `None` tant qu'aucune sentinelle n'est
             #: arrivée, et `None` aussi si le fournisseur ne l'a pas annoncée.
             _contexte_tokens: Optional[int] = None
+            #: Coupes du raisonnement par la réserve de réponse (#76), et
+            #: raisonnement reçu malgré une coupure demandée — déjà signalé ?
+            _raisonnement_plafonne = 0
+            _raisonnement_signale = False
             _first_token = True
             while True:
                 item = await queue.get()
@@ -1945,7 +1981,31 @@ async def ws_chat(websocket: WebSocket):
                     if skill_citable(item.get("outil") or ""):
                         web_resultats.extend(item.get("resultats") or [])
                     continue
+                if isinstance(item, dict) and item.get("__raisonnement_plafonne__"):
+                    # Réserve de réponse atteinte (#76) : le raisonnement a été
+                    # interrompu et la réponse relancée sans lui. Jamais en
+                    # silence — et si la relance raisonne encore, plus bas,
+                    # l'erreur nommée remplace la bulle vide.
+                    _raisonnement_plafonne += 1
+                    _on_etape_recherche({
+                        "etape": "raisonnement_plafonne",
+                        "tokens_raisonnement": item.get("tokens_raisonnement"),
+                        "plafond_sortie": item.get("plafond_sortie"),
+                        "reserve_reponse": item.get("reserve_reponse"),
+                        "relance": bool(item.get("relance")),
+                    })
+                    continue
                 if isinstance(item, dict) and item.get("__reasoning__"):
+                    if not raisonnement and not _raisonnement_signale:
+                        # Coupure demandée (défaut des tours web ou réglage
+                        # `desactive`), raisonnement reçu quand même : le
+                        # réglage a été ignoré par le serveur (vu sur un
+                        # appareil LM Link distant, #77). Une fois par tour.
+                        _raisonnement_signale = True
+                        _on_etape_recherche({
+                            "etape": "raisonnement_non_coupe",
+                            "modele": tronquer_champ(model_override or llm._model or ""),
+                        })
                     # Raisonnement du modèle, canal distinct du contenu final.
                     # `{"type": "reasoning"}` suit la forme de `{"type": "token"}`
                     # juste en dessous plutôt qu'un format à part : le frontend a
@@ -2012,6 +2072,18 @@ async def ws_chat(websocket: WebSocket):
                         "Le modèle a épuisé son budget de génération en réfléchissant, "
                         "sans produire de réponse. Désactivez le raisonnement dans le "
                         "panneau Compétences, ou posez une question plus simple."
+                    ),
+                }, ensure_ascii=False))
+            elif _raisonnement_plafonne and not accumulated:
+                # Réserve atteinte, relance comprise, sans un caractère de
+                # réponse : le serveur raisonne malgré la coupure demandée.
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "conversation_id": conv_id,
+                    "content": (
+                        "Le modèle a continué à réfléchir malgré le raisonnement coupé, "
+                        "et n'a pas produit de réponse. Rechargez-le sur ce poste "
+                        "(LM Studio) ou choisissez un autre modèle."
                     ),
                 }, ensure_ascii=False))
 

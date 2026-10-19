@@ -151,14 +151,17 @@ class StreamRoutageTest(unittest.TestCase):
         self.assertEqual(provider, "lmstudio")
 
 
-class BasculeRaisonnementInerteTest(unittest.TestCase):
-    """La bascule `raisonnement` ne doit RIEN envoyer de neuf à LM Studio.
+class BasculeRaisonnementTest(unittest.TestCase):
+    """La bascule `raisonnement` vers LM Studio, MESURÉE le 2026-10-19 (#76).
 
-    Même statut que groq/cerebras/mistral/nvidia/deepseek (cf.
-    `test_raisonnement_stream.BasculeFlmTest.
-    test_les_fournisseurs_cloud_ne_recoivent_rien_de_neuf`), mais pour une
-    raison propre à LM Studio et pas seulement « pas mesuré » : voir le
-    docstring de `LLMEngine._stream_openai`.
+    Ce test exigeait autrefois qu'AUCUN `extra_body` ne parte vers LM Studio :
+    aucun réglage n'avait été mesuré, et la doc de LM Studio rapportait des
+    réglages ignorés sur Qwen3.5. Mesuré depuis sur qwen3.5-9b : seul
+    `reasoning_effort: "none"` coupe (0 token de raisonnement, contre 400/400
+    pour `enable_thinking: false` et `reasoning: "off"`), et il est sans effet
+    sur un modèle qui ne raisonne pas (ministral-3-3b : même réponse, même
+    nombre de tokens, HTTP 200). Couper l'envoie ; allumer n'envoie rien,
+    comme pour Ollama. Cf. le docstring de `LLMEngine._stream_openai`.
     """
 
     def _capturer(self, **kwargs):
@@ -180,14 +183,20 @@ class BasculeRaisonnementInerteTest(unittest.TestCase):
                                    "un-modele", _Client(), "lmstudio", 300, **kwargs))
         return vus
 
-    def test_aucun_extra_body_quelle_que_soit_la_valeur(self):
-        for valeur in (True, False):
-            vus = self._capturer(raisonnement=valeur)
-            self.assertNotIn("extra_body", vus, valeur)
+    def test_couper_envoie_reasoning_effort_none(self):
+        self.assertEqual(self._capturer(raisonnement=False).get("extra_body"),
+                         {"reasoning_effort": "none"})
 
-    def test_le_raisonnement_ne_remonte_pas_meme_si_le_champ_existe(self):
-        """Même forme de flux que FLM (`reasoning_content` présent) — la garde
-        sur `provider` doit l'ignorer côté LM Studio comme côté cloud."""
+    def test_allumer_n_envoie_rien(self):
+        self.assertNotIn("extra_body", self._capturer(raisonnement=True))
+
+    def test_le_raisonnement_remonte_comme_pour_flm(self):
+        """Même forme de flux que FLM (`reasoning_content`), mesurée sur LM
+        Studio le 2026-10-19 (un token par chunk). Elle remonte désormais en
+        `__reasoning__` : le chat l'affiche dans son bloc repliable, et la
+        réserve de réponse (#76) peut la compter. Masquée, elle rendait la
+        coupure invérifiable — un raisonnement de 4 096 tokens passait pour un
+        silence."""
         mesure = [
             _chunk_oai(reasoning=""),
             _chunk_oai(reasoning="Okay, 17 x 23"),
@@ -212,7 +221,7 @@ class BasculeRaisonnementInerteTest(unittest.TestCase):
         sortie = list(moteur._stream_openai(
             [{"role": "user", "content": "17 x 23 ?"}], "un-modele",
             _Client(), "lmstudio", 300))
-        self.assertEqual(_raisonnements(sortie), [])
+        self.assertEqual(_raisonnements(sortie), ["Okay, 17 x 23", ". Let me compute."])
         self.assertEqual("".join(_textes(sortie)), "17 x 23 = 391.")
 
 

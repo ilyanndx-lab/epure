@@ -932,11 +932,64 @@ class LLMEngine:
 
     def stream(self, messages: list[dict], model: Optional[str] = None,
                max_tokens: Optional[int] = None, raisonnement: bool = True,
-               outils: Optional[list[str]] = None,
-               budgets_override: Optional[dict[str, int]] = None,
-               skills_dynamiques: Optional[dict[str, dict]] = None,
-               on_etape_recherche: Optional[Callable[[dict], None]] = None,
-               rang_web_existant: int = 0) -> Generator:
+               reserve_reponse: int = 0, **kw) -> Generator:
+        """Flux de génération — `_stream_brut`, plus une RÉSERVE pour la réponse.
+
+        ``reserve_reponse`` (0 par défaut : comportement historique, à l'octet)
+        garantit au moins ce nombre de tokens à la réponse. Pourquoi c'est
+        nécessaire : le plafond de sortie est UNIQUE, réflexion et réponse y
+        puisent au même endroit (cf. `_budget`). Mesuré pendant #75 : un
+        raisonnement de 4 096 tokens sur 4 096, réponse vide.
+
+        Mécanique : les sentinelles ``__reasoning__`` sont comptées (une par
+        token streamé chez Ollama et LM Studio — une approximation, pas un
+        décompte du tokeniseur). Quand elles atteignent ``plafond − réserve``,
+        le flux est INTERROMPU (le générateur fermé, donc la requête HTTP
+        abandonnée), une sentinelle ``__raisonnement_plafonne__`` le dit, et la
+        réponse est relancée SANS raisonnement avec au moins la réserve. Une
+        seule relance : si elle raisonne encore (réglage ignoré par le
+        serveur), elle est coupée de même et le tour s'arrête là — l'appelant
+        voit deux sentinelles et aucune réponse, et le dit.
+        """
+        if not reserve_reponse:
+            yield from self._stream_brut(messages, model=model, max_tokens=max_tokens,
+                                         raisonnement=raisonnement, **kw)
+            return
+
+        plafond = self._budget(max_tokens, raisonnement)
+        for relance in (False, True):
+            limite = max(0, plafond - reserve_reponse)
+            pensees = 0
+            flux = self._stream_brut(messages, model=model, max_tokens=max_tokens,
+                                     raisonnement=raisonnement, **kw)
+            coupe = False
+            try:
+                for item in flux:
+                    if isinstance(item, dict) and item.get("__reasoning__"):
+                        if pensees >= limite:
+                            coupe = True
+                            break
+                        pensees += 1
+                    yield item
+            finally:
+                flux.close()
+            if not coupe:
+                return
+            yield {"__raisonnement_plafonne__": True, "tokens_raisonnement": pensees,
+                   "plafond_sortie": plafond, "reserve_reponse": reserve_reponse,
+                   "relance": relance}
+            # Relance : raisonnement coupé, plafond d'au moins la réserve.
+            raisonnement = False
+            max_tokens = max(reserve_reponse, self._gen["max_tokens"])
+            plafond = self._budget(max_tokens, raisonnement)
+
+    def _stream_brut(self, messages: list[dict], model: Optional[str] = None,
+                     max_tokens: Optional[int] = None, raisonnement: bool = True,
+                     outils: Optional[list[str]] = None,
+                     budgets_override: Optional[dict[str, int]] = None,
+                     skills_dynamiques: Optional[dict[str, dict]] = None,
+                     on_etape_recherche: Optional[Callable[[dict], None]] = None,
+                     rang_web_existant: int = 0) -> Generator:
         """Flux de génération. ``raisonnement=False`` coupe la réflexion du modèle.
 
         ``outils``/``on_etape_recherche``/``rang_web_existant`` : tool-calling
@@ -1651,23 +1704,26 @@ class LLMEngine:
         été mesurée, et ``extra_body`` part vers une API distante qui pourrait
         refuser un champ inconnu. On ne devine pas sur du réseau facturé.
 
-        **``lmstudio`` rejoint ce groupe, délibérément, pour une raison
-        différente : il n'existe PAS UN paramètre API stable à poser.** LM
-        Studio expose deux mécanismes concurrents selon le modèle/la version —
-        ``reasoning_effort`` (un raccourci ajouté après coup) et
-        ``chat_template_kwargs: {"enable_thinking": ...}`` (dépendant du gabarit
-        de discussion du modèle chargé) — et son propre suivi de bugs rapporte
-        ce flag **ignoré** sur des familles récentes (Qwen3.5 : le raisonnement
-        continue de consommer tout ``max_tokens`` malgré ``enableThinking:
-        false``). Rien de tout ça n'a été rejoué sur ce poste — aucune instance
-        LM Studio disponible au moment d'écrire —, donc ni mesuré ni supposé
-        fiable : câbler un flag qui peut être silencieusement ignoré serait pire
-        que ne rien câbler, ça donnerait l'illusion d'un contrôle qui n'agit pas
-        toujours. Revoir cette garde le jour où c'est mesuré sur un vrai serveur
-        LM Studio ; jusque-là, ``lmstudio`` suit le chemin ``raisonnement``
-        inerte du chat classique — le toggle du frontend le range déjà dans sa
-        branche « budget de réflexion seul » (aucun préfixe local reconnu),
-        sans qu'il ait fallu y toucher.
+        **``lmstudio`` : couper se dit ``reasoning_effort: "none"``, MESURÉ le
+        2026-10-19** (LM Studio local, ``huihui-qwen3.5-9b-abliterated``, même
+        question, ``max_tokens: 400``) :
+
+        =====================================================  ==============
+        corps de requête                                       raisonnement
+        =====================================================  ==============
+        (rien)                                                 400 / 400
+        ``reasoning_effort: "none"``                           **0** / 20
+        ``chat_template_kwargs: {"enable_thinking": false}``   400 / 400
+        ``reasoning: "off"``                                   400 / 400
+        =====================================================  ==============
+
+        Les deux autres mécanismes sont ignorés EN SILENCE sur Qwen3.5 (ce que
+        le suivi de bugs de LM Studio rapportait) : seul ``reasoning_effort``
+        est donc câblé, et seulement pour COUPER — « allumer » reste « ne rien
+        passer », comme pour Ollama. Limite connue : sur un appareil LM Link
+        distant, ce même réglage a été ignoré une fois (#77). Le chat ne s'y
+        fie donc pas aveuglément : il détecte un raisonnement produit malgré
+        tout et réserve des tokens à la réponse (`stream`, ``reserve_reponse``).
 
         **Le raisonnement de FLM est remonté depuis le 2026-08-24**, comme celui
         d'Ollama et sous la même sentinelle ``__reasoning__`` — donc le même
@@ -1697,7 +1753,13 @@ class LLMEngine:
           était donc ici plus long que sur Ollama (76 s), sur le chemin NPU qui
           est censé être le rapide.
 
-        **Réservé à ``flm``, délibérément.** Les autres fournisseurs
+        **``lmstudio`` aussi depuis le 2026-10-19**, après mesure sur
+        qwen3.5-9b : même champ ``reasoning_content``, un token par chunk (le
+        premier porte « Thinking »). Masqué, il passait pour un silence — un
+        raisonnement de 4 096 tokens sans réponse (#75) restait invisible, et
+        la réserve de réponse de #76 ne pouvait pas le compter.
+
+        **Réservé à ces deux-là, délibérément.** Les autres fournisseurs
         OpenAI-compatibles n'ont pas été mesurés — ``deepseek`` en particulier
         publie un ``reasoning_content`` sur son modèle de raisonnement, et le
         remonter serait probablement juste. Mais « probablement » n'est pas une
@@ -1783,6 +1845,10 @@ class LLMEngine:
             )
             if provider == "flm":
                 kwargs["extra_body"] = {"think": bool(raisonnement)}
+            elif provider == "lmstudio" and not raisonnement:
+                # Seul levier mesuré efficace (cf. docstring) ; rien quand le
+                # raisonnement est actif — le corps reste celui d'avant.
+                kwargs["extra_body"] = {"reasoning_effort": "none"}
             if with_usage:
                 kwargs["stream_options"] = {"include_usage": True}
             if tools:
@@ -1830,7 +1896,9 @@ class LLMEngine:
                 for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta is not None:
-                        if provider == "flm":
+                        # `lmstudio` depuis le 2026-10-19 : même champ, mesuré
+                        # sur qwen3.5-9b (un token par chunk) — cf. docstring.
+                        if provider in ("flm", "lmstudio"):
                             # Champ extra, non modélisé par le SDK : `getattr` et non
                             # `delta.reasoning_content`, pour que la fin de cette
                             # tolérance rende None au lieu de lever. Test de VÉRITÉ et

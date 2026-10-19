@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -282,5 +282,38 @@ describe('detailBudgetLecture', () => {
     expect(detailBudgetLecture({
       etape: 'lecture_url', statut: 'succès', passages_retenus: 3, ms: 900,
     })).toBeNull()
+  })
+})
+
+describe('raisonnement sur les tours de lecture d’URL / recherche web (#76)', () => {
+  const LECTURE_OK: EtapeTrace = {
+    etape: 'lecture_url', url: 'https://site.example/a', statut: 'succès', ms: 420, passages_retenus: 3,
+  }
+  const COUPE: EtapeTrace = { etape: 'raisonnement_coupe', raison: 'lecture_url' }
+  const NON_COUPE: EtapeTrace = { etape: 'raisonnement_non_coupe', modele: 'lmstudio:qwen' }
+  const PLAFONNE: EtapeTrace = {
+    etape: 'raisonnement_plafonne', tokens_raisonnement: 1536, plafond_sortie: 2048,
+    reserve_reponse: 512, relance: false,
+  }
+
+  it('ces étapes ne transforment pas une lecture en « Recherche web »', () => {
+    expect(resumeTrace([LECTURE_OK, COUPE, NON_COUPE, PLAFONNE])).toBe('Page lue : 3 passages')
+  })
+
+  it('chaque étape a un libellé qui dit ce qui s’est passé', () => {
+    expect(libelleRaisonnement(COUPE)).toBe(
+      'Raisonnement coupé pour ce tour (page lue, modèle local) : la réponse garde tout le budget de sortie.')
+    expect(libelleRaisonnement({ ...COUPE, raison: 'contenu_web' })).toBe(
+      'Raisonnement coupé pour ce tour (résultats web, modèle local) : la réponse garde tout le budget de sortie.')
+    expect(libelleRaisonnement(NON_COUPE)).toBe(
+      'Le modèle a raisonné malgré la coupure demandée (réglage ignoré par le serveur).')
+    expect(libelleRaisonnement(PLAFONNE)).toBe(
+      'Raisonnement interrompu après 1536 tokens sur 2048 : réponse relancée sans lui, 512 tokens réservés.')
+    expect(libelleRaisonnement({ ...PLAFONNE, relance: true })).toBe(
+      'La relance a encore raisonné : interrompue après 1536 tokens, sans réponse.')
+  })
+
+  it('autre étape : pas de libellé', () => {
+    expect(libelleRaisonnement(LECTURE_OK)).toBeNull()
   })
 })
