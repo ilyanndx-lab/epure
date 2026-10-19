@@ -134,6 +134,43 @@ class ReserveReponseTest(unittest.TestCase):
         self.assertIn("fin", sortie)
 
 
+class FluxLMStudioReelTest(unittest.TestCase):
+    """De bout en bout depuis la FORME RÉELLE d'un flux LM Studio (mesurée le
+    2026-10-19 sur qwen3.5-9b : `delta.reasoning_content`, un token par chunk),
+    pas depuis des sentinelles toutes faites. Sans ce test, la détection et la
+    réserve passaient leurs tests alors que `_stream_openai` ne remontait
+    AUCUN raisonnement de LM Studio (garde réservée à `flm`) : elles étaient
+    aveugles sur le cas même qui a motivé #76."""
+
+    def _chunk_raisonnement(self, texte):
+        from openai.types.chat import ChatCompletionChunk
+        from openai.types.chat.chat_completion_chunk import Choice, ChoiceDelta
+        delta = ChoiceDelta(role="assistant", content=None)
+        delta.reasoning_content = texte  # champ hors modèle du SDK, comme mesuré
+        return ChatCompletionChunk(id="c", object="chat.completion.chunk", created=1, model="m",
+                                   choices=[Choice(index=0, delta=delta, finish_reason=None)])
+
+    def test_raisonnement_lmstudio_compte_et_plafonne(self):
+        moteur = LLMEngine(config_path=_CONFIG)
+        plafond = moteur._budget(None, False)
+        limite = plafond - _RESERVE
+        rounds = [
+            [self._chunk_raisonnement("pensée ") for _ in range(limite + 5)] + [_chunk(content="trop tard")],
+            [_chunk(content="réponse relancée"), _usage(10, 3)],
+        ]
+        client = _ClientFactice(rounds)
+        with mock.patch.object(moteur, "_openai_client", return_value=client):
+            sortie = list(moteur.stream(list(_HISTORIQUE), model="lmstudio:m",
+                                        raisonnement=False, reserve_reponse=_RESERVE))
+        self.assertEqual(sum(1 for s in sortie if isinstance(s, dict) and s.get("__reasoning__")), limite)
+        self.assertTrue(any(isinstance(s, dict) and s.get("__raisonnement_plafonne__") for s in sortie))
+        self.assertIn("réponse relancée", sortie)
+        self.assertNotIn("trop tard", sortie)
+        # Les deux appels demandaient le raisonnement coupé.
+        self.assertEqual([a.get("extra_body") for a in client.appels],
+                         [{"reasoning_effort": "none"}] * 2)
+
+
 class _BaseTour(_Base):
     """Le faux `llm.stream` du chat, qui capture aussi les arguments du tour."""
 
