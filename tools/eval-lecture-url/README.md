@@ -73,9 +73,27 @@ Ce qui manque :
   n'est pas assez proche de la question.
 - photoelectrique : les deux fragments.
 
-### Étage 2 : pas encore exécuté
+### Étage 2 (2026-10-19) : `resultats/resultats.json`
 
-Le 2026-10-19, le modèle chargé à 8 192 tokens (4 slots, puis 1 slot)
-occupait 11,6 à 12,2 Go et faisait passer la mémoire libre de 13,3 à 1,3 Go,
-sous le seuil de 3 Go. La machine était en plus sur batterie, avec MATLAB
-ouvert. L'étage 2 n'a donc pas été lancé, et le modèle a été déchargé.
+Conditions : modèle chargé **en local** (ilyann1) à 8 192 tokens, raisonnement
+coupé (0 token de raisonnement à chaque essai). La mémoire libre est restée
+entre 3,6 et 4,9 Go. L'essai s'est fait **sur batterie, avec MATLAB ouvert** :
+les délais sont donc pessimistes. La notation est manuelle et se fait sur les
+réponses brutes du fichier.
+
+| Question | Budget | Extrait | 1er token | Prompt | Sortie |
+|---|---|---|---|---|---|
+| relativite_restreinte | 4 000 | 3 848 | 12,6 s | 1 057 | 307 |
+| relativite_restreinte | 16 000 | 15 454 | 39,9 s | 3 923 | 132 |
+| photoelectrique | 4 000 | 3 354 | 14,5 s | 1 224 | 234 |
+| photoelectrique | 16 000 | 14 984 | 67,6 s | 5 044 | 111 |
+
+**Piège LM Link** : `lms load … -y` peut charger le modèle sur l'appareil
+relié (ilyann2) plutôt qu'en local. Vérifier la colonne `DEVICE` de
+`lms ps`. Sur ilyann2, le 2026-10-19 :
+- un essai a ignoré `reasoning_effort: "none"` (1 024 tokens de raisonnement,
+  réponse vide) ;
+- le modèle y a ensuite été déchargé en plein flux.
+
+Le harnais signale désormais ces cas (`anomalie`) au lieu de les compter comme
+des essais.

@@ -33,6 +33,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 from unittest import mock
 
@@ -221,10 +222,19 @@ def interroger(modele, systeme, utilisateur):
                 reponse += delta.get("content") or ""
                 fin = choix.get("finish_reason") or fin
     details = usage.get("completion_tokens_details") or {}
-    return {"reponse": reponse, "t_premier_token_s": round(premier, 2) if premier is not None else None,
-            "t_total_s": round(time.time() - t0, 2), "tokens_prompt": usage.get("prompt_tokens"),
-            "tokens_sortie": usage.get("completion_tokens"),
-            "tokens_raisonnement": details.get("reasoning_tokens"), "fin": fin}
+    resultat = {"reponse": reponse, "t_premier_token_s": round(premier, 2) if premier is not None else None,
+                "t_total_s": round(time.time() - t0, 2), "tokens_prompt": usage.get("prompt_tokens"),
+                "tokens_sortie": usage.get("completion_tokens"),
+                "tokens_raisonnement": details.get("reasoning_tokens"), "fin": fin}
+    # Deux défauts vécus le 2026-10-19, à dire plutôt qu'à compter comme un
+    # essai : un flux coupé sans `finish_reason` (modèle déchargé en cours de
+    # route), et un raisonnement que `reasoning_effort` n'a pas coupé (ignoré
+    # sur l'appareil LM Link distant, mais pas en local).
+    if fin is None:
+        resultat["anomalie"] = "flux interrompu (aucun finish_reason)"
+    elif details.get("reasoning_tokens"):
+        resultat["anomalie"] = "raisonnement non coupé"
+    return resultat
 
 
 def etage2(modele, budgets, decharger_a_la_fin):
@@ -264,11 +274,15 @@ def etage2(modele, budgets, decharger_a_la_fin):
                 ecrire()
                 print(f"{q['page']:24s} {budget:6d} ttft={essai['t_premier_token_s']}s "
                       f"prompt={essai['tokens_prompt']} sortie={essai['tokens_sortie']} "
-                      f"fin={essai['fin']}", flush=True)
+                      f"fin={essai['fin']} {essai.get('anomalie', '')}", flush=True)
     except MemoireBasse:
         doc["meta"]["arret"] = f"mémoire libre sous {SEUIL_MEMOIRE_GO} Go"
         ecrire()
         print(f"ARRÊT : mémoire libre sous {SEUIL_MEMOIRE_GO} Go — résultats partiels écrits", flush=True)
+    except (urllib.error.URLError, OSError) as exc:
+        doc["meta"]["arret"] = f"LM Studio : {exc}"
+        ecrire()
+        print(f"ARRÊT : LM Studio a répondu {exc} — résultats partiels écrits", flush=True)
     finally:
         if decharger_a_la_fin:
             decharger(modele)

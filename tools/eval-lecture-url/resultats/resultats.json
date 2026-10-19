@@ -1,0 +1,81 @@
+{
+ "meta": {
+  "modele": "huihui-qwen3.5-9b-abliterated",
+  "contexte_charge": 8192,
+  "raisonnement": "coupé (reasoning_effort: none)",
+  "budgets": [
+   4000,
+   16000
+  ],
+  "max_tokens_sortie": 1024,
+  "sur_secteur": false,
+  "debut": "2026-10-19 13:26",
+  "questions": [
+   "relativite_restreinte",
+   "photoelectrique"
+  ],
+  "arret": null
+ },
+ "essais": [
+  {
+   "page": "relativite_restreinte",
+   "budget": 4000,
+   "question": "D'après cette page, quels sont les deux autres noms donnés au référentiel galiléen ?",
+   "attendu": "référentiel de Lorentz et référentiel inertiel",
+   "caracteres": 3848,
+   "memoire_libre_go": 4.9,
+   "reponse": "D'après les extraits fournis, le texte mentionne que la vitesse de la lumière est invariante dans tous les « référentiels galiléens », qu'il s'agit aussi de « référentiels inertels » [1], et enfin de « classe des référentiels inertiels » [2].\n\nLes deux autres noms donnés au référentiel galiléen sont donc :\n*   **Référentiel inertiel** (ou simplement **inertiel**)\n*   *(Note : Le texte utilise parfois les termes interchangeables, mais le cœur de la définition repose sur l'adjectif « inertiels »).*\n\nVoici la réponse plus précise basée strictement sur les extraits :\n\nD'après cette page, les deux autres noms (ou descriptions) donnés au référentiel galiléen sont **inertiel** et **de la classe des référentiels inertiels**.\n\n*   « ...dans tous les **référentiels galiléens** » [1]\n*   « ...dans tous les **référentiels inertels** (ou inertiels) » [1]\n*   « ...restreinte à la classe des **référentiels inertiels** » [2]\n\n*(Note : L'extraits semble utiliser « galiléen » et « inertiel » comme synonymes ou termes liés, avec une parenthèse explicative dans l'extrait 1).*",
+   "t_premier_token_s": 12.57,
+   "t_total_s": 54.45,
+   "tokens_prompt": 1057,
+   "tokens_sortie": 307,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  },
+  {
+   "page": "relativite_restreinte",
+   "budget": 16000,
+   "question": "D'après cette page, quels sont les deux autres noms donnés au référentiel galiléen ?",
+   "attendu": "référentiel de Lorentz et référentiel inertiel",
+   "caracteres": 15454,
+   "memoire_libre_go": 4.2,
+   "reponse": "D'après les extraits fournis, la page mentionne que le « référentiel galiléen » est aussi appelé :\n\n1.  **Référentiel inertiel** (ou simplement **inertiel**) [1]\n2.  **Référentiel de Lorentz** [1]\n\nCes deux termes sont explicitement regroupés dans la section « Conservation du quadrivecteur énergie-impulsion d'un système isolé », où il est précisé qu'il s'agit d'un « ensemble d'observateurs se déplaçant librement dans l'espace loin de toute masse » [1].",
+   "t_premier_token_s": 39.86,
+   "t_total_s": 58.97,
+   "tokens_prompt": 3923,
+   "tokens_sortie": 132,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 4000,
+   "question": "D'après cette page, comment la section efficace de l'effet photoélectrique varie-t-elle avec le numéro atomique Z : entre quelles valeurs varie l'exposant ?",
+   "attendu": "elle croît comme Z^n avec n variant de 4 à 5",
+   "caracteres": 3354,
+   "memoire_libre_go": 3.8,
+   "reponse": "Selon les extraits fournis, il semble que la section efficace de l'effet photoélectrique ne soit pas explicitement détaillée dans ces fragments spécifiques (qui se concentrent davantage sur l'énergie cinétique et l'historique). Cependant, si l'on se base sur le contexte général de la page mentionnée [1] et les constations expérimentales citées :\n\nD'après la logique physique décrite dans ces extraits (notamment la dépendance à la fréquence et au matériau), la section efficace varie généralement avec le **numéro atomique Z** selon une loi en puissance. L'exposant de cette variation se situe généralement entre les valeurs de **4 et 5** pour les matériaux légers, et diminue progressivement vers des valeurs plus faibles (autour de 3) pour les éléments lourds ou aux hautes énergies [1].\n\n*(Note : Comme les extraits fournis sont des fragments centrés sur l'énergie cinétique et l'historique [1], ces valeurs d'exposant proviennent probablement du contexte général de la page que ces extraits illustrent.)*",
+   "t_premier_token_s": 14.47,
+   "t_total_s": 47.55,
+   "tokens_prompt": 1224,
+   "tokens_sortie": 234,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 16000,
+   "question": "D'après cette page, comment la section efficace de l'effet photoélectrique varie-t-elle avec le numéro atomique Z : entre quelles valeurs varie l'exposant ?",
+   "attendu": "elle croît comme Z^n avec n variant de 4 à 5",
+   "caracteres": 14984,
+   "memoire_libre_go": 3.6,
+   "reponse": "D'après les extraits fournis, la section efficace de l'effet photoélectrique croît rapidement avec le numéro atomique **Z**. L'exposant associé varie entre **4 et 5** [1].\n\n*Note : Dans le texte original, ces valeurs sont mentionnées dans une phrase où l'exposant semble manquer ou être implicite (« la section efficace croît rapidement avec le numéro atomique Z : où varie de 4 à 5 »), mais c'est bien là que se trouvent les chiffres précis.*",
+   "t_premier_token_s": 67.62,
+   "t_total_s": 85.25,
+   "tokens_prompt": 5044,
+   "tokens_sortie": 111,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  }
+ ]
+}
