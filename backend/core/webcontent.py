@@ -671,15 +671,20 @@ def _titre_de_page(html: str) -> str:
         return ""
 
 
-def _lire_une_url(url: str) -> tuple[list[str], str, str, float, str]:
+def _lire_une_url(url: str) -> tuple[list[str], str, str, float, str, dict]:
     """Refus, fetch, contrôles, extraction pour UNE URL, dans un thread du
-    pool. Rend ``(chunks, statut, raison, ms, titre)`` — `statut` ∈
+    pool. Rend ``(chunks, statut, raison, ms, titre, durees)`` — `statut` ∈
     {"succès", "échec", "refusée"}. Ne lève jamais : une exception imprévue
-    devient un échec nommé, pas une lecture qui disparaît de la trace."""
+    devient un échec nommé, pas une lecture qui disparaît de la trace.
+
+    ``durees`` : ``fetch_ms`` (réseau, redirections comprises) et
+    ``extraction_ms`` (readability + découpage), pour la trace — un premier
+    tour à 146 s n'avait laissé aucune ligne pour dire où passait le temps."""
     t0 = time.time()
+    durees: dict = {}
 
     def fin(statut: str, raison: str, chunks: Optional[list[str]] = None, titre: str = ""):
-        return chunks or [], statut, raison, round((time.time() - t0) * 1000), titre
+        return chunks or [], statut, raison, round((time.time() - t0) * 1000), titre, durees
 
     try:
         raison = adresse_refusee(url)
@@ -689,6 +694,9 @@ def _lire_une_url(url: str) -> tuple[list[str], str, str, float, str]:
             html, raison, url_finale = _recuperer_page_detaillee(url)
         except _AdresseRefusee as exc:
             return fin("refusée", f"redirection refusée : {exc}")
+        finally:
+            durees["fetch_ms"] = round((time.time() - t0) * 1000)
+        t_extraction = time.time()
         if html is None:
             return fin("échec", raison)
         if url_finale != url and _ressemble_a_une_page_de_connexion(url_finale):
@@ -700,7 +708,9 @@ def _lire_une_url(url: str) -> tuple[list[str], str, str, float, str]:
             return fin("échec", "page protégée par une connexion (formulaire de mot de passe, aucun contenu lisible)")
         if not texte:
             return fin("échec", "aucun texte exploitable dans la page (contenu généré en JavaScript ?)")
-        return fin("succès", "", _decouper_en_chunks(texte), _titre_de_page(html))
+        chunks, titre = _decouper_en_chunks(texte), _titre_de_page(html)
+        durees["extraction_ms"] = round((time.time() - t_extraction) * 1000)
+        return fin("succès", "", chunks, titre)
     except Exception:
         logger.exception("Erreur inattendue en lisant %s", url)
         return fin("échec", "erreur inattendue pendant la lecture")
@@ -845,19 +855,23 @@ def lire_urls(
     for i in range(len(a_lire)):
         if i not in issues:
             issues[i] = ([], "échec", f"délai dépassé (budget de {_TIMEOUT_ETAPE_S:g} s pour l'étape)",
-                         round(_TIMEOUT_ETAPE_S * 1000), "")
+                         round(_TIMEOUT_ETAPE_S * 1000), "", {})
 
     chunks_par_index = {i: issue[0] for i, issue in issues.items()
                         if issue[0] and issue[1] == "succès"}
     budget_total = budget_lecture(contexte_charge)
     budget_page = budget_total // len(chunks_par_index) if chunks_par_index else 0
+    t_selection = time.time()
     priorites, selection = (_priorites(question, chunks_par_index, on_etape)
                             if chunks_par_index else ({}, ""))
+    # Embedding local compris : un PREMIER chargement du modèle d'embedding
+    # (store paresseux, `core/runtime.py`) se lit ici.
+    selection_ms = round((time.time() - t_selection) * 1000)
 
     lectures: list[LectureUrl] = []
     rang = rang_de_depart
     for i, url in enumerate(a_lire):
-        chunks, statut, raison, ms, titre = issues[i]
+        chunks, statut, raison, ms, titre, durees = issues[i]
         extrait, nb_passages = "", 0
         if i in chunks_par_index:
             extrait, nb_passages = _selectionner(chunks, priorites[i], budget_page)
@@ -877,7 +891,8 @@ def lire_urls(
             "budget_caracteres": budget_total,
         }
         if resultat is not None:
-            etape.update(selection=selection, budget_page=budget_page, caracteres=len(extrait))
+            etape.update(selection=selection, budget_page=budget_page, caracteres=len(extrait),
+                         selection_ms=selection_ms, **durees)
         if raison:
             etape["raison"] = tronquer_champ(raison)
         _emettre(on_etape, etape)

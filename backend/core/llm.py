@@ -1853,7 +1853,12 @@ class LLMEngine:
                 kwargs["stream_options"] = {"include_usage": True}
             if tools:
                 kwargs["tools"] = tools
-            return client.chat.completions.create(**kwargs)
+            t0 = time.time()
+            reponse = client.chat.completions.create(**kwargs)
+            # Diagnostic du premier tour lent : combien de temps entre l'appel
+            # et la réponse HTTP du serveur (en-têtes du flux).
+            logger.info("Diag %s : requête acceptée en %.3fs", provider, time.time() - t0)
+            return reponse
 
         def _abandonner(raison: str, noms: list[str]) -> None:
             """Tentative d'appel d'outil ABANDONNÉE — pas de crash, une étape

@@ -464,6 +464,8 @@ class TourSuivantTest(_Base):
             "etape", "url", "statut", "ms", "passages_retenus", "raison",
             "selection", "caracteres", "budget_page", "budget_caracteres",
             "contexte_charge", "source_contexte",
+            # Durées (diagnostic du premier tour lent) : des nombres.
+            "fetch_ms", "extraction_ms", "selection_ms", "t_ms",
         })
 
 
