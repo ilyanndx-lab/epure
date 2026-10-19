@@ -480,7 +480,7 @@ class BudgetSelonLeContexteChargeTest(_Base):
         self.assertEqual(fenetre.call_args.args[0], routeur_chat.llm._model)
         lecture = next(e for e in self._trace(conv_id) if e["etape"] == "lecture_url")
         self.assertEqual(lecture["contexte_charge"], 8192)
-        self.assertEqual(lecture["budget_caracteres"], 7168)
+        self.assertEqual(lecture["budget_caracteres"], 6553)
         self.assertEqual(lecture["source_contexte"], "lmstudio /api/v1/models")
 
     def test_contexte_inconnu_plancher(self):

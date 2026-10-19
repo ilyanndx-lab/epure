@@ -10,7 +10,7 @@ documentée telle quelle dans `test_lecture_url.test_reclassement_par_la_questio
 
 Ce fichier verrouille la règle qui la remplace :
 
-  * budget total = 25 % du contexte chargé × 3,5 caractères par token,
+  * budget total = 25 % du contexte chargé × 3,2 caractères par token,
     plafonné à 16 000, avec un plancher de 4 000 quand le contexte est
     inconnu ; partagé également entre les pages lues ;
   * sélection par similarité avec le message sans ses URLs, sur des passages
@@ -80,13 +80,19 @@ class _Base(unittest.TestCase):
 class BudgetTest(unittest.TestCase):
     """La formule seule, sans page."""
 
-    def test_vingt_cinq_pour_cent_du_contexte_a_trois_caracteres_et_demi(self):
-        # 8 192 × 0,25 × 3,5 = 7 168
-        self.assertEqual(webcontent.budget_lecture(8192), 7168)
-        self.assertEqual(webcontent.budget_lecture(4096), 3584)
+    def test_vingt_cinq_pour_cent_du_contexte_a_trois_caracteres_deux(self):
+        # 8 192 × 0,25 × 3,2 = 6 553,6 → 6 553 (ratio mesuré, cf. webcontent)
+        self.assertEqual(webcontent.budget_lecture(8192), 6553)
+        self.assertEqual(webcontent.budget_lecture(4096), 3276)
 
     def test_plafond(self):
         self.assertEqual(webcontent.budget_lecture(262144), 16000)
+
+    def test_plafond_atteint_a_vingt_mille_tokens(self):
+        """16 000 / (0,25 × 3,2) = 20 000 : en dessous, le plafond n'est pas
+        atteint — à 8 192 tokens chargés, le budget reste à 6 553."""
+        self.assertEqual(webcontent.budget_lecture(20000), 16000)
+        self.assertEqual(webcontent.budget_lecture(19999), 15999)
 
     def test_plancher_quand_le_contexte_est_inconnu(self):
         self.assertEqual(webcontent.budget_lecture(None), 4000)
@@ -107,7 +113,7 @@ class FinDePageTest(_Base):
                                       "Que dit le passage PERTINENT ?", contexte_charge=8192)
         extrait = lectures[0].resultat.extrait
         self.assertIn("PERTINENT", extrait)
-        self.assertLessEqual(len(extrait), 7168)
+        self.assertLessEqual(len(extrait), 6553)
         # Le budget sert : plus que les trois passages de la phase 4.
         self.assertGreater(lectures[0].passages, 3)
         self.assertEqual(etapes[0]["selection"], "similarite")
@@ -140,7 +146,7 @@ class OrdreDePageTest(_Base):
         # Début de page : le premier passage, titre <h1> compris.
         self.assertTrue(extrait.startswith(_chunks_de(html)[0]))
         self.assertGreater(len(extrait), 800)
-        self.assertLessEqual(len(extrait), 7168)
+        self.assertLessEqual(len(extrait), 6553)
         self.assertEqual(etapes[0]["selection"], "ordre_page")
 
     def test_embedding_indisponible_ordre_de_la_page(self):
@@ -165,18 +171,18 @@ class PartageEtTraceTest(_Base):
         lectures, etapes = self._lire(pages, "question", contexte_charge=8192)
         self.assertEqual([lec.statut for lec in lectures], ["succès", "succès"])
         for lec in lectures:
-            self.assertLessEqual(len(lec.resultat.extrait), 7168 // 2)
+            self.assertLessEqual(len(lec.resultat.extrait), 6553 // 2)
             self.assertGreater(len(lec.resultat.extrait), 800)
         for etape in etapes:
-            self.assertEqual(etape["budget_caracteres"], 7168)
-            self.assertEqual(etape["budget_page"], 3584)
+            self.assertEqual(etape["budget_caracteres"], 6553)
+            self.assertEqual(etape["budget_page"], 3276)
 
     def test_trace_contexte_et_source(self):
         lectures, etapes = self._lire({"https://site.example/long": _page_longue()},
                                       "question", contexte_charge=8192,
                                       source_contexte="lmstudio /api/v1/models")
         self.assertEqual(etapes[0]["contexte_charge"], 8192)
-        self.assertEqual(etapes[0]["budget_caracteres"], 7168)
+        self.assertEqual(etapes[0]["budget_caracteres"], 6553)
         self.assertEqual(etapes[0]["source_contexte"], "lmstudio /api/v1/models")
         self.assertEqual(etapes[0]["caracteres"], len(lectures[0].resultat.extrait))
 
@@ -191,8 +197,8 @@ class PartageEtTraceTest(_Base):
         self.assertEqual(etapes[0]["budget_caracteres"], 4000)
 
     def test_budget_plus_petit_qu_un_passage_coupe_sur_un_mot(self):
-        """Contexte minuscule (1 024 tokens → 896 caractères pour deux pages,
-        448 chacune) : aucun passage entier ne tient. Plutôt que de rendre la
+        """Contexte minuscule (1 024 tokens → 819 caractères pour deux pages,
+        409 chacune) : aucun passage entier ne tient. Plutôt que de rendre la
         page « sans passage exploitable », le meilleur passage est coupé sur
         une frontière de MOT, marqué « … »."""
         pages = {
@@ -202,7 +208,7 @@ class PartageEtTraceTest(_Base):
         lectures, _ = self._lire(pages, "PERTINENT ?", contexte_charge=1024)
         extrait = lectures[0].resultat.extrait
         self.assertEqual(lectures[0].statut, "succès")
-        self.assertLessEqual(len(extrait), 448)
+        self.assertLessEqual(len(extrait), 409)
         self.assertTrue(extrait.endswith("…"))
         meilleur = next(c for c in _chunks_de(pages["https://a.example/long"]) if "PERTINENT" in c)
         coupe = extrait[:-1]

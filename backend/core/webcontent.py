@@ -156,13 +156,25 @@ _BUDGET_CARACTERES_PAR_PAGE = 800
 
 #: Part du contexte chargé réservée aux pages lues, tous liens confondus.
 _PART_CONTEXTE_LECTURE = 0.25
-#: Conversion tokens → caractères. Une estimation, pas une mesure par
-#: tokeniseur : le français tourne autour de 3 à 4 caractères par token sur
-#: les tokeniseurs courants, 3,5 est le milieu.
-_CARACTERES_PAR_TOKEN = 3.5
-#: Plafond, quel que soit le contexte : au-delà, la lecture d'une page
-#: allonge le délai avant le premier token sans gain mesuré. PROVISOIRE, à
-#: fixer d'après la mini-évaluation (4 000 / 8 000 / 16 000 caractères).
+#: Conversion tokens → caractères, MESURÉE (2026-10-19, qwen3.5-9b sous
+#: LM Studio, pages Wikipédia en français, tokens de prompt rapportés par le
+#: serveur, ratio pris par différence entre deux budgets pour éliminer le
+#: reste du prompt) :
+#:   - Photosynthèse + Cycle de Calvin (mesure du cas le plus chargé, #75) :
+#:     4 719 car. / 1 483 tokens = 3,18 ;
+#:   - pages de `tools/eval-lecture-url`, étage 2 (16 000 − 4 000) :
+#:     relativité 11 606 / 2 866 = 4,05, effet photoélectrique 11 630 / 3 820
+#:     = 3,04 — 3,48 sur les deux.
+#: Le ratio varie donc d'une page à l'autre (formules, nombres et noms propres
+#: coûtent plus de tokens par caractère). 3,2 est pris du côté prudent : il
+#: surestime les tokens d'une page « chère », ce qui garde le budget sous la
+#: part visée plutôt qu'au-dessus. L'ancienne valeur, 3,5, sous-estimait les
+#: tokens sur la mesure du cas le plus chargé (≈ 29 % du contexte au lieu de 25 %).
+_CARACTERES_PAR_TOKEN = 3.2
+#: Plafond, quel que soit le contexte. Fixé d'après la mini-évaluation de #75
+#: (`tools/eval-lecture-url`) : 8/10 réponses présentes dans l'extrait à 4 000
+#: et à 8 000 caractères, 10/10 à 16 000. Avec 25 % × 3,2 car./token, il
+#: n'est atteint qu'à partir d'un contexte chargé de 20 000 tokens.
 _BUDGET_LECTURE_MAX = 16000
 #: Plancher quand le contexte chargé est INCONNU (modèle pas encore chargé,
 #: fournisseur qui ne l'expose pas). Cinq fois le budget de la phase 4 : de
@@ -173,7 +185,7 @@ _BUDGET_LECTURE_PLANCHER = 4000
 def budget_lecture(contexte_charge: Optional[int]) -> int:
     """Budget TOTAL, en caractères, des pages lues d'un même message.
 
-    25 % du contexte chargé × 3,5 caractères par token, plafonné à
+    25 % du contexte chargé × 3,2 caractères par token, plafonné à
     `_BUDGET_LECTURE_MAX`. Le plancher ne s'applique qu'à un contexte
     INCONNU : un contexte connu et petit donne un budget petit, c'est voulu —
     le dépasser déborderait la fenêtre que le modèle a effectivement.

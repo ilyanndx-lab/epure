@@ -250,18 +250,18 @@ describe('detailBudgetLecture', () => {
   // réponse a pu tomber sous la coupe.
   it('contexte chargé connu : taille, budget, contexte et sa source', () => {
     expect(detailBudgetLecture({
-      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 6950,
-      budget_page: 7168, budget_caracteres: 7168, contexte_charge: 8192,
+      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 6400,
+      budget_page: 6553, budget_caracteres: 6553, contexte_charge: 8192,
       source_contexte: 'lmstudio /api/v1/models',
-    })).toBe('6950 car. sur 7168 — contexte chargé 8192 tokens (lmstudio /api/v1/models)')
+    })).toBe('6400 car. sur 6553 — contexte chargé 8192 tokens (lmstudio /api/v1/models)')
   })
 
   it('budget partagé entre plusieurs pages : la part de la page et le total', () => {
     expect(detailBudgetLecture({
-      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 3500,
-      budget_page: 3584, budget_caracteres: 7168, contexte_charge: 8192,
+      etape: 'lecture_url', statut: 'succès', selection: 'similarite', caracteres: 3200,
+      budget_page: 3276, budget_caracteres: 6553, contexte_charge: 8192,
       source_contexte: 'ollama /api/ps',
-    })).toBe('3500 car. sur 3584 (total 7168) — contexte chargé 8192 tokens (ollama /api/ps)')
+    })).toBe('3200 car. sur 3276 (total 6553) — contexte chargé 8192 tokens (ollama /api/ps)')
   })
 
   it('contexte inconnu : le plancher est dit comme tel', () => {
