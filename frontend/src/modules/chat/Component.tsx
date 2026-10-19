@@ -17,7 +17,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -534,6 +534,11 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
         </p>
       )
     }
+    case 'raisonnement_coupe':
+      return <p className="m-0">{libelleRaisonnement(etape)}</p>
+    case 'raisonnement_non_coupe':
+    case 'raisonnement_plafonne':
+      return <p className="m-0 text-warning">{libelleRaisonnement(etape)}</p>
     case 'outils_retires':
       // Raison (`lecture_url` / `contenu_web`) dite par `libelleRetraitOutils`.
       return <p className="m-0">{libelleRetraitOutils(etape)}</p>

@@ -117,7 +117,37 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
  */
 const ETAPES_HORS_RECHERCHE = new Set([
   'citations_invalides', 'lecture_url', 'reclassement_indisponible', 'outils_retires',
+  // Raisonnement coupé / reçu malgré tout / interrompu (#76) : accompagnent un
+  // tour web ou une lecture, sans être une recherche.
+  'raisonnement_coupe', 'raisonnement_non_coupe', 'raisonnement_plafonne',
 ])
+
+/**
+ * Libellé des étapes de raisonnement d'un tour web ou de lecture d'URL (#76,
+ * `modules/chat/router.py`) : coupé par défaut avec un modèle local, reçu
+ * malgré tout (réglage ignoré par le serveur), ou interrompu pour garder des
+ * tokens à la réponse. `null` pour toute autre étape.
+ */
+export function libelleRaisonnement(etape: EtapeTrace): string | null {
+  switch (etape.etape) {
+    case 'raisonnement_coupe': {
+      const origine = texte(etape.raison) === 'contenu_web' ? 'résultats web' : 'page lue'
+      return `Raisonnement coupé pour ce tour (${origine}, modèle local) : la réponse garde tout le budget de sortie.`
+    }
+    case 'raisonnement_non_coupe':
+      return 'Le modèle a raisonné malgré la coupure demandée (réglage ignoré par le serveur).'
+    case 'raisonnement_plafonne': {
+      const tokens = Number(etape.tokens_raisonnement) || 0
+      if (etape.relance === true) {
+        return `La relance a encore raisonné : interrompue après ${tokens} tokens, sans réponse.`
+      }
+      return `Raisonnement interrompu après ${tokens} tokens sur ${Number(etape.plafond_sortie) || 0} : `
+        + `réponse relancée sans lui, ${Number(etape.reserve_reponse) || 0} tokens réservés.`
+    }
+    default:
+      return null
+  }
+}
 
 /** Une lecture d'URL a-t-elle échoué (ou été refusée) ? Tout statut autre
  * que « succès » en est un : une trace abîmée ne doit pas passer pour lue. */
