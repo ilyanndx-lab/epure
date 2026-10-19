@@ -191,10 +191,13 @@ class _BaseTour(_Base):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def _modele(self, modele):
+    def _modele(self, modele, raisonnement=None):
         original = routeur_chat.memory.get_context
+        extra = {"modèle_actif": modele}
+        if raisonnement is not None:
+            extra["raisonnement"] = raisonnement
         patcher = mock.patch.object(routeur_chat.memory, "get_context",
-                                    lambda: {**original(), "modèle_actif": modele})
+                                    lambda: {**original(), **extra})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -313,6 +316,85 @@ class RaisonnementJamaisReinjecteTest(_Base):
         self.assertNotIn(self.MARQUEUR, second_prompt)
         persiste = repr(routeur_chat.history_engine.get_conversation(conv_id))
         self.assertNotIn(self.MARQUEUR, persiste)
+
+
+class ModeRaisonnementTest(unittest.TestCase):
+    """Trois états au lieu d'un booléen : `auto` (défaut), `active`, `desactive`.
+
+    `auto` coupe sur les tours de lecture d'URL et de recherche web avec un
+    modèle local ; `active` prime sur ce défaut partout ; `desactive` coupe
+    partout. Migration : toute valeur qui n'est pas l'un des trois états — en
+    particulier les anciens booléens `true`/`false` — devient `auto`."""
+
+    def test_trois_etats_conserves(self):
+        from core.memory import normaliser_raisonnement
+        for etat in ("auto", "active", "desactive"):
+            self.assertEqual(normaliser_raisonnement(etat), etat)
+
+    def test_migration_tout_le_reste_devient_auto(self):
+        from core.memory import normaliser_raisonnement
+        for ancienne in (True, False, None, "", "on", 1, {"x": 1}):
+            with self.subTest(ancienne=ancienne):
+                self.assertEqual(normaliser_raisonnement(ancienne), "auto")
+
+    def test_defaut_auto(self):
+        from core.memory import _CONTEXT_DEFAULT
+        self.assertEqual(_CONTEXT_DEFAULT["raisonnement"], "auto")
+
+
+class ModeRaisonnementReglageTest(_Base):
+    """`PATCH /context/settings` normalise à l'écriture, comme `tool_calling`."""
+
+    def _patch(self, valeur):
+        r = self.client.patch("/context/settings", json={"raisonnement": valeur},
+                              headers={"Authorization": f"Bearer {self.token}"})
+        self.assertEqual(r.status_code, 200)
+        return routeur_chat.memory.get_context()["raisonnement"]
+
+    def test_ecriture_normalisee(self):
+        self.assertEqual(self._patch("desactive"), "desactive")
+        self.assertEqual(self._patch("active"), "active")
+        self.assertEqual(self._patch(True), "auto")
+        self.assertEqual(self._patch("n'importe quoi"), "auto")
+
+
+class ModeRaisonnementTourTest(_BaseTour):
+    LMSTUDIO = "lmstudio:huihui-qwen3.5-9b-abliterated"
+
+    def test_active_prime_sur_le_defaut_des_tours_web(self):
+        self._modele(self.LMSTUDIO, "active")
+        _trames, conv_id = self._envoyer(f"Que dit cette page ? {_URL}")
+        appel = self.appels_stream[-1]
+        self.assertTrue(appel["raisonnement"])
+        self.assertEqual(self._etapes(conv_id, "raisonnement_coupe"), [])
+        # La réserve reste : elle ne coupe que ce qui priverait la réponse.
+        self.assertEqual(appel["reserve_reponse"], _RESERVE)
+
+    def test_desactive_coupe_partout(self):
+        self._modele(self.LMSTUDIO, "desactive")
+        self._envoyer("explique-moi le théorème de Rolle")
+        self.assertFalse(self.appels_stream[-1]["raisonnement"])
+
+    def test_desactive_sur_tour_web_pas_d_etape_de_coupure_par_defaut(self):
+        """La coupure vient du réglage, pas du défaut des tours web : la trace
+        ne doit pas l'attribuer à la page lue."""
+        self._modele(self.LMSTUDIO, "desactive")
+        _trames, conv_id = self._envoyer(f"Que dit cette page ? {_URL}")
+        self.assertFalse(self.appels_stream[-1]["raisonnement"])
+        self.assertEqual(self._etapes(conv_id, "raisonnement_coupe"), [])
+
+    def test_auto_tour_ordinaire_raisonne(self):
+        self._modele(self.LMSTUDIO, "auto")
+        self._envoyer("explique-moi le théorème de Rolle")
+        self.assertTrue(self.appels_stream[-1]["raisonnement"])
+
+    def test_ancien_booleen_traite_comme_auto(self):
+        for ancien in (True, False):
+            with self.subTest(ancien=ancien):
+                self._modele(self.LMSTUDIO, ancien)
+                _trames, conv_id = self._envoyer(f"Que dit cette page ? {_URL}")
+                self.assertFalse(self.appels_stream[-1]["raisonnement"])
+                self.assertEqual(len(self._etapes(conv_id, "raisonnement_coupe")), 1)
 
 
 if __name__ == "__main__":
