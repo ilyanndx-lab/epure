@@ -21,6 +21,8 @@ pu être mesuré n'est pas dans la table, et la conséquence est assumée : pas 
 camembert pour ce fournisseur-là.
 
     ollama    GET /api/ps        context_length          mesuré (cf. plus bas)
+    lmstudio  GET /api/v1/models loaded_instances[].config.context_length
+                                                         mesuré le 2026-10-18 (cf. plus bas)
     gemini    get_model()        input_token_limit       1 048 576 (2.5-flash)
     mistral   GET /v1/models     max_context_length      262 144 (small-latest)
     cerebras  GET /v1/models     —   clés de l'item : created, id, object, owned_by
@@ -39,10 +41,23 @@ deviner un nom de champ — la documentation de Groq annonce un ``context_window
 mais une doc n'est pas une mesure, et c'est exactement la distinction que ce
 dépôt applique partout ailleurs. À compléter le jour où la clé sera renouvelée.
 
-**FLM et LM Studio** ne sont pas mesurés non plus, leurs serveurs étant éteints
-sur ce poste au moment de la mesure (LM Studio porte pourtant un
-``max_context_length`` sur ``/api/v0/models``, cf. `core/materiel.py:791`) : à
-mesurer avant de les brancher, pas à supposer.
+**FLM** n'est pas mesuré non plus, son serveur étant éteint sur ce poste au
+moment de la mesure : à mesurer avant de le brancher, pas à supposer.
+
+── LM Studio : le contexte ALLOUÉ, pas ``max_context_length`` ──────────────
+
+Mesuré le 2026-10-18 (LM Studio, port 1234), le 9B chargé par
+``lms load … --context-length 8192`` : la même réponse de ``GET
+/api/v1/models`` porte ``max_context_length: 262144`` (ce que le modèle SAIT
+tenir) et ``loaded_instances[0].config.context_length: 8192`` (ce que LM Studio
+a ALLOUÉ). ``/api/v0/models`` dit la même chose en ``loaded_context_length:
+8192``. C'est le pendant exact du couple ``/api/ps`` / ``/api/show`` d'Ollama,
+et la même règle s'applique : le maximum est la source écartée. Un modèle sans
+instance chargée n'a pas de fenêtre connue → ``None``.
+
+``loaded_instances`` se remplit dès le DÉBUT d'un chargement
+(`core.models.etat_modele_lmstudio`) ; ça ne gêne pas ici, la configuration de
+l'instance (dont ``context_length``) est fixée avant que les poids arrivent.
 
 ── Ollama : ``/api/ps``, et pourquoi pas ``/api/show`` ─────────────────────
 
@@ -73,11 +88,14 @@ l'ait demandé »). D'où le mémo ci-dessous : une sonde par modèle et par ses
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import urllib.error
+import urllib.request
 from typing import Optional
 
+from core.llm import lmstudio_host as _lmstudio_host
 from core.models import _http_json
 from core.ollama_memoire import lister_charges
 
@@ -129,6 +147,46 @@ def _fenetre_ollama(modele_id: str) -> Optional[int]:
         if entree.get("id") == modele_id:
             valeur = entree.get("fenetre_contexte")
             return valeur if isinstance(valeur, int) and valeur > 0 else None
+    return None
+
+
+#: Délai de la sonde LM Studio : serveur LOCAL, même borne que
+#: `core.models._TIMEOUT_SONDE_LMSTUDIO_S`.
+_TIMEOUT_LMSTUDIO_S = 2
+
+
+def _modeles_lmstudio() -> Optional[dict]:
+    """``GET /api/v1/models`` brut, ou ``None`` si LM Studio ne répond pas."""
+    try:
+        req = urllib.request.Request(f"{_lmstudio_host}/api/v1/models")
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_LMSTUDIO_S) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _fenetre_lmstudio(modele_id: str) -> Optional[int]:
+    """Contexte ALLOUÉ à l'instance chargée de ce modèle. ``None`` sinon.
+
+    Pas de mémo, même raison qu'Ollama (`_fenetre_ollama`) : recharger le
+    modèle avec un autre contexte change la valeur. Le modèle est reconnu
+    par sa clé, une de ses variantes (``qwen/qwen3.8-27b@q4_k_m``) ou l'id
+    d'une de ses instances.
+
+    Toutes les entrées sont parcourues, pas seulement la première qui porte
+    ce nom : la même clé peut apparaître deux fois (catalogue de ce poste et
+    celui d'un appareil relié, mesuré le 2026-10-19), et l'entrée sans
+    instance peut venir d'abord.
+    """
+    for item in ((_modeles_lmstudio() or {}).get("models") or []):
+        instances = item.get("loaded_instances") or []
+        noms = {item.get("key"), *(item.get("variants") or []), *(i.get("id") for i in instances)}
+        if modele_id not in noms:
+            continue
+        for instance in instances:
+            valeur = (instance.get("config") or {}).get("context_length")
+            if isinstance(valeur, int) and valeur > 0:
+                return valeur
     return None
 
 
@@ -199,18 +257,23 @@ def fenetre_de(modele_id: str, provider: Optional[str] = None) -> tuple[Optional
     prefixe_decoupe, nom = _decouper(modele_id)
     prefixe = provider or prefixe_decoupe
 
-    if prefixe == "ollama":
+    locales = {
+        "ollama": (_fenetre_ollama, "ollama /api/ps"),
+        "lmstudio": (_fenetre_lmstudio, "lmstudio /api/v1/models"),
+    }
+    if prefixe in locales:
+        sonde, libelle = locales[prefixe]
         try:
-            valeur = _fenetre_ollama(nom)
+            valeur = sonde(nom)
         except Exception:
-            logger.exception("Fenêtre de contexte illisible pour %s (Ollama)", modele_id)
+            logger.exception("Fenêtre de contexte illisible pour %s (%s)", modele_id, prefixe)
             return None, None
-        return (valeur, "ollama /api/ps") if valeur else (None, None)
+        return (valeur, libelle) if valeur else (None, None)
 
     entree = _SONDES.get(prefixe)
     if entree is None:
         # Fournisseur mesuré comme ne partageant rien, ou fournisseur non mesuré
-        # (Groq, FLM, LM Studio) : les deux cas rendent la même chose, et c'est
+        # (Groq, FLM) : les deux cas rendent la même chose, et c'est
         # voulu — dans les deux, on ne SAIT pas, donc on n'affiche pas.
         return None, None
 

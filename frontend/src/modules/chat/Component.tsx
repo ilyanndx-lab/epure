@@ -17,7 +17,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -508,9 +508,11 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
         )
       }
       const passages = Number(etape.passages_retenus) || 0
+      const budget = detailBudgetLecture(etape)
       return (
         <p className="m-0">
           Page lue directement (sans moteur de recherche) : {lien} — {passages} passage{passages > 1 ? 's' : ''} retenu{passages > 1 ? 's' : ''} en {Number(etape.ms) || 0} ms
+          {budget && <span className="text-muted"> ({budget})</span>}
         </p>
       )
     }

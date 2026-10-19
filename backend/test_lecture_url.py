@@ -15,8 +15,9 @@ dégâts :
      connexion (401, redirection vers /login, formulaire de mot de passe
      sans contenu), 403, paywall, délai dépassé : chacun a sa raison lisible,
      qui part dans la trace persistée.
-  3. **Mêmes budgets que la phase 4** (`_TIMEOUT_PAGE_S`, `_TIMEOUT_ETAPE_S`,
-     `_BUDGET_CARACTERES_PAR_PAGE`) — pas une seconde série de constantes.
+  3. **Mêmes budgets de temps que la phase 4** (`_TIMEOUT_PAGE_S`,
+     `_TIMEOUT_ETAPE_S`) — pas une seconde série de constantes. Le budget de
+     CARACTÈRES, lui, suit le contexte chargé : `test_budget_lecture_url.py`.
 
 Isolé du réseau aux points d'entrée que le module expose pour ça :
 `_ouvrir` (l'appel HTTP), `socket.getaddrinfo` (la résolution DNS) et
@@ -370,33 +371,33 @@ class LectureReussieTest(_Base):
         self.assertEqual(etape["passages_retenus"], lecture.passages)
         self.assertIn("ms", etape)
 
-    def test_budget_de_caracteres_de_la_phase_4(self):
+    def test_budget_de_caracteres_plancher_sans_contexte_connu(self):
+        """Sans contexte chargé connu, le plancher de `budget_lecture` — et
+        plus les 800 caractères de la phase 4 (cf. test_budget_lecture_url)."""
         def ouvrir(req, timeout):
             return _FausseReponse(_article(nb_paragraphes=60), url_finale=req.full_url)
 
         lectures, _etapes, _ = self._lire(["https://site.example/long"], "question",
                                           ouvrir=ouvrir)
         self.assertLessEqual(len(lectures[0].resultat.extrait),
-                             webcontent._BUDGET_CARACTERES_PAR_PAGE + 1)
-        self.assertLessEqual(lectures[0].passages, webcontent._MAX_PASSAGES_PAR_PAGE)
+                             webcontent._BUDGET_LECTURE_PLANCHER)
 
     def test_reclassement_par_la_question(self):
         """Les passages retenus sont ceux qui répondent à la question, comme
         en phase 4 — pas simplement le début de la page.
 
-        Un seul passage retenu pour ce test : avec trois, ils sont remis dans
-        l'ordre de la page (choix de la phase 4) puis tronqués à 800
-        caractères, et un passage pertinent situé tard dans la page tombe
-        sous la coupe — comportement de la phase 4, gardé à l'identique."""
+        Ce test devait réduire la sélection à UN passage : avec trois, remis
+        dans l'ordre de la page puis tronqués à 800 caractères, le passage
+        pertinent tombait sous la coupe. Le budget proportionnel au contexte
+        a levé cette limite (`test_budget_lecture_url.FinDePageTest`)."""
         html = _article(nb_paragraphes=30, mot="banal").replace(
             "Paragraphe 25 de l'article", "Paragraphe 25 PERTINENT de l'article")
 
         def ouvrir(req, timeout):
             return _FausseReponse(html, url_finale=req.full_url)
 
-        with mock.patch.object(webcontent, "_MAX_PASSAGES_PAR_PAGE", 1):
-            lectures, _etapes, _ = self._lire(["https://site.example/a"], "PERTINENT ?",
-                                              ouvrir=ouvrir)
+        lectures, _etapes, _ = self._lire(["https://site.example/a"], "PERTINENT ?",
+                                          ouvrir=ouvrir)
         self.assertIn("PERTINENT", lectures[0].resultat.extrait)
 
     def test_embedding_indisponible_debut_de_page_garde_et_signale(self):

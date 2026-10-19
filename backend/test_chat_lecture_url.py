@@ -458,7 +458,37 @@ class TourSuivantTest(_Base):
         self.assertEqual(reponse_1["sources"],
                          [{"rang": 1, "titre": "Le théorème de Rolle", "url": _URL}])
         lecture = next(e for e in reponse_1["trace_recherche"] if e["etape"] == "lecture_url")
-        self.assertLessEqual(set(lecture), {"etape", "url", "statut", "ms", "passages_retenus", "raison"})
+        # Le budget de lecture (`core.webcontent.lire_urls`) ajoute des
+        # NOMBRES et un libellé de source, jamais du contenu de page.
+        self.assertLessEqual(set(lecture), {
+            "etape", "url", "statut", "ms", "passages_retenus", "raison",
+            "selection", "caracteres", "budget_page", "budget_caracteres",
+            "contexte_charge", "source_contexte",
+        })
+
+
+class BudgetSelonLeContexteChargeTest(_Base):
+    """Le budget de lecture se calcule sur le contexte CHARGÉ du modèle de ce
+    tour (`core.fenetre_contexte.fenetre_de`), et la trace persistée dit
+    lequel et d'où il vient."""
+
+    def test_contexte_du_modele_du_tour_dans_la_trace(self):
+        with mock.patch.object(routeur_chat, "fenetre_de",
+                               return_value=(8192, "lmstudio /api/v1/models")) as fenetre:
+            _trames, conv_id = self._envoyer(f"Que dit cette page sur la dérivée ? {_URL}")
+        fenetre.assert_called_once()
+        self.assertEqual(fenetre.call_args.args[0], routeur_chat.llm._model)
+        lecture = next(e for e in self._trace(conv_id) if e["etape"] == "lecture_url")
+        self.assertEqual(lecture["contexte_charge"], 8192)
+        self.assertEqual(lecture["budget_caracteres"], 6553)
+        self.assertEqual(lecture["source_contexte"], "lmstudio /api/v1/models")
+
+    def test_contexte_inconnu_plancher(self):
+        with mock.patch.object(routeur_chat, "fenetre_de", return_value=(None, None)):
+            _trames, conv_id = self._envoyer(f"Résume {_URL}")
+        lecture = next(e for e in self._trace(conv_id) if e["etape"] == "lecture_url")
+        self.assertIsNone(lecture["contexte_charge"])
+        self.assertEqual(lecture["budget_caracteres"], 4000)
 
 
 class TexteSansUrlsTest(unittest.TestCase):

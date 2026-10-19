@@ -47,6 +47,7 @@ from core.citations import (
     RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls,
     extraire_urls_ordonnees, valider_citations,
 )
+from core.fenetre_contexte import fenetre_de
 from core.webcontent import LectureUrl, lire_urls, recuperer_contenu
 from core.websearch import (
     PREFIXE_ERREUR,
@@ -232,7 +233,7 @@ def _construire_ctx_lecture(lectures: list[LectureUrl]) -> str:
 
 
 def _lire_urls_pour_prompt(
-    user_text: str, rang_de_depart: int, on_etape=None,
+    user_text: str, rang_de_depart: int, on_etape=None, modele: Optional[str] = None,
 ) -> tuple[str, list[ResultatWeb]]:
     """Lit les URLs du message et rend ``(contexte, pages_lues)``.
 
@@ -244,12 +245,19 @@ def _lire_urls_pour_prompt(
 
     Synchrone (appelée via `run_in_executor`) : `lire_urls` borne elle-même
     sa durée (`_TIMEOUT_ETAPE_S`).
+
+    `modele` = le modèle de CE tour : son contexte chargé fixe le budget de
+    caractères des pages (`core.webcontent.budget_lecture`). Sondé à chaque
+    tour, jamais mémorisé pour un modèle local : un rechargement avec un
+    autre contexte le change.
     """
     urls = extraire_urls_ordonnees(user_text)
     if not urls:
         return "", []
+    contexte_charge, source_contexte = fenetre_de(modele) if modele else (None, None)
     lectures = lire_urls(urls, _texte_sans_urls(user_text),
-                         rang_de_depart=rang_de_depart, on_etape=on_etape)
+                         rang_de_depart=rang_de_depart, on_etape=on_etape,
+                         contexte_charge=contexte_charge, source_contexte=source_contexte)
     pages = [lec.resultat for lec in lectures if lec.resultat is not None]
     return _construire_ctx_lecture(lectures), pages
 
@@ -1481,7 +1489,8 @@ async def ws_chat(websocket: WebSocket):
             if urls_du_message:
                 _t_lecture = time.time()
                 lecture_ctx, pages_lues = await loop.run_in_executor(
-                    None, _lire_urls_pour_prompt, user_text, len(web_resultats), _on_etape_recherche
+                    None, _lire_urls_pour_prompt, user_text, len(web_resultats), _on_etape_recherche,
+                    model_override or llm._model,
                 )
                 web_resultats.extend(pages_lues)
                 logger.info("TTFT Lecture URL: %.3fs (%d/%d page(s) lue(s))",
