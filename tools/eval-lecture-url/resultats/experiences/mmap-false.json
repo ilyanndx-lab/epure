@@ -1,0 +1,40 @@
+{
+ "False": {
+  "t_chargement_s": 37.9,
+  "lmstudio_ws_go": 2.54,
+  "lmstudio_prive_go": 8.11,
+  "libre_charge_go": 5.36,
+  "requete": {
+   "usage": {
+    "prompt_tokens": 1280,
+    "completion_tokens": 101,
+    "total_tokens": 1381,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "t_total_s": 31.85,
+   "prompt_eval": [
+    "16866.39",
+    "1280",
+    "75.89"
+   ],
+   "eval": [
+    [
+     "14738.67",
+     "101",
+     "6.78"
+    ]
+   ],
+   "slots": [
+    [
+     "0",
+     "selected slot by LRU"
+    ]
+   ]
+  },
+  "lmstudio_ws_apres_go": 2.76,
+  "lmstudio_prive_apres_go": 8.33,
+  "libre_apres_go": 5.07
+ }
+}
