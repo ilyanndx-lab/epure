@@ -101,10 +101,6 @@ class _Base(unittest.TestCase):
         cls.token = get_api_token()
 
     def setUp(self):
-        # Contexte chargé gardé en cache par le chat (`core.fenetre_contexte`) :
-        # vidé avant ET après, sinon la valeur d'un test fuirait dans le suivant.
-        routeur_chat.fenetre_contexte.oublier_contexte_charge()
-        self.addCleanup(routeur_chat.fenetre_contexte.oublier_contexte_charge)
         self.prompts: list[list[dict]] = []
         stream_original = routeur_chat.llm.stream
         self.addCleanup(setattr, routeur_chat.llm, "stream", stream_original)

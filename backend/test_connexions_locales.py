@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Connexions aux serveurs LOCAUX (LM Studio, Ollama) : adresse, réutilisation,
-contexte chargé gardé en cache.
+contexte chargé relu à chaque tour.
 
 Mesuré le 2026-10-19 sur ce poste, pendant le diagnostic d'un premier tour
 lent (#80) :
@@ -16,10 +16,13 @@ lent (#80) :
   * la sonde du contexte chargé (`fenetre_de`) refaite à chaque tour d'URL :
     encore 2 s.
 
-Ce fichier verrouille les trois parades : `127.0.0.1` par défaut (toujours
-surchargeable par `OLLAMA_HOST` / `LMSTUDIO_HOST`), un client réutilisé par
-fournisseur, et un contexte chargé relu seulement quand le modèle actif change
-ou qu'une requête échoue.
+Ce fichier verrouille les deux parades : `127.0.0.1` par défaut (toujours
+surchargeable par `OLLAMA_HOST` / `LMSTUDIO_HOST`) et un client réutilisé par
+fournisseur. La sonde du contexte chargé, elle, n'est PAS mise en cache : par
+`127.0.0.1` elle ne coûte plus que ~30 ms (médiane mesurée le 2026-10-20,
+modèle chargé), et un cache gardait l'ancienne
+valeur quand le même modèle était rechargé avec un autre contexte. Le dernier
+test vérifie qu'elle est bien relue à chaque tour d'URL.
 
 Usage :
     python test_connexions_locales.py
@@ -88,68 +91,27 @@ class ClientReutiliseTest(unittest.TestCase):
             self.assertIsNot(self.moteur._openai_client("mistral"), a)
 
 
-class ContexteChargeEnCacheTest(unittest.TestCase):
-    def setUp(self):
-        fenetre_contexte.oublier_contexte_charge()
-        self.addCleanup(fenetre_contexte.oublier_contexte_charge)
-        self.sonde = mock.patch.object(fenetre_contexte, "fenetre_de",
-                                       return_value=(8192, "lmstudio /api/v1/models"))
-        self.fenetre = self.sonde.start()
-        self.addCleanup(self.sonde.stop)
-
-    def test_meme_modele_une_seule_sonde(self):
-        for _ in range(3):
-            self.assertEqual(fenetre_contexte.contexte_charge("lmstudio:m"),
-                             (8192, "lmstudio /api/v1/models"))
-        self.assertEqual(self.fenetre.call_count, 1)
-
-    def test_modele_actif_change_relu(self):
-        fenetre_contexte.contexte_charge("lmstudio:m")
-        fenetre_contexte.contexte_charge("lmstudio:autre")
-        self.assertEqual(self.fenetre.call_count, 2)
-
-    def test_inconnu_jamais_garde(self):
-        """Un modèle pas encore chargé rend `None` ; le garder figerait le
-        plancher alors qu'il sera chargé au tour suivant."""
-        self.fenetre.return_value = (None, None)
-        fenetre_contexte.contexte_charge("lmstudio:m")
-        fenetre_contexte.contexte_charge("lmstudio:m")
-        self.assertEqual(self.fenetre.call_count, 2)
-
-    def test_oublier_force_la_relecture(self):
-        fenetre_contexte.contexte_charge("lmstudio:m")
-        fenetre_contexte.oublier_contexte_charge()
-        fenetre_contexte.contexte_charge("lmstudio:m")
-        self.assertEqual(self.fenetre.call_count, 2)
-
-
-class ContexteChargeDansLeChatTest(_Base):
+class ContexteChargeReluChaqueTourTest(_Base):
     def setUp(self):
         super().setUp()
-        fenetre_contexte.oublier_contexte_charge()
-        self.addCleanup(fenetre_contexte.oublier_contexte_charge)
         patcher = mock.patch.object(fenetre_contexte, "fenetre_de",
                                     return_value=(8192, "lmstudio /api/v1/models"))
         self.fenetre = patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_deux_tours_d_url_une_seule_sonde(self):
+    def test_chaque_tour_d_url_relit_le_contexte(self):
         self._envoyer(f"Résume {_URL}")
         self._envoyer(f"Et encore {_URL}")
-        self.assertEqual(self.fenetre.call_count, 1)
-
-    def test_requete_en_echec_relit_au_tour_suivant(self):
-        self._envoyer(f"Résume {_URL}")
-
-        def stream_en_echec(messages, model=None, raisonnement=True, **kw):
-            raise RuntimeError("context length exceeded")
-        routeur_chat.llm.stream = stream_en_echec
-        # Le tour en échec lit encore la valeur gardée…
-        self._envoyer(f"Résume {_URL}")
-        self.assertEqual(self.fenetre.call_count, 1)
-        # … et c'est le tour SUIVANT qui la relit.
-        self._envoyer(f"Résume {_URL}")
         self.assertEqual(self.fenetre.call_count, 2)
+
+    def test_meme_modele_recharge_avec_un_autre_contexte(self):
+        """Le cas qu'un cache manquait : même modèle, rechargé à 16 384 sans
+        erreur entre-temps. Le tour suivant doit lire la nouvelle valeur."""
+        self._envoyer(f"Résume {_URL}")
+        self.fenetre.return_value = (16384, "lmstudio /api/v1/models")
+        _trames, conv_id = self._envoyer(f"Résume {_URL}")
+        lecture = next(e for e in self._trace(conv_id) if e["etape"] == "lecture_url")
+        self.assertEqual(lecture["contexte_charge"], 16384)
 
 
 if __name__ == "__main__":

@@ -264,9 +264,11 @@ def _lire_urls_pour_prompt(
     urls = extraire_urls_ordonnees(user_text)
     if not urls:
         return "", []
-    # En cache pour le modèle actif (`core.fenetre_contexte.contexte_charge`) :
-    # la sonde coûtait un aller-retour vers le serveur à chaque tour d'URL.
-    contexte_charge, source_contexte = (fenetre_contexte.contexte_charge(modele)
+    # Relu à CHAQUE tour, sans cache : par `127.0.0.1`, la sonde ne coûte plus
+    # que ~30 ms (médiane mesurée le 2026-10-20, modèle chargé ; ~2 s par
+    # `localhost`, #80), et un cache gardait l'ancienne valeur quand le même
+    # modèle était rechargé avec un autre contexte.
+    contexte_charge, source_contexte = (fenetre_contexte.fenetre_de(modele)
                                         if modele else (None, None))
     lectures = lire_urls(urls, _texte_sans_urls(user_text),
                          rang_de_depart=rang_de_depart, on_etape=on_etape,
@@ -1960,10 +1962,6 @@ async def ws_chat(websocket: WebSocket):
                 if item is None:
                     break
                 if isinstance(item, dict) and "error" in item:
-                    # Requête en échec (débordement de contexte, modèle
-                    # rechargé…) : le contexte chargé gardé en cache est relu
-                    # au tour suivant.
-                    fenetre_contexte.oublier_contexte_charge()
                     await websocket.send_text(
                         json.dumps({"type": "error", "content": item["error"], "conversation_id": conv_id})
                     )
