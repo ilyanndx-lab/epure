@@ -21,13 +21,34 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_FILE = BACKEND_DIR / "config.yaml"
 
-# OLLAMA_HOST=0.0.0.0 is a server *listen* address — the client can't connect
-# to it on Windows. Normalize to localhost for all client calls.
-ollama_host = os.environ.get("OLLAMA_HOST", "").strip() or "http://localhost:11434"
-if "0.0.0.0" in ollama_host:
-    ollama_host = ollama_host.replace("0.0.0.0", "localhost")
-if not ollama_host.startswith("http"):
-    ollama_host = f"http://{ollama_host}:11434"
+#: Adresse par défaut des serveurs LOCAUX : `127.0.0.1`, pas `localhost`.
+#:
+#: Mesuré le 2026-10-19 sur ce poste (diagnostic d'un premier tour lent, #80) :
+#: `localhost` résout d'abord `::1` ; LM Studio n'écoute qu'en IPv4
+#: (`127.0.0.1:1234`), et chaque NOUVELLE connexion attendait ~2 s avant de
+#: retomber sur IPv4 — 2,09 s contre 0,03 s (urllib), deux fois par tour d'URL
+#: (sonde du contexte chargé, puis requête de génération). Ollama, qui écoute ici
+#: sur `0.0.0.0` et `[::]`, n'en souffrait pas (0,00 à 0,06 s par les deux
+#: noms) ; à sa configuration par défaut (IPv4 local seul), il y serait exposé
+#: pareil. Toujours surchargeable par `OLLAMA_HOST` / `LMSTUDIO_HOST`.
+_HOTE_LOCAL = "127.0.0.1"
+
+
+def hote_ollama(valeur: str) -> str:
+    """URL du serveur Ollama à partir de `OLLAMA_HOST` (vide = défaut).
+
+    `OLLAMA_HOST=0.0.0.0` est une adresse d'ÉCOUTE — le client ne peut pas s'y
+    connecter sous Windows (incident connu) : elle devient la boucle locale.
+    """
+    hote = (valeur or "").strip() or f"http://{_HOTE_LOCAL}:11434"
+    if "0.0.0.0" in hote:
+        hote = hote.replace("0.0.0.0", _HOTE_LOCAL)
+    if not hote.startswith("http"):
+        hote = f"http://{hote}:11434"
+    return hote
+
+
+ollama_host = hote_ollama(os.environ.get("OLLAMA_HOST", ""))
 
 
 def _ollama_timeout_s() -> float:
@@ -99,9 +120,16 @@ _vision_ollama_client = ollama.Client(
 #: silencieusement si l'une des deux normalisations est oubliée un jour — même
 #: raison que `core.models.ollama_host` est déjà importé d'ici plutôt que
 #: reparsé.
-lmstudio_host = os.environ.get("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
-if not lmstudio_host.startswith("http"):
-    lmstudio_host = f"http://{lmstudio_host}:1234"
+def hote_lmstudio(valeur: str) -> str:
+    """URL du serveur LM Studio à partir de `LMSTUDIO_HOST` (vide = défaut,
+    `127.0.0.1` — cf. `_HOTE_LOCAL`)."""
+    hote = (valeur or "").strip() or f"http://{_HOTE_LOCAL}:1234"
+    if not hote.startswith("http"):
+        hote = f"http://{hote}:1234"
+    return hote
+
+
+lmstudio_host = hote_lmstudio(os.environ.get("LMSTUDIO_HOST", ""))
 
 # OpenAI-compatible providers: name → (base_url, env_key | None)
 # env_key=None means no API key required (local server)
@@ -915,6 +943,14 @@ class LLMEngine:
         return "ollama", model
 
     def _openai_client(self, provider: str):
+        """Client OpenAI RÉUTILISÉ par fournisseur (connexions keep-alive).
+
+        Un client neuf à chaque appel ouvrait une connexion neuve à chaque tour
+        — et payait, vers LM Studio joint par `localhost`, ~2 s de repli IPv6
+        à chaque fois (mesuré, #80). La clé fait partie de la clé de cache :
+        une clé saisie dans Réglages prend effet au tour suivant, sans
+        redémarrage, comme avant.
+        """
         base_url, key_name = _OPENAI_COMPAT[provider]
         if key_name is None:
             api_key = "not-needed"  # local server, no auth required
@@ -922,11 +958,15 @@ class LLMEngine:
             api_key = os.environ.get(key_name, "").strip()
             if not api_key:
                 raise ValueError(f"{key_name} non configurée — ajoutez-la dans Settings")
-        try:
-            from openai import OpenAI
-            return OpenAI(base_url=base_url, api_key=api_key)
-        except ImportError:
-            raise RuntimeError("Package 'openai' non installé — pip install openai")
+        clients = self.__dict__.setdefault("_clients_openai", {})
+        cle = (provider, base_url, api_key)
+        if cle not in clients:
+            try:
+                from openai import OpenAI
+            except ImportError:
+                raise RuntimeError("Package 'openai' non installé — pip install openai")
+            clients[cle] = OpenAI(base_url=base_url, api_key=api_key)
+        return clients[cle]
 
     # ── Public API ───────────────────────────────────────────────────────────
 

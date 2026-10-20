@@ -293,3 +293,4 @@ def fenetre_de(modele_id: str, provider: Optional[str] = None) -> tuple[Optional
         _MEMO[cle] = valeur
         return valeur, libelle
     return None, None
+

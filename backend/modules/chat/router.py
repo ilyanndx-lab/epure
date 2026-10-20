@@ -48,7 +48,7 @@ from core.citations import (
     RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls,
     extraire_urls_ordonnees, valider_citations,
 )
-from core.fenetre_contexte import fenetre_de
+from core import fenetre_contexte
 from core.webcontent import LectureUrl, lire_urls, recuperer_contenu
 from core.websearch import (
     PREFIXE_ERREUR,
@@ -264,7 +264,12 @@ def _lire_urls_pour_prompt(
     urls = extraire_urls_ordonnees(user_text)
     if not urls:
         return "", []
-    contexte_charge, source_contexte = fenetre_de(modele) if modele else (None, None)
+    # Relu à CHAQUE tour, sans cache : par `127.0.0.1`, la sonde ne coûte plus
+    # que ~30 ms (médiane mesurée le 2026-10-20, modèle chargé ; ~2 s par
+    # `localhost`, #80), et un cache gardait l'ancienne valeur quand le même
+    # modèle était rechargé avec un autre contexte.
+    contexte_charge, source_contexte = (fenetre_contexte.fenetre_de(modele)
+                                        if modele else (None, None))
     lectures = lire_urls(urls, _texte_sans_urls(user_text),
                          rang_de_depart=rang_de_depart, on_etape=on_etape,
                          contexte_charge=contexte_charge, source_contexte=source_contexte)
