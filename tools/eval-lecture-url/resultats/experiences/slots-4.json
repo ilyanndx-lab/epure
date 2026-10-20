@@ -1,0 +1,99 @@
+{
+ "parallel": 4,
+ "libre_charge_go": 5.83,
+ "essais": [
+  {
+   "prompt_tokens": 1280,
+   "details": null,
+   "slot": [
+    [
+     "0",
+     "LRU, n_tokens = 0, t_last = -1"
+    ]
+   ],
+   "retraites": "1280",
+   "pe_ms": "29608.15",
+   "lignes_cache": [
+    "\"content\": \"[PROFIL ÉLÈVE]\\nPoints forts : intérêt pour les thé... <Truncated in logs> ...utôt que de compléter de mémoire sans le signaler.\"",
+    "\"content\": \"Selon cette page, quelle est la puissance approxim... <Truncated in logs> ...? https://fr.wikipedia.org/wiki/Photosynth%C3%A8se\"",
+    "[2026-10-20 13:34:54][DEBUG] 1.28.533.346 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1295, truncated = 0"
+   ],
+   "nom": "ref tour 1"
+  },
+  {
+   "prompt_tokens": 1307,
+   "details": null,
+   "slot": [
+    [
+     "1",
+     "LRU, n_tokens = 0, t_last = -1\r"
+    ]
+   ],
+   "retraites": "1307",
+   "pe_ms": "30587.51",
+   "lignes_cache": [
+    "\"content\": \"[PROFIL ÉLÈVE]\\nPoints forts : intérêt pour les thé... <Truncated in logs> ...utôt que de compléter de mémoire sans le signaler.\"",
+    "\"content\": \"Selon cette page, quelle est la puissance approxim... <Truncated in logs> ...? https://fr.wikipedia.org/wiki/Photosynth%C3%A8se\"",
+    "\"content\": \"D'après cette page, qui a élaboré en novembre 2013... <Truncated in logs> ... ? https://fr.wikipedia.org/wiki/Machine_de_Turing\"",
+    "[2026-10-20 13:35:30][DEBUG] 2.04.812.005 I slot      release: id  1 | task 20 | stop processing: n_tokens = 1322, truncated = 0"
+   ],
+   "nom": "ref tour 2"
+  },
+  {
+   "prompt_tokens": 1307,
+   "details": null,
+   "slot": [
+    [
+     "1",
+     "LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.989"
+    ]
+   ],
+   "retraites": "4",
+   "pe_ms": "536.01",
+   "lignes_cache": [
+    "\"content\": \"[PROFIL ÉLÈVE]\\nPoints forts : intérêt pour les thé... <Truncated in logs> ...utôt que de compléter de mémoire sans le signaler.\"",
+    "\"content\": \"Selon cette page, quelle est la puissance approxim... <Truncated in logs> ...? https://fr.wikipedia.org/wiki/Photosynth%C3%A8se\"",
+    "\"content\": \"D'après cette page, qui a élaboré en novembre 2013... <Truncated in logs> ... ? https://fr.wikipedia.org/wiki/Machine_de_Turing\"",
+    "[2026-10-20 13:35:36][DEBUG] 2.10.702.879 I slot      release: id  1 | task 41 | stop processing: n_tokens = 1322, truncated = 0"
+   ],
+   "nom": "ref tour 2 répété"
+  },
+  {
+   "prompt_tokens": 2041,
+   "details": null,
+   "slot": [
+    [
+     "2",
+     "LRU, n_tokens = 0, t_last = -1\r"
+    ]
+   ],
+   "retraites": "2041",
+   "pe_ms": "43314.45",
+   "lignes_cache": [
+    "\"content\": \"[PROFIL ÉLÈVE]\\nPoints forts : intérêt pour les thé... <Truncated in logs> ...ôt de coller le texte de la page dans son message.\"",
+    "\"content\": \"Contenu de page(s) web fournie(s) par l'utilisateu... <Truncated in logs> ...? https://fr.wikipedia.org/wiki/Photosynth%C3%A8se\"",
+    "2.59.074.771 I slot      release: id  2 | task 58 | stop processing: n_tokens = 2056, truncated = 0"
+   ],
+   "nom": "var tour 1"
+  },
+  {
+   "prompt_tokens": 2104,
+   "details": null,
+   "slot": [
+    [
+     "3",
+     "LRU, n_tokens = 0, t_last = -1\r"
+    ]
+   ],
+   "retraites": "2104",
+   "pe_ms": "41326.51",
+   "lignes_cache": [
+    "\"content\": \"[PROFIL ÉLÈVE]\\nPoints forts : intérêt pour les thé... <Truncated in logs> ...ôt de coller le texte de la page dans son message.\"",
+    "\"content\": \"Selon cette page, quelle est la puissance approxim... <Truncated in logs> ...? https://fr.wikipedia.org/wiki/Photosynth%C3%A8se\"",
+    "\"content\": \"Recherche web : Erreur de recherche web : <urlopen... <Truncated in logs> ... ? https://fr.wikipedia.org/wiki/Machine_de_Turing\"",
+    "[2026-10-20 13:37:10][DEBUG] 3.44.378.052 I slot      release: id  3 | task 78 | stop processing: n_tokens = 2119, truncated = 0"
+   ],
+   "nom": "var tour 2"
+  }
+ ]
+}

@@ -1,0 +1,81 @@
+{
+ "meta": {
+  "modele": "huihui-qwen3.5-9b-abliterated",
+  "contexte_charge": 8192,
+  "raisonnement": "coupé (reasoning_effort: none)",
+  "budgets": [
+   4000,
+   16000
+  ],
+  "max_tokens_sortie": 1024,
+  "sur_secteur": true,
+  "debut": "2026-10-20 13:41",
+  "questions": [
+   "relativite_restreinte",
+   "photoelectrique"
+  ],
+  "arret": null
+ },
+ "essais": [
+  {
+   "page": "relativite_restreinte",
+   "budget": 4000,
+   "question": "D'après cette page, quels sont les deux autres noms donnés au référentiel galiléen ?",
+   "attendu": "référentiel de Lorentz et référentiel inertiel",
+   "caracteres": 3848,
+   "memoire_libre_go": 5.7,
+   "reponse": "D'après le texte fourni, le « référentiel galiléen » est également appelé **référentiel inertiel** (ou **inertiel**) [1].\n\nLe passage précise que la vitesse de la lumière a la même valeur dans tous les « référentiels galiléens (ou inertiels) » et qu'Einstein a dû étendre le principe de relativité à cette classe de référentiels [1].",
+   "t_premier_token_s": 22.56,
+   "t_total_s": 35.0,
+   "tokens_prompt": 1154,
+   "tokens_sortie": 92,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  },
+  {
+   "page": "relativite_restreinte",
+   "budget": 16000,
+   "question": "D'après cette page, quels sont les deux autres noms donnés au référentiel galiléen ?",
+   "attendu": "référentiel de Lorentz et référentiel inertiel",
+   "caracteres": 15454,
+   "memoire_libre_go": 5.3,
+   "reponse": "D'après le texte fourni, le référentiel galiléen est également appelé **référentiel inertiel** ou **référentiel de Lorentz**.\n\nCes deux noms sont explicitement mentionnés dans la section « Événement » du document [1] :\n> « …appelé aussi « **référentiel de Lorentz** » ou **« référentiel inertiel »** : ensemble d'observateurs se déplaçant librement dans l'espace loin de toute masse, dont les distances mutuelles ne changent pas au cours du temps (ils sont au repos les uns par rapport aux autres) et qui ont synchronisé leurs horloges. » [1]",
+   "t_premier_token_s": 60.8,
+   "t_total_s": 87.28,
+   "tokens_prompt": 4020,
+   "tokens_sortie": 148,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 4000,
+   "question": "D'après cette page, comment la section efficace de l'effet photoélectrique varie-t-elle avec le numéro atomique Z : entre quelles valeurs varie l'exposant ?",
+   "attendu": "elle croît comme Z^n avec n variant de 4 à 5",
+   "caracteres": 3354,
+   "memoire_libre_go": 4.4,
+   "reponse": "Selon les extraits fournis par la page web, la section efficace de l'effet photoélectrique est décrite comme étant proportionnelle à une puissance du numéro atomique $Z$ (notamment dans le contexte des applications techniques et de la génération d'ondes porteuses). L'exposant varie entre **4** et **5**.\n\nCependant, il y a un détail important concernant l'origine de ces chiffres : les extraits indiquent que cette variation concerne spécifiquement les électrons « **lents** » (ou à faible énergie cinétique) [1]. Si votre question portait sur le comportement général ou celui des électrons rapides, la page suggère que ce régime est différent.\n\nVoici l'analyse détaillée basée uniquement sur ces fragments :\n\n*   **Variation avec Z :** La section efficace augmente avec le numéro atomique $Z$ (souvent noté comme $Z^n$ dans les formules implicites de cette époque) [1].\n*   **Valeurs de l'exposant :** L'exposant varie entre **4** et **5**.\n\n*(Note : Dans la physique classique décrite ici, on trouve souvent une relation où la section efficace $\\sigma \\propto Z^4$ ou $Z^5$, mais les extraits précisent que cette dépendance forte s'applique aux électrons de faible énergie [1].)*",
+   "t_premier_token_s": 16.98,
+   "t_total_s": 117.55,
+   "tokens_prompt": 1321,
+   "tokens_sortie": 292,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  },
+  {
+   "page": "photoelectrique",
+   "budget": 16000,
+   "question": "D'après cette page, comment la section efficace de l'effet photoélectrique varie-t-elle avec le numéro atomique Z : entre quelles valeurs varie l'exposant ?",
+   "attendu": "elle croît comme Z^n avec n variant de 4 à 5",
+   "caracteres": 14984,
+   "memoire_libre_go": 4.6,
+   "reponse": "D'après l'extrait fourni, la section efficace de l'effet photoélectrique croît rapidement avec le numéro atomique $Z$. L'exposant associé varie entre **4 et 5**.\n\nCes valeurs sont mentionnées dans la partie « Interprétation et explication » du texte [1].",
+   "t_premier_token_s": 153.65,
+   "t_total_s": 175.66,
+   "tokens_prompt": 5141,
+   "tokens_sortie": 67,
+   "tokens_raisonnement": 0,
+   "fin": "stop"
+  }
+ ]
+}
