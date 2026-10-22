@@ -60,6 +60,7 @@ reste donc résoluble.
 | Le tool-calling natif (outils du chat, budgets, capacités, LM Studio) | `docs/claude/tool-calling.md` |
 | N'importe quoi — avant de conclure qu'un bug est nouveau | `docs/claude/pieges-connus.md` |
 | Le pourquoi historique derrière une règle de ce noyau | `docs/claude/contexte-historique.md` |
+| Les mesures de performance LM Studio (mmap, requêtes parallèles, cache Qwen3.5) | `docs/claude/perf-lmstudio.md` — mesures, non normatif |
 
 ---
 

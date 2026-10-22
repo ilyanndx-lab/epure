@@ -100,13 +100,18 @@ système reste identique d'un tour à l'autre. Envois comparés : `envois-main.j
 (système de 1 061 caractères, 6 305 caractères de données dans le message
 utilisateur).
 
-**Raison de l'abandon : incompatible avec #66** (décision d'Ilyann). Cette PR
-(lecture directe d'une URL collée) traite la page lue comme une source citable
-`[n]` et ajoute au prompt des consignes sur les pages non lues, avec un ensemble
-de référence des citations et des images. La variante déplace ce découpage
-consigne/donnée ; ses tests n'avaient d'ailleurs pas été adaptés (message du
-commit). Le détail de l'incompatibilité n'a pas été réexaminé en écrivant cette
-note : se reporter à #66.
+**Raison de l'abandon : incompatible avec #66.** Sur Qwen3.5, le cache n'est
+réutilisé que si le prompt du tour n+1 prolonge celui du tour n à l'octet près
+(§3). Pour que la variante en profite, il faudrait donc garder les extraits de
+chaque tour dans l'historique, ce qui :
+
+- **(a)** réinjecterait du contenu web non fiable à chaque tour suivant,
+  contrairement à la règle de #66 (seules les métadonnées `sources` et la
+  trace sont persistées) ;
+- **(b)** gonflerait le contexte, à 8 192 tokens ;
+- **(c)** retirerait les outils pour tout le reste de la conversation dès la
+  première URL, puisqu'un tour qui contient du contenu web n'expose plus
+  d'outils.
 
 Mesure, pour la mémoire : même avec la variante, le système du tour 2 différait
 du tour 1 (1 455 contre 1 061 caractères) — consigne « page non lue » ajoutée
@@ -119,21 +124,24 @@ Erreur de recherche web : <urlopen error tim… » au lieu du contenu de la page
 ## 5. Notation de l'étage 2 (variante)
 
 Fichier : `etage2-variante.json`. Conditions : sur secteur, raisonnement coupé,
-8 192 de contexte, 2 questions × 2 budgets. **Notation relue sur les réponses
-brutes contre `attendu` et contre l'étage 1** (`README.md` : à 4 000, l'extrait
+8 192 de contexte, 2 questions × 2 budgets. Contexte de l'étage 1 (`README.md` : à 4 000, l'extrait
 de `relativite_restreinte` ne contient pas « référentiel de Lorentz », et celui
 de `photoelectrique` ne contient aucun des deux fragments).
 
-| Question | Budget | Réponse attendue présente ? | Fidèle à l'extrait ? | Note |
-|---|---|---|---|---|
-| relativite_restreinte | 4 000 | **Non** : donne « inertiel », pas « Lorentz » | Oui (n'invente pas, mais incomplet) | ❌ |
-| relativite_restreinte | 16 000 | Oui, les deux noms | Oui (citation textuelle vérifiable) | ✅ |
-| photoelectrique | 4 000 | « 4 et 5 » dit, **mais absent de l'extrait** | **Non** : [1] se voit attribuer « électrons lents » et des valeurs que l'extrait ne porte pas | ❌ (bonne valeur, mauvaise source) |
-| photoelectrique | 16 000 | Oui, « 4 et 5 » | Plausible, non vérifié contre l'extrait | ✅ |
+Notation d'Ilyann, sur les réponses brutes. « Référence » = le code de `main`
+(`resultats/resultats.json`, 2026-10-19) ; « Variante » = `etage2-variante.json`.
 
-Le cas `photoelectrique` 4 000 est le plus instructif : un correcteur qui ne
-regarde que la réponse finale le note juste. Voir l'issue « Fidélité des
-citations ».
+| Cas | Référence | Variante |
+|---|---|---|
+| relativité 4k | ✗ fabrique un second « nom » (« classe des référentiels inertiels ») | ~ incomplète mais honnête (« inertiel » seul) |
+| relativité 16k | ✓ (section citée douteuse) | ✓ citation mot pour mot |
+| photoélectrique 4k | ~ signale que l'extrait ne contient pas les valeurs, mais cite [1] pour 4 et 5 et ajoute « vers 3 » sans source | ✗✗ attribue à [1] des valeurs et des notions absentes de l'extrait (« électrons lents », « ondes porteuses ») |
+| photoélectrique 16k | ✓ | ✓ |
+
+**Conclusion** : la variante est meilleure sur 3 cas et pire sur le cas
+critique, la fidélité à la source. Avec 1 tirage par case, on ne peut pas
+trancher (cf. #83). Le cas photoélectrique 4k montre qu'une notation sur la
+seule réponse finale le compterait juste.
 
 **Temps (non comparables à l'étage 1 du README, pris sur batterie et MATLAB
 ouvert ; celui-ci est sur secteur)** : premier token 22,6 s et 17,0 s à 4 000, 60,8 s et 153,7 s à 16 000.
@@ -146,3 +154,30 @@ Un seul tirage par case (question × budget). À température d'échantillonnage
 non nulle, l'écart entre deux cases peut être du bruit. L'éval devrait faire
 **5 tirages par case** pour séparer un effet réel de ce bruit (suivi dans
 l'issue « Fidélité des citations »).
+
+## 7. Voie 1 validée (JIT et réglages par modèle)
+
+Réglages faits par Ilyann dans LM Studio pour `huihui-qwen3.5-9b-abliterated`
+(1 requête parallèle, mmap désactivé), puis modèle déchargé et un tour envoyé
+pour déclencher le chargement JIT (2026-10-22). Le tour est une requête
+`/v1/chat/completions` directe, de même forme que celle d'Épure, **sans passer
+par le backend d'Épure**.
+
+- `n_slots = 1` dans le journal llama.cpp ; `parallel: 1` dans
+  `/api/v1/models` (`loaded_instances[].config`).
+- mmap désactivé, **déduit** du profil mémoire du processus LM Studio : 3,01 Go
+  en working set et 8,49 Go en privé, comme `mmap-false.json` (2,54 / 8,11) et
+  pas comme `mmap-true.json` (11,95 / 7,59). Le champ n'apparaît ni dans
+  `/api/v1/models` ni dans le journal.
+- Chargement d'environ 28,7 s selon le journal (50,2 s vu du client, requête
+  comprise). Un passage par mode : l'écart avec les 37,9 s du SDK ne se tranche
+  pas.
+- Mémoire libre : 6,95 Go avant, 1,92 Go après. Non comparable à la séance
+  mmap (ligne de base différente).
+- Délai d'inactivité de 60 min avant déchargement (`lms ps`, TTL 60m / 1h).
+  Origine (réglage local ou défaut LM Studio) **non vérifiée**.
+
+**Conclusion** : Épure garde sa position « JIT, on ne charge pas »
+(`core/models.py`, `etat_modele_lmstudio`). Les réglages recommandés
+(1 requête parallèle, mmap désactivé) se font par modèle dans LM Studio. La
+sonde sur `POST /api/v1/models/load` n'a pas été nécessaire.
