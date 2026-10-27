@@ -97,3 +97,25 @@ relié (ilyann2) plutôt qu'en local. Vérifier la colonne `DEVICE` de
 
 Le harnais signale désormais ces cas (`anomalie`) au lieu de les compter comme
 des essais.
+
+## Fidélité des citations (#83)
+
+`core.citations.verifier_fidelite` signale les nombres et les citations entre
+guillemets d'une réponse absents du passage RÉELLEMENT injecté pour la source
+`[n]` (cf. sa docstring pour les règles et les limites). Deux commandes :
+
+```powershell
+python tools\eval-lecture-url\eval.py extraits
+python tools\eval-lecture-url\eval.py fidelite --modele huihui-qwen3.5-9b-abliterated --tirages 5 --decharger
+```
+
+- `extraits` fige `resultats/fidelite/extraits.json` : titre + extrait des
+  quatre cas de l'étage 2, par le code de l'étage 1 (l'embedding rend la
+  sélection déterministe, longueurs 3 848 / 15 454 / 3 354 / 14 984). La CI n'a
+  pas le modèle d'embedding : `backend/test_fidelite_citations.py` lit ce
+  fichier et les huit réponses réelles de l'étage 2.
+- `fidelite` fait N tirages par cas (raisonnement coupé, contexte système réel
+  du chat) et écrit réponse brute + éléments signalés dans
+  `resultats/fidelite/tirages.json`. Mêmes conditions que l'étage 2 : portable
+  branché, MATLAB fermé, arrêt propre sous 3 Go de mémoire libre. La notation
+  des vrais et faux positifs est manuelle.

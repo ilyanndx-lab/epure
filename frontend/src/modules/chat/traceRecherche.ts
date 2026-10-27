@@ -80,8 +80,9 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
     const lectures = etapes.filter(e => e.etape === 'lecture_url')
     if (lectures.length > 0) return resumeLectures(lectures)
     const citations = etapes.find(e => e.etape === 'citations_invalides')
-    if (!citations) return ''  // ne devrait pas arriver : trace vide → pas de panneau
-    return verifieeContreRecherche(citations) ? 'Citation hors sources' : 'Lien non vérifié'
+    if (citations) return verifieeContreRecherche(citations) ? 'Citation hors sources' : 'Lien non vérifié'
+    if (aDesAffirmationsNonEtayees(etapes)) return RESUME_NON_ETAYEE
+    return ''  // ne devrait pas arriver : trace vide → pas de panneau
   }
 
   const derniere = [...etapes].reverse().find(
@@ -116,7 +117,7 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
  * recherche, d'autres étapes portent déjà le résumé.
  */
 const ETAPES_HORS_RECHERCHE = new Set([
-  'citations_invalides', 'lecture_url', 'reclassement_indisponible', 'outils_retires',
+  'citations_invalides', 'citations_non_etayees', 'lecture_url', 'reclassement_indisponible', 'outils_retires',
   // Raisonnement coupé / reçu malgré tout / interrompu (#76) : accompagnent un
   // tour web ou une lecture, sans être une recherche.
   'raisonnement_coupe', 'raisonnement_non_coupe', 'raisonnement_plafonne',
@@ -275,7 +276,38 @@ export function libelleBadgeLimite(etapes: EtapeTrace[]): string | null {
  */
 export function libelleBadgeCitations(etapes: EtapeTrace[]): string | null {
   const etapeCitations = etapes.find(e => e.etape === 'citations_invalides')
-  const aUneEtapeDeRecherche = etapes.some(e => e.etape !== 'citations_invalides')
+  const aUneEtapeDeRecherche = etapes.some(
+    e => e.etape !== 'citations_invalides' && e.etape !== 'citations_non_etayees'
+  )
   if (!etapeCitations || !aUneEtapeDeRecherche) return null
   return verifieeContreRecherche(etapeCitations) ? 'citation hors sources' : 'lien non vérifié'
+}
+
+/** Résumé replié d'une trace qui ne porte QUE `citations_non_etayees`. */
+const RESUME_NON_ETAYEE = 'Affirmation non trouvée dans la source'
+
+/**
+ * La trace porte-t-elle une étape `citations_non_etayees` non vide (#83) ?
+ * Un nombre ou une citation de la réponse absents du passage RÉELLEMENT
+ * injecté pour la source citée (`core.citations.verifier_fidelite`). Le
+ * backend n'écrit l'étape que s'il y a au moins une affirmation.
+ */
+export function aDesAffirmationsNonEtayees(etapes: EtapeTrace[]): boolean {
+  const etape = etapes.find(e => e.etape === 'citations_non_etayees')
+  return !!etape && liste(etape.affirmations).length > 0
+}
+
+/**
+ * Badge « affirmation non trouvée dans la source », ou `null`.
+ *
+ * Comme `libelleBadgeCitations`, il n'existe qu'EN PLUS d'un résumé : une
+ * trace qui ne porte que cette étape a déjà ce libellé pour résumé, et un
+ * badge identique à côté serait un doublon. C'est un SIGNALEMENT, jamais une
+ * correction : la réponse n'est ni masquée ni réécrite, et « non trouvée »
+ * n'affirme pas « fausse » — le contrôle ne lit que les nombres et les
+ * citations entre guillemets.
+ */
+export function libelleBadgeNonEtayees(etapes: EtapeTrace[]): string | null {
+  if (!aDesAffirmationsNonEtayees(etapes)) return null
+  return resumeTrace(etapes) === RESUME_NON_ETAYEE ? null : 'affirmation non trouvée dans la source'
 }

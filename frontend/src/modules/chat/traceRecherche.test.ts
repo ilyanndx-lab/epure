@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aDesAffirmationsNonEtayees, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -315,5 +315,52 @@ describe('raisonnement sur les tours de lecture d’URL / recherche web (#76)', 
 
   it('autre étape : pas de libellé', () => {
     expect(libelleRaisonnement(LECTURE_OK)).toBeNull()
+  })
+})
+
+// ── citations_non_etayees (#83) : nombre ou citation absent de la source ──
+
+const NON_ETAYEES: EtapeTrace = {
+  etape: 'citations_non_etayees',
+  affirmations: [{ phrase: 'L’exposant varie entre 4 et 5 [1].', element: '4', type: 'nombre', sources: [1] }],
+}
+const NON_ETAYEES_VIDE: EtapeTrace = { etape: 'citations_non_etayees', affirmations: [] }
+const LECTURE_OK: EtapeTrace = { etape: 'lecture_url', url: 'https://exemple.org/p', statut: 'succès', passages: 3, ms: 40 }
+
+describe('citations_non_etayees', () => {
+  it('trace réduite à cette étape : résumé « Affirmation non trouvée dans la source », sans badge doublon', () => {
+    expect(resumeTrace([NON_ETAYEES])).toBe('Affirmation non trouvée dans la source')
+    expect(libelleBadgeNonEtayees([NON_ETAYEES])).toBeNull()
+  })
+
+  it('jamais annoncée comme une recherche web', () => {
+    expect(resumeTrace([NON_ETAYEES])).not.toMatch(/recherche/i)
+  })
+
+  it('avec une lecture d’URL : le résumé reste celui de la lecture, le badge s’ajoute', () => {
+    const etapes = [LECTURE_OK, NON_ETAYEES]
+    expect(resumeTrace(etapes)).not.toBe('Affirmation non trouvée dans la source')
+    expect(libelleBadgeNonEtayees(etapes)).toBe('affirmation non trouvée dans la source')
+  })
+
+  it('avec une recherche : badge affiché à côté du résumé de recherche', () => {
+    expect(libelleBadgeNonEtayees([RECHERCHE_RESULTATS, NON_ETAYEES]))
+      .toBe('affirmation non trouvée dans la source')
+  })
+
+  it('avec citations_invalides seule : résumé des citations, badge d’affirmation en plus', () => {
+    const etapes = [CITATIONS_RECHERCHE, NON_ETAYEES]
+    expect(resumeTrace(etapes)).toBe('Citation hors sources')
+    expect(libelleBadgeNonEtayees(etapes)).toBe('affirmation non trouvée dans la source')
+  })
+
+  it('ne fait pas passer citations_invalides pour accompagnée d’une recherche', () => {
+    expect(libelleBadgeCitations([CITATIONS_RECHERCHE, NON_ETAYEES])).toBeNull()
+  })
+
+  it('étape vide ou absente : aucun badge', () => {
+    expect(aDesAffirmationsNonEtayees([NON_ETAYEES_VIDE])).toBe(false)
+    expect(libelleBadgeNonEtayees([LECTURE_OK, NON_ETAYEES_VIDE])).toBeNull()
+    expect(libelleBadgeNonEtayees([LECTURE_OK])).toBeNull()
   })
 })

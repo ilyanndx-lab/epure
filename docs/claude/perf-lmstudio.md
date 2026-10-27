@@ -143,6 +143,15 @@ critique, la fidélité à la source. Avec 1 tirage par case, on ne peut pas
 trancher (cf. #83). Le cas photoélectrique 4k montre qu'une notation sur la
 seule réponse finale le compterait juste.
 
+**Correction (#83, 2026-10-27)** : « électrons lents » et « ondes porteuses »
+ne sont PAS absents de l'extrait à 4 000 caractères : ils y figurent, dans des
+passages sans rapport avec la dépendance en Z (« faisceau d'électrons « lents » »,
+« génération d'ondes porteuses non atténuées »). Ce qui manque à l'extrait, ce
+sont les valeurs 4 et 5 (hors renvois de notes « [ 4 ] , [ 5 ] »). La faute de
+la variante est donc double : des valeurs absentes, et des mots réels
+détournés de leur sens — ce que l'heuristique de `core.citations.verifier_fidelite`
+ne peut signaler que pour les valeurs.
+
 **Temps (non comparables à l'étage 1 du README, pris sur batterie et MATLAB
 ouvert ; celui-ci est sur secteur)** : premier token 22,6 s et 17,0 s à 4 000, 60,8 s et 153,7 s à 16 000.
 Le 153,7 s de `photoelectrique` 16 000 (5 141 tokens) n'a pas d'explication

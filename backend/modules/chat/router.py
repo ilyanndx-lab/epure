@@ -45,8 +45,8 @@ from core.runtime import (
     usage_tracker,
 )
 from core.citations import (
-    RapportCitations, construire_reference, extraire_rangs_cites, extraire_urls,
-    extraire_urls_ordonnees, valider_citations,
+    AffirmationNonEtayee, RapportCitations, construire_reference, extraire_rangs_cites,
+    extraire_urls, extraire_urls_ordonnees, valider_citations, verifier_fidelite,
 )
 from core import fenetre_contexte
 from core.webcontent import LectureUrl, lire_urls, recuperer_contenu
@@ -375,8 +375,27 @@ def _verifier_citations(
     return valider_citations(reponse, reference)
 
 
+def _verifier_fidelite(
+    reponse: str, resultats_web: list[ResultatWeb],
+) -> list[AffirmationNonEtayee]:
+    """Troisième verrou (#83) : nombres et citations de la réponse absents du
+    passage injecté pour la source citée. Calcul PUR après le flux, comme
+    `_verifier_citations` ; ne touche jamais à `reponse`.
+
+    Le texte comparé est celui que `formater_pour_llm` a RÉELLEMENT écrit dans
+    le prompt pour chaque rang — titre puis extrait — et non la page entière :
+    c'est ce que le modèle avait sous les yeux, donc ce à quoi sa phrase peut
+    être comparée. Ces `ResultatWeb` sont encore en mémoire à la fin du tour
+    (pages lues, résultats web, résultats d'outils), aucune relecture.
+    """
+    if not reponse or not resultats_web:
+        return []
+    return verifier_fidelite(reponse, {r.rang: f"{r.titre} {r.extrait}" for r in resultats_web})
+
+
 def _construire_trace_finale(
     etapes: list[dict], rapport: Optional[RapportCitations], a_des_resultats_recherche: bool,
+    non_etayees: Optional[list[AffirmationNonEtayee]] = None,
 ) -> list[dict]:
     """Assemble la trace persistée : les étapes de recherche (`core.websearch`,
     poussées en direct pendant le tour, vide s'il n'y en a pas eu) + l'étape
@@ -426,16 +445,31 @@ def _construire_trace_finale(
     D'où : tronquer d'abord les étapes de déroulement à `TRACE_MAX_ETAPES - 1`,
     PUIS ajouter `citations_invalides` en dernière position — elle survit
     toujours quand elle existe.
+
+    **`citations_non_etayees` (#83) a la même place réservée**, en toute fin,
+    après `citations_invalides` : un nombre ou une citation de la réponse
+    absents du passage réellement injecté pour la source citée
+    (`core.citations.verifier_fidelite`). Liste bornée à `TRACE_LISTE_MAX`
+    affirmations, chaque champ texte tronqué par `tronquer_champ`.
     """
+    reservees: list[dict] = []
     if rapport is not None and rapport.a_des_anomalies():
-        citation_invalide = {
+        reservees.append({
             "etape": "citations_invalides",
             "rangs": rapport.rangs_hors_plage[:TRACE_LISTE_MAX],
             "urls": [tronquer_champ(u) for u in rapport.urls_non_reconnues[:TRACE_LISTE_MAX]],
             "verifiees_contre": "recherche" if a_des_resultats_recherche else "aucune_source",
-        }
-        return list(etapes)[:TRACE_MAX_ETAPES - 1] + [citation_invalide]
-    return list(etapes)[:TRACE_MAX_ETAPES]
+        })
+    if non_etayees:
+        reservees.append({
+            "etape": "citations_non_etayees",
+            "affirmations": [
+                {"phrase": tronquer_champ(a.phrase), "element": tronquer_champ(a.element),
+                 "type": a.type, "sources": list(a.sources)}
+                for a in non_etayees[:TRACE_LISTE_MAX]
+            ],
+        })
+    return list(etapes)[:TRACE_MAX_ETAPES - len(reservees)] + reservees
 
 
 def _finaliser_citations_et_trace(
@@ -453,7 +487,8 @@ def _finaliser_citations_et_trace(
     """
     sources = _sources_citees(reponse, resultats_web)
     rapport = _verifier_citations(reponse, resultats_web, user_text, urls_rag)
-    trace = _construire_trace_finale(etapes_recherche, rapport, bool(resultats_web))
+    non_etayees = _verifier_fidelite(reponse, resultats_web)
+    trace = _construire_trace_finale(etapes_recherche, rapport, bool(resultats_web), non_etayees)
     if rapport is not None and rapport.aucune_citation_malgre_contexte:
         logger.warning("Réponse sans aucune citation malgré un contexte web fourni (conv=%s)", conv_id)
     return sources, trace
