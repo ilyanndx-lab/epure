@@ -252,6 +252,10 @@ _ATTRIBUTION_RE = re.compile(
 )
 
 _MARQUEUR_RANG_RE = re.compile(r"\[\s*\d+\s*\]")
+#: La marque que la consigne de non-invention (#86) demande au modèle pour
+#: une valeur de mémoire : « hors extrait », « hors des extraits »,
+#: « hors de l'extrait ». Cherchée sur le texte normalisé (casse, accents).
+_HORS_EXTRAIT_RE = re.compile(r"\bhors\s+(?:de\s+l'\s*|de\s+la\s+|du\s+|des\s+|d'\s*)?extraits?\b")
 #: Un renvoi de note d'une page web copiée : « [ 4 ] », « [4] », « [ N 1 ] »,
 #: « [réf 4] », « [ note 3 ] », plages « [4-6] », « [ 4 , 5 ] ». Le crochet ne doit pas être
 #: collé à une lettre, un « _ », un « ] » ou un « ) » : `arr[0]`,
@@ -537,6 +541,13 @@ def verifier_fidelite(
     dont tous les `[n]` sont hors liste est comparée à l'union des sources
     (`valider_citations` signale en plus le rang).
 
+    **Exclu.** Une phrase marquée « hors extrait » (« hors des extraits »,
+    « hors de l'extrait », casse et accents indifférents, hors guillemets) se
+    déclare elle-même non sourcée, comme la consigne de non-invention le
+    demande (#86) : elle n'est pas vérifiée, n'ouvre ni ne ferme une
+    attribution, et la marque ne s'hérite pas — la phrase suivante est
+    traitée normalement.
+
     `texte_utilisateur` : le message de l'utilisateur. Un nombre ou une
     citation de la réponse qui s'y trouve est étayé — le modèle reprend la
     question (« deux autres noms »), il n'invente pas. Ses URLs sont retirées
@@ -583,6 +594,11 @@ def verifier_fidelite(
         attribution_active = False
         for phrase in phrases:
             citations, hors_guillemets = _separer_guillemets(phrase)
+            if _HORS_EXTRAIT_RE.search(_plat(hors_guillemets)):
+                # Se déclare elle-même non sourcée : ni vérifiée, ni comptée
+                # dans l'attribution (son « extrait » n'invoque pas la source,
+                # son éventuel [n] n'y met pas fin).
+                continue
             cites = [int(n) for n in re.findall(r"\[(\d+)\]", phrase)]
             valides = sorted({n for n in cites if n in preparees})
             invoque = bool(_ATTRIBUTION_RE.search(_plat(hors_guillemets)))

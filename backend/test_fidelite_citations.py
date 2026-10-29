@@ -198,6 +198,17 @@ class TiragesFideliteTest(unittest.TestCase):
             with self.subTest(tirage=tirage):
                 self.assertIn("inerte", {a.element for a in self._signale("relativite_restreinte", 16000, tirage)})
 
+    def test_photoelectrique_4k_apres_t2_t3_t4_rien_sur_les_phrases_marquees(self):
+        """Mesure « après » de #86 (`tirages-non-invention.json`) : les
+        valeurs que le modèle annonce « hors extrait » ne sont plus signalées."""
+        apres = {e["tirage"]: e for e in _charger("fidelite/tirages-non-invention.json")["essais"]
+                 if e["page"] == "photoelectrique" and e["budget"] == 4000}
+        for tirage in (2, 3, 4):
+            with self.subTest(tirage=tirage):
+                e = apres[tirage]
+                self.assertEqual(verifier_fidelite(e["reponse"], self.sources[("photoelectrique", 4000)],
+                                                   texte_utilisateur=self.messages["photoelectrique"]), [])
+
     def test_photoelectrique_16k_jamais_signale(self):
         for tirage in range(1, 6):
             with self.subTest(tirage=tirage):
@@ -370,6 +381,43 @@ class CitationsEntreGuillemetsTest(unittest.TestCase):
 
     def test_mots_presents_mais_ordre_different_signale(self):
         self.assertEqual(self._el("Il dit « Lorentz de référentiel » [1]."), ["Lorentz de référentiel"])
+
+
+class HorsExtraitTest(unittest.TestCase):
+    """#86 : une phrase marquée « hors extrait » se déclare elle-même non
+    sourcée — la consigne de non-invention le demande — et n'est pas vérifiée."""
+    SRC = {1: "La limite est 4 et la borne 5.", 2: "Une autre page : la limite vaut 9."}
+
+    def _el(self, reponse):
+        return [a.element for a in verifier_fidelite(reponse, self.SRC)]
+
+    def test_phrase_marquee_exclue(self):
+        for phrase in ("Hors extrait, d'après mes connaissances : la limite vaut 42 [1].",
+                       "HORS EXTRAIT : la limite vaut 42 [1].",
+                       "Hors des extraits, la limite vaut 42 [1].",
+                       "Hors de l'extrait, la limite vaut 42 [1].",
+                       "La limite vaut 42 (hors extrait) [1].",
+                       "*Hors extrait, d’après mes connaissances générales : la limite vaut 42.*",
+                       "Selon les extraits fournis, hors extrait, la limite vaut 42."):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(self._el(phrase), [])
+
+    def test_phrase_suivante_verifiee_normalement(self):
+        self.assertEqual(self._el("Hors extrait : la limite vaut 42. Elle vaut 77 [1]."), ["77"])
+
+    def test_la_marque_ne_s_herite_pas(self):
+        """L'attribution d'une phrase précédente traverse la phrase marquée :
+        celle-ci n'en ouvre ni n'en ferme aucune."""
+        self.assertEqual(self._el("Selon les extraits, la limite existe. Hors extrait, elle vaut 42. "
+                                  "Elle vaut 77."), ["77"])
+
+    def test_la_phrase_marquee_n_ouvre_pas_d_attribution(self):
+        """« Hors extrait (les extraits sont concis), … » contient « extraits » :
+        ce n'est pas pour autant une invocation de la source."""
+        self.assertEqual(self._el("Hors extrait (les extraits sont concis), l'exposant vaut 42. Il vaut 77."), [])
+
+    def test_mot_extrait_seul_n_est_pas_la_marque(self):
+        self.assertEqual(self._el("L'extrait dit 42 [1]."), ["42"])
 
 
 class RattachementTest(unittest.TestCase):
