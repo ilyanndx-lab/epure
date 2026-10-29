@@ -209,6 +209,27 @@ class TiragesFideliteTest(unittest.TestCase):
                 self.assertEqual(verifier_fidelite(e["reponse"], self.sources[("photoelectrique", 4000)],
                                                    texte_utilisateur=self.messages["photoelectrique"]), [])
 
+    def _apres_photo_4k(self, tirage):
+        e = next(e for e in _charger("fidelite/tirages-non-invention.json")["essais"]
+                 if e["page"] == "photoelectrique" and e["budget"] == 4000 and e["tirage"] == tirage)
+        return verifier_fidelite(e["reponse"], self.sources[("photoelectrique", 4000)],
+                                 texte_utilisateur=self.messages["photoelectrique"])
+
+    def test_photoelectrique_4k_apres_t1_non_signale(self):
+        """Le résumé final (« il varie entre 4 et 5 ») répète une valeur
+        donnée plus haut « hors extrait ». Répétition non marquée sans [n] ni
+        mot désignant la source : hors du périmètre, cf. issue #89."""
+        self.assertEqual(self._apres_photo_4k(1), [])
+
+    def test_photoelectrique_4k_apres_t5_signale_seulement_la_phrase_qui_cite_1(self):
+        """« Si tu cherches… (souvent compris entre Z⁴ et Z⁵…)… extraits [1] »
+        est signalée. La dernière phrase (« souvent entre 4 et 5 ») ne l'est
+        pas : répétition non marquée sans [n] ni mot désignant la source :
+        hors du périmètre, cf. issue #89."""
+        signalees = self._apres_photo_4k(5)
+        self.assertEqual([a.element for a in signalees], ["4", "5"])
+        self.assertTrue(all("[1]" in a.phrase and a.phrase.startswith("Si tu cherches") for a in signalees))
+
     def test_photoelectrique_16k_jamais_signale(self):
         for tirage in range(1, 6):
             with self.subTest(tirage=tirage):
