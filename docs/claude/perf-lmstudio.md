@@ -135,13 +135,22 @@ Notation d'Ilyann, sur les réponses brutes. « Référence » = le code de `mai
 |---|---|---|
 | relativité 4k | ✗ fabrique un second « nom » (« classe des référentiels inertiels ») | ~ incomplète mais honnête (« inertiel » seul) |
 | relativité 16k | ✓ (section citée douteuse) | ✓ citation mot pour mot |
-| photoélectrique 4k | ~ signale que l'extrait ne contient pas les valeurs, mais cite [1] pour 4 et 5 et ajoute « vers 3 » sans source | ✗✗ attribue à [1] des valeurs et des notions absentes de l'extrait (« électrons lents », « ondes porteuses ») |
+| photoélectrique 4k | ~ signale que l'extrait ne contient pas les valeurs, mais cite [1] pour 4 et 5 et ajoute « vers 3 » sans source | ✗ affirme que l’extrait donne 4 et 5 (absents) ; “électrons lents” et “ondes porteuses” sont présents dans l’extrait mais sortis de leur contexte et reliés à tort à la loi en Z |
 | photoélectrique 16k | ✓ | ✓ |
 
 **Conclusion** : la variante est meilleure sur 3 cas et pire sur le cas
 critique, la fidélité à la source. Avec 1 tirage par case, on ne peut pas
 trancher (cf. #83). Le cas photoélectrique 4k montre qu'une notation sur la
 seule réponse finale le compterait juste.
+
+**Correction (#83, 2026-10-27)** : « électrons lents » et « ondes porteuses »
+ne sont PAS absents de l'extrait à 4 000 caractères : ils y figurent, dans des
+passages sans rapport avec la dépendance en Z (« faisceau d'électrons « lents » »,
+« génération d'ondes porteuses non atténuées »). Ce qui manque à l'extrait, ce
+sont les valeurs 4 et 5 (hors renvois de notes « [ 4 ] , [ 5 ] »). La faute de
+la variante est donc double : des valeurs absentes, et des mots réels
+détournés de leur sens — ce que l'heuristique de `core.citations.verifier_fidelite`
+ne peut signaler que pour les valeurs.
 
 **Temps (non comparables à l'étage 1 du README, pris sur batterie et MATLAB
 ouvert ; celui-ci est sur secteur)** : premier token 22,6 s et 17,0 s à 4 000, 60,8 s et 153,7 s à 16 000.

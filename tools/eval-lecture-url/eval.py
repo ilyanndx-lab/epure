@@ -20,6 +20,18 @@ d'embedding réel est lu. Les pages viennent des fixtures, jamais du réseau.
 
     python tools/eval-lecture-url/eval.py etage1
     python tools/eval-lecture-url/eval.py etage2 --modele <clé LM Studio> [--decharger]
+
+Fidélité des citations (#83) : `extraits` fige, dans
+`resultats/fidelite/extraits.json`, le texte EXACT que le chat injecte pour les
+quatre cas de l'étage 2 (titre + extrait, tels que `formater_pour_llm` les
+écrit) — l'embedding local rend la sélection déterministe (longueurs relevées
+identiques à celles de l'étage 1), et la CI, qui n'a pas ce modèle, lit le
+fichier au lieu de reconstruire. `fidelite` fait N tirages par cas et note ce
+que l'heuristique `core.citations.verifier_fidelite` signale ; la notation des
+vrais et faux positifs est manuelle.
+
+    python tools/eval-lecture-url/eval.py extraits
+    python tools/eval-lecture-url/eval.py fidelite --modele <clé LM Studio> [--tirages 5] [--decharger]
 """
 import argparse
 import ctypes
@@ -45,6 +57,9 @@ LMSTUDIO = os.environ.get("LMSTUDIO_HOST", "http://127.0.0.1:1234").rstrip("/")
 #: Sous ce seuil de mémoire libre, l'étage 2 s'arrête proprement (résultats
 #: déjà écrits, modèle déchargé si demandé) au lieu de se faire tuer.
 SEUIL_MEMOIRE_GO = 3.0
+#: Sur batterie, même arrêt propre sous ce pourcentage de charge (éval de
+#: fidélité du 2026-10-29, lancée sur batterie : les durées n'y comptent pas).
+SEUIL_BATTERIE_PCT = 20
 #: Raisonnement coupé : la réponse seule tient largement dans ce plafond.
 MAX_TOKENS_SORTIE = 1024
 
@@ -94,6 +109,30 @@ def sur_secteur():
     if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(etat)):
         return None
     return {0: False, 1: True}.get(etat.ACLineStatus)
+
+
+def batterie_pct():
+    """Charge en %, ou None si inconnue (pas de batterie : 255 côté Windows)."""
+    class Etat(ctypes.Structure):
+        _fields_ = [("ACLineStatus", ctypes.c_byte), ("BatteryFlag", ctypes.c_byte),
+                    ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_byte),
+                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+    etat = Etat()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(etat)):
+        return None
+    return None if etat.BatteryLifePercent == 255 else etat.BatteryLifePercent
+
+
+def _verifier_ressources():
+    """Lève `MemoireBasse` ou `BatterieFaible` ; la batterie ne compte que
+    débranché. Renvoie la mémoire libre."""
+    libre = memoire_libre_go()
+    if libre < SEUIL_MEMOIRE_GO:
+        raise MemoireBasse()
+    pct = batterie_pct()
+    if sur_secteur() is False and pct is not None and pct < SEUIL_BATTERIE_PCT:
+        raise BatterieFaible()
+    return libre
 
 
 def lire(webcontent, q, budget):
@@ -191,6 +230,10 @@ class MemoireBasse(Exception):
     pass
 
 
+class BatterieFaible(Exception):
+    pass
+
+
 def interroger(modele, systeme, utilisateur):
     """Flux LM Studio, raisonnement coupé. `reasoning_effort: "none"` est le
     seul réglage mesuré efficace sur ce Qwen3.5 (2026-10-19) : 0 token de
@@ -208,8 +251,8 @@ def interroger(modele, systeme, utilisateur):
     with urllib.request.urlopen(req, timeout=900) as r:
         for ligne in r:
             n += 1
-            if n % 50 == 0 and memoire_libre_go() < SEUIL_MEMOIRE_GO:
-                raise MemoireBasse()
+            if n % 50 == 0:
+                _verifier_ressources()
             ligne = ligne.decode("utf-8").strip()
             if not ligne.startswith("data:") or ligne == "data: [DONE]":
                 continue
@@ -279,6 +322,100 @@ def etage2(modele, budgets, decharger_a_la_fin):
         doc["meta"]["arret"] = f"mémoire libre sous {SEUIL_MEMOIRE_GO} Go"
         ecrire()
         print(f"ARRÊT : mémoire libre sous {SEUIL_MEMOIRE_GO} Go — résultats partiels écrits", flush=True)
+    except BatterieFaible:
+        doc["meta"]["arret"] = f"batterie sous {SEUIL_BATTERIE_PCT} %"
+        ecrire()
+        print(f"ARRÊT : batterie sous {SEUIL_BATTERIE_PCT} % — résultats partiels écrits", flush=True)
+    except (urllib.error.URLError, OSError) as exc:
+        doc["meta"]["arret"] = f"LM Studio : {exc}"
+        ecrire()
+        print(f"ARRÊT : LM Studio a répondu {exc} — résultats partiels écrits", flush=True)
+    finally:
+        if decharger_a_la_fin:
+            decharger(modele)
+    return doc
+
+
+#: Les quatre cas de l'étage 2 : questions où l'étage 1 diffère entre 4 000 et 16 000.
+CAS_FIDELITE = [("relativite_restreinte", 4000), ("relativite_restreinte", 16000),
+                ("photoelectrique", 4000), ("photoelectrique", 16000)]
+
+
+def extraits_fidelite():
+    """Fige titre + extrait des quatre cas (`resultats/fidelite/extraits.json`)."""
+    from core import webcontent
+    questions = {q["page"]: q for q in json.loads((ICI / "questions.json").read_text(encoding="utf-8"))}
+    cas = []
+    for page, budget in CAS_FIDELITE:
+        lectures, etape, indispo = lire(webcontent, questions[page], budget)
+        if indispo or etape.get("selection") != "similarite":
+            raise SystemExit(f"{page} {budget} : embedding indisponible, extrait non déterministe")
+        r = lectures[0].resultat
+        cas.append({"page": page, "budget": budget, "rang": r.rang, "titre": r.titre,
+                    "extrait": r.extrait, "caracteres": len(r.extrait)})
+        print(f"{page:24s} {budget:6d} {len(r.extrait)} car.", flush=True)
+    dossier = RESULTATS / "fidelite"
+    dossier.mkdir(parents=True, exist_ok=True)
+    (dossier / "extraits.json").write_text(
+        json.dumps({"cas": cas}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
+
+
+def fidelite(modele, tirages, decharger_a_la_fin):
+    """`tirages` réponses par cas, code de `main` (contexte système réel du
+    chat), raisonnement coupé ; pour chacune, ce que l'heuristique signale."""
+    from core import webcontent
+    from core.citations import verifier_fidelite
+    import modules.chat.router as routeur
+
+    questions = {q["page"]: q for q in json.loads((ICI / "questions.json").read_text(encoding="utf-8"))}
+    dossier = RESULTATS / "fidelite"
+    dossier.mkdir(parents=True, exist_ok=True)
+    sortie = dossier / "tirages.json"
+    doc = {"meta": {"modele": modele, "contexte_charge": contexte_charge(modele),
+                    "raisonnement": "coupé (reasoning_effort: none)", "tirages_par_cas": tirages,
+                    "max_tokens_sortie": MAX_TOKENS_SORTIE, "sur_secteur": sur_secteur(),
+                    "batterie_pct_debut": batterie_pct(),
+                    "debut": time.strftime("%Y-%m-%d %H:%M"), "arret": None},
+           "essais": []}
+
+    def ecrire():
+        sortie.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
+
+    ecrire()
+    try:
+        for page, budget in CAS_FIDELITE:
+            q = questions[page]
+            lectures, etape, indispo = lire(webcontent, q, budget)
+            if indispo or etape.get("selection") != "similarite":
+                raise SystemExit(f"{page} {budget} : embedding indisponible, extrait non déterministe")
+            r = lectures[0].resultat
+            systeme = routeur._construire_ctx_lecture(lectures)
+            for i in range(1, tirages + 1):
+                libre = _verifier_ressources()
+                essai = {"page": page, "budget": budget, "tirage": i, "question": q["question"],
+                         "attendu": q["attendu"], "memoire_libre_go": round(libre, 1),
+                         "batterie_pct": batterie_pct(), "sur_secteur": sur_secteur()}
+                message = f"{q['question']} {q['url']}"
+                essai.update(interroger(modele, systeme, message))
+                essai["signale"] = [
+                    {"phrase": a.phrase, "element": a.element, "type": a.type, "sources": a.sources}
+                    for a in verifier_fidelite(essai["reponse"], {r.rang: f"{r.titre} {r.extrait}"},
+                                               texte_utilisateur=message)]
+                doc["essais"].append(essai)
+                if doc["meta"]["contexte_charge"] is None:  # chargé par le JIT à ce premier tirage
+                    doc["meta"]["contexte_charge"] = contexte_charge(modele)
+                ecrire()
+                print(f"{page:24s} {budget:6d} #{i} ttft={essai['t_premier_token_s']}s "
+                      f"sortie={essai['tokens_sortie']} fin={essai['fin']} "
+                      f"signalé={len(essai['signale'])} {essai.get('anomalie', '')}", flush=True)
+    except MemoireBasse:
+        doc["meta"]["arret"] = f"mémoire libre sous {SEUIL_MEMOIRE_GO} Go"
+        ecrire()
+        print(f"ARRÊT : mémoire libre sous {SEUIL_MEMOIRE_GO} Go — résultats partiels écrits", flush=True)
+    except BatterieFaible:
+        doc["meta"]["arret"] = f"batterie sous {SEUIL_BATTERIE_PCT} %"
+        ecrire()
+        print(f"ARRÊT : batterie sous {SEUIL_BATTERIE_PCT} % — résultats partiels écrits", flush=True)
     except (urllib.error.URLError, OSError) as exc:
         doc["meta"]["arret"] = f"LM Studio : {exc}"
         ecrire()
@@ -291,15 +428,22 @@ def etage2(modele, budgets, decharger_a_la_fin):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("etage", choices=["etage1", "etage2"])
+    parser.add_argument("etage", choices=["etage1", "etage2", "extraits", "fidelite"])
     parser.add_argument("--budgets", type=int, nargs="+")
     parser.add_argument("--modele", help="clé LM Studio du modèle chargé (étage 2)")
+    parser.add_argument("--tirages", type=int, default=5, help="tirages par cas (fidélité)")
     parser.add_argument("--decharger", action="store_true",
                         help="décharger le modèle de LM Studio à la fin ou à l'arrêt (étage 2)")
     args = parser.parse_args()
     _isoler()
     if args.etage == "etage1":
         etage1(args.budgets or [4000, 8000, 16000])
+    elif args.etage == "extraits":
+        extraits_fidelite()
+    elif args.etage == "fidelite":
+        if not args.modele:
+            parser.error("--modele est requis pour la fidélité")
+        fidelite(args.modele, args.tirages, args.decharger)
     else:
         if not args.modele:
             parser.error("--modele est requis pour l'étage 2")

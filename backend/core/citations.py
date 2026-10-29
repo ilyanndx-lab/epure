@@ -22,8 +22,10 @@ qu'une source inventée qui apparaît). Signaler, jamais réécrire.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
-from typing import Iterable
+from decimal import Decimal
+from typing import Iterable, Mapping
 
 # ── Zones qui ne sont PAS des citations, malgré la syntaxe ───────────────────
 #
@@ -221,3 +223,365 @@ def valider_citations(reponse: str, reference: ReferenceCitations) -> RapportCit
         rangs_cites=extraire_rangs_cites(reponse, reference.rangs_valides),
         aucune_citation_malgre_contexte=bool(reference.rangs_valides) and not rang_trouve,
     )
+
+
+# ── Fidélité : ce qu'une phrase rattachée à [n] affirme figure-t-il dans [n] ? ──
+#
+# `valider_citations` ne vérifie que la FORME : un [n] existe, une URL a été
+# fournie. Elle ne voit pas une phrase qui attribue à [1] ce que [1] ne dit pas
+# (cas réel, #83 : sur « photoélectrique » à 4 000 caractères, un modèle local
+# répond « selon les extraits… l'exposant varie entre 4 et 5 » alors que
+# l'extrait injecté ne contient pas ces valeurs). `verifier_fidelite` est le
+# troisième verrou : un contrôle MATÉRIEL, sans LLM ni réseau, qui compare
+# deux sortes d'éléments vérifiables — les nombres et les citations entre
+# guillemets — au texte RÉELLEMENT injecté pour la source citée (pas la page
+# entière : ce que le modèle a eu sous les yeux). Même contrat que le reste du
+# module : générique, pur, et il SIGNALE sans jamais supprimer ni réécrire.
+
+#: Phrases rattachées à la source SANS numéro : le modèle invoque « les
+#: extraits », « la page », « le texte »… Formules cherchées sur le texte
+#: normalisé (casse et accents retirés), hors guillemets.
+_ATTRIBUTION_RE = re.compile(
+    r"\b(?:selon|d'apres|dans|sur|par)\s+(?:les|ces|ce|cet|cette|l'|la|le|l)\s*"
+    r"(?:extraits?|fragments?|passages?|page|texte|document|sources?)\b"
+    r"|\b(?:les|ces|ce|cet|cette|l'|la|le|l)\s*(?:extraits?|fragments?|passages?|page|texte|document)\s+"
+    r"(?:fournis?|fournies?|indiqu\w*|precis\w*|mentionn\w*|affirm\w*|stipul\w*|explique\w*|dit|disent|decri\w*|montr\w*)\b"
+    r"|\b(?:extraits?|texte|page|passages?|fragments?|document)\s+(?:fournis?|fournies?)\b"
+    # Tout nom qui désigne la source, quelle que soit la tournure (#85).
+    r"|\b(?:extraits?|textes?|pages?|sources?|documents?)\b"
+)
+
+_MARQUEUR_RANG_RE = re.compile(r"\[\s*\d+\s*\]")
+#: Marqueurs de note d'une page web copiée — « [ 4 ] », « [ N 1 ] » — retirés
+#: de la SOURCE : ce sont des renvois, pas des valeurs (sur la page
+#: photoélectrique, « [ 4 ] , [ 5 ] » faisait croire que 4 et 5 s'y trouvaient).
+_MARQUEUR_NOTE_RE = re.compile(r"\[\s*(?:[A-Za-z]{1,3}\s*)?\d+\s*\]")
+
+_EXPOSANTS = str.maketrans("⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹", "+-0123456789")
+_EXPOSANTS_RE = re.compile(r"[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+")
+
+_SEP_MILLIERS = "[    ]"
+_NOMBRE_RE = re.compile(
+    r"(?<![\w.,])([-−])?(\d{1,3}(?:" + _SEP_MILLIERS + r"\d{3})+|\d+)(?:[.,](\d+))?(?!\w)"
+)
+_MOTS_NOMBRES = {
+    "zero": 0, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "six": 6, "sept": 7,
+    "huit": 8, "dix-sept": 17, "dix-huit": 18, "dix-neuf": 19, "dix": 10, "onze": 11,
+    "douze": 12, "treize": 13, "quatorze": 14, "quinze": 15, "seize": 16, "vingt": 20,
+}
+#: « un », « une » (articles) et « neuf » (adjectif) : jamais lus comme nombres
+#: dans la RÉPONSE, trop ambigus ; « neuf » compte côté source, où il ne
+#: coûte qu'un faux négatif de plus.
+_MOTS_NOMBRES_SOURCE = {**_MOTS_NOMBRES, "neuf": 9}
+_MOT_NOMBRE_RE = re.compile(
+    r"(?<![\w-])(dix-sept|dix-huit|dix-neuf|zero|deux|trois|quatre|cinq|six|sept|huit|"
+    r"dix|onze|douze|treize|quatorze|quinze|seize|vingt)(?![\w-])"
+)
+_MOT_NOMBRE_SOURCE_RE = re.compile(
+    r"(?<![\w-])(dix-sept|dix-huit|dix-neuf|zero|deux|trois|quatre|cinq|six|sept|huit|neuf|"
+    r"dix|onze|douze|treize|quatorze|quinze|seize|vingt)(?![\w-])"
+)
+
+_DETERMINANT_AVANT_RE = re.compile(r"\b(?:les|ces|ses|mes|tes|nos|vos|leurs|des|aux)\s+$")
+#: Une désignation de la source (« extrait 1 », « source n° 2 ») : un numéro d'ordre, pas une valeur.
+_REFERENCE_AVANT_RE = re.compile(r"\b(?:extraits?|sources?|passages?|fragments?|resultats?)\s+(?:n°\s*|no\s*)?$")
+
+#: Mots différents tolérés par tranche de cinq mots d'une citation : AUCUN.
+#: Une tolérance d'un mot (essayée dans la première version de #85) laissait
+#: passer une citation ALTÉRÉE : dans la réponse de référence « relativité 4k »
+#: (étage 2 de #75), « dans tous les référentiels inertels (ou inertiels) »
+#: remplace « galiléens » par un mot inventé. Un mot changé dans des
+#: guillemets est une altération, pas un bruit de recopie. Reste toléré : un
+#: écart d'une lettre sur un mot de 6 lettres ou plus (faute de frappe :
+#: « inertels » pour « inertiels »), et les passages sautés par une ellipse
+#: (chaque fragment est cherché à part).
+_MOTS_DIFFERENTS_PAR_CINQ = 0
+
+_ELLIPSE_RE = re.compile(r"\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.")
+_FIN_DE_PHRASE_RE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZÀ-ÖØ-Þ«“\"(\[0-9])")
+_PROTEGE = {".": "", "!": "", "?": "", "…": ""}
+_RESTAURE = {v: k for k, v in _PROTEGE.items()}
+_EXTRAIT_PHRASE_MAX = 300
+
+
+@dataclass
+class AffirmationNonEtayee:
+    """Un élément d'une phrase rattachée à des sources qui n'est dans aucune.
+
+    `phrase` : la phrase entière (balisage gras/italique retiré, [n]
+    conservés). `element` : le nombre tel qu'écrit, ou la citation (fragment
+    fautif). `type` : « nombre » ou « citation ». `sources` : rangs auxquels la
+    phrase était rattachée.
+    """
+    phrase: str
+    element: str
+    type: str
+    sources: list[int]
+
+
+def _plat(texte: str) -> str:
+    """Casse, accents, apostrophes — et exposants ramenés à `^`+ASCII AVANT
+    NFKD (qui écrase `⁻⁹` en « −9 » et perd qu'il s'agit d'un exposant)."""
+    texte = _EXPOSANTS_RE.sub(lambda m: "^" + m.group(0).translate(_EXPOSANTS), texte)
+    texte = unicodedata.normalize("NFKD", texte.replace("’", "'").replace("‘", "'"))
+    return "".join(c for c in texte if not unicodedata.combining(c)).casefold()
+
+
+def _mots(texte_plat: str) -> list[str]:
+    return re.findall(r"\w+", texte_plat)
+
+
+def _a_une_lettre_pres(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 6 or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    if len(a) == len(b):
+        return a[i + 1:] == b[i + 1:]
+    return a[i:] == b[i + 1:]
+
+
+def _fragment_etaye(fragment: list[str], source: list[str]) -> bool:
+    """`fragment` (mots) figure-t-il, dans l'ordre et contigu, dans `source` ?
+    Avec la tolérance décrite plus haut (`_MOTS_DIFFERENTS_PAR_CINQ`)."""
+    n = len(fragment)
+    if n == 0:
+        return True
+    marge = (n // 5) * _MOTS_DIFFERENTS_PAR_CINQ
+    for i in range(len(source) - n + 1):
+        ecarts = 0
+        for j in range(n):
+            if not _a_une_lettre_pres(fragment[j], source[i + j]):
+                ecarts += 1
+                if ecarts > marge:
+                    break
+        else:
+            return True
+    return False
+
+
+def _valeur(entier: str, decimales: str | None, signe: str | None) -> str:
+    chiffres = re.sub(r"\D", "", entier)
+    d = Decimal(f"{chiffres}.{decimales}" if decimales else chiffres).normalize()
+    texte = format(d, "f")
+    return "-" + texte if signe and d != 0 else texte
+
+
+def _nombres(texte: str, mots_source: bool = False) -> list[tuple[str, str]]:
+    """`[(affichage, valeur normalisée)]` : chiffres (virgule ou point
+    décimal, espaces de milliers, signe moins ASCII ou Unicode, exposants) puis
+    nombres en toutes lettres de zéro à vingt. « 4 et 5 » donne 4 et 5 ;
+    « 4 à 5 », « 4–5 » aussi — l'intervalle s'éclate de lui-même."""
+    plat = _plat(texte)
+    trouves = [(m.group(0).strip(), _valeur(m.group(2), m.group(3), m.group(1)))
+               for m in _NOMBRE_RE.finditer(plat)]
+    table = _MOTS_NOMBRES_SOURCE if mots_source else _MOTS_NOMBRES
+    motif = _MOT_NOMBRE_SOURCE_RE if mots_source else _MOT_NOMBRE_RE
+    if not mots_source:
+        trouves = [t for t, m in zip(trouves, _NOMBRE_RE.finditer(plat))
+                   if not _REFERENCE_AVANT_RE.search(plat[:m.start()])]
+    for m in motif.finditer(plat):
+        # « les deux autres noms », « ces trois cas » : un quantificateur sur un
+        # ensemble déjà posé (souvent par la question), pas une valeur mesurée.
+        if not mots_source and _DETERMINANT_AVANT_RE.search(plat[:m.start()]):
+            continue
+        trouves.append((m.group(1), str(table[m.group(1)])))
+    return trouves
+
+
+def _preparer_source(texte: str) -> tuple[set[str], list[str]]:
+    """(valeurs numériques, mots) d'un passage injecté, marqueurs de note retirés."""
+    texte = _MARQUEUR_NOTE_RE.sub(" ", texte)
+    return ({v for _, v in _nombres(texte, mots_source=True)}, _mots(_plat(texte)))
+
+
+def _separer_guillemets(texte: str) -> tuple[list[str], str]:
+    """`(contenus des guillemets de plus haut niveau, texte sans eux)`.
+
+    « … » et “ … ”, imbriqués compris (le contenu d'un niveau garde ses
+    guillemets internes, que l'appelant retire). Un guillemet ouvrant jamais
+    refermé n'ouvre rien : le reste du texte reste du texte.
+    """
+    spans: list[str] = []
+    dehors: list[str] = []
+    profondeur, debut = 0, 0
+    for i, c in enumerate(texte):
+        if c in "«“":
+            if profondeur == 0:
+                debut = i
+            profondeur += 1
+        elif c in "»”" and profondeur > 0:
+            profondeur -= 1
+            if profondeur == 0:
+                spans.append(texte[debut + 1:i])
+                dehors.append(" ")
+                debut = i + 1
+        elif profondeur == 0:
+            dehors.append(c)
+    if profondeur > 0:
+        dehors.append(texte[debut:])
+    return spans, "".join(dehors)
+
+
+def _fragments_de_citation(contenu: str) -> list[str]:
+    """Une citation, privée de ses guillemets internes et découpée aux
+    ellipses (« … » et « […] » marquent un passage sauté)."""
+    contenu = re.sub(r"[«»“”]", " ", contenu)
+    return [re.sub(r"\s+", " ", f).strip() for f in _ELLIPSE_RE.split(contenu) if f.strip()]
+
+
+def _proteger_guillemets(ligne: str) -> str:
+    """Remplace la ponctuation de fin de phrase DANS des guillemets par un
+    caractère neutre, pour qu'une citation de deux phrases ne soit pas coupée."""
+    sortie, profondeur = [], 0
+    for c in ligne:
+        if c in "«“":
+            profondeur += 1
+        elif c in "»”" and profondeur > 0:
+            profondeur -= 1
+        sortie.append(_PROTEGE[c] if profondeur > 0 and c in _PROTEGE else c)
+    return "".join(sortie)
+
+
+def _paragraphes(reponse: str) -> list[list[str]]:
+    """Réponse (code et maths déjà masqués) → paragraphes → phrases.
+
+    Un paragraphe se termine à une ligne vide ; chaque ligne perd son
+    marqueur de liste, de citation ou de titre (« 1. », « - », « > », « # »),
+    sans quoi « 1. » compterait comme un nombre. Une phrase qui ne tient qu'à un
+    renvoi « [n] » après le point final est recollée à la précédente.
+    """
+    resultat: list[list[str]] = []
+    for bloc in re.split(r"\n\s*\n", reponse):
+        phrases: list[str] = []
+        for ligne in bloc.split("\n"):
+            ligne = re.sub(r"^\s*(?:>\s*)*(?:[-*•+]\s+|\d+[.)]\s+|#+\s+)?", "", ligne)
+            ligne = ligne.replace("*", "").strip()
+            if not ligne:
+                continue
+            for morceau in _FIN_DE_PHRASE_RE.split(_proteger_guillemets(ligne)):
+                morceau = "".join(_RESTAURE.get(c, c) for c in morceau).strip()
+                if not morceau:
+                    continue
+                seul_renvoi = _MARQUEUR_RANG_RE.search(morceau) and not _MARQUEUR_RANG_RE.sub("", morceau).strip(" .,;:")
+                if phrases and seul_renvoi:
+                    phrases[-1] += " " + morceau
+                else:
+                    phrases.append(morceau)
+        if phrases:
+            resultat.append(phrases)
+    return resultat
+
+
+def verifier_fidelite(
+    reponse: str, sources: Mapping[int, str], texte_utilisateur: str = "",
+) -> list[AffirmationNonEtayee]:
+    """Nombres et citations d'une réponse absents des sources auxquelles leur
+    phrase se rattache. Calcul PUR, sans LLM ni réseau, APRÈS le flux ; ne
+    modifie jamais `reponse` (signaler, jamais réécrire).
+
+    `sources` : rang `[n]` → texte EXACT injecté pour cette source (titre et
+    extrait, tel que `formater_pour_llm` l'écrit), pas la page entière.
+
+    **Rattachement.** Une phrase est rattachée à ses `[n]` valides. Sans `[n]`,
+    elle l'est à l'UNION des sources du tour si elle invoque la source (« selon
+    les extraits », « d'après la page », « le texte indique »…) ; cette
+    attribution vaut ensuite pour les phrases suivantes du MÊME paragraphe (cas
+    réel : « Selon les extraits fournis… la section efficace… Z. L'exposant
+    varie entre 4 et 5. » — la seconde phrase n'a ni numéro ni formule),
+    jusqu'au premier `[n]` explicite : passé ce renvoi, le modèle désigne de
+    nouveau ses sources lui-même, et une phrase sans numéro qui suit peut tenir
+    de ses connaissances (risque de faux positif). Invoquer la source, c'est
+    la NOMMER hors guillemets — « extrait(s) », « texte(s) », « page(s) »,
+    « source(s) », « document(s) » —, quelle que soit la tournure : les
+    formules figées ratent « Réponse basée sur l'analyse des extraits » et
+    « les lois physiques sous-jacentes évoquées dans ces textes »
+    (photoélectrique 4k, tirages 3 et 5 du 2026-10-29). Une phrase sans `[n]`
+    et hors d'une attribution n'est pas vérifiée : elle peut venir des
+    connaissances du modèle, ce n'est pas à ce contrôle d'en juger. Une phrase
+    dont tous les `[n]` sont hors liste est comparée à l'union des sources
+    (`valider_citations` signale en plus le rang).
+
+    `texte_utilisateur` : le message de l'utilisateur. Un nombre ou une
+    citation de la réponse qui s'y trouve est étayé — le modèle reprend la
+    question (« deux autres noms »), il n'invente pas. Ses URLs sont retirées
+    avant comparaison.
+
+    **Vérifié.** (1) Les nombres, normalisés : virgule ou point décimal,
+    espaces de milliers, signe moins Unicode, exposants (`10⁻⁹`), nombres en
+    toutes lettres de zéro à vingt (« un », « une », « neuf » exclus côté
+    réponse), intervalles éclatés (« 4 à 5 » → 4 et 5). (2) Les citations entre
+    « … » ou “ … ”, comparées mot à mot, dans l'ordre, après normalisation de la
+    casse, des accents et des espaces, avec la tolérance de
+    `_MOTS_DIFFERENTS_PAR_CINQ`. Le numéro `[n]` lui-même n'est pas un nombre ;
+    code et maths sont masqués comme dans `valider_citations`. Un nombre écrit
+    entre guillemets est vérifié comme partie de la citation, pas à part.
+
+    **Limites connues, v1.**
+      * Les nombres à l'intérieur des formules (`$Z^4$`) ne sont pas vérifiés
+        (maths masquées).
+      * Présence n'est pas sens : un nombre qui figure dans l'extrait ailleurs
+        (« ≤ 3 × 10⁻⁹ s » pour un « autour de 3 ») n'est pas signalé.
+      * Une ERREUR D'INTERPRÉTATION n'est pas une invention : sur « relativité
+        restreinte » à 4 000 caractères, le modèle prend « classe des référentiels
+        inertiels » pour un nom du référentiel galiléen — les mots sont dans
+        l'extrait, rien n'est signalé.
+      * La page est prise telle qu'injectée : sa bibliographie compte comme
+        source, et ses renvois « [ 4 ] » sont ignorés mais pas ses listes
+        « 1 2 3 4 ».
+      * Seuls les passages portant un rang `[n]` (pages lues, résultats web)
+        sont comparés ; les extraits de documents (RAG) ne le sont pas.
+    """
+    if not reponse or not sources:
+        return []
+    preparees = {rang: _preparer_source(texte) for rang, texte in sources.items()}
+    # URLs retirées : une URL désigne la page, elle n'affirme rien (« 2013 »
+    # dans un chemin n'étaie pas « 2013 » dans la réponse).
+    nombres_user, mots_user = _preparer_source(_URL_RE.sub(" ", texte_utilisateur or ""))
+    masque = _masquer_zones_non_citables(reponse)
+
+    signalees: list[AffirmationNonEtayee] = []
+    for phrases in _paragraphes(masque):
+        attribution_active = False
+        for phrase in phrases:
+            citations, hors_guillemets = _separer_guillemets(phrase)
+            cites = [int(n) for n in re.findall(r"\[(\d+)\]", phrase)]
+            valides = sorted({n for n in cites if n in preparees})
+            invoque = bool(_ATTRIBUTION_RE.search(_plat(hors_guillemets)))
+            # Héritage borné : il s'arrête au premier [n] explicite (même
+            # hors plage, même dans la phrase qui invoque la source).
+            attribution_active = (attribution_active or invoque) and not cites
+            if valides:
+                rangs = valides
+            elif cites or attribution_active:
+                # Numéros tous hors liste (renvois de notes de la page
+                # recopiés, photoélectrique 4k) : la phrase invoque des
+                # sources sans en désigner une offerte — comparée à toutes.
+                # `valider_citations` signale en plus le rang.
+                rangs = sorted(preparees)
+            else:
+                continue
+
+            nombres_sources = set().union(*(preparees[r][0] for r in rangs))
+            mots_sources = [m for r in rangs for m in preparees[r][1]]
+            vus: set[str] = set()
+            trouvees: list[tuple[str, str]] = []
+            sans_renvoi = _MARQUEUR_RANG_RE.sub(" ", hors_guillemets)
+            for affichage, valeur in _nombres(sans_renvoi):
+                if valeur not in vus and valeur not in nombres_sources and valeur not in nombres_user:
+                    vus.add(valeur)
+                    trouvees.append((affichage, "nombre"))
+            for contenu in citations:
+                for fragment in _fragments_de_citation(contenu):
+                    mots = _mots(_plat(fragment))
+                    if not (_fragment_etaye(mots, mots_sources) or _fragment_etaye(mots, mots_user)):
+                        trouvees.append((fragment, "citation"))
+            for element, genre in trouvees:
+                signalees.append(AffirmationNonEtayee(
+                    phrase=phrase[:_EXTRAIT_PHRASE_MAX], element=element, type=genre, sources=list(rangs)))
+    return signalees

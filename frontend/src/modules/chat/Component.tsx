@@ -17,7 +17,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -534,6 +534,30 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
         </p>
       )
     }
+    case 'citations_non_etayees': {
+      // Un SIGNALEMENT, jamais une correction (#83) : la réponse reste telle
+      // qu'écrite. « non trouvé » ne dit pas « faux » — seuls les nombres et
+      // les citations entre guillemets sont comparés au passage injecté.
+      const affirmations = liste<Record<string, unknown>>(etape.affirmations)
+      return (
+        <div>
+          <p className="m-0 text-warning">Affirmation non trouvée dans la source</p>
+          <ul className="m-0 mt-1 pl-4 list-disc">
+            {affirmations.map((a, i) => {
+              const rangs = liste<number>(a.sources)
+              return (
+                <li key={i}>
+                  {texte(a.type) === 'citation' ? 'Citation' : 'Nombre'}{' '}
+                  <span className="font-mono text-secondary">« {texte(a.element)} »</span>
+                  {rangs.length > 0 && <> — source{rangs.length > 1 ? 's' : ''} {rangs.map(r => `[${r}]`).join(', ')}</>}
+                  <span className="block text-muted">{texte(a.phrase)}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )
+    }
     case 'raisonnement_coupe':
       return <p className="m-0">{libelleRaisonnement(etape)}</p>
     case 'raisonnement_non_coupe':
@@ -584,6 +608,7 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
   onToggle: () => void
 }) {
   const libelleBadge = libelleBadgeCitations(etapes)
+  const libelleNonEtayee = libelleBadgeNonEtayees(etapes)
   // Visible sans déplier le panneau, comme le badge des citations : c'est ce
   // qui distingue une réponse sourcée d'une réponse donnée de mémoire.
   const libelleAbandon = libelleBadgeAbandon(etapes)
@@ -601,6 +626,11 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
           {libelleBadge && (
             <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
               {libelleBadge}
+            </span>
+          )}
+          {libelleNonEtayee && (
+            <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
+              {libelleNonEtayee}
             </span>
           )}
           {libelleAbandon && (
