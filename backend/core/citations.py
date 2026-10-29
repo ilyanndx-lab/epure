@@ -276,6 +276,11 @@ def retirer_renvois_de_notes(texte: str) -> str:
     source comparée par `verifier_fidelite` — « [ 4 ] , [ 5 ] » y faisait
     croire que 4 et 5 figuraient dans l'extrait. Un renvoi collé au mot
     suivant laisse une espace, pour ne pas souder deux mots.
+
+    **Limite connue** : un renvoi collé à un mot (« Hertz[4] ») n'est pas
+    retiré, pour préserver les indices de code (`arr[0]`, `matrice[1][2]`) —
+    seul un crochet précédé d'une espace, d'un chiffre ou d'une ponctuation
+    est lu comme un renvoi.
     """
     def _remplacer(m: re.Match) -> str:
         suite = texte[m.end():m.end() + 1]
