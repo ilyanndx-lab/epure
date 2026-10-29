@@ -15,10 +15,13 @@ retrouve-t-il dans le passage RÉELLEMENT injecté pour cette source ?
     contrôlées contre l'étage 1 : 3 848 / 15 454 / 3 354 / 14 984 caractères ;
   * des cas synthétiques qui isolent chaque règle.
 
-Un cas réel est « signalé » ou « non signalé » selon l'attendu de #83. Celui
-de relativité 4k (non signalé, des deux côtés) n'est PAS une preuve de
-fidélité : c'est une erreur d'interprétation (le modèle prend « classe des
-référentiels inertiels » pour un nom), que cette heuristique ne voit pas par
+Un cas réel est « signalé » ou « non signalé » selon l'attendu de #83, revu
+sur #85 : la réponse de RÉFÉRENCE relativité 4k est signalée (sa citation
+« dans tous les référentiels inertels (ou inertiels) » remplace « galiléens »
+par un mot inventé — la tolérance d'un mot par tranche de cinq, qui la
+laissait passer, est retirée). La VARIANTE relativité 4k reste non signalée,
+ce qui n'est PAS une preuve de fidélité : son erreur est d'interprétation (elle
+prend « inertiels » pour un nom), que cette heuristique ne voit pas par
 construction — limite connue, écrite dans la docstring de `verifier_fidelite`.
 """
 
@@ -117,12 +120,21 @@ class ReponsesReellesEtage2Test(unittest.TestCase):
         for reponses in (self.reference, self.variante):
             self.assertEqual(self._signale(reponses, ("relativite_restreinte", 16000)), [])
 
-    def test_relativite_4k_non_signale(self):
+    def test_relativite_4k_reference_signale_la_citation_alteree(self):
+        """« dans tous les référentiels inertels (ou inertiels) » : l'extrait dit
+        « galiléens (ou inertiels ) ». Un mot remplacé dans une citation est
+        une altération, signalée. La citation courte « référentiels inertels »
+        du premier paragraphe, elle, n'est qu'à une lettre de « référentiels
+        inertiels » (présent dans l'extrait) : tolérée comme faute de frappe."""
+        signalees = self._signale(self.reference, ("relativite_restreinte", 4000))
+        self.assertEqual([(a.type, a.element) for a in signalees],
+                         [("citation", "dans tous les référentiels inertels (ou inertiels)")])
+        self.assertEqual(signalees[0].sources, [1])
+
+    def test_relativite_4k_variante_non_signale(self):
         """Erreur d'interprétation, pas invention : limite connue (cf. docstring
-        du module). Inclut une faute de frappe du modèle (« inertels »), tolérée
-        comme transcription et non comme invention."""
-        for reponses in (self.reference, self.variante):
-            self.assertEqual(self._signale(reponses, ("relativite_restreinte", 4000)), [])
+        du module) — les mots cités sont dans l'extrait."""
+        self.assertEqual(self._signale(self.variante, ("relativite_restreinte", 4000)), [])
 
 
 class NombresTest(unittest.TestCase):
@@ -243,6 +255,24 @@ class CitationsEntreGuillemetsTest(unittest.TestCase):
         self.assertEqual(self._el("Il est appelé « référentiel de Lorntz » [1]."), [])  # une lettre en moins
         self.assertEqual(self._el("Il est appelé « référentiel de Lornzt » [1]."), ["référentiel de Lornzt"])
 
+    def test_un_mot_remplace_signale_meme_dans_une_longue_citation(self):
+        """Aucune tolérance au niveau du mot (`_MOTS_DIFFERENTS_PAR_CINQ = 0`) :
+        un seul mot changé sur huit suffit à signaler."""
+        self.assertEqual(self._el("Il dit « le référentiel galiléen est appelé aussi référentiel de Newton » [1]."),
+                         ["le référentiel galiléen est appelé aussi référentiel de Newton"])
+
+    def test_citation_exacte_coupee_par_une_ellipse_non_signalee(self):
+        """Chaque fragment autour de « … » ou « ... » est cherché séparément :
+        une citation exacte qui saute un passage n'est pas une altération."""
+        for ellipse in ("…", "...", " … ", " ... "):
+            with self.subTest(ellipse=ellipse):
+                rep = f"Il dit « Le référentiel galiléen est appelé{ellipse}ensemble d'observateurs » [1]."
+                self.assertEqual(self._el(rep), [])
+
+    def test_fragment_altere_apres_une_ellipse_signale_seul(self):
+        rep = "Il dit « Le référentiel galiléen est appelé ... ensemble de chevaux » [1]."
+        self.assertEqual(self._el(rep), ["ensemble de chevaux"])
+
     def test_mots_presents_mais_ordre_different_signale(self):
         self.assertEqual(self._el("Il dit « Lorentz de référentiel » [1]."), ["Lorentz de référentiel"])
 
@@ -274,6 +304,19 @@ class RattachementTest(unittest.TestCase):
     def test_attribution_heritee_dans_le_meme_paragraphe(self):
         res = self._res("Selon les extraits fournis, la limite existe. Elle vaut entre 4 et 12.")
         self.assertEqual([a.element for a in res], ["12"])
+
+    def test_attribution_heritee_s_arrete_au_premier_n_explicite(self):
+        """Après un [n] explicite, le modèle a repris la main sur ses renvois :
+        une phrase suivante sans [n] n'est plus rattachée d'office."""
+        res = self._res("Selon les extraits fournis, la limite existe. Elle vaut 4 [1]. Elle monte à 42.")
+        self.assertEqual(res, [])
+
+    def test_le_n_explicite_qui_arrete_l_heritage_reste_verifie(self):
+        res = self._res("Selon les extraits fournis, la limite existe. Elle vaut 42 [1]. Elle monte à 77.")
+        self.assertEqual([(a.element, a.sources) for a in res], [("42", [1])])
+
+    def test_attribution_avec_n_dans_la_meme_phrase_ne_se_prolonge_pas(self):
+        self.assertEqual(self._res("Selon la page [1], la limite existe. Elle vaut 42."), [])
 
     def test_attribution_non_heritee_au_paragraphe_suivant(self):
         self.assertEqual(self._res("Selon les extraits fournis, la limite existe.\n\nElle vaut 42."), [])

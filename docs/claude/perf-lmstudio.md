@@ -135,7 +135,7 @@ Notation d'Ilyann, sur les réponses brutes. « Référence » = le code de `mai
 |---|---|---|
 | relativité 4k | ✗ fabrique un second « nom » (« classe des référentiels inertiels ») | ~ incomplète mais honnête (« inertiel » seul) |
 | relativité 16k | ✓ (section citée douteuse) | ✓ citation mot pour mot |
-| photoélectrique 4k | ~ signale que l'extrait ne contient pas les valeurs, mais cite [1] pour 4 et 5 et ajoute « vers 3 » sans source | ✗✗ attribue à [1] des valeurs et des notions absentes de l'extrait (« électrons lents », « ondes porteuses ») |
+| photoélectrique 4k | ~ signale que l'extrait ne contient pas les valeurs, mais cite [1] pour 4 et 5 et ajoute « vers 3 » sans source | ✗ affirme que l’extrait donne 4 et 5 (absents) ; “électrons lents” et “ondes porteuses” sont présents dans l’extrait mais sortis de leur contexte et reliés à tort à la loi en Z |
 | photoélectrique 16k | ✓ | ✓ |
 
 **Conclusion** : la variante est meilleure sur 3 cas et pire sur le cas

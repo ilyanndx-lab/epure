@@ -284,17 +284,16 @@ _DETERMINANT_AVANT_RE = re.compile(r"\b(?:les|ces|ses|mes|tes|nos|vos|leurs|des|
 #: Une désignation de la source (« extrait 1 », « source n° 2 ») : un numéro d'ordre, pas une valeur.
 _REFERENCE_AVANT_RE = re.compile(r"\b(?:extraits?|sources?|passages?|fragments?|resultats?)\s+(?:n°\s*|no\s*)?$")
 
-#: Citation approximative tolérée : un mot différent par tranche de cinq mots
-#: (une citation de 5 à 9 mots admet 1 mot de travers, de 10 à 14 mots 2…),
-#: aucun en dessous. Un modèle local recopie mal ; signaler chaque mot de
-#: travers noierait le signal. Plus un écart d'une lettre sur un mot de 6
-#: lettres ou plus (faute de frappe : « inertels » pour « inertiels »).
-#:
-#: ⚠️ Cette tolérance laisse passer une citation ALTÉRÉE : dans la réponse de
-#: référence « relativité 4k » (étage 2 de #75), « dans tous les référentiels
-#: inertels (ou inertiels) » remplace « galiléens » par un mot inventé, et
-#: n'est pas signalée. À mettre à 0 pour une vérification stricte.
-_MOTS_DIFFERENTS_PAR_CINQ = 1
+#: Mots différents tolérés par tranche de cinq mots d'une citation : AUCUN.
+#: Une tolérance d'un mot (essayée dans la première version de #85) laissait
+#: passer une citation ALTÉRÉE : dans la réponse de référence « relativité 4k »
+#: (étage 2 de #75), « dans tous les référentiels inertels (ou inertiels) »
+#: remplace « galiléens » par un mot inventé. Un mot changé dans des
+#: guillemets est une altération, pas un bruit de recopie. Reste toléré : un
+#: écart d'une lettre sur un mot de 6 lettres ou plus (faute de frappe :
+#: « inertels » pour « inertiels »), et les passages sautés par une ellipse
+#: (chaque fragment est cherché à part).
+_MOTS_DIFFERENTS_PAR_CINQ = 0
 
 _ELLIPSE_RE = re.compile(r"\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.")
 _FIN_DE_PHRASE_RE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZÀ-ÖØ-Þ«“\"(\[0-9])")
@@ -490,8 +489,11 @@ def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[Affirmat
     les extraits », « d'après la page », « le texte indique »…) ; cette
     attribution vaut ensuite pour les phrases suivantes du MÊME paragraphe (cas
     réel : « Selon les extraits fournis… la section efficace… Z. L'exposant
-    varie entre 4 et 5. » — la seconde phrase n'a ni numéro ni formule). Une
-    phrase sans `[n]` et hors d'une attribution n'est pas vérifiée : elle peut
+    varie entre 4 et 5. » — la seconde phrase n'a ni numéro ni formule),
+    jusqu'au premier `[n]` explicite : passé ce renvoi, le modèle désigne de
+    nouveau ses sources lui-même, et une phrase sans numéro qui suit peut tenir
+    de ses connaissances (risque de faux positif). Une phrase sans `[n]` et
+    hors d'une attribution n'est pas vérifiée : elle peut
     venir des connaissances du modèle, ce n'est pas à ce contrôle d'en juger.
     Une phrase qui ne cite que des numéros hors liste est laissée à
     `valider_citations`.
@@ -534,7 +536,9 @@ def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[Affirmat
             cites = [int(n) for n in re.findall(r"\[(\d+)\]", phrase)]
             valides = sorted({n for n in cites if n in preparees})
             invoque = bool(_ATTRIBUTION_RE.search(_plat(hors_guillemets)))
-            attribution_active = attribution_active or invoque
+            # Héritage borné : il s'arrête au premier [n] explicite (même
+            # hors plage, même dans la phrase qui invoque la source).
+            attribution_active = (attribution_active or invoque) and not cites
             if valides:
                 rangs = valides
             elif cites:
