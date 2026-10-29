@@ -57,6 +57,9 @@ LMSTUDIO = os.environ.get("LMSTUDIO_HOST", "http://127.0.0.1:1234").rstrip("/")
 #: Sous ce seuil de mémoire libre, l'étage 2 s'arrête proprement (résultats
 #: déjà écrits, modèle déchargé si demandé) au lieu de se faire tuer.
 SEUIL_MEMOIRE_GO = 3.0
+#: Sur batterie, même arrêt propre sous ce pourcentage de charge (éval de
+#: fidélité du 2026-10-29, lancée sur batterie : les durées n'y comptent pas).
+SEUIL_BATTERIE_PCT = 20
 #: Raisonnement coupé : la réponse seule tient largement dans ce plafond.
 MAX_TOKENS_SORTIE = 1024
 
@@ -106,6 +109,30 @@ def sur_secteur():
     if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(etat)):
         return None
     return {0: False, 1: True}.get(etat.ACLineStatus)
+
+
+def batterie_pct():
+    """Charge en %, ou None si inconnue (pas de batterie : 255 côté Windows)."""
+    class Etat(ctypes.Structure):
+        _fields_ = [("ACLineStatus", ctypes.c_byte), ("BatteryFlag", ctypes.c_byte),
+                    ("BatteryLifePercent", ctypes.c_ubyte), ("SystemStatusFlag", ctypes.c_byte),
+                    ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+    etat = Etat()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(etat)):
+        return None
+    return None if etat.BatteryLifePercent == 255 else etat.BatteryLifePercent
+
+
+def _verifier_ressources():
+    """Lève `MemoireBasse` ou `BatterieFaible` ; la batterie ne compte que
+    débranché. Renvoie la mémoire libre."""
+    libre = memoire_libre_go()
+    if libre < SEUIL_MEMOIRE_GO:
+        raise MemoireBasse()
+    pct = batterie_pct()
+    if sur_secteur() is False and pct is not None and pct < SEUIL_BATTERIE_PCT:
+        raise BatterieFaible()
+    return libre
 
 
 def lire(webcontent, q, budget):
@@ -203,6 +230,10 @@ class MemoireBasse(Exception):
     pass
 
 
+class BatterieFaible(Exception):
+    pass
+
+
 def interroger(modele, systeme, utilisateur):
     """Flux LM Studio, raisonnement coupé. `reasoning_effort: "none"` est le
     seul réglage mesuré efficace sur ce Qwen3.5 (2026-10-19) : 0 token de
@@ -220,8 +251,8 @@ def interroger(modele, systeme, utilisateur):
     with urllib.request.urlopen(req, timeout=900) as r:
         for ligne in r:
             n += 1
-            if n % 50 == 0 and memoire_libre_go() < SEUIL_MEMOIRE_GO:
-                raise MemoireBasse()
+            if n % 50 == 0:
+                _verifier_ressources()
             ligne = ligne.decode("utf-8").strip()
             if not ligne.startswith("data:") or ligne == "data: [DONE]":
                 continue
@@ -291,6 +322,10 @@ def etage2(modele, budgets, decharger_a_la_fin):
         doc["meta"]["arret"] = f"mémoire libre sous {SEUIL_MEMOIRE_GO} Go"
         ecrire()
         print(f"ARRÊT : mémoire libre sous {SEUIL_MEMOIRE_GO} Go — résultats partiels écrits", flush=True)
+    except BatterieFaible:
+        doc["meta"]["arret"] = f"batterie sous {SEUIL_BATTERIE_PCT} %"
+        ecrire()
+        print(f"ARRÊT : batterie sous {SEUIL_BATTERIE_PCT} % — résultats partiels écrits", flush=True)
     except (urllib.error.URLError, OSError) as exc:
         doc["meta"]["arret"] = f"LM Studio : {exc}"
         ecrire()
@@ -339,6 +374,7 @@ def fidelite(modele, tirages, decharger_a_la_fin):
     doc = {"meta": {"modele": modele, "contexte_charge": contexte_charge(modele),
                     "raisonnement": "coupé (reasoning_effort: none)", "tirages_par_cas": tirages,
                     "max_tokens_sortie": MAX_TOKENS_SORTIE, "sur_secteur": sur_secteur(),
+                    "batterie_pct_debut": batterie_pct(),
                     "debut": time.strftime("%Y-%m-%d %H:%M"), "arret": None},
            "essais": []}
 
@@ -349,15 +385,16 @@ def fidelite(modele, tirages, decharger_a_la_fin):
     try:
         for page, budget in CAS_FIDELITE:
             q = questions[page]
-            lectures, etape, _ = lire(webcontent, q, budget)
+            lectures, etape, indispo = lire(webcontent, q, budget)
+            if indispo or etape.get("selection") != "similarite":
+                raise SystemExit(f"{page} {budget} : embedding indisponible, extrait non déterministe")
             r = lectures[0].resultat
             systeme = routeur._construire_ctx_lecture(lectures)
             for i in range(1, tirages + 1):
-                libre = memoire_libre_go()
-                if libre < SEUIL_MEMOIRE_GO:
-                    raise MemoireBasse()
+                libre = _verifier_ressources()
                 essai = {"page": page, "budget": budget, "tirage": i, "question": q["question"],
-                         "attendu": q["attendu"], "memoire_libre_go": round(libre, 1)}
+                         "attendu": q["attendu"], "memoire_libre_go": round(libre, 1),
+                         "batterie_pct": batterie_pct(), "sur_secteur": sur_secteur()}
                 essai.update(interroger(modele, systeme, f"{q['question']} {q['url']}"))
                 essai["signale"] = [
                     {"phrase": a.phrase, "element": a.element, "type": a.type, "sources": a.sources}
@@ -373,6 +410,10 @@ def fidelite(modele, tirages, decharger_a_la_fin):
         doc["meta"]["arret"] = f"mémoire libre sous {SEUIL_MEMOIRE_GO} Go"
         ecrire()
         print(f"ARRÊT : mémoire libre sous {SEUIL_MEMOIRE_GO} Go — résultats partiels écrits", flush=True)
+    except BatterieFaible:
+        doc["meta"]["arret"] = f"batterie sous {SEUIL_BATTERIE_PCT} %"
+        ecrire()
+        print(f"ARRÊT : batterie sous {SEUIL_BATTERIE_PCT} % — résultats partiels écrits", flush=True)
     except (urllib.error.URLError, OSError) as exc:
         doc["meta"]["arret"] = f"LM Studio : {exc}"
         ecrire()
