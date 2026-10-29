@@ -28,6 +28,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from core.citations import retirer_renvois_de_notes
 from core.instance import modele_local_defaut
 from core.runtime import llm
 
@@ -727,10 +728,15 @@ def formater_pour_llm(resultats: list[ResultatWeb]) -> str:
     Pas de consigne de citation ici : le format est un bloc numéroté brut,
     la consigne d'usage (« cite par [n] ») reste du ressort de l'appelant
     (`modules/chat/router.py:_construire_web_ctx`).
+
+    Les renvois de notes de la page (« [ 4 ] , [ 5 ] ») sont retirés de
+    l'extrait (#86) : à côté des vrais rangs `[n]`, le modèle les recopiait
+    comme des numéros de source. Le `ResultatWeb` garde son extrait brut ;
+    `verifier_fidelite` retire les mêmes renvois avec la même fonction.
     """
     if not resultats:
         return ""
     lignes: list[str] = []
     for r in resultats:
-        lignes.append(f"[{r.rang}] {r.titre} ({_domaine(r.url)}) — {r.extrait}")
+        lignes.append(f"[{r.rang}] {r.titre} ({_domaine(r.url)}) — {retirer_renvois_de_notes(r.extrait)}")
     return "\n".join(lignes)

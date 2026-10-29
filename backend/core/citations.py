@@ -252,10 +252,44 @@ _ATTRIBUTION_RE = re.compile(
 )
 
 _MARQUEUR_RANG_RE = re.compile(r"\[\s*\d+\s*\]")
-#: Marqueurs de note d'une page web copiée — « [ 4 ] », « [ N 1 ] » — retirés
-#: de la SOURCE : ce sont des renvois, pas des valeurs (sur la page
-#: photoélectrique, « [ 4 ] , [ 5 ] » faisait croire que 4 et 5 s'y trouvaient).
-_MARQUEUR_NOTE_RE = re.compile(r"\[\s*(?:[A-Za-z]{1,3}\s*)?\d+\s*\]")
+#: La marque que la consigne de non-invention (#86) demande au modèle pour
+#: une valeur de mémoire : « hors extrait », « hors des extraits »,
+#: « hors de l'extrait ». Cherchée sur le texte normalisé (casse, accents).
+_HORS_EXTRAIT_RE = re.compile(r"\bhors\s+(?:de\s+l'\s*|de\s+la\s+|du\s+|des\s+|d'\s*)?extraits?\b")
+#: Un renvoi de note d'une page web copiée : « [ 4 ] », « [4] », « [ N 1 ] »,
+#: « [réf 4] », « [ note 3 ] », plages « [4-6] », « [ 4 , 5 ] ». Le crochet ne doit pas être
+#: collé à une lettre, un « _ », un « ] » ou un « ) » : `arr[0]`,
+#: `matrice[1][2]`, `f(x)[3]` sont des indices de code, pas des notes (le
+#: cœur est générique, une page de programmation se lit aussi). Contrepartie :
+#: « Hertz[4] », collé, reste.
+_RENVOI_NOTE = r"\[\s*(?:[^\W\d]{1,5}\.?\s*)?\d+(?:\s*[-–—,]\s*\d+)*\s*\]"
+#: Une SUITE de renvois et leurs séparateurs (« [ 4 ] , [ 5 ] », « [4][5] »,
+#: « [4]–[7] », « [ 4 ] à [ 7 ] »), espaces de tête compris. Le garde
+#: anti-indice ne porte que sur le premier crochet de la suite.
+_RENVOIS_NOTES_RE = re.compile(
+    r"\s*(?<![^\W\d])(?<![\])])" + _RENVOI_NOTE + r"(?:\s*(?:[,;–—-]|à)?\s*" + _RENVOI_NOTE + r")*")
+
+
+def retirer_renvois_de_notes(texte: str) -> str:
+    """`texte` privé de ses renvois de notes (#86).
+
+    Deux usages, UNE fonction, pour qu'ils restent alignés : (1) l'extrait
+    injecté au modèle (`core.websearch.formater_pour_llm`) — sur
+    photoélectrique à 4 000 caractères, le modèle recopiait « Millikan [4] »
+    ou « les sections [1] à [10] » comme des numéros de source ; (2) la
+    source comparée par `verifier_fidelite` — « [ 4 ] , [ 5 ] » y faisait
+    croire que 4 et 5 figuraient dans l'extrait. Un renvoi collé au mot
+    suivant laisse une espace, pour ne pas souder deux mots.
+
+    **Limite connue** : un renvoi collé à un mot (« Hertz[4] ») n'est pas
+    retiré, pour préserver les indices de code (`arr[0]`, `matrice[1][2]`) —
+    seul un crochet précédé d'une espace, d'un chiffre ou d'une ponctuation
+    est lu comme un renvoi.
+    """
+    def _remplacer(m: re.Match) -> str:
+        suite = texte[m.end():m.end() + 1]
+        return " " if suite and (suite.isalnum() or suite == "_") else ""
+    return _RENVOIS_NOTES_RE.sub(_remplacer, texte)
 
 _EXPOSANTS = str.maketrans("⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹", "+-0123456789")
 _EXPOSANTS_RE = re.compile(r"[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+")
@@ -396,7 +430,7 @@ def _nombres(texte: str, mots_source: bool = False) -> list[tuple[str, str]]:
 
 def _preparer_source(texte: str) -> tuple[set[str], list[str]]:
     """(valeurs numériques, mots) d'un passage injecté, marqueurs de note retirés."""
-    texte = _MARQUEUR_NOTE_RE.sub(" ", texte)
+    texte = retirer_renvois_de_notes(texte)
     return ({v for _, v in _nombres(texte, mots_source=True)}, _mots(_plat(texte)))
 
 
@@ -507,6 +541,13 @@ def verifier_fidelite(
     dont tous les `[n]` sont hors liste est comparée à l'union des sources
     (`valider_citations` signale en plus le rang).
 
+    **Exclu.** Une phrase marquée « hors extrait » (« hors des extraits »,
+    « hors de l'extrait », casse et accents indifférents, hors guillemets) se
+    déclare elle-même non sourcée, comme la consigne de non-invention le
+    demande (#86) : elle n'est pas vérifiée, n'ouvre ni ne ferme une
+    attribution, et la marque ne s'hérite pas — la phrase suivante est
+    traitée normalement.
+
     `texte_utilisateur` : le message de l'utilisateur. Un nombre ou une
     citation de la réponse qui s'y trouve est étayé — le modèle reprend la
     question (« deux autres noms »), il n'invente pas. Ses URLs sont retirées
@@ -536,6 +577,9 @@ def verifier_fidelite(
         « 1 2 3 4 ».
       * Seuls les passages portant un rang `[n]` (pages lues, résultats web)
         sont comparés ; les extraits de documents (RAG) ne le sont pas.
+      * Une phrase qui NIE est vérifiée comme une affirmation : « l'extrait ne
+        donne pas d'autre nom (comme « référentiel propre ») » signale
+        « référentiel propre » (relativité 4k, tirage 2 du 2026-10-29).
     """
     if not reponse or not sources:
         return []
@@ -550,6 +594,11 @@ def verifier_fidelite(
         attribution_active = False
         for phrase in phrases:
             citations, hors_guillemets = _separer_guillemets(phrase)
+            if _HORS_EXTRAIT_RE.search(_plat(hors_guillemets)):
+                # Se déclare elle-même non sourcée : ni vérifiée, ni comptée
+                # dans l'attribution (son « extrait » n'invoque pas la source,
+                # son éventuel [n] n'y met pas fin).
+                continue
             cites = [int(n) for n in re.findall(r"\[(\d+)\]", phrase)]
             valides = sorted({n for n in cites if n in preparees})
             invoque = bool(_ATTRIBUTION_RE.search(_plat(hors_guillemets)))

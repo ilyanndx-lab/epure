@@ -32,6 +32,7 @@ vrais et faux positifs est manuelle.
 
     python tools/eval-lecture-url/eval.py extraits
     python tools/eval-lecture-url/eval.py fidelite --modele <clé LM Studio> [--tirages 5] [--decharger]
+        [--cas photoelectrique:4000 ...] [--sortie tirages.json]
 """
 import argparse
 import ctypes
@@ -41,6 +42,7 @@ import os
 import pathlib
 import re
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -360,7 +362,19 @@ def extraits_fidelite():
         json.dumps({"cas": cas}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8", newline="\n")
 
 
-def fidelite(modele, tirages, decharger_a_la_fin):
+def _commit():
+    """Commit du code mesuré (prompt compris), `+modifié` si l'arbre est sale."""
+    try:
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ICI, capture_output=True,
+                             text=True, check=True).stdout.strip()
+        sale = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ICI,
+                              capture_output=True, text=True, check=True).stdout.strip()
+        return sha + ("+modifié" if sale else "")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def fidelite(modele, tirages, decharger_a_la_fin, cas=None, nom_sortie="tirages.json"):
     """`tirages` réponses par cas, code de `main` (contexte système réel du
     chat), raisonnement coupé ; pour chacune, ce que l'heuristique signale."""
     from core import webcontent
@@ -370,11 +384,13 @@ def fidelite(modele, tirages, decharger_a_la_fin):
     questions = {q["page"]: q for q in json.loads((ICI / "questions.json").read_text(encoding="utf-8"))}
     dossier = RESULTATS / "fidelite"
     dossier.mkdir(parents=True, exist_ok=True)
-    sortie = dossier / "tirages.json"
+    # Nom distinct pour une mesure « après » : `tirages.json` reste la mesure
+    # « avant » de #86 (prompt d'origine), qu'on ne relance pas.
+    sortie = dossier / nom_sortie
     doc = {"meta": {"modele": modele, "contexte_charge": contexte_charge(modele),
                     "raisonnement": "coupé (reasoning_effort: none)", "tirages_par_cas": tirages,
                     "max_tokens_sortie": MAX_TOKENS_SORTIE, "sur_secteur": sur_secteur(),
-                    "batterie_pct_debut": batterie_pct(),
+                    "batterie_pct_debut": batterie_pct(), "commit": _commit(),
                     "debut": time.strftime("%Y-%m-%d %H:%M"), "arret": None},
            "essais": []}
 
@@ -383,7 +399,7 @@ def fidelite(modele, tirages, decharger_a_la_fin):
 
     ecrire()
     try:
-        for page, budget in CAS_FIDELITE:
+        for page, budget in cas or CAS_FIDELITE:
             q = questions[page]
             lectures, etape, indispo = lire(webcontent, q, budget)
             if indispo or etape.get("selection") != "similarite":
@@ -432,6 +448,10 @@ if __name__ == "__main__":
     parser.add_argument("--budgets", type=int, nargs="+")
     parser.add_argument("--modele", help="clé LM Studio du modèle chargé (étage 2)")
     parser.add_argument("--tirages", type=int, default=5, help="tirages par cas (fidélité)")
+    parser.add_argument("--cas", nargs="+", metavar="PAGE:BUDGET",
+                        help="sous-ensemble de cas (fidélité), ex. photoelectrique:4000")
+    parser.add_argument("--sortie", default="tirages.json",
+                        help="nom du fichier dans resultats/fidelite/ (fidélité)")
     parser.add_argument("--decharger", action="store_true",
                         help="décharger le modèle de LM Studio à la fin ou à l'arrêt (étage 2)")
     args = parser.parse_args()
@@ -443,7 +463,13 @@ if __name__ == "__main__":
     elif args.etage == "fidelite":
         if not args.modele:
             parser.error("--modele est requis pour la fidélité")
-        fidelite(args.modele, args.tirages, args.decharger)
+        cas = None
+        if args.cas:
+            cas = [(c.split(":")[0], int(c.split(":")[1])) for c in args.cas]
+            inconnus = [c for c in cas if c not in CAS_FIDELITE]
+            if inconnus:
+                parser.error(f"cas inconnus : {inconnus} (connus : {CAS_FIDELITE})")
+        fidelite(args.modele, args.tirages, args.decharger, cas, args.sortie)
     else:
         if not args.modele:
             parser.error("--modele est requis pour l'étage 2")

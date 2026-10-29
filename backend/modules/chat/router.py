@@ -124,6 +124,24 @@ def perform_web_search(query: str) -> str:
     return texte
 
 
+#: Consigne de non-invention (#86), commune aux deux contrats de citation
+#: (recherche web, lecture d'URL). Constat qui la motive : à 4 000 caractères
+#: sur « photoélectrique », le modèle donnait 5 fois sur 5 des valeurs absentes
+#: de l'extrait, y compris juste après avoir écrit qu'elles n'y étaient pas, et
+#: leur mettait un [n] — ou recopiait un renvoi de note de la page comme un
+#: numéro de source. L'ancienne phrase (« dis-le plutôt que de compléter de
+#: mémoire sans le signaler ») ne disait ni COMMENT signaler, ni que la valeur
+#: de mémoire ne porte pas de [n]. Un prompt ne garantit rien seul :
+#: `core.citations` reste le second verrou.
+_CONSIGNE_NON_INVENTION = (
+    "Si l'information demandée n'est pas dans ces extraits, dis-le explicitement. "
+    "Toute valeur ou notion qui vient de tes connaissances générales doit être annoncée "
+    "comme telle (« hors extrait, d'après mes connaissances : … ») et ne porte JAMAIS de "
+    "numéro [n]. Ne cite QUE les numéros [n] de la liste ci-dessus : un nombre entre "
+    "crochets recopié du texte d'un extrait n'est pas une source."
+)
+
+
 def _construire_web_ctx(web_results: str) -> str:
     """Construit le contexte @web injecté au prompt à partir du retour de
     `perform_web_search`.
@@ -160,8 +178,7 @@ def _construire_web_ctx(web_results: str) -> str:
             "Si pertinent, intègre ces informations dans ta réponse. Cite tes sources "
             "UNIQUEMENT par leur numéro entre crochets, par exemple [1] — n'écris "
             "JAMAIS d'URL, et ne cite JAMAIS un numéro absent de la liste ci-dessus. "
-            "Si la liste ne permet pas de répondre à la question, dis-le explicitement "
-            "plutôt que de compléter avec tes connaissances sans le signaler."
+            + _CONSIGNE_NON_INVENTION
         )
     return (
         "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
@@ -225,8 +242,7 @@ def _construire_ctx_lecture(lectures: list[LectureUrl]) -> str:
             f"{formater_pour_llm(lues)}\n\n"
             "Appuie-toi sur ces extraits pour répondre. Cite-les UNIQUEMENT par leur numéro "
             "entre crochets, par exemple [n] — n'écris JAMAIS d'URL. Ces numéros s'ajoutent "
-            "à ceux d'éventuels résultats de recherche web. Si ces extraits ne permettent "
-            "pas de répondre, dis-le plutôt que de compléter de mémoire sans le signaler."
+            "à ceux d'éventuels résultats de recherche web. " + _CONSIGNE_NON_INVENTION
         )
     for lec in lectures:
         if lec.resultat is not None:
