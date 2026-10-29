@@ -247,6 +247,8 @@ _ATTRIBUTION_RE = re.compile(
     r"|\b(?:les|ces|ce|cet|cette|l'|la|le|l)\s*(?:extraits?|fragments?|passages?|page|texte|document)\s+"
     r"(?:fournis?|fournies?|indiqu\w*|precis\w*|mentionn\w*|affirm\w*|stipul\w*|explique\w*|dit|disent|decri\w*|montr\w*)\b"
     r"|\b(?:extraits?|texte|page|passages?|fragments?|document)\s+(?:fournis?|fournies?)\b"
+    # Tout nom qui désigne la source, quelle que soit la tournure (#85).
+    r"|\b(?:extraits?|textes?|pages?|sources?|documents?)\b"
 )
 
 _MARQUEUR_RANG_RE = re.compile(r"\[\s*\d+\s*\]")
@@ -476,7 +478,9 @@ def _paragraphes(reponse: str) -> list[list[str]]:
     return resultat
 
 
-def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[AffirmationNonEtayee]:
+def verifier_fidelite(
+    reponse: str, sources: Mapping[int, str], texte_utilisateur: str = "",
+) -> list[AffirmationNonEtayee]:
     """Nombres et citations d'une réponse absents des sources auxquelles leur
     phrase se rattache. Calcul PUR, sans LLM ni réseau, APRÈS le flux ; ne
     modifie jamais `reponse` (signaler, jamais réécrire).
@@ -492,11 +496,21 @@ def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[Affirmat
     varie entre 4 et 5. » — la seconde phrase n'a ni numéro ni formule),
     jusqu'au premier `[n]` explicite : passé ce renvoi, le modèle désigne de
     nouveau ses sources lui-même, et une phrase sans numéro qui suit peut tenir
-    de ses connaissances (risque de faux positif). Une phrase sans `[n]` et
-    hors d'une attribution n'est pas vérifiée : elle peut
-    venir des connaissances du modèle, ce n'est pas à ce contrôle d'en juger.
-    Une phrase qui ne cite que des numéros hors liste est laissée à
-    `valider_citations`.
+    de ses connaissances (risque de faux positif). Invoquer la source, c'est
+    la NOMMER hors guillemets — « extrait(s) », « texte(s) », « page(s) »,
+    « source(s) », « document(s) » —, quelle que soit la tournure : les
+    formules figées ratent « Réponse basée sur l'analyse des extraits » et
+    « les lois physiques sous-jacentes évoquées dans ces textes »
+    (photoélectrique 4k, tirages 3 et 5 du 2026-10-29). Une phrase sans `[n]`
+    et hors d'une attribution n'est pas vérifiée : elle peut venir des
+    connaissances du modèle, ce n'est pas à ce contrôle d'en juger. Une phrase
+    dont tous les `[n]` sont hors liste est comparée à l'union des sources
+    (`valider_citations` signale en plus le rang).
+
+    `texte_utilisateur` : le message de l'utilisateur. Un nombre ou une
+    citation de la réponse qui s'y trouve est étayé — le modèle reprend la
+    question (« deux autres noms »), il n'invente pas. Ses URLs sont retirées
+    avant comparaison.
 
     **Vérifié.** (1) Les nombres, normalisés : virgule ou point décimal,
     espaces de milliers, signe moins Unicode, exposants (`10⁻⁹`), nombres en
@@ -526,6 +540,9 @@ def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[Affirmat
     if not reponse or not sources:
         return []
     preparees = {rang: _preparer_source(texte) for rang, texte in sources.items()}
+    # URLs retirées : une URL désigne la page, elle n'affirme rien (« 2013 »
+    # dans un chemin n'étaie pas « 2013 » dans la réponse).
+    nombres_user, mots_user = _preparer_source(_URL_RE.sub(" ", texte_utilisateur or ""))
     masque = _masquer_zones_non_citables(reponse)
 
     signalees: list[AffirmationNonEtayee] = []
@@ -541,9 +558,11 @@ def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[Affirmat
             attribution_active = (attribution_active or invoque) and not cites
             if valides:
                 rangs = valides
-            elif cites:
-                continue  # numéros hors liste : affaire de `valider_citations`
-            elif attribution_active:
+            elif cites or attribution_active:
+                # Numéros tous hors liste (renvois de notes de la page
+                # recopiés, photoélectrique 4k) : la phrase invoque des
+                # sources sans en désigner une offerte — comparée à toutes.
+                # `valider_citations` signale en plus le rang.
                 rangs = sorted(preparees)
             else:
                 continue
@@ -554,12 +573,13 @@ def verifier_fidelite(reponse: str, sources: Mapping[int, str]) -> list[Affirmat
             trouvees: list[tuple[str, str]] = []
             sans_renvoi = _MARQUEUR_RANG_RE.sub(" ", hors_guillemets)
             for affichage, valeur in _nombres(sans_renvoi):
-                if valeur not in vus and valeur not in nombres_sources:
+                if valeur not in vus and valeur not in nombres_sources and valeur not in nombres_user:
                     vus.add(valeur)
                     trouvees.append((affichage, "nombre"))
             for contenu in citations:
                 for fragment in _fragments_de_citation(contenu):
-                    if not _fragment_etaye(_mots(_plat(fragment)), mots_sources):
+                    mots = _mots(_plat(fragment))
+                    if not (_fragment_etaye(mots, mots_sources) or _fragment_etaye(mots, mots_user)):
                         trouvees.append((fragment, "citation"))
             for element, genre in trouvees:
                 signalees.append(AffirmationNonEtayee(

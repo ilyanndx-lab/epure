@@ -13,6 +13,9 @@ retrouve-t-il dans le passage RÉELLEMENT injecté pour cette source ?
     `tools/eval-lecture-url/eval.py extraits` (code de l'étage 1, embedding
     local ; la CI n'a pas ce modèle, elle lit le fichier). Longueurs
     contrôlées contre l'étage 1 : 3 848 / 15 454 / 3 354 / 14 984 caractères ;
+  * les 20 réponses des tirages de fidélité (`resultats/fidelite/tirages.json`,
+    5 tirages × 4 cas, 2026-10-29), rejouées hors ligne avec le message de
+    l'utilisateur tel que l'éval l'a envoyé (question + URL) ;
   * des cas synthétiques qui isolent chaque règle.
 
 Un cas réel est « signalé » ou « non signalé » selon l'attendu de #83, revu
@@ -57,6 +60,12 @@ def _reponses(chemin):
     return {(e["page"], e["budget"]): e["reponse"] for e in _charger(chemin)["essais"]}
 
 
+def _messages_utilisateur():
+    """`{page: message}` — question + URL, comme `eval.py` l'envoie au modèle."""
+    questions = json.loads((RESULTATS.parent / "questions.json").read_text(encoding="utf-8"))
+    return {q["page"]: f"{q['question']} {q['url']}" for q in questions}
+
+
 class ExtraitsFigesTest(unittest.TestCase):
     """Les fixtures sont bien celles de l'étage 1 (extrait déterministe)."""
 
@@ -77,9 +86,10 @@ class ReponsesReellesEtage2Test(unittest.TestCase):
         cls.sources = _sources_reelles()
         cls.reference = _reponses("resultats.json")
         cls.variante = _reponses("experiences/etage2-variante.json")
+        cls.messages = _messages_utilisateur()
 
     def _signale(self, reponses, cle):
-        return verifier_fidelite(reponses[cle], self.sources[cle])
+        return verifier_fidelite(reponses[cle], self.sources[cle], texte_utilisateur=self.messages[cle[0]])
 
     def _elements(self, reponses, cle):
         return {a.element for a in self._signale(reponses, cle)}
@@ -135,6 +145,91 @@ class ReponsesReellesEtage2Test(unittest.TestCase):
         """Erreur d'interprétation, pas invention : limite connue (cf. docstring
         du module) — les mots cités sont dans l'extrait."""
         self.assertEqual(self._signale(self.variante, ("relativite_restreinte", 4000)), [])
+
+
+class TiragesFideliteTest(unittest.TestCase):
+    """Les 20 tirages du 2026-10-29, rejoués sans modèle. Attendus posés par
+    Ilyann sur #85 après lecture des réponses brutes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sources = _sources_reelles()
+        cls.messages = _messages_utilisateur()
+        cls.essais = {(e["page"], e["budget"], e["tirage"]): e
+                      for e in _charger("fidelite/tirages.json")["essais"]}
+
+    def _signale(self, page, budget, tirage):
+        e = self.essais[(page, budget, tirage)]
+        return verifier_fidelite(e["reponse"], self.sources[(page, budget)],
+                                 texte_utilisateur=self.messages[page])
+
+    def test_vingt_tirages(self):
+        self.assertEqual(len(self.essais), 20)
+
+    def test_les_mots_de_la_question_ne_sont_jamais_signales(self):
+        """« deux autres noms », cité entre guillemets par le modèle, et
+        « deux » viennent de la question, pas de la source."""
+        for (page, budget, tirage) in self.essais:
+            with self.subTest(page=page, budget=budget, tirage=tirage):
+                elements = {a.element for a in self._signale(page, budget, tirage)}
+                self.assertNotIn("deux autres noms", elements)
+                self.assertNotIn("deux", elements)
+
+    def test_photoelectrique_4k_t3_signale(self):
+        """« entre 3 et 4 » dans une phrase qui ne cite que [4] et [5], hors
+        liste (renvois de notes de la page recopiés), et dans la conclusion
+        « Réponse basée sur l'analyse des extraits »."""
+        self.assertIn("4", {a.element for a in self._signale("photoelectrique", 4000, 3)})
+
+    def test_photoelectrique_4k_t5_signale(self):
+        """« D'après les lois physiques sous-jacentes évoquées dans ces textes,
+        … entre 4 et 5 »."""
+        elements = {a.element for a in self._signale("photoelectrique", 4000, 5)}
+        self.assertTrue({"4", "5"} <= elements, elements)
+
+    def test_photoelectrique_4k_tous_les_tirages_signales(self):
+        for tirage in range(1, 6):
+            with self.subTest(tirage=tirage):
+                self.assertTrue(self._signale("photoelectrique", 4000, tirage))
+
+    def test_relativite_16k_t2_et_t4_signales(self):
+        """« (ou simplement « inerte ») » : mot absent de l'extrait."""
+        for tirage in (2, 4):
+            with self.subTest(tirage=tirage):
+                self.assertIn("inerte", {a.element for a in self._signale("relativite_restreinte", 16000, tirage)})
+
+    def test_photoelectrique_16k_jamais_signale(self):
+        for tirage in range(1, 6):
+            with self.subTest(tirage=tirage):
+                self.assertEqual(self._signale("photoelectrique", 16000, tirage), [])
+
+
+class MessageUtilisateurTest(unittest.TestCase):
+    """Ce que l'utilisateur a écrit n'est pas une invention du modèle."""
+
+    def _el(self, reponse, user, sources=None):
+        return [a.element for a in verifier_fidelite(reponse, sources or {1: "rien"}, texte_utilisateur=user)]
+
+    def test_nombre_du_message_etaye(self):
+        self.assertEqual(self._el("Il y a 12 cas [1].", ""), ["12"])
+        self.assertEqual(self._el("Il y a 12 cas [1].", "Pourquoi 12 cas ?"), [])
+
+    def test_nombre_en_lettres_du_message_etaye(self):
+        self.assertEqual(self._el("Il cite deux autres noms [1].", "Quels sont les deux autres noms ?"), [])
+        self.assertEqual(self._el("Il cite 2 noms [1].", "Quels sont les deux autres noms ?"), [])
+
+    def test_citation_reprise_du_message_etayee(self):
+        self.assertEqual(self._el("La page ne donne pas « deux autres noms » [1].",
+                                  "D'après cette page, quels sont les deux autres noms ?"), [])
+
+    def test_citation_absente_du_message_et_de_la_source_signalee(self):
+        self.assertEqual(self._el("Elle dit « trois noms distincts » [1].", "Quels sont les deux autres noms ?"),
+                         ["trois noms distincts"])
+
+    def test_les_nombres_d_une_url_du_message_ne_comptent_pas(self):
+        """Une URL désigne la page, elle n'affirme rien : « 2013 » dans un
+        chemin n'étaye pas « 2013 » dans la réponse."""
+        self.assertEqual(self._el("Prototype de 2013 [1].", "Lis https://exemple.org/2013/turing"), ["2013"])
 
 
 class NombresTest(unittest.TestCase):
@@ -301,6 +396,31 @@ class RattachementTest(unittest.TestCase):
             with self.subTest(debut=debut):
                 self.assertEqual([a.element for a in self._res(f"{debut}, la limite vaut 42.")], ["42"])
 
+    def test_attribution_par_un_nom_designant_la_source(self):
+        """Toute phrase qui nomme la source — « extrait(s) », « texte(s) »,
+        « page », « source(s) », « document » — s'y rattache. Deux formules
+        réelles (photoélectrique 4k, t3 et t5) en tête."""
+        for phrase in ("Réponse basée sur l'analyse des extraits : la limite vaut 42.",
+                       "D'après les lois physiques sous-jacentes évoquées dans ces textes, la limite vaut 42.",
+                       "Cet extrait laisse penser que la limite vaut 42.",
+                       "Le texte original donne une limite de 42.",
+                       "Sur cette page, la limite vaut 42.",
+                       "Les sources convergent vers 42.",
+                       "La source mentionne 42.",
+                       "Le document donne 42."):
+            with self.subTest(phrase=phrase):
+                res = self._res(phrase)
+                self.assertEqual([(a.element, a.sources) for a in res], [("42", [1, 2])])
+
+    def test_attribution_par_nom_heritee_jusqu_au_premier_n(self):
+        res = self._res("Réponse basée sur l'analyse des extraits : la limite existe. Elle vaut 42. "
+                        "Elle vaut 4 [1]. Elle monte à 77.")
+        self.assertEqual([a.element for a in res], ["42"])
+
+    def test_nom_de_source_entre_guillemets_n_attribue_pas(self):
+        """Le mot est dans une citation, pas dans le discours du modèle."""
+        self.assertEqual(self._res("Le titre « Texte intégral » vaut 42."), [])
+
     def test_attribution_heritee_dans_le_meme_paragraphe(self):
         res = self._res("Selon les extraits fournis, la limite existe. Elle vaut entre 4 et 12.")
         self.assertEqual([a.element for a in res], ["12"])
@@ -327,8 +447,17 @@ class RattachementTest(unittest.TestCase):
         self.assertEqual([a.element for a in res], ["9"])
         self.assertEqual(res[0].sources, [1])
 
-    def test_n_hors_plage_seul_laisse_au_validateur_existant(self):
-        self.assertEqual(self._res("La limite vaut 42 [7]."), [])
+    def test_n_tous_hors_liste_verifie_contre_l_union(self):
+        """Renvois de notes de la page recopiés comme des [n] (photoélectrique
+        4k, t3 à t5) : la phrase ne se rattache à aucune source offerte, elle
+        est comparée à toutes. `valider_citations` signale en plus le rang."""
+        res = self._res("La limite vaut 42 [7].")
+        self.assertEqual([(a.element, a.sources) for a in res], [("42", [1, 2])])
+        self.assertEqual(self._res("La limite vaut 9 [7] et 4 [8]."), [])
+
+    def test_n_hors_liste_mele_a_un_n_valide_restreint_au_valide(self):
+        res = self._res("La limite vaut 9 [1] [7].")
+        self.assertEqual([(a.element, a.sources) for a in res], [("9", [1])])
 
     def test_citation_apres_le_point_rattachee_a_la_phrase_precedente(self):
         res = self._res("La limite vaut 42. [1]")

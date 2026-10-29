@@ -376,7 +376,7 @@ def _verifier_citations(
 
 
 def _verifier_fidelite(
-    reponse: str, resultats_web: list[ResultatWeb],
+    reponse: str, resultats_web: list[ResultatWeb], user_text: str = "",
 ) -> list[AffirmationNonEtayee]:
     """Troisième verrou (#83) : nombres et citations de la réponse absents du
     passage injecté pour la source citée. Calcul PUR après le flux, comme
@@ -387,10 +387,12 @@ def _verifier_fidelite(
     c'est ce que le modèle avait sous les yeux, donc ce à quoi sa phrase peut
     être comparée. Ces `ResultatWeb` sont encore en mémoire à la fin du tour
     (pages lues, résultats web, résultats d'outils), aucune relecture.
+    `user_text` étaie ce que le modèle reprend de la question.
     """
     if not reponse or not resultats_web:
         return []
-    return verifier_fidelite(reponse, {r.rang: f"{r.titre} {r.extrait}" for r in resultats_web})
+    return verifier_fidelite(reponse, {r.rang: f"{r.titre} {r.extrait}" for r in resultats_web},
+                             texte_utilisateur=user_text)
 
 
 def _construire_trace_finale(
@@ -487,7 +489,7 @@ def _finaliser_citations_et_trace(
     """
     sources = _sources_citees(reponse, resultats_web)
     rapport = _verifier_citations(reponse, resultats_web, user_text, urls_rag)
-    non_etayees = _verifier_fidelite(reponse, resultats_web)
+    non_etayees = _verifier_fidelite(reponse, resultats_web, user_text)
     trace = _construire_trace_finale(etapes_recherche, rapport, bool(resultats_web), non_etayees)
     if rapport is not None and rapport.aucune_citation_malgre_contexte:
         logger.warning("Réponse sans aucune citation malgré un contexte web fourni (conv=%s)", conv_id)

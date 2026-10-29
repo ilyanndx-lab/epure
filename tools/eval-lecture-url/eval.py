@@ -395,10 +395,12 @@ def fidelite(modele, tirages, decharger_a_la_fin):
                 essai = {"page": page, "budget": budget, "tirage": i, "question": q["question"],
                          "attendu": q["attendu"], "memoire_libre_go": round(libre, 1),
                          "batterie_pct": batterie_pct(), "sur_secteur": sur_secteur()}
-                essai.update(interroger(modele, systeme, f"{q['question']} {q['url']}"))
+                message = f"{q['question']} {q['url']}"
+                essai.update(interroger(modele, systeme, message))
                 essai["signale"] = [
                     {"phrase": a.phrase, "element": a.element, "type": a.type, "sources": a.sources}
-                    for a in verifier_fidelite(essai["reponse"], {r.rang: f"{r.titre} {r.extrait}"})]
+                    for a in verifier_fidelite(essai["reponse"], {r.rang: f"{r.titre} {r.extrait}"},
+                                               texte_utilisateur=message)]
                 doc["essais"].append(essai)
                 if doc["meta"]["contexte_charge"] is None:  # chargé par le JIT à ce premier tirage
                     doc["meta"]["contexte_charge"] = contexte_charge(modele)
