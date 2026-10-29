@@ -11,9 +11,16 @@ comme s'ils étaient des numéros de source. Deux corrections, verrouillées ici
   a. les renvois de notes sont retirés des extraits AVANT injection, par la
      même fonction que celle qui les retire de la source comparée par
      `verifier_fidelite` — les deux restent alignées par construction ;
-  b. le contrat de citation demande de dire l'absence, d'annoncer ce qui vient
-     des connaissances générales sans lui donner de [n], et de ne citer que
-     les numéros listés.
+  b. le contrat de citation demande de dire l'absence et de ne citer que les
+     numéros listés.
+
+Décision produit qui a suivi (branche feat/arret-info-absente) : sur un tour
+de lecture d'URL, une information absente des extraits n'est PAS complétée de
+mémoire, même marquée « hors extrait » — le modèle le dit et propose @web. La
+mesure de #86 avait montré que le contenu marqué restait peu fiable (t4 :
+« la section efficace diminue quand Z augmente »). Une phrase « hors extrait »
+devient donc une violation, comptée par l'étape de trace
+`hors_extrait_present`.
 """
 
 import json
@@ -26,7 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _test_env  # noqa: F401 — convention du dépôt, avant tout core.*
 
-from core.citations import retirer_renvois_de_notes, verifier_fidelite
+from core.citations import phrases_hors_extrait, retirer_renvois_de_notes, verifier_fidelite
+from core.websearch import TRACE_LISTE_MAX
 from core.websearch import ResultatWeb, formater_pour_llm
 from core.webcontent import LectureUrl
 from modules.chat import router as chat_router
@@ -121,29 +129,45 @@ class InjectionSansRenvoisTest(unittest.TestCase):
 
 
 class ContratDeCitationTest(unittest.TestCase):
-    """b. Consigne de non-invention, dans les deux contrats de citation."""
+    """Contrats de citation : arrêt sur information absente, aucune
+    connaissance générale ajoutée."""
 
-    def _contextes(self):
+    def _lecture(self):
         r = ResultatWeb(rang=1, titre="Page", url="https://exemple.org/p", extrait="extrait", moteur="lecture")
-        return {
-            "lecture": chat_router._construire_ctx_lecture([_lue(r)]),
-            "recherche": chat_router._construire_web_ctx("[1] Titre (exemple.org) — extrait"),
-        }
+        return chat_router._construire_ctx_lecture([_lue(r)])
 
-    def test_dire_l_absence(self):
-        for nom, ctx in self._contextes().items():
-            with self.subTest(contexte=nom):
-                self.assertIn("n'est pas dans", ctx)
-                self.assertIn("dis-le explicitement", ctx)
+    def _recherche(self):
+        return chat_router._construire_web_ctx("[1] Titre (exemple.org) — extrait")
 
-    def test_connaissances_generales_annoncees_et_sans_numero(self):
-        for nom, ctx in self._contextes().items():
+    def test_lecture_dit_l_absence_et_propose_web(self):
+        ctx = self._lecture()
+        self.assertIn("Si l'information demandée n'est pas dans les extraits, dis-le explicitement "
+                      "(« La page ne contient pas cette information. ») et propose de relancer avec @web.", ctx)
+
+    def test_lecture_aucune_connaissance_ajoutee(self):
+        self.assertIn("N'ajoute aucune valeur, aucun nom, aucune notion venant de tes connaissances.", self._lecture())
+
+    def test_lecture_information_partielle(self):
+        self.assertIn("Si l'information est partiellement présente, donne seulement la partie présente, "
+                      "citée avec [n], et signale ce qui manque.", self._lecture())
+
+    def test_recherche_meme_regle_sans_proposition_web(self):
+        ctx = self._recherche()
+        self.assertIn("Si l'information demandée n'est pas dans les résultats, dis-le explicitement "
+                      "(« Les résultats ne contiennent pas cette information. »).", ctx)
+        self.assertIn("N'ajoute aucune valeur, aucun nom, aucune notion venant de tes connaissances.", ctx)
+        self.assertIn("Si l'information est partiellement présente, donne seulement la partie présente, "
+                      "citée avec [n], et signale ce qui manque.", ctx)
+        self.assertNotIn("@web", ctx)
+
+    def test_plus_de_consigne_de_marquage(self):
+        for nom, ctx in (("lecture", self._lecture()), ("recherche", self._recherche())):
             with self.subTest(contexte=nom):
-                self.assertIn("« hors extrait, d'après mes connaissances : … »", ctx)
-                self.assertIn("ne porte JAMAIS de numéro [n]", ctx)
+                self.assertNotIn("hors extrait", ctx)
+                self.assertNotIn("d'après mes connaissances", ctx)
 
     def test_seulement_les_numeros_listes(self):
-        for nom, ctx in self._contextes().items():
+        for nom, ctx in (("lecture", self._lecture()), ("recherche", self._recherche())):
             with self.subTest(contexte=nom):
                 self.assertIn("Ne cite QUE les numéros [n] de la liste", ctx)
 
@@ -153,7 +177,87 @@ class ContratDeCitationTest(unittest.TestCase):
         ctx = chat_router._construire_ctx_lecture(
             [LectureUrl(url="https://exemple.org/p", statut="échec", raison="délai dépassé", passages=0, resultat=None)])
         self.assertIn("n'a PAS pu être lue", ctx)
-        self.assertNotIn("hors extrait", ctx)
+        self.assertNotIn("@web", ctx)
+
+
+class PhrasesHorsExtraitTest(unittest.TestCase):
+    """`phrases_hors_extrait` : même marque que l'exclusion de
+    `verifier_fidelite` (`_HORS_EXTRAIT_RE`), sur le même découpage."""
+
+    def test_phrases_marquees_listees(self):
+        rep = ("La page ne contient pas cette information [1].\n\n"
+               "Hors extrait, d'après mes connaissances : l'exposant vaut 4. Il vaut 5 ensuite.\n\n"
+               "*Hors des extraits : Z⁴ à Z⁵.*")
+        self.assertEqual(phrases_hors_extrait(rep),
+                         ["Hors extrait, d'après mes connaissances : l'exposant vaut 4.",
+                          "Hors des extraits : Z⁴ à Z⁵."])
+
+    def test_aucune_marque(self):
+        self.assertEqual(phrases_hors_extrait("La page ne contient pas cette information. "
+                                              "Je peux relancer avec @web."), [])
+
+    def test_marque_entre_guillemets_ignoree(self):
+        """Citer la consigne n'est pas la violer."""
+        self.assertEqual(phrases_hors_extrait("La consigne dit « hors extrait » [1]."), [])
+
+    def test_code_ignore(self):
+        self.assertEqual(phrases_hors_extrait("Voir `hors extrait` [1]."), [])
+
+    def test_reponse_vide(self):
+        self.assertEqual(phrases_hors_extrait(""), [])
+
+    def test_mesure_de_86_t4(self):
+        """Mesure « après » de #86 : t4 annonce une valeur hors extrait."""
+        essais = json.loads((EXTRAITS.parent / "tirages-non-invention.json").read_text(encoding="utf-8"))["essais"]
+        t4 = next(e for e in essais if e["page"] == "photoelectrique" and e["budget"] == 4000 and e["tirage"] == 4)
+        self.assertEqual(len(phrases_hors_extrait(t4["reponse"])), 1)
+
+
+class TraceHorsExtraitTest(unittest.TestCase):
+    """Étape `hors_extrait_present` : une violation à compter, réservée en fin
+    de trace comme les deux autres signalements."""
+
+    def _resultats(self):
+        return [ResultatWeb(rang=1, titre="Page", url="https://exemple.org/p",
+                            extrait="La limite vaut 4.", moteur="lecture")]
+
+    def test_etape_construite_quand_la_reponse_en_contient(self):
+        _, trace = chat_router._finaliser_citations_et_trace(
+            "c1", "La page ne le dit pas [1]. Hors extrait, d'après mes connaissances : 4.",
+            self._resultats(), "", set(), [])
+        self.assertEqual([e["etape"] for e in trace], ["hors_extrait_present"])
+        self.assertEqual(trace[0]["phrases"], ["Hors extrait, d'après mes connaissances : 4."])
+
+    def test_pas_d_etape_sans_marque(self):
+        _, trace = chat_router._finaliser_citations_et_trace(
+            "c1", "La limite vaut 4 [1].", self._resultats(), "", set(), [])
+        self.assertEqual(trace, [])
+
+    def test_pas_d_etape_sans_source(self):
+        """Hors d'un tour de lecture ou de recherche, « hors extrait » ne veut
+        rien dire : aucune consigne ne l'interdisait."""
+        _, trace = chat_router._finaliser_citations_et_trace(
+            "c1", "Hors extrait, d'après mes connaissances : 4.", [], "", set(), [])
+        self.assertEqual(trace, [])
+
+    def test_place_reservee_en_dernier(self):
+        from core.citations import RapportCitations
+        from core.websearch import TRACE_MAX_ETAPES
+        beaucoup = [{"etape": "recherche_debut", "requete": str(i)} for i in range(TRACE_MAX_ETAPES + 5)]
+        non_etayees = verifier_fidelite("La limite vaut 42 [1].", {1: "rien"})
+        trace = chat_router._construire_trace_finale(
+            beaucoup, RapportCitations(rangs_hors_plage=[7]), True, non_etayees, ["Hors extrait : 4."])
+        self.assertEqual(len(trace), TRACE_MAX_ETAPES)
+        self.assertEqual([e["etape"] for e in trace[-3:]],
+                         ["citations_invalides", "citations_non_etayees", "hors_extrait_present"])
+
+    def test_liste_bornee(self):
+        phrases = [f"Hors extrait : {i}." for i in range(30)]
+        trace = chat_router._construire_trace_finale([], None, False, [], phrases)
+        self.assertEqual(len(trace[0]["phrases"]), TRACE_LISTE_MAX)
+
+    def test_toujours_exclue_de_verifier_fidelite(self):
+        self.assertEqual(verifier_fidelite("Hors extrait, d'après mes connaissances : 42 [1].", {1: "rien"}), [])
 
 
 if __name__ == "__main__":

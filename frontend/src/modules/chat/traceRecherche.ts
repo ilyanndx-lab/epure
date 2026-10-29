@@ -82,6 +82,7 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
     const citations = etapes.find(e => e.etape === 'citations_invalides')
     if (citations) return verifieeContreRecherche(citations) ? 'Citation hors sources' : 'Lien non vérifié'
     if (aDesAffirmationsNonEtayees(etapes)) return RESUME_NON_ETAYEE
+    if (aDuContenuHorsExtrait(etapes)) return RESUME_HORS_EXTRAIT
     return ''  // ne devrait pas arriver : trace vide → pas de panneau
   }
 
@@ -117,7 +118,7 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
  * recherche, d'autres étapes portent déjà le résumé.
  */
 const ETAPES_HORS_RECHERCHE = new Set([
-  'citations_invalides', 'citations_non_etayees', 'lecture_url', 'reclassement_indisponible', 'outils_retires',
+  'citations_invalides', 'citations_non_etayees', 'hors_extrait_present', 'lecture_url', 'reclassement_indisponible', 'outils_retires',
   // Raisonnement coupé / reçu malgré tout / interrompu (#76) : accompagnent un
   // tour web ou une lecture, sans être une recherche.
   'raisonnement_coupe', 'raisonnement_non_coupe', 'raisonnement_plafonne',
@@ -278,6 +279,7 @@ export function libelleBadgeCitations(etapes: EtapeTrace[]): string | null {
   const etapeCitations = etapes.find(e => e.etape === 'citations_invalides')
   const aUneEtapeDeRecherche = etapes.some(
     e => e.etape !== 'citations_invalides' && e.etape !== 'citations_non_etayees'
+      && e.etape !== 'hors_extrait_present'
   )
   if (!etapeCitations || !aUneEtapeDeRecherche) return null
   return verifieeContreRecherche(etapeCitations) ? 'citation hors sources' : 'lien non vérifié'
@@ -310,4 +312,31 @@ export function aDesAffirmationsNonEtayees(etapes: EtapeTrace[]): boolean {
 export function libelleBadgeNonEtayees(etapes: EtapeTrace[]): string | null {
   if (!aDesAffirmationsNonEtayees(etapes)) return null
   return resumeTrace(etapes) === RESUME_NON_ETAYEE ? null : 'affirmation non trouvée dans la source'
+}
+
+/** Résumé replié d'une trace qui ne porte QUE `hors_extrait_present`. */
+const RESUME_HORS_EXTRAIT = 'Contenu hors extrait'
+
+/**
+ * La trace porte-t-elle une étape `hors_extrait_present` non vide ? Des
+ * phrases marquées « hors extrait » sur un tour sourcé
+ * (`core.citations.phrases_hors_extrait`) : depuis l'arrêt sur information
+ * absente, le contrat de citation interdit tout complément de mémoire — une
+ * VIOLATION, plus un contenu légitime. Le backend n'écrit l'étape que s'il y
+ * a au moins une phrase.
+ */
+export function aDuContenuHorsExtrait(etapes: EtapeTrace[]): boolean {
+  const etape = etapes.find(e => e.etape === 'hors_extrait_present')
+  return !!etape && liste(etape.phrases).length > 0
+}
+
+/**
+ * Badge « contenu hors extrait », ou `null`. Même règle que
+ * `libelleBadgeNonEtayees` : seulement EN PLUS d'un autre résumé, jamais en
+ * doublon du sien. Signalement, jamais correction : la réponse reste telle
+ * qu'écrite.
+ */
+export function libelleBadgeHorsExtrait(etapes: EtapeTrace[]): string | null {
+  if (!aDuContenuHorsExtrait(etapes)) return null
+  return resumeTrace(etapes) === RESUME_HORS_EXTRAIT ? null : 'contenu hors extrait'
 }

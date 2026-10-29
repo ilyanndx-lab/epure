@@ -634,3 +634,27 @@ def verifier_fidelite(
                 signalees.append(AffirmationNonEtayee(
                     phrase=phrase[:_EXTRAIT_PHRASE_MAX], element=element, type=genre, sources=list(rangs)))
     return signalees
+
+
+def phrases_hors_extrait(reponse: str) -> list[str]:
+    """Phrases de `reponse` marquées « hors extrait » (même marque, même
+    découpage, mêmes zones masquées que l'exclusion de `verifier_fidelite`).
+
+    Le contrat de citation de #86 demandait cette marque pour une valeur de
+    mémoire ; la décision qui l'a suivie (feat/arret-info-absente) interdit
+    toute valeur de mémoire sur un tour sourcé — le contenu marqué restait peu
+    fiable (« la section efficace diminue quand Z augmente », #86, t4). Une
+    phrase marquée est donc désormais une VIOLATION à compter, plus un
+    contenu légitime. `verifier_fidelite` continue de l'exclure : la compter
+    ici et la signaler aussi comme non étayée ferait deux alertes pour une
+    faute. Une marque entre guillemets (citer la consigne) n'en est pas une.
+    """
+    if not reponse:
+        return []
+    trouvees: list[str] = []
+    for phrases in _paragraphes(_masquer_zones_non_citables(reponse)):
+        for phrase in phrases:
+            _, hors_guillemets = _separer_guillemets(phrase)
+            if _HORS_EXTRAIT_RE.search(_plat(hors_guillemets)):
+                trouvees.append(phrase[:_EXTRAIT_PHRASE_MAX])
+    return trouvees
