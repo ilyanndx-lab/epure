@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aDesAffirmationsNonEtayees, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aDesAffirmationsNonEtayees, aDuContenuHorsExtrait, estViolationHorsExtrait, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeHorsExtrait, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -362,5 +362,71 @@ describe('citations_non_etayees', () => {
     expect(aDesAffirmationsNonEtayees([NON_ETAYEES_VIDE])).toBe(false)
     expect(libelleBadgeNonEtayees([LECTURE_OK, NON_ETAYEES_VIDE])).toBeNull()
     expect(libelleBadgeNonEtayees([LECTURE_OK])).toBeNull()
+  })
+})
+
+// ── hors_extrait_present : complément de mémoire sur un tour sourcé ──
+// Depuis l'arrêt sur information absente, le contrat interdit tout contenu
+// « hors extrait » : c'est une violation, signalée comme les deux autres.
+
+const HORS_EXTRAIT: EtapeTrace = {
+  etape: 'hors_extrait_present',
+  phrases: ['Hors extrait, d’après mes connaissances : l’exposant varie entre 4 et 5.'],
+}
+const HORS_EXTRAIT_VIDE: EtapeTrace = { etape: 'hors_extrait_present', phrases: [] }
+
+describe('hors_extrait_present', () => {
+  it('trace réduite à cette étape : résumé « Contenu hors extrait », sans badge doublon', () => {
+    expect(resumeTrace([HORS_EXTRAIT])).toBe('Contenu hors extrait')
+    expect(libelleBadgeHorsExtrait([HORS_EXTRAIT])).toBeNull()
+  })
+
+  it('jamais annoncée comme une recherche web', () => {
+    expect(resumeTrace([HORS_EXTRAIT])).not.toMatch(/recherche/i)
+    expect(resumeTrace([LECTURE_OK, HORS_EXTRAIT])).not.toMatch(/recherche/i)
+  })
+
+  it('avec une lecture d’URL : le résumé reste celui de la lecture, le badge s’ajoute', () => {
+    const etapes = [LECTURE_OK, HORS_EXTRAIT]
+    expect(resumeTrace(etapes)).toBe(resumeTrace([LECTURE_OK]))
+    expect(libelleBadgeHorsExtrait(etapes)).toBe('contenu hors extrait')
+  })
+
+  it('ne fait pas passer citations_invalides pour accompagnée d’une recherche', () => {
+    expect(libelleBadgeCitations([CITATIONS_RECHERCHE, HORS_EXTRAIT])).toBeNull()
+  })
+
+  it('étape vide ou absente : aucun badge', () => {
+    expect(aDuContenuHorsExtrait([HORS_EXTRAIT_VIDE])).toBe(false)
+    expect(libelleBadgeHorsExtrait([LECTURE_OK, HORS_EXTRAIT_VIDE])).toBeNull()
+    expect(libelleBadgeHorsExtrait([LECTURE_OK])).toBeNull()
+  })
+})
+
+// Recherche web seule : le contrat permet un complément annoncé « hors
+// extrait » — l'étape reste dans la trace, sans badge d'alerte (#90).
+const HORS_EXTRAIT_RECHERCHE: EtapeTrace = {
+  etape: 'hors_extrait_present',
+  phrases: ['Hors extrait, d’après mes connaissances : 4.'],
+  violation: false,
+}
+
+describe('hors_extrait_present sur une recherche web', () => {
+  it('pas une violation : aucun badge', () => {
+    expect(libelleBadgeHorsExtrait([RECHERCHE_RESULTATS, HORS_EXTRAIT_RECHERCHE])).toBeNull()
+    expect(estViolationHorsExtrait(HORS_EXTRAIT_RECHERCHE)).toBe(false)
+  })
+
+  it('le résumé reste celui de la recherche', () => {
+    expect(resumeTrace([RECHERCHE_RESULTATS, HORS_EXTRAIT_RECHERCHE]))
+      .toBe(resumeTrace([RECHERCHE_RESULTATS]))
+  })
+
+  it('trace réduite à cette étape : résumé neutre, pas « Contenu hors extrait »', () => {
+    expect(resumeTrace([HORS_EXTRAIT_RECHERCHE])).toBe('Complément hors extrait annoncé')
+  })
+
+  it('champ absent (trace écrite avant #90) : traité comme une violation', () => {
+    expect(estViolationHorsExtrait(HORS_EXTRAIT)).toBe(true)
   })
 })

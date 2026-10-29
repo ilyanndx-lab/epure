@@ -378,7 +378,7 @@ def fidelite(modele, tirages, decharger_a_la_fin, cas=None, nom_sortie="tirages.
     """`tirages` réponses par cas, code de `main` (contexte système réel du
     chat), raisonnement coupé ; pour chacune, ce que l'heuristique signale."""
     from core import webcontent
-    from core.citations import verifier_fidelite
+    from core.citations import phrases_hors_extrait, verifier_fidelite
     import modules.chat.router as routeur
 
     questions = {q["page"]: q for q in json.loads((ICI / "questions.json").read_text(encoding="utf-8"))}
@@ -416,14 +416,18 @@ def fidelite(modele, tirages, decharger_a_la_fin, cas=None, nom_sortie="tirages.
                 essai["signale"] = [
                     {"phrase": a.phrase, "element": a.element, "type": a.type, "sources": a.sources}
                     for a in verifier_fidelite(essai["reponse"], {r.rang: f"{r.titre} {r.extrait}"},
-                                               texte_utilisateur=message)]
+                                               texte_utilisateur=message,
+                                               texte_contrat=routeur._texte_contrat([r]))]
+                # Complément de mémoire, interdit depuis l'arrêt sur information absente.
+                essai["hors_extrait_present"] = phrases_hors_extrait(essai["reponse"])
                 doc["essais"].append(essai)
                 if doc["meta"]["contexte_charge"] is None:  # chargé par le JIT à ce premier tirage
                     doc["meta"]["contexte_charge"] = contexte_charge(modele)
                 ecrire()
                 print(f"{page:24s} {budget:6d} #{i} ttft={essai['t_premier_token_s']}s "
                       f"sortie={essai['tokens_sortie']} fin={essai['fin']} "
-                      f"signalé={len(essai['signale'])} {essai.get('anomalie', '')}", flush=True)
+                      f"signalé={len(essai['signale'])} hors_extrait={len(essai['hors_extrait_present'])} "
+                      f"{essai.get('anomalie', '')}", flush=True)
     except MemoireBasse:
         doc["meta"]["arret"] = f"mémoire libre sous {SEUIL_MEMOIRE_GO} Go"
         ecrire()

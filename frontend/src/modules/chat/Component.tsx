@@ -17,7 +17,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { detailBudgetLecture, estViolationHorsExtrait, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeHorsExtrait, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -558,6 +558,22 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
         </div>
       )
     }
+    case 'hors_extrait_present': {
+      // Complément de mémoire sur un tour sourcé. Lecture d'URL : le contrat
+      // l'interdit (#90), c'est une violation. Recherche web : permis s'il
+      // est annoncé, dit sans alerte. Signalé, jamais masqué.
+      const phrases = liste<string>(etape.phrases)
+      return (
+        <div>
+          {estViolationHorsExtrait(etape)
+            ? <p className="m-0 text-warning">Contenu hors extrait : la réponse complète de mémoire</p>
+            : <p className="m-0">Complément de mémoire annoncé « hors extrait »</p>}
+          <ul className="m-0 mt-1 pl-4 list-disc">
+            {phrases.map((p, i) => <li key={i} className="text-muted">{p}</li>)}
+          </ul>
+        </div>
+      )
+    }
     case 'raisonnement_coupe':
       return <p className="m-0">{libelleRaisonnement(etape)}</p>
     case 'raisonnement_non_coupe':
@@ -609,6 +625,7 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
 }) {
   const libelleBadge = libelleBadgeCitations(etapes)
   const libelleNonEtayee = libelleBadgeNonEtayees(etapes)
+  const libelleHorsExtrait = libelleBadgeHorsExtrait(etapes)
   // Visible sans déplier le panneau, comme le badge des citations : c'est ce
   // qui distingue une réponse sourcée d'une réponse donnée de mémoire.
   const libelleAbandon = libelleBadgeAbandon(etapes)
@@ -631,6 +648,11 @@ function TraceRechercheView({ etapes, collapsed, onToggle }: {
           {libelleNonEtayee && (
             <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
               {libelleNonEtayee}
+            </span>
+          )}
+          {libelleHorsExtrait && (
+            <span className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-warning/20 text-warning">
+              {libelleHorsExtrait}
             </span>
           )}
           {libelleAbandon && (
