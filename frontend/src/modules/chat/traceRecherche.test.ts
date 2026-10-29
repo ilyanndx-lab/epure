@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aAtteintLimiteRecherches, aDesAffirmationsNonEtayees, aDuContenuHorsExtrait, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeHorsExtrait, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { aAtteintLimiteRecherches, aDesAffirmationsNonEtayees, aDuContenuHorsExtrait, estViolationHorsExtrait, aUneRechercheAbandonnee, detailBudgetLecture, etapesDe, libelleRaisonnement, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeHorsExtrait, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 
 /**
  * Le sujet de ce fichier tient en deux phrases :
@@ -400,5 +400,33 @@ describe('hors_extrait_present', () => {
     expect(aDuContenuHorsExtrait([HORS_EXTRAIT_VIDE])).toBe(false)
     expect(libelleBadgeHorsExtrait([LECTURE_OK, HORS_EXTRAIT_VIDE])).toBeNull()
     expect(libelleBadgeHorsExtrait([LECTURE_OK])).toBeNull()
+  })
+})
+
+// Recherche web seule : le contrat permet un complément annoncé « hors
+// extrait » — l'étape reste dans la trace, sans badge d'alerte (#90).
+const HORS_EXTRAIT_RECHERCHE: EtapeTrace = {
+  etape: 'hors_extrait_present',
+  phrases: ['Hors extrait, d’après mes connaissances : 4.'],
+  violation: false,
+}
+
+describe('hors_extrait_present sur une recherche web', () => {
+  it('pas une violation : aucun badge', () => {
+    expect(libelleBadgeHorsExtrait([RECHERCHE_RESULTATS, HORS_EXTRAIT_RECHERCHE])).toBeNull()
+    expect(estViolationHorsExtrait(HORS_EXTRAIT_RECHERCHE)).toBe(false)
+  })
+
+  it('le résumé reste celui de la recherche', () => {
+    expect(resumeTrace([RECHERCHE_RESULTATS, HORS_EXTRAIT_RECHERCHE]))
+      .toBe(resumeTrace([RECHERCHE_RESULTATS]))
+  })
+
+  it('trace réduite à cette étape : résumé neutre, pas « Contenu hors extrait »', () => {
+    expect(resumeTrace([HORS_EXTRAIT_RECHERCHE])).toBe('Complément hors extrait annoncé')
+  })
+
+  it('champ absent (trace écrite avant #90) : traité comme une violation', () => {
+    expect(estViolationHorsExtrait(HORS_EXTRAIT)).toBe(true)
   })
 })

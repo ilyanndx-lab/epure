@@ -716,6 +716,12 @@ def _lire_une_url(url: str) -> tuple[list[str], str, str, float, str, dict]:
         return fin("échec", "erreur inattendue pendant la lecture")
 
 
+#: `ResultatWeb.moteur` d'une page lue directement : c'est ainsi que la fin de
+#: tour sait quel contrat de citation a été envoyé (lecture d'URL, stricte, ou
+#: recherche web, qui permet un complément annoncé « hors extrait »).
+MOTEUR_LECTURE = "lecture-directe"
+
+
 @dataclass(frozen=True)
 class LectureUrl:
     """Issue de la lecture d'UNE URL. `resultat` n'existe qu'en cas de
@@ -880,7 +886,7 @@ def lire_urls(
             rang += 1
             resultat = ResultatWeb(
                 rang=rang, titre=tronquer_champ(titre or _domaine(url)), url=url,
-                extrait=extrait, moteur="lecture-directe",
+                extrait=extrait, moteur=MOTEUR_LECTURE,
             )
         elif statut == "succès":
             statut, raison = "échec", "aucun passage exploitable dans la page"

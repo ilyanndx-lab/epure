@@ -298,25 +298,22 @@ _SEP_MILLIERS = "[    ]"
 _NOMBRE_RE = re.compile(
     r"(?<![\w.,])([-−])?(\d{1,3}(?:" + _SEP_MILLIERS + r"\d{3})+|\d+)(?:[.,](\d+))?(?!\w)"
 )
-_MOTS_NOMBRES = {
+#: Nombres en toutes lettres, lus côté SOURCE seulement : un « 4 » de la
+#: réponse est étayé par « quatre » dans l'extrait. Côté réponse, ils ne sont
+#: plus vérifiés (#90) : « une liste de trois noms », « les deux autres noms »
+#: sont des quantificateurs du discours, pas des valeurs tirées de la page —
+#: sur les tirages mesurés, ils ne produisaient que des faux positifs.
+#: « un », « une » (articles) restent exclus.
+_MOTS_NOMBRES_SOURCE = {
     "zero": 0, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "six": 6, "sept": 7,
-    "huit": 8, "dix-sept": 17, "dix-huit": 18, "dix-neuf": 19, "dix": 10, "onze": 11,
+    "huit": 8, "neuf": 9, "dix-sept": 17, "dix-huit": 18, "dix-neuf": 19, "dix": 10, "onze": 11,
     "douze": 12, "treize": 13, "quatorze": 14, "quinze": 15, "seize": 16, "vingt": 20,
 }
-#: « un », « une » (articles) et « neuf » (adjectif) : jamais lus comme nombres
-#: dans la RÉPONSE, trop ambigus ; « neuf » compte côté source, où il ne
-#: coûte qu'un faux négatif de plus.
-_MOTS_NOMBRES_SOURCE = {**_MOTS_NOMBRES, "neuf": 9}
-_MOT_NOMBRE_RE = re.compile(
-    r"(?<![\w-])(dix-sept|dix-huit|dix-neuf|zero|deux|trois|quatre|cinq|six|sept|huit|"
-    r"dix|onze|douze|treize|quatorze|quinze|seize|vingt)(?![\w-])"
-)
 _MOT_NOMBRE_SOURCE_RE = re.compile(
     r"(?<![\w-])(dix-sept|dix-huit|dix-neuf|zero|deux|trois|quatre|cinq|six|sept|huit|neuf|"
     r"dix|onze|douze|treize|quatorze|quinze|seize|vingt)(?![\w-])"
 )
 
-_DETERMINANT_AVANT_RE = re.compile(r"\b(?:les|ces|ses|mes|tes|nos|vos|leurs|des|aux)\s+$")
 #: Une désignation de la source (« extrait 1 », « source n° 2 ») : un numéro d'ordre, pas une valeur.
 _REFERENCE_AVANT_RE = re.compile(r"\b(?:extraits?|sources?|passages?|fragments?|resultats?)\s+(?:n°\s*|no\s*)?$")
 
@@ -408,23 +405,18 @@ def _valeur(entier: str, decimales: str | None, signe: str | None) -> str:
 
 def _nombres(texte: str, mots_source: bool = False) -> list[tuple[str, str]]:
     """`[(affichage, valeur normalisée)]` : chiffres (virgule ou point
-    décimal, espaces de milliers, signe moins ASCII ou Unicode, exposants) puis
-    nombres en toutes lettres de zéro à vingt. « 4 et 5 » donne 4 et 5 ;
-    « 4 à 5 », « 4–5 » aussi — l'intervalle s'éclate de lui-même."""
+    décimal, espaces de milliers, signe moins ASCII ou Unicode, exposants),
+    plus — côté source seulement (`mots_source`) — les nombres en toutes
+    lettres de zéro à vingt. « 4 et 5 » donne 4 et 5 ; « 4 à 5 », « 4–5 »
+    aussi — l'intervalle s'éclate de lui-même."""
     plat = _plat(texte)
     trouves = [(m.group(0).strip(), _valeur(m.group(2), m.group(3), m.group(1)))
                for m in _NOMBRE_RE.finditer(plat)]
-    table = _MOTS_NOMBRES_SOURCE if mots_source else _MOTS_NOMBRES
-    motif = _MOT_NOMBRE_SOURCE_RE if mots_source else _MOT_NOMBRE_RE
     if not mots_source:
-        trouves = [t for t, m in zip(trouves, _NOMBRE_RE.finditer(plat))
-                   if not _REFERENCE_AVANT_RE.search(plat[:m.start()])]
-    for m in motif.finditer(plat):
-        # « les deux autres noms », « ces trois cas » : un quantificateur sur un
-        # ensemble déjà posé (souvent par la question), pas une valeur mesurée.
-        if not mots_source and _DETERMINANT_AVANT_RE.search(plat[:m.start()]):
-            continue
-        trouves.append((m.group(1), str(table[m.group(1)])))
+        return [t for t, m in zip(trouves, _NOMBRE_RE.finditer(plat))
+                if not _REFERENCE_AVANT_RE.search(plat[:m.start()])]
+    for m in _MOT_NOMBRE_SOURCE_RE.finditer(plat):
+        trouves.append((m.group(1), str(_MOTS_NOMBRES_SOURCE[m.group(1)])))
     return trouves
 
 
@@ -514,6 +506,7 @@ def _paragraphes(reponse: str) -> list[list[str]]:
 
 def verifier_fidelite(
     reponse: str, sources: Mapping[int, str], texte_utilisateur: str = "",
+    texte_contrat: str = "",
 ) -> list[AffirmationNonEtayee]:
     """Nombres et citations d'une réponse absents des sources auxquelles leur
     phrase se rattache. Calcul PUR, sans LLM ni réseau, APRÈS le flux ; ne
@@ -553,10 +546,18 @@ def verifier_fidelite(
     question (« deux autres noms »), il n'invente pas. Ses URLs sont retirées
     avant comparaison.
 
-    **Vérifié.** (1) Les nombres, normalisés : virgule ou point décimal,
-    espaces de milliers, signe moins Unicode, exposants (`10⁻⁹`), nombres en
-    toutes lettres de zéro à vingt (« un », « une », « neuf » exclus côté
-    réponse), intervalles éclatés (« 4 à 5 » → 4 et 5). (2) Les citations entre
+    `texte_contrat` : le contrat de citation envoyé ce tour (consignes du
+    contexte système, sans les extraits). Une CITATION entre guillemets qui
+    s'y trouve est étayée — le modèle reprend un mot de la consigne
+    (« partiellement présente », photoélectrique 16k, t5 du 2026-10-29). Les
+    nombres n'y sont pas cherchés : le contrat écrit « [1] » en exemple.
+
+    **Vérifié.** (1) Les nombres en CHIFFRES de la réponse, normalisés :
+    virgule ou point décimal, espaces de milliers, signe moins Unicode,
+    exposants (`10⁻⁹`), intervalles éclatés (« 4 à 5 » → 4 et 5). Un nombre en
+    toutes lettres dans la réponse n'est plus vérifié (« une liste de trois
+    noms » : un quantificateur, pas une valeur) ; côté source, « quatre »
+    étaie toujours un « 4 ». (2) Les citations entre
     « … » ou “ … ”, comparées mot à mot, dans l'ordre, après normalisation de la
     casse, des accents et des espaces, avec la tolérance de
     `_MOTS_DIFFERENTS_PAR_CINQ`. Le numéro `[n]` lui-même n'est pas un nombre ;
@@ -587,6 +588,7 @@ def verifier_fidelite(
     # URLs retirées : une URL désigne la page, elle n'affirme rien (« 2013 »
     # dans un chemin n'étaie pas « 2013 » dans la réponse).
     nombres_user, mots_user = _preparer_source(_URL_RE.sub(" ", texte_utilisateur or ""))
+    mots_contrat = _mots(_plat(texte_contrat or ""))
     masque = _masquer_zones_non_citables(reponse)
 
     signalees: list[AffirmationNonEtayee] = []
@@ -628,7 +630,8 @@ def verifier_fidelite(
             for contenu in citations:
                 for fragment in _fragments_de_citation(contenu):
                     mots = _mots(_plat(fragment))
-                    if not (_fragment_etaye(mots, mots_sources) or _fragment_etaye(mots, mots_user)):
+                    if not (_fragment_etaye(mots, mots_sources) or _fragment_etaye(mots, mots_user)
+                            or _fragment_etaye(mots, mots_contrat)):
                         trouvees.append((fragment, "citation"))
             for element, genre in trouvees:
                 signalees.append(AffirmationNonEtayee(
@@ -641,13 +644,15 @@ def phrases_hors_extrait(reponse: str) -> list[str]:
     découpage, mêmes zones masquées que l'exclusion de `verifier_fidelite`).
 
     Le contrat de citation de #86 demandait cette marque pour une valeur de
-    mémoire ; la décision qui l'a suivie (feat/arret-info-absente) interdit
-    toute valeur de mémoire sur un tour sourcé — le contenu marqué restait peu
-    fiable (« la section efficace diminue quand Z augmente », #86, t4). Une
-    phrase marquée est donc désormais une VIOLATION à compter, plus un
-    contenu légitime. `verifier_fidelite` continue de l'exclure : la compter
-    ici et la signaler aussi comme non étayée ferait deux alertes pour une
-    faute. Une marque entre guillemets (citer la consigne) n'en est pas une.
+    mémoire. Depuis #90, il ne la demande plus qu'en RECHERCHE WEB, où le
+    complément annoncé reste permis ; en LECTURE D'URL, il interdit toute
+    valeur de mémoire (le contenu marqué restait peu fiable : « la section
+    efficace diminue quand Z augmente », #86, t4) et une phrase marquée y est
+    une VIOLATION. L'appelant (`modules/chat/router.py`) sait quel contrat a
+    été envoyé ; cette fonction ne fait que trouver les phrases.
+    `verifier_fidelite` continue de les exclure : les compter ici et les
+    signaler aussi comme non étayées ferait deux alertes pour une faute. Une
+    marque entre guillemets (citer la consigne) n'en est pas une.
     """
     if not reponse:
         return []

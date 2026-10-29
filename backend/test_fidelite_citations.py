@@ -288,8 +288,16 @@ class NombresTest(unittest.TestCase):
     def test_chiffre_contre_en_toutes_lettres(self):
         self.assertEqual(self._el("Il y a 4 cas [1].", {1: "On compte quatre cas."}), [])
 
-    def test_nombre_en_toutes_lettres_absent_signale(self):
-        self.assertEqual(self._el("Il y a douze cas [1].", {1: "On compte 4 cas."}), ["douze"])
+    def test_nombre_en_toutes_lettres_non_verifie_dans_la_reponse(self):
+        """Côté réponse, seuls les chiffres sont vérifiés (#90) : « trois »,
+        « deux » sont presque toujours des quantificateurs du discours (« une
+        liste de trois noms »), rarement des valeurs tirées de la source."""
+        self.assertEqual(self._el("Il y a douze cas [1].", {1: "On compte 4 cas."}), [])
+        self.assertEqual(self._el("Une liste de trois noms [1].", {1: "rien"}), [])
+
+    def test_chiffre_contre_toutes_lettres_de_la_source(self):
+        """Côté source, la normalisation lettres → chiffres reste."""
+        self.assertEqual(self._el("Il y a 12 cas [1].", {1: "On compte douze cas."}), [])
 
     def test_un_et_une_ne_sont_pas_des_nombres(self):
         self.assertEqual(self._el("Une valeur et un cas [1].", {1: "rien"}), [])

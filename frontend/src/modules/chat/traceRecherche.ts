@@ -82,7 +82,7 @@ export function resumeTrace(etapes: EtapeTrace[]): string {
     const citations = etapes.find(e => e.etape === 'citations_invalides')
     if (citations) return verifieeContreRecherche(citations) ? 'Citation hors sources' : 'Lien non vérifié'
     if (aDesAffirmationsNonEtayees(etapes)) return RESUME_NON_ETAYEE
-    if (aDuContenuHorsExtrait(etapes)) return RESUME_HORS_EXTRAIT
+    if (aDuContenuHorsExtrait(etapes)) return resumeHorsExtrait(etapes)
     return ''  // ne devrait pas arriver : trace vide → pas de panneau
   }
 
@@ -316,14 +316,13 @@ export function libelleBadgeNonEtayees(etapes: EtapeTrace[]): string | null {
 
 /** Résumé replié d'une trace qui ne porte QUE `hors_extrait_present`. */
 const RESUME_HORS_EXTRAIT = 'Contenu hors extrait'
+const RESUME_HORS_EXTRAIT_ANNONCE = 'Complément hors extrait annoncé'
 
 /**
  * La trace porte-t-elle une étape `hors_extrait_present` non vide ? Des
  * phrases marquées « hors extrait » sur un tour sourcé
- * (`core.citations.phrases_hors_extrait`) : depuis l'arrêt sur information
- * absente, le contrat de citation interdit tout complément de mémoire — une
- * VIOLATION, plus un contenu légitime. Le backend n'écrit l'étape que s'il y
- * a au moins une phrase.
+ * (`core.citations.phrases_hors_extrait`). Le backend n'écrit l'étape que
+ * s'il y a au moins une phrase.
  */
 export function aDuContenuHorsExtrait(etapes: EtapeTrace[]): boolean {
   const etape = etapes.find(e => e.etape === 'hors_extrait_present')
@@ -331,12 +330,34 @@ export function aDuContenuHorsExtrait(etapes: EtapeTrace[]): boolean {
 }
 
 /**
- * Badge « contenu hors extrait », ou `null`. Même règle que
- * `libelleBadgeNonEtayees` : seulement EN PLUS d'un autre résumé, jamais en
- * doublon du sien. Signalement, jamais correction : la réponse reste telle
- * qu'écrite.
+ * Le complément « hors extrait » viole-t-il le contrat du tour (#90) ? Oui
+ * sur une lecture d'URL, dont le contrat interdit toute valeur de mémoire ;
+ * non sur une recherche web seule, dont le contrat permet un complément
+ * annoncé. Champ absent (trace écrite avant #90) : violation, la lecture
+ * stricte.
+ */
+export function estViolationHorsExtrait(etape: EtapeTrace): boolean {
+  return etape.violation !== false
+}
+
+function aUneViolationHorsExtrait(etapes: EtapeTrace[]): boolean {
+  const etape = etapes.find(e => e.etape === 'hors_extrait_present')
+  return !!etape && aDuContenuHorsExtrait(etapes) && estViolationHorsExtrait(etape)
+}
+
+/** Résumé d'une trace réduite à `hors_extrait_present` (cf. `resumeTrace`). */
+function resumeHorsExtrait(etapes: EtapeTrace[]): string {
+  return aUneViolationHorsExtrait(etapes) ? RESUME_HORS_EXTRAIT : RESUME_HORS_EXTRAIT_ANNONCE
+}
+
+/**
+ * Badge « contenu hors extrait », ou `null`. Seulement pour une VIOLATION :
+ * un complément annoncé sur une recherche web reste dans la trace, sans
+ * alerte. Même règle que `libelleBadgeNonEtayees` : seulement EN PLUS d'un
+ * autre résumé, jamais en doublon du sien. Signalement, jamais correction :
+ * la réponse reste telle qu'écrite.
  */
 export function libelleBadgeHorsExtrait(etapes: EtapeTrace[]): string | null {
-  if (!aDuContenuHorsExtrait(etapes)) return null
+  if (!aUneViolationHorsExtrait(etapes)) return null
   return resumeTrace(etapes) === RESUME_HORS_EXTRAIT ? null : 'contenu hors extrait'
 }

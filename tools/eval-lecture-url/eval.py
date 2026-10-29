@@ -416,7 +416,8 @@ def fidelite(modele, tirages, decharger_a_la_fin, cas=None, nom_sortie="tirages.
                 essai["signale"] = [
                     {"phrase": a.phrase, "element": a.element, "type": a.type, "sources": a.sources}
                     for a in verifier_fidelite(essai["reponse"], {r.rang: f"{r.titre} {r.extrait}"},
-                                               texte_utilisateur=message)]
+                                               texte_utilisateur=message,
+                                               texte_contrat=routeur._texte_contrat([r]))]
                 # Complément de mémoire, interdit depuis l'arrêt sur information absente.
                 essai["hors_extrait_present"] = phrases_hors_extrait(essai["reponse"])
                 doc["essais"].append(essai)

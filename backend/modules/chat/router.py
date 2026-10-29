@@ -49,7 +49,7 @@ from core.citations import (
     extraire_urls, extraire_urls_ordonnees, phrases_hors_extrait, valider_citations, verifier_fidelite,
 )
 from core import fenetre_contexte
-from core.webcontent import LectureUrl, lire_urls, recuperer_contenu
+from core.webcontent import MOTEUR_LECTURE, LectureUrl, lire_urls, recuperer_contenu
 from core.websearch import (
     PREFIXE_ERREUR,
     TRACE_LISTE_MAX,
@@ -124,37 +124,60 @@ def perform_web_search(query: str) -> str:
     return texte
 
 
-#: Arrêt sur information absente — décision produit (feat/arret-info-absente)
-#: qui remplace la consigne de marquage de #86. Historique : à 4 000
-#: caractères sur « photoélectrique », le modèle donnait 5 fois sur 5 des
-#: valeurs absentes de l'extrait, avec un [n] ; #86 lui a fait marquer ces
-#: valeurs « hors extrait, d'après mes connaissances », ce qu'il a fait, mais
-#: le contenu marqué restait peu fiable (« la section efficace diminue quand Z
-#: augmente »). Sur un tour sourcé, il ne complète donc plus du tout : il dit
-#: l'absence (et, en lecture d'URL, propose @web). Une phrase « hors extrait »
-#: est désormais une violation, comptée par l'étape `hors_extrait_present`
-#: (`core.citations.phrases_hors_extrait`). Un prompt ne garantit rien seul :
-#: `core.citations` reste le second verrou.
-_ARRET_INFO_ABSENTE_LECTURE = (
-    "Si l'information demandée n'est pas dans les extraits, dis-le explicitement "
-    "(« La page ne contient pas cette information. ») et propose de relancer avec @web. "
-)
-#: Même règle pour la recherche web, sans proposition @web (on y est déjà).
-#: NON MESURÉE : seul le harnais de lecture d'URL existe.
-_ARRET_INFO_ABSENTE_RECHERCHE = (
-    "Si l'information demandée n'est pas dans les résultats, dis-le explicitement "
-    "(« Les résultats ne contiennent pas cette information. »). "
-)
-_SANS_CONNAISSANCES = (
-    "N'ajoute aucune valeur, aucun nom, aucune notion venant de tes connaissances. "
-    "Si l'information est partiellement présente, donne seulement la partie présente, "
-    "citée avec [n], et signale ce qui manque. "
-)
 #: Gardé de #86 (mesuré : [n] hors liste 5/5 → 0/5 sur photoélectrique 4k).
 _NUMEROS_LISTES_SEULS = (
     "Ne cite QUE les numéros [n] de la liste ci-dessus : un nombre entre "
     "crochets recopié du texte d'un extrait n'est pas une source."
 )
+
+#: Contrat de la LECTURE D'URL — arrêt sur information absente (#90).
+#: Historique : à 4 000 caractères sur « photoélectrique », le modèle donnait
+#: 5 fois sur 5 des valeurs absentes de l'extrait, avec un [n] ; #86 lui a
+#: fait marquer ces valeurs « hors extrait », ce qu'il a fait, mais le contenu
+#: marqué restait peu fiable (« la section efficace diminue quand Z
+#: augmente »). L'utilisateur a désigné UNE page : il veut ce qu'elle dit. Le
+#: modèle ne complète donc plus du tout ; il dit l'absence et propose @web.
+#: Une phrase « hors extrait » y est une violation (`hors_extrait_present`,
+#: `violation: true`).
+_CONTRAT_LECTURE = (
+    "Appuie-toi sur ces extraits pour répondre. Cite-les UNIQUEMENT par leur numéro "
+    "entre crochets, par exemple [n] — n'écris JAMAIS d'URL. Ces numéros s'ajoutent "
+    "à ceux d'éventuels résultats de recherche web. "
+    "Si l'information demandée n'est pas dans les extraits, dis-le explicitement "
+    "(« La page ne contient pas cette information. ») et propose de relancer avec @web. "
+    "N'ajoute aucune valeur, aucun nom, aucune notion venant de tes connaissances. "
+    "Si l'information est partiellement présente, donne seulement la partie présente, "
+    "citée avec [n], et signale ce qui manque. "
+    + _NUMEROS_LISTES_SEULS
+)
+
+#: Contrat de la RECHERCHE WEB — consigne de #87, gardée : les résultats
+#: « peuvent compléter tes connaissances », une question générale n'a pas à
+#: s'arrêter au contenu de quelques extraits. Un complément de mémoire est
+#: permis s'il est annoncé « hors extrait » et ne porte jamais de [n] ; ce
+#: n'est pas une violation (`hors_extrait_present`, `violation: false`).
+_CONTRAT_RECHERCHE = (
+    "Si pertinent, intègre ces informations dans ta réponse. Cite tes sources "
+    "UNIQUEMENT par leur numéro entre crochets, par exemple [1] — n'écris "
+    "JAMAIS d'URL, et ne cite JAMAIS un numéro absent de la liste ci-dessus. "
+    "Si l'information demandée n'est pas dans ces extraits, dis-le explicitement. "
+    "Toute valeur ou notion qui vient de tes connaissances générales doit être annoncée "
+    "comme telle (« hors extrait, d'après mes connaissances : … ») et ne porte JAMAIS de "
+    "numéro [n]. "
+    + _NUMEROS_LISTES_SEULS
+)
+
+
+def _texte_contrat(resultats_web: list[ResultatWeb]) -> str:
+    """Le(s) contrat(s) de citation envoyé(s) ce tour, d'après la nature des
+    sources : `verifier_fidelite` y lit les citations que le modèle reprend
+    de la consigne, et non de la page."""
+    contrats = []
+    if any(r.moteur == MOTEUR_LECTURE for r in resultats_web):
+        contrats.append(_CONTRAT_LECTURE)
+    if any(r.moteur != MOTEUR_LECTURE for r in resultats_web):
+        contrats.append(_CONTRAT_RECHERCHE)
+    return "\n".join(contrats)
 
 
 def _construire_web_ctx(web_results: str) -> str:
@@ -190,10 +213,7 @@ def _construire_web_ctx(web_results: str) -> str:
             f"Date du jour : {date_du_jour}\n"
             "Résultats de recherche web récents (peuvent compléter tes connaissances) :\n"
             f"{web_results}\n\n"
-            "Si pertinent, intègre ces informations dans ta réponse. Cite tes sources "
-            "UNIQUEMENT par leur numéro entre crochets, par exemple [1] — n'écris "
-            "JAMAIS d'URL, et ne cite JAMAIS un numéro absent de la liste ci-dessus. "
-            + _ARRET_INFO_ABSENTE_RECHERCHE + _SANS_CONNAISSANCES + _NUMEROS_LISTES_SEULS
+            + _CONTRAT_RECHERCHE
         )
     return (
         "Recherche web : aucun résultat exploitable trouvé pour cette requête. "
@@ -255,10 +275,7 @@ def _construire_ctx_lecture(lectures: list[LectureUrl]) -> str:
             "Contenu de page(s) web fournie(s) par l'utilisateur, lu directement sur le "
             "site (extraits, pas la page entière) :\n"
             f"{formater_pour_llm(lues)}\n\n"
-            "Appuie-toi sur ces extraits pour répondre. Cite-les UNIQUEMENT par leur numéro "
-            "entre crochets, par exemple [n] — n'écris JAMAIS d'URL. Ces numéros s'ajoutent "
-            "à ceux d'éventuels résultats de recherche web. "
-            + _ARRET_INFO_ABSENTE_LECTURE + _SANS_CONNAISSANCES + _NUMEROS_LISTES_SEULS
+            + _CONTRAT_LECTURE
         )
     for lec in lectures:
         if lec.resultat is not None:
@@ -419,18 +436,19 @@ def _verifier_fidelite(
     c'est ce que le modèle avait sous les yeux, donc ce à quoi sa phrase peut
     être comparée. Ces `ResultatWeb` sont encore en mémoire à la fin du tour
     (pages lues, résultats web, résultats d'outils), aucune relecture.
-    `user_text` étaie ce que le modèle reprend de la question.
+    `user_text` étaie ce que le modèle reprend de la question, le contrat de
+    citation du tour (`_texte_contrat`) ce qu'il cite de la consigne.
     """
     if not reponse or not resultats_web:
         return []
     return verifier_fidelite(reponse, {r.rang: f"{r.titre} {r.extrait}" for r in resultats_web},
-                             texte_utilisateur=user_text)
+                             texte_utilisateur=user_text, texte_contrat=_texte_contrat(resultats_web))
 
 
 def _construire_trace_finale(
     etapes: list[dict], rapport: Optional[RapportCitations], a_des_resultats_recherche: bool,
     non_etayees: Optional[list[AffirmationNonEtayee]] = None,
-    hors_extrait: Optional[list[str]] = None,
+    hors_extrait: Optional[list[str]] = None, hors_extrait_violation: bool = True,
 ) -> list[dict]:
     """Assemble la trace persistée : les étapes de recherche (`core.websearch`,
     poussées en direct pendant le tour, vide s'il n'y en a pas eu) + l'étape
@@ -488,10 +506,12 @@ def _construire_trace_finale(
     affirmations, chaque champ texte tronqué par `tronquer_champ`.
 
     **`hors_extrait_present` a la même place réservée**, en dernier : les
-    phrases que le modèle a marquées « hors extrait » sur un tour sourcé.
-    Depuis l'arrêt sur information absente (feat/arret-info-absente), le
-    contrat interdit tout complément de mémoire : c'est une violation à
-    compter, plus un contenu légitime (`core.citations.phrases_hors_extrait`).
+    phrases que le modèle a marquées « hors extrait » sur un tour sourcé
+    (`core.citations.phrases_hors_extrait`). `violation` dit laquelle des deux
+    lectures vaut : `true` si le contrat de LECTURE D'URL a été envoyé (il
+    interdit tout complément de mémoire, #90), `false` sur une recherche web
+    seule, dont le contrat permet un complément annoncé (badge d'alerte côté
+    frontend seulement dans le premier cas).
     """
     reservees: list[dict] = []
     if rapport is not None and rapport.a_des_anomalies():
@@ -514,6 +534,7 @@ def _construire_trace_finale(
         reservees.append({
             "etape": "hors_extrait_present",
             "phrases": [tronquer_champ(p) for p in hors_extrait[:TRACE_LISTE_MAX]],
+            "violation": hors_extrait_violation,
         })
     return list(etapes)[:TRACE_MAX_ETAPES - len(reservees)] + reservees
 
@@ -534,10 +555,13 @@ def _finaliser_citations_et_trace(
     sources = _sources_citees(reponse, resultats_web)
     rapport = _verifier_citations(reponse, resultats_web, user_text, urls_rag)
     non_etayees = _verifier_fidelite(reponse, resultats_web, user_text)
-    # Seulement sur un tour sourcé : c'est là que le contrat interdit de
-    # compléter de mémoire ; ailleurs, « hors extrait » ne veut rien dire.
+    # Seulement sur un tour sourcé ; ailleurs, « hors extrait » ne veut rien
+    # dire. Violation si le contrat de LECTURE a été envoyé (il interdit tout
+    # complément de mémoire) ; sur une recherche web seule, complément annoncé.
     hors_extrait = phrases_hors_extrait(reponse) if resultats_web else []
-    trace = _construire_trace_finale(etapes_recherche, rapport, bool(resultats_web), non_etayees, hors_extrait)
+    violation = any(r.moteur == MOTEUR_LECTURE for r in resultats_web)
+    trace = _construire_trace_finale(etapes_recherche, rapport, bool(resultats_web), non_etayees,
+                                     hors_extrait, violation)
     if rapport is not None and rapport.aucune_citation_malgre_contexte:
         logger.warning("Réponse sans aucune citation malgré un contexte web fourni (conv=%s)", conv_id)
     return sources, trace

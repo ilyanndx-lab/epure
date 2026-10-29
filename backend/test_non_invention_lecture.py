@@ -35,6 +35,7 @@ import _test_env  # noqa: F401 — convention du dépôt, avant tout core.*
 
 from core.citations import phrases_hors_extrait, retirer_renvois_de_notes, verifier_fidelite
 from core.websearch import TRACE_LISTE_MAX
+from core.webcontent import MOTEUR_LECTURE
 from core.websearch import ResultatWeb, formater_pour_llm
 from core.webcontent import LectureUrl
 from modules.chat import router as chat_router
@@ -151,20 +152,27 @@ class ContratDeCitationTest(unittest.TestCase):
         self.assertIn("Si l'information est partiellement présente, donne seulement la partie présente, "
                       "citée avec [n], et signale ce qui manque.", self._lecture())
 
-    def test_recherche_meme_regle_sans_proposition_web(self):
+    def test_recherche_consigne_de_87(self):
+        """Recherche web : connaissances générales permises, annoncées « hors
+        extrait », jamais avec [n] — la règle stricte ne vaut que pour la
+        lecture d'URL."""
         ctx = self._recherche()
-        self.assertIn("Si l'information demandée n'est pas dans les résultats, dis-le explicitement "
-                      "(« Les résultats ne contiennent pas cette information. »).", ctx)
-        self.assertIn("N'ajoute aucune valeur, aucun nom, aucune notion venant de tes connaissances.", ctx)
-        self.assertIn("Si l'information est partiellement présente, donne seulement la partie présente, "
-                      "citée avec [n], et signale ce qui manque.", ctx)
+        self.assertIn("Si l'information demandée n'est pas dans ces extraits, dis-le explicitement.", ctx)
+        self.assertIn("« hors extrait, d'après mes connaissances : … »", ctx)
+        self.assertIn("ne porte JAMAIS de numéro [n]", ctx)
+        self.assertNotIn("N'ajoute aucune", ctx)
         self.assertNotIn("@web", ctx)
 
-    def test_plus_de_consigne_de_marquage(self):
-        for nom, ctx in (("lecture", self._lecture()), ("recherche", self._recherche())):
-            with self.subTest(contexte=nom):
-                self.assertNotIn("hors extrait", ctx)
-                self.assertNotIn("d'après mes connaissances", ctx)
+    def test_lecture_sans_consigne_de_marquage(self):
+        ctx = self._lecture()
+        self.assertNotIn("hors extrait", ctx)
+        self.assertNotIn("d'après mes connaissances", ctx)
+
+    def test_contrats_envoyes_identiques_aux_constantes(self):
+        """`verifier_fidelite` lit le contrat par `_texte_contrat` : il doit
+        être celui que le modèle a reçu, à l'octet."""
+        self.assertIn(chat_router._CONTRAT_LECTURE, self._lecture())
+        self.assertIn(chat_router._CONTRAT_RECHERCHE, self._recherche())
 
     def test_seulement_les_numeros_listes(self):
         for nom, ctx in (("lecture", self._lecture()), ("recherche", self._recherche())):
@@ -214,12 +222,14 @@ class PhrasesHorsExtraitTest(unittest.TestCase):
 
 
 class TraceHorsExtraitTest(unittest.TestCase):
-    """Étape `hors_extrait_present` : une violation à compter, réservée en fin
-    de trace comme les deux autres signalements."""
+    """Étape `hors_extrait_present`, réservée en fin de trace comme les deux
+    autres signalements : une VIOLATION sur un tour de lecture d'URL (le
+    contrat l'interdit), un complément annoncé sur un tour de recherche web
+    seule (le contrat le permet)."""
 
-    def _resultats(self):
+    def _resultats(self, moteur=MOTEUR_LECTURE):
         return [ResultatWeb(rang=1, titre="Page", url="https://exemple.org/p",
-                            extrait="La limite vaut 4.", moteur="lecture")]
+                            extrait="La limite vaut 4.", moteur=moteur)]
 
     def test_etape_construite_quand_la_reponse_en_contient(self):
         _, trace = chat_router._finaliser_citations_et_trace(
@@ -227,6 +237,22 @@ class TraceHorsExtraitTest(unittest.TestCase):
             self._resultats(), "", set(), [])
         self.assertEqual([e["etape"] for e in trace], ["hors_extrait_present"])
         self.assertEqual(trace[0]["phrases"], ["Hors extrait, d'après mes connaissances : 4."])
+        self.assertIs(trace[0]["violation"], True)
+
+    def test_recherche_web_seule_pas_une_violation(self):
+        _, trace = chat_router._finaliser_citations_et_trace(
+            "c1", "Les résultats ne le disent pas [1]. Hors extrait, d'après mes connaissances : 4.",
+            self._resultats(moteur="ddg-html"), "", set(), [])
+        self.assertEqual([e["etape"] for e in trace], ["hors_extrait_present"])
+        self.assertIs(trace[0]["violation"], False)
+
+    def test_lecture_et_recherche_dans_le_meme_tour_violation(self):
+        """Le contrat de lecture a été envoyé : il interdit le complément."""
+        resultats = self._resultats() + [ResultatWeb(rang=2, titre="R", url="https://exemple.org/r",
+                                                     extrait="x", moteur="ddg-html")]
+        _, trace = chat_router._finaliser_citations_et_trace(
+            "c1", "Hors extrait, d'après mes connaissances : 4.", resultats, "", set(), [])
+        self.assertIs(trace[-1]["violation"], True)
 
     def test_pas_d_etape_sans_marque(self):
         _, trace = chat_router._finaliser_citations_et_trace(
@@ -258,6 +284,69 @@ class TraceHorsExtraitTest(unittest.TestCase):
 
     def test_toujours_exclue_de_verifier_fidelite(self):
         self.assertEqual(verifier_fidelite("Hors extrait, d'après mes connaissances : 42 [1].", {1: "rien"}), [])
+
+
+class CitationDuContratTest(unittest.TestCase):
+    """Une citation entre guillemets reprise du contrat de citation envoyé
+    ce tour n'est pas une invention (photoélectrique 16k, t5 : « partiellement
+    présente », mot de la consigne)."""
+
+    def test_citation_du_contrat_etayee(self):
+        rep = "L'information est « partiellement présente » [1]."
+        self.assertEqual([a.element for a in verifier_fidelite(rep, {1: "rien"})], ["partiellement présente"])
+        self.assertEqual(verifier_fidelite(rep, {1: "rien"}, texte_contrat=chat_router._CONTRAT_LECTURE), [])
+
+    def test_seulement_les_citations_pas_les_nombres(self):
+        """Le contrat n'étaie pas un nombre : « [1] » y figure en exemple."""
+        res = verifier_fidelite("La valeur vaut 1 [1].", {1: "rien"}, texte_contrat="par exemple [1] et 1")
+        self.assertEqual([a.element for a in res], ["1"])
+
+    def test_finalisation_passe_le_contrat_du_tour(self):
+        resultats = [ResultatWeb(rang=1, titre="Page", url="https://exemple.org/p",
+                                 extrait="La limite vaut 4.", moteur=MOTEUR_LECTURE)]
+        _, trace = chat_router._finaliser_citations_et_trace(
+            "c1", "La limite vaut 4 [1]. Le reste est « partiellement présente » [1].", resultats, "", set(), [])
+        self.assertEqual(trace, [])
+
+    def test_texte_contrat_selon_les_sources_du_tour(self):
+        lue = ResultatWeb(rang=1, titre="P", url="https://e.org/p", extrait="x", moteur=MOTEUR_LECTURE)
+        cherchee = ResultatWeb(rang=2, titre="R", url="https://e.org/r", extrait="x", moteur="ddg-html")
+        self.assertEqual(chat_router._texte_contrat([lue]), chat_router._CONTRAT_LECTURE)
+        self.assertEqual(chat_router._texte_contrat([cherchee]), chat_router._CONTRAT_RECHERCHE)
+        self.assertIn(chat_router._CONTRAT_LECTURE, chat_router._texte_contrat([lue, cherchee]))
+        self.assertIn(chat_router._CONTRAT_RECHERCHE, chat_router._texte_contrat([lue, cherchee]))
+        self.assertEqual(chat_router._texte_contrat([]), "")
+
+
+class TiragesArretTest(unittest.TestCase):
+    """Mesure de l'arrêt sur information absente (`tirages-arret.json`),
+    rejouée hors ligne avec le contrat de lecture envoyé."""
+
+    @classmethod
+    def setUpClass(cls):
+        dossier = EXTRAITS.parent
+        cls.sources = {(c["page"], c["budget"]): {c["rang"]: f"{c['titre']} {c['extrait']}"}
+                       for c in json.loads(EXTRAITS.read_text(encoding="utf-8"))["cas"]}
+        questions = json.loads((dossier.parents[1] / "questions.json").read_text(encoding="utf-8"))
+        cls.messages = {q["page"]: f"{q['question']} {q['url']}" for q in questions}
+        cls.essais = {(e["page"], e["budget"], e["tirage"]): e
+                      for e in json.loads((dossier / "tirages-arret.json").read_text(encoding="utf-8"))["essais"]}
+
+    def _el(self, page, budget, tirage):
+        e = self.essais[(page, budget, tirage)]
+        return [a.element for a in verifier_fidelite(
+            e["reponse"], self.sources[(page, budget)], texte_utilisateur=self.messages[page],
+            texte_contrat=chat_router._CONTRAT_LECTURE)]
+
+    def test_relativite_4k_t1_trois_n_est_plus_signale(self):
+        """« trois », nombre en lettres : plus vérifié côté réponse."""
+        self.assertEqual(self._el("relativite_restreinte", 4000, 1), [])
+
+    def test_photoelectrique_16k_t5_partiellement_presente_n_est_plus_signale(self):
+        self.assertEqual(self._el("photoelectrique", 16000, 5), [])
+
+    def test_relativite_4k_t3_toujours_signale(self):
+        self.assertEqual(self._el("relativite_restreinte", 4000, 3), ["référentiel en mouvement rectiligne uniforme"])
 
 
 if __name__ == "__main__":

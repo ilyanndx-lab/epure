@@ -17,7 +17,7 @@ import { liste, texte, modelesDisponibles, type ModeleDisponible } from '../../n
 import { useModules } from '../../modules'
 import { metaAffichable, type MetaAffichable } from './metaMessage'
 import { budgetRechercheApprofondie, infoBulleRechercheApprofondie } from './rechercheApprofondie'
-import { detailBudgetLecture, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeHorsExtrait, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
+import { detailBudgetLecture, estViolationHorsExtrait, etapesDe, libelleBadgeAbandon, libelleBadgeCitations, libelleBadgeHorsExtrait, libelleBadgeLecture, libelleBadgeLimite, libelleBadgeNonEtayees, libelleRaisonnement, libelleRetraitOutils, resumeTrace, verifieeContreRecherche, type EtapeTrace } from './traceRecherche'
 import CamembertContexte from './CamembertContexte'
 import { useFluxEnCours } from '../../redemarrage'
 
@@ -559,12 +559,15 @@ function EtapeTraceView({ etape }: { etape: EtapeTrace }) {
       )
     }
     case 'hors_extrait_present': {
-      // Complément de mémoire sur un tour sourcé : le contrat l'interdit
-      // depuis l'arrêt sur information absente. Signalé, jamais masqué.
+      // Complément de mémoire sur un tour sourcé. Lecture d'URL : le contrat
+      // l'interdit (#90), c'est une violation. Recherche web : permis s'il
+      // est annoncé, dit sans alerte. Signalé, jamais masqué.
       const phrases = liste<string>(etape.phrases)
       return (
         <div>
-          <p className="m-0 text-warning">Contenu hors extrait : la réponse complète de mémoire</p>
+          {estViolationHorsExtrait(etape)
+            ? <p className="m-0 text-warning">Contenu hors extrait : la réponse complète de mémoire</p>
+            : <p className="m-0">Complément de mémoire annoncé « hors extrait »</p>}
           <ul className="m-0 mt-1 pl-4 list-disc">
             {phrases.map((p, i) => <li key={i} className="text-muted">{p}</li>)}
           </ul>
